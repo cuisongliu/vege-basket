@@ -1,0 +1,84 @@
+export const schemaSql = `
+create table if not exists users (
+  id bigserial primary key,
+  email text not null unique,
+  display_name text not null default '',
+  password_hash text not null default '',
+  created_at timestamptz not null default now()
+);
+
+alter table users add column if not exists display_name text not null default '';
+
+create table if not exists sessions (
+  token text primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null
+);
+
+create table if not exists projects (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  name text not null,
+  status text not null default 'active',
+  tags text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists journal_entries (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists todos (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  title text not null,
+  due_date date not null,
+  priority text not null default 'medium',
+  done boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists risks (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  content text not null,
+  journal_entry_id bigint references journal_entries(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (project_id, content)
+);
+
+create table if not exists draft_items (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  source text not null default 'manual',
+  content text not null,
+  suggested_project_id bigint references projects(id) on delete set null,
+  processed boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists summaries (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  type text not null,
+  title text not null,
+  period text not null,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_projects_user_id on projects(user_id);
+create index if not exists idx_sessions_user_id on sessions(user_id);
+create index if not exists idx_sessions_expires_at on sessions(expires_at);
+create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
+create index if not exists idx_todos_project_id on todos(project_id);
+create index if not exists idx_risks_project_id on risks(project_id);
+create index if not exists idx_draft_items_user_id on draft_items(user_id);
+create index if not exists idx_summaries_project_id on summaries(project_id);
+`
