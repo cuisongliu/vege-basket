@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+.env
+.env.local
+.env.*.local
+.sealos
+Dockerfile
+*.log
+.DS_Store
+.vscode
+.idea

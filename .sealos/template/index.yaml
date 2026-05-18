@@ -1,0 +1,366 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: vege-basket
+spec:
+  title: Project Basket
+  url: https://github.com/felixqiu014-wq/vege-basket
+  gitRepo: https://github.com/felixqiu014-wq/vege-basket
+  author: felixqiu014-wq
+  description: Personal project management workspace for projects, journals, drafts, todos, risks, and AI summaries.
+  readme: https://raw.githubusercontent.com/felixqiu014-wq/vege-basket/main/README.md
+  icon: https://raw.githubusercontent.com/labring-actions/templates/main/template/sealos.svg
+  templateType: inline
+  categories:
+    - tool
+  locale: en
+  i18n:
+    zh:
+      description: 用于管理项目、日记、草稿、待办、风险和 AI 总结的个人项目工作台。
+  defaults:
+    app_name:
+      type: string
+      value: vege-basket-170451
+    app_host:
+      type: string
+      value: vege-basket-170451
+  inputs:
+    AI_ENABLED:
+      description: Set to true to enable AI endpoints after API credentials are configured.
+      type: string
+      default: 'false'
+      required: false
+    AI_API_BASE:
+      description: OpenAI-compatible API base URL for AI summary features.
+      type: string
+      default: ''
+      required: true
+    AI_API_KEY:
+      description: API key for AI summary features. Store as a Sealos secret in updates.
+      type: string
+      default: ''
+      required: true
+    AI_MODEL:
+      description: AI model name.
+      type: string
+      default: deepseek-v3.2
+      required: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-pg
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-pg
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    kb.io/database: postgresql-16.4.0
+    clusterdefinition.kubeblocks.io/name: postgresql
+    clusterversion.kubeblocks.io/name: postgresql-16.4.0
+  name: ${{ defaults.app_name }}-pg
+spec:
+  affinity:
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+  clusterDefinitionRef: postgresql
+  clusterVersionRef: postgresql-16.4.0
+  componentSpecs:
+    - componentDefRef: postgresql
+      disableExporter: true
+      enabledLogs:
+        - running
+      name: postgresql
+      replicas: 1
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 50m
+          memory: 51Mi
+      serviceAccountName: ${{ defaults.app_name }}-pg
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+            storageClassName: openebs-backup
+  terminationPolicy: Delete
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-pg-init
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+        - name: pgsql-init
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: PG_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: endpoint
+            - name: PG_DATABASE
+              value: vegebasket
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for i in $(seq 1 90); do
+                if pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U postgres -d postgres >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 2
+              done
+              pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U postgres -d postgres >/dev/null 2>&1
+              if ! psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DATABASE}'" | grep -q 1; then
+                psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${PG_DATABASE}\";"
+              fi
+      restartPolicy: OnFailure
+  ttlSecondsAfterFinished: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+  annotations:
+    originImageName: ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+spec:
+  revisionHistoryLimit: 1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ${{ defaults.app_name }}
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: PG_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: endpoint
+            - name: PG_DATABASE
+              value: vegebasket
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for i in $(seq 1 90); do
+                if pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U postgres -d postgres >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 2
+              done
+              pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U postgres -d postgres >/dev/null 2>&1
+              if ! psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DATABASE}'" | grep -q 1; then
+                psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${PG_DATABASE}\";"
+              fi
+          resources:
+            requests:
+              cpu: 20m
+              memory: 25Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8787
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: '8787'
+            - name: PG_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: port
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: postgresql://$(PG_USER):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/vegebasket
+            - name: AI_ENABLED
+              value: ${{ inputs.AI_ENABLED }}
+            - name: AI_API_BASE
+              value: ${{ inputs.AI_API_BASE }}
+            - name: AI_API_KEY
+              value: ${{ inputs.AI_API_KEY }}
+            - name: AI_MODEL
+              value: ${{ inputs.AI_MODEL }}
+            - name: AI_RATE_LIMIT
+              value: '5'
+            - name: AI_RATE_WINDOW_MS
+              value: '60000'
+            - name: AI_MAX_MESSAGE_LENGTH
+              value: '2000'
+            - name: AI_MAX_CONTEXT_CHARS
+              value: '12000'
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8787
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8787
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 20m
+              memory: 25Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  ports:
+    - name: http
+      port: 8787
+      targetPort: 8787
+  selector:
+    app: ${{ defaults.app_name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      location ~* \.(?:css|js|woff2?|png|jpg|jpeg|gif|svg|ico)$ {
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800, immutable";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 8787
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: https://raw.githubusercontent.com/labring-actions/templates/main/template/sealos.svg
+  name: Project Basket
+  type: link

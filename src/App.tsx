@@ -72,6 +72,7 @@ import {
   removeJournalEntry,
   removeProject,
   removeTodo,
+  resolveRisk,
   updateJournalEntry,
   updateProject,
   updateTodo,
@@ -541,6 +542,10 @@ function App() {
     await runMutation(() => createRiskFromJournal(projectId, entryId))
   }
 
+  async function resolveProjectRisk(projectId: number, content: string) {
+    await runMutation(() => resolveRisk(projectId, content))
+  }
+
   async function addInboxItem() {
     const content = inboxDraft.trim()
     if (!content) return
@@ -691,6 +696,10 @@ ${summariesText || '暂无总结'}`
     return <LoginScreen error={authError} onSignIn={signIn} />
   }
 
+  if (!workspaceLoaded && !authUser) {
+    return <WorkspaceBootScreen />
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -792,13 +801,14 @@ ${summariesText || '暂无总结'}`
                     </Label>
                     <DialogFooter>
                       <Button
+                        className="ghost-button"
                         variant="outline"
                         type="button"
                         onClick={() => changeNewProjectDialogOpen(false)}
                       >
                         取消
                       </Button>
-                      <Button type="submit">
+                      <Button className="solid-button" type="submit">
                         <Plus size={15} /> 创建项目
                       </Button>
                     </DialogFooter>
@@ -833,6 +843,7 @@ ${summariesText || '暂无总结'}`
             onDeleteJournalEntry={deleteJournalEntry}
             onEditJournalEntry={editJournalEntry}
             onMarkJournalAsRisk={markJournalAsRisk}
+            onResolveRisk={resolveProjectRisk}
             onDeleteTodo={deleteTodo}
             onTodoDueDateChange={setTodoDueDate}
             onTodoDraftChange={setTodoDraft}
@@ -905,6 +916,21 @@ ${summariesText || '暂无总结'}`
           />
         )}
       </section>
+    </main>
+  )
+}
+
+function WorkspaceBootScreen() {
+  return (
+    <main className="workspace-boot-screen" aria-busy="true">
+      <div className="workspace-boot-panel">
+        <div className="brand-mark">PM</div>
+        <div>
+          <p className="eyebrow">个人项目驾驶舱</p>
+          <h1>正在同步工作区</h1>
+          <p>稍等一下，正在连接线上数据。</p>
+        </div>
+      </div>
     </main>
   )
 }
@@ -1196,13 +1222,14 @@ function EmptyWorkspace({
             </Label>
             <DialogFooter>
               <Button
+                className="ghost-button"
                 variant="outline"
                 type="button"
                 onClick={() => onNewProjectDialogOpenChange(false)}
               >
                 取消
               </Button>
-              <Button type="submit">
+              <Button className="solid-button" type="submit">
                 <Plus size={15} /> 创建项目
               </Button>
             </DialogFooter>
@@ -1226,6 +1253,7 @@ function ProjectDetail({
   onDeleteJournalEntry,
   onEditJournalEntry,
   onMarkJournalAsRisk,
+  onResolveRisk,
   onDeleteTodo,
   onTodoDueDateChange,
   onTodoDraftChange,
@@ -1255,6 +1283,7 @@ function ProjectDetail({
     content: string,
   ) => void
   onMarkJournalAsRisk: (projectId: number, entryId: number) => void
+  onResolveRisk: (projectId: number, content: string) => void
   onDeleteTodo: (todoId: number) => void
   onTodoDueDateChange: (value: string) => void
   onTodoDraftChange: (value: string) => void
@@ -1578,7 +1607,19 @@ function ProjectDetail({
             {project.risks.length > 0 ? (
               project.risks.map((risk) => (
                 <article key={risk} className="risk-item">
-                  <strong>{project.name}</strong>
+                  <div className="risk-item-header">
+                    <strong>{project.name}</strong>
+                    <Button
+                      className="risk-resolve-button"
+                      variant="ghost"
+                      type="button"
+                      aria-label="解决风险"
+                      title="解决风险"
+                      onClick={() => onResolveRisk(project.id, risk)}
+                    >
+                      解决
+                    </Button>
+                  </div>
                   <p>{risk}</p>
                 </article>
               ))

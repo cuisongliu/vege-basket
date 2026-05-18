@@ -1,0 +1,13 @@
+{
+  "outcome": "success",
+  "registry": "ghcr",
+  "build": {
+    "image_name": "vege-basket",
+    "started_at": "2026-05-18T12:24:39.453Z"
+  },
+  "push": {
+    "remote_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439",
+    "pushed_at": "2026-05-18T12:26:01.531Z"
+  },
+  "finished_at": "2026-05-18T12:26:01.531Z"
+}

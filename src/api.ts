@@ -149,6 +149,13 @@ export function createRiskFromJournal(projectId: number, journalEntryId: number)
   })
 }
 
+export function resolveRisk(projectId: number, content: string) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/risks`, {
+    method: 'DELETE',
+    body: JSON.stringify({ content }),
+  })
+}
+
 export function createDraft(payload: {
   content: string
   suggestedProjectId?: number

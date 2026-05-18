@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-05-18T10:45:03.673Z",
+  "project": {
+    "github_url": "git@github.com:felixqiu014-wq/vege-basket.git",
+    "work_dir": "/Users/felixqiu/Documents/New project 5",
+    "repo_name": "vege-basket",
+    "branch": "main"
+  },
+  "score": {
+    "total": 8,
+    "verdict": "Good",
+    "dimensions": {
+      "statelessness": 2,
+      "config": 2,
+      "scalability": 1,
+      "startup": 1,
+      "observability": 1,
+      "boundaries": 1
+    }
+  },
+  "language": "node",
+  "all_languages": [
+    "node"
+  ],
+  "framework": "express, vite, react",
+  "package_manager": "npm",
+  "port": 8787,
+  "databases": [
+    "postgres"
+  ],
+  "runtime_version": {
+    "node": "24",
+    "source": "local"
+  },
+  "env_vars": {
+    "DATABASE_URL": {
+      "description": "PostgreSQL connection string composed from Sealos PostgreSQL credentials",
+      "category": "auto"
+    },
+    "PORT": {
+      "description": "HTTP port",
+      "category": "auto"
+    },
+    "AI_API_BASE": {
+      "description": "OpenAI-compatible AI API base URL",
+      "category": "required"
+    },
+    "AI_API_KEY": {
+      "description": "AI API key injected from a Kubernetes Secret",
+      "category": "required"
+    },
+    "AI_MODEL": {
+      "description": "AI model name",
+      "category": "optional",
+      "default": "deepseek-v3.2"
+    },
+    "AI_ENABLED": {
+      "description": "Feature flag for enabling production AI endpoints",
+      "category": "optional",
+      "default": "false"
+    },
+    "AI_RATE_LIMIT": {
+      "description": "Maximum AI requests per user within the rate window",
+      "category": "optional",
+      "default": "5"
+    },
+    "AI_RATE_WINDOW_MS": {
+      "description": "AI rate limit window in milliseconds",
+      "category": "optional",
+      "default": "60000"
+    },
+    "AI_MAX_MESSAGE_LENGTH": {
+      "description": "Maximum user or assistant message characters sent to the AI provider",
+      "category": "optional",
+      "default": "2000"
+    },
+    "AI_MAX_CONTEXT_CHARS": {
+      "description": "Maximum workspace context characters sent to the AI provider",
+      "category": "optional",
+      "default": "12000"
+    }
+  },
+  "has_dockerfile": true,
+  "complexity_tier": "L2",
+  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439"
+}

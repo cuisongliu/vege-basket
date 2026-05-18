@@ -1,0 +1,115 @@
+{
+  "version": "1.0",
+  "last_deploy": {
+    "app_name": "vege-basket-170451",
+    "app_host": "vege-basket-170451",
+    "namespace": "ns-44bchscw",
+    "region": "sealosgzg.site",
+    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439",
+    "docker_hub_user": null,
+    "repo_name": "vege-basket",
+    "url": "https://vege-basket-170451.sealosgzg.site",
+    "deployed_at": "2026-05-18T09:18:53.000Z",
+    "last_updated_at": "2026-05-18T12:26:01.531Z"
+  },
+  "history": [
+    {
+      "at": "2026-05-18T09:18:53.000Z",
+      "action": "deploy",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-170451",
+      "method": "template-api",
+      "status": "success",
+      "note": "Initial Sealos Template API deployment; rollout blocked on private GHCR image pull."
+    },
+    {
+      "at": "2026-05-18T09:54:38.788Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-170451",
+      "image": "ttl.sh/vege-basket-slim-20260518-1753:24h",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Switched to ultra-slim public ttl.sh fallback image after GHCR private image pull stalled."
+    },
+    {
+      "at": "2026-05-18T10:10:11.520Z",
+      "action": "set-image",
+      "previous_image": "ttl.sh/vege-basket-slim-20260518-1753:24h",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Switched back to public GHCR image after package visibility was changed to public."
+    },
+    {
+      "at": "2026-05-18T10:55:12.108Z",
+      "action": "set-env",
+      "changes": [
+        "AI_ENABLED",
+        "AI_API_BASE",
+        "AI_API_KEY",
+        "AI_MODEL",
+        "AI_RATE_LIMIT",
+        "AI_RATE_WINDOW_MS",
+        "AI_MAX_MESSAGE_LENGTH",
+        "AI_MAX_CONTEXT_CHARS"
+      ],
+      "method": "kubectl-set-env",
+      "status": "success",
+      "note": "Enabled production AI using a Kubernetes Secret for provider credentials and safe server-side limits."
+    },
+    {
+      "at": "2026-05-18T10:55:12.108Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b",
+      "image": "ttl.sh/vege-basket-20260518-184547:24h",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Built and pushed ghcr.io/felixqiu014-wq/vege-basket:20260518-184547; switched to ttl.sh fallback with the same digest after Sealos node GHCR pull stalled."
+    },
+    {
+      "at": "2026-05-18T10:57:09.207Z",
+      "action": "patch",
+      "changes": [
+        "imagePullSecrets"
+      ],
+      "method": "kubectl-patch",
+      "status": "success",
+      "note": "Attached a GHCR image pull secret to make official GHCR image pulls reliable from Sealos nodes."
+    },
+    {
+      "at": "2026-05-18T10:57:09.207Z",
+      "action": "set-image",
+      "previous_image": "ttl.sh/vege-basket-20260518-184547:24h",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-184547",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Switched from ttl.sh fallback to the official GHCR image after adding the pull secret."
+    },
+    {
+      "at": "2026-05-18T12:10:59.601Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-184547",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-200919",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Added risk resolve action and DELETE risk API, then updated the existing deployment."
+    },
+    {
+      "at": "2026-05-18T12:22:33.864Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-200919",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202059",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Updated typography scale for improved readability."
+    },
+    {
+      "at": "2026-05-18T12:26:01.531Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202059",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Added an authenticated boot loading screen to prevent demo data flashing on refresh."
+    }
+  ]
+}
