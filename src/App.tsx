@@ -6,6 +6,8 @@ import {
   Clock,
   DotsThree,
   CaretDown,
+  CaretLeft,
+  CaretRight,
   PencilSimple,
   DownloadSimple,
   FileText,
@@ -14,7 +16,6 @@ import {
   NotePencil,
   PaperPlaneTilt,
   Plus,
-  Robot,
   SignIn,
   SignOut,
   Sparkle,
@@ -60,6 +61,7 @@ import {
   createProject,
   createRiskFromJournal,
   createSummary,
+  createSummaryFromContent,
   createTodo,
   fetchCurrentUser,
   getAuthToken,
@@ -70,6 +72,7 @@ import {
   removeJournalEntry,
   removeProject,
   removeTodo,
+  updateJournalEntry,
   updateProject,
   updateTodo,
   setAuthToken,
@@ -91,6 +94,7 @@ import type {
 import './App.css'
 
 type View = 'project' | 'inbox' | 'search' | 'summaries'
+type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
 
 function getShanghaiDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('zh-CN', {
@@ -122,6 +126,32 @@ function getReadableToday() {
   return `${year} 年 ${Number(month)} 月 ${Number(day)} 日 · 上海时间`
 }
 
+function getCurrentDateTimeStamp() {
+  const parts = getShanghaiDateParts()
+  return `${parts.date} ${parts.time}`
+}
+
+function addDays(dateStamp: string, delta: number) {
+  const [year, month, day] = dateStamp.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  date.setDate(date.getDate() + delta)
+  return formatDateStamp(date)
+}
+
+function formatDateStamp(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function formatMonthTitle(year: number, month: number) {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(year, month, 1))
+}
+
 const today = getTodayStamp()
 
 const statusCopy: Record<ProjectStatus, string> = {
@@ -142,6 +172,7 @@ const initialProjects: Project[] = [
     id: 1,
     name: 'AIGC 内容工作台',
     status: 'active',
+    createdAt: '2026-05-12 09:40',
     updatedAt: '今天 15:20',
     tags: ['AI', '内容生产', 'MVP'],
     risks: ['模型输出质量波动，需要确认评估标准'],
@@ -164,6 +195,7 @@ const initialProjects: Project[] = [
     id: 2,
     name: '数据看板重构',
     status: 'active',
+    createdAt: '2026-05-10 14:20',
     updatedAt: '今天 11:05',
     tags: ['数据', '体验优化'],
     risks: ['旧指标口径不一致，可能影响上线验收'],
@@ -180,6 +212,7 @@ const initialProjects: Project[] = [
     id: 3,
     name: '内部知识库迁移',
     status: 'paused',
+    createdAt: '2026-05-08 10:15',
     updatedAt: '昨天 18:40',
     tags: ['知识库', '迁移'],
     risks: ['历史文档质量参差，自动整理前需要抽样检查'],
@@ -196,6 +229,7 @@ const initialProjects: Project[] = [
     id: 4,
     name: '支付链路稳定性',
     status: 'completed',
+    createdAt: '2026-05-01 16:30',
     updatedAt: '05-12 17:30',
     tags: ['交易', '稳定性'],
     risks: [],
@@ -290,7 +324,7 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authError, setAuthError] = useState('')
-  const [view, setView] = useState<View>('project')
+  const [view, setView] = useState<View>('search')
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
   const [inbox, setInbox] = useState(initialInbox)
@@ -309,13 +343,8 @@ function App() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
-  const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([
-    {
-      role: 'assistant',
-      content:
-        '你好，我是 Veges 的项目总结 Agent。你可以让我基于当前项目日记、待办、风险和草稿生成周总结、月总结，或者帮你梳理今天最该推进的事项。',
-    },
-  ])
+  const initialAiMessages: DisplayAiChatMessage[] = []
+  const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
   const [aiDraft, setAiDraft] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
@@ -469,7 +498,7 @@ function App() {
     setNewProjectTags('')
     setJournalDraft('')
     setIsNewProjectDialogOpen(false)
-    setView('project')
+    setView(createdProject ? 'project' : 'search')
   }
 
   async function saveJournal() {
@@ -504,6 +533,13 @@ function App() {
 
   async function deleteJournalEntry(projectId: number, entryId: number) {
     await runMutation(() => removeJournalEntry(projectId, entryId))
+  }
+
+  async function editJournalEntry(projectId: number, entryId: number, content: string) {
+    const nextContent = content.trim()
+    if (!nextContent) return
+
+    await runMutation(() => updateJournalEntry(projectId, entryId, nextContent))
   }
 
   async function markJournalAsRisk(projectId: number, entryId: number) {
@@ -559,19 +595,49 @@ function App() {
     setView('summaries')
   }
 
+  async function generateSummaryFromAiMessage(message: DisplayAiChatMessage) {
+    const content = message.content.trim()
+    const projectId = selectedProject?.id ?? projects[0]?.id
+    if (!content || !projectId) return
+
+    await runMutation(() =>
+      createSummaryFromContent({
+        content,
+        projectId,
+        title: `${message.createdAt.slice(0, 10)} AI 生成总结`,
+        type: 'weekly',
+      }),
+    )
+  }
+
   async function sendAgentMessage() {
     const content = aiDraft.trim()
     if (!content || aiBusy) return
 
-    const nextMessages: AiChatMessage[] = [...aiMessages, { role: 'user', content }]
+    const nextMessages: DisplayAiChatMessage[] = [
+      ...aiMessages,
+      { role: 'user', content, createdAt: getCurrentDateTimeStamp() },
+    ]
     setAiMessages(nextMessages)
     setAiDraft('')
     setAiBusy(true)
     setAiError('')
 
     try {
-      const result = await sendAiChat(nextMessages)
-      setAiMessages([...nextMessages, { role: 'assistant', content: result.message }])
+      const result = await sendAiChat(
+        nextMessages.map(({ role, content: messageContent }) => ({
+          role,
+          content: messageContent,
+        })),
+      )
+      setAiMessages([
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content: result.message,
+          createdAt: getCurrentDateTimeStamp(),
+        },
+      ])
     } catch {
       setAiError('AI Agent 暂时没有响应，请检查后端服务或 API 配置。')
     } finally {
@@ -641,14 +707,11 @@ ${summariesText || '暂无总结'}`
           </div>
         </div>
         <nav className="nav-list">
-          <NavButton active={view === 'project'} onClick={() => setView('project')}>
-            <Target size={18} weight="duotone" /> 今日驾驶舱
+          <NavButton active={view === 'search'} onClick={() => setView('search')}>
+            <Target size={18} weight="duotone" /> 项目篮子
           </NavButton>
           <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-            <Tray size={18} weight="duotone" /> 今日草稿箱
-          </NavButton>
-          <NavButton active={view === 'search'} onClick={() => setView('search')}>
-            <MagnifyingGlass size={18} weight="duotone" /> 搜索回溯
+            <Tray size={18} weight="duotone" /> 草稿箱
           </NavButton>
           <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
             <FileText size={18} weight="duotone" /> AI 总结
@@ -661,7 +724,7 @@ ${summariesText || '暂无总结'}`
         />
       </aside>
 
-      <section className="workspace">
+      <section className={view === 'project' ? 'workspace cockpit-workspace' : 'workspace'}>
         <header className="topbar">
           <div>
             <p className="eyebrow">{getReadableToday()}</p>
@@ -676,9 +739,70 @@ ${summariesText || '暂无总结'}`
             <Button className="ghost-button" variant="outline" type="button" onClick={() => exportMarkdown()}>
               <DownloadSimple size={17} /> 批量导出
             </Button>
-            <Button className="solid-button" type="button" onClick={() => setView('inbox')}>
-              <Plus size={17} /> 快速捕捉
-            </Button>
+            {view === 'search' ? (
+              <Dialog
+                open={isNewProjectDialogOpen}
+                onOpenChange={changeNewProjectDialogOpen}
+              >
+                <DialogTrigger asChild>
+                  <Button className="solid-button" type="button">
+                    <Plus size={17} /> 新建项目
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>新建项目</DialogTitle>
+                    <DialogDescription>
+                      先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form
+                    className="new-project-dialog-form"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      addProject()
+                    }}
+                  >
+                    <Label>
+                      项目名称
+                      <Input
+                        autoFocus
+                        aria-label="新项目名称"
+                        placeholder="例如：增长实验复盘"
+                        required
+                        value={newProjectName}
+                        onChange={(event) => setNewProjectName(event.target.value)}
+                      />
+                    </Label>
+                    <Label>
+                      标签
+                      <Input
+                        aria-label="项目标签"
+                        placeholder="可选，用逗号或空格分隔"
+                        value={newProjectTags}
+                        onChange={(event) => setNewProjectTags(event.target.value)}
+                      />
+                    </Label>
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        type="button"
+                        onClick={() => changeNewProjectDialogOpen(false)}
+                      >
+                        取消
+                      </Button>
+                      <Button type="submit">
+                        <Plus size={15} /> 创建项目
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            ) : (
+              <Button className="solid-button" type="button" onClick={() => setView('inbox')}>
+                <Plus size={17} /> 快速捕捉
+              </Button>
+            )}
           </div>
         </header>
 
@@ -692,22 +816,15 @@ ${summariesText || '暂无总结'}`
           <ProjectDetail
             exportMarkdown={exportMarkdown}
             generateSummary={generateSummary}
-            isNewProjectDialogOpen={isNewProjectDialogOpen}
             journalDraft={journalDraft}
-            newProjectName={newProjectName}
-            newProjectTags={newProjectTags}
-            onAddProject={addProject}
             onAddTodo={addTodo}
             onDraftChange={setJournalDraft}
-            onNewProjectDialogOpenChange={changeNewProjectDialogOpen}
-            onNewProjectNameChange={setNewProjectName}
-            onNewProjectTagsChange={setNewProjectTags}
-            onProjectClick={selectProject}
             onSaveJournal={saveJournal}
             onRenameProject={renameProject}
             onUpdateProjectStatus={updateProjectStatus}
             onDeleteProject={deleteProject}
             onDeleteJournalEntry={deleteJournalEntry}
+            onEditJournalEntry={editJournalEntry}
             onMarkJournalAsRisk={markJournalAsRisk}
             onDeleteTodo={deleteTodo}
             onTodoDueDateChange={setTodoDueDate}
@@ -768,8 +885,13 @@ ${summariesText || '暂无总结'}`
             aiDraft={aiDraft}
             aiError={aiError}
             aiMessages={aiMessages}
-            generateSummary={generateSummary}
             onAiDraftChange={setAiDraft}
+            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
+            onResetAiChat={() => {
+              setAiMessages(initialAiMessages)
+              setAiDraft('')
+              setAiError('')
+            }}
             onSendAgentMessage={sendAgentMessage}
             projects={projects}
             summaries={summaries}
@@ -1087,22 +1209,15 @@ function EmptyWorkspace({
 function ProjectDetail({
   exportMarkdown,
   generateSummary,
-  isNewProjectDialogOpen,
   journalDraft,
-  newProjectName,
-  newProjectTags,
-  onAddProject,
   onAddTodo,
   onDraftChange,
-  onNewProjectDialogOpenChange,
-  onNewProjectNameChange,
-  onNewProjectTagsChange,
-  onProjectClick,
   onSaveJournal,
   onRenameProject,
   onUpdateProjectStatus,
   onDeleteProject,
   onDeleteJournalEntry,
+  onEditJournalEntry,
   onMarkJournalAsRisk,
   onDeleteTodo,
   onTodoDueDateChange,
@@ -1119,22 +1234,19 @@ function ProjectDetail({
 }: {
   exportMarkdown: (projectId?: number) => void
   generateSummary: (projectId: number, type: Summary['type']) => void
-  isNewProjectDialogOpen: boolean
   journalDraft: string
-  newProjectName: string
-  newProjectTags: string
-  onAddProject: () => void
   onAddTodo: () => void
   onDraftChange: (value: string) => void
-  onNewProjectDialogOpenChange: (open: boolean) => void
-  onNewProjectNameChange: (value: string) => void
-  onNewProjectTagsChange: (value: string) => void
-  onProjectClick: (id: number) => void
   onSaveJournal: () => void
   onRenameProject: (projectId: number, name: string) => void
   onUpdateProjectStatus: (projectId: number, status: ProjectStatus) => void
   onDeleteProject: (projectId: number) => void
   onDeleteJournalEntry: (projectId: number, entryId: number) => void
+  onEditJournalEntry: (
+    projectId: number,
+    entryId: number,
+    content: string,
+  ) => void
   onMarkJournalAsRisk: (projectId: number, entryId: number) => void
   onDeleteTodo: (todoId: number) => void
   onTodoDueDateChange: (value: string) => void
@@ -1151,86 +1263,34 @@ function ProjectDetail({
 }) {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [projectNameDraft, setProjectNameDraft] = useState(project.name)
+  const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
+  const [journalEditDraft, setJournalEditDraft] = useState('')
+  const journalDates = useMemo(
+    () => Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10)))),
+    [project.journals],
+  )
+  const defaultJournalDate = journalDates.includes(today)
+    ? today
+    : journalDates[0] ?? today
+  const [selectedJournalDate, setSelectedJournalDate] = useState(defaultJournalDate)
+  const visibleJournals = project.journals.filter((entry) =>
+    entry.createdAt.startsWith(selectedJournalDate),
+  )
+
+  useEffect(() => {
+    setSelectedJournalDate(defaultJournalDate)
+    setEditingJournalId(null)
+    setJournalEditDraft('')
+  }, [defaultJournalDate, project.id])
+
+  useEffect(() => {
+    if (journalDates.length > 0 && !journalDates.includes(selectedJournalDate)) {
+      setSelectedJournalDate(defaultJournalDate)
+    }
+  }, [defaultJournalDate, journalDates, selectedJournalDate])
 
   return (
     <div className="detail-layout">
-      <aside className="project-switcher">
-        <Dialog
-          open={isNewProjectDialogOpen}
-          onOpenChange={onNewProjectDialogOpenChange}
-        >
-          <DialogTrigger asChild>
-            <Button className="new-project-trigger" type="button">
-              <Plus size={15} /> 新建项目
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>新建项目</DialogTitle>
-              <DialogDescription>
-                先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
-              </DialogDescription>
-            </DialogHeader>
-            <form
-              className="new-project-dialog-form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                onAddProject()
-              }}
-            >
-              <Label>
-                项目名称
-                <Input
-                  autoFocus
-                  aria-label="新项目名称"
-                  placeholder="例如：增长实验复盘"
-                  required
-                  value={newProjectName}
-                  onChange={(event) => onNewProjectNameChange(event.target.value)}
-                />
-              </Label>
-              <Label>
-                标签
-                <Input
-                  aria-label="项目标签"
-                  placeholder="可选，用逗号或空格分隔"
-                  value={newProjectTags}
-                  onChange={(event) => onNewProjectTagsChange(event.target.value)}
-                />
-              </Label>
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => onNewProjectDialogOpenChange(false)}
-                >
-                  取消
-                </Button>
-                <Button type="submit">
-                  <Plus size={15} /> 创建项目
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-        {projects.map((item) => (
-          <button
-            className={item.id === project.id ? 'switcher-item active' : 'switcher-item'}
-            key={item.id}
-            onClick={() => onProjectClick(item.id)}
-            type="button"
-          >
-            <span className="switcher-title">{item.name}</span>
-            <span className="switcher-meta-row">
-              <span className={`switcher-status-tag ${item.status}`}>
-                {statusCopy[item.status]}
-              </span>
-              <ProjectTags tags={item.tags} compact />
-            </span>
-          </button>
-        ))}
-      </aside>
-
       <Card className="panel journal-panel">
         <div className="section-header">
           <div>
@@ -1329,44 +1389,139 @@ function ProjectDetail({
         </Button>
 
         <div className="history-list">
-          {project.journals.map((entry) => (
-            <article className="history-item" key={entry.id}>
-              <div className="history-item-header">
-                <time>{entry.createdAt}</time>
-                <span className="history-actions">
-                  <Button
-                    className="history-risk-button"
-                    variant="ghost"
-                    size="icon"
-                    type="button"
-                    aria-label="标记为风险"
-                    title="标记为风险"
-                    onClick={() => onMarkJournalAsRisk(project.id, entry.id)}
+          {visibleJournals.length > 0 ? (
+            visibleJournals.map((entry) => (
+              <article className="history-item" key={entry.id}>
+                <div className="history-item-header">
+                  <time>{entry.createdAt}</time>
+                  <span className="history-actions">
+                    <Button
+                      className="history-edit-button"
+                      variant="ghost"
+                      size="icon"
+                      type="button"
+                      aria-label="编辑日记"
+                      title="编辑日记"
+                      onClick={() => {
+                        setEditingJournalId(entry.id)
+                        setJournalEditDraft(entry.content)
+                      }}
+                    >
+                      <PencilSimple size={15} />
+                    </Button>
+                    <Button
+                      className="history-risk-button"
+                      variant="ghost"
+                      size="icon"
+                      type="button"
+                      aria-label="标记为风险"
+                      title="标记为风险"
+                      onClick={() => onMarkJournalAsRisk(project.id, entry.id)}
+                    >
+                      <WarningCircle size={15} />
+                    </Button>
+                    <ConfirmDialog
+                      confirmLabel="删除日记"
+                      description={`这条 ${entry.createdAt} 的日记删除后将无法在当前预览数据中恢复。`}
+                      onConfirm={() => onDeleteJournalEntry(project.id, entry.id)}
+                      title="确认删除这条日记？"
+                      trigger={
+                        <Button
+                          className="history-delete-button"
+                          variant="ghost"
+                          size="icon"
+                          type="button"
+                          aria-label="删除日记"
+                        >
+                          <Trash size={15} />
+                        </Button>
+                      }
+                    />
+                  </span>
+                </div>
+                {editingJournalId === entry.id ? (
+                  <form
+                    className="journal-edit-form"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      const nextContent = journalEditDraft.trim()
+                      if (!nextContent) return
+                      onEditJournalEntry(project.id, entry.id, nextContent)
+                      setEditingJournalId(null)
+                      setJournalEditDraft('')
+                    }}
                   >
-                    <WarningCircle size={15} />
-                  </Button>
-                  <ConfirmDialog
-                    confirmLabel="删除日记"
-                    description={`这条 ${entry.createdAt} 的日记删除后将无法在当前预览数据中恢复。`}
-                    onConfirm={() => onDeleteJournalEntry(project.id, entry.id)}
-                    title="确认删除这条日记？"
-                    trigger={
+                    <Textarea
+                      autoFocus
+                      aria-label="编辑日记内容"
+                      value={journalEditDraft}
+                      onChange={(event) => setJournalEditDraft(event.target.value)}
+                    />
+                    <div className="journal-edit-actions">
                       <Button
-                        className="history-delete-button"
-                        variant="ghost"
-                        size="icon"
+                        className="ghost-button"
                         type="button"
-                        aria-label="删除日记"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingJournalId(null)
+                          setJournalEditDraft('')
+                        }}
                       >
-                        <Trash size={15} />
+                        取消
                       </Button>
-                    }
-                  />
-                </span>
-              </div>
-              <p>{entry.content}</p>
-            </article>
-          ))}
+                      <Button
+                        className="solid-button"
+                        type="submit"
+                        disabled={!journalEditDraft.trim()}
+                      >
+                        保存修改
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <p>{entry.content}</p>
+                )}
+              </article>
+            ))
+          ) : (
+            <p className="empty-state">这一天还没有日记记录。</p>
+          )}
+        </div>
+        <div className="journal-pagination" aria-label="日记日期选择">
+          <Button
+            className="ghost-button"
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setSelectedJournalDate((date) => addDays(date, -1))
+              setEditingJournalId(null)
+              setJournalEditDraft('')
+            }}
+          >
+            上一天
+          </Button>
+          <JournalDatePicker
+            datesWithEntries={journalDates}
+            value={selectedJournalDate}
+            onChange={(date) => {
+              setSelectedJournalDate(date)
+              setEditingJournalId(null)
+              setJournalEditDraft('')
+            }}
+          />
+          <span>{visibleJournals.length} 条</span>
+          <Button
+            className="ghost-button"
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setSelectedJournalDate((date) => addDays(date, 1))
+              setEditingJournalId(null)
+              setJournalEditDraft('')
+            }}
+          >
+            下一天
+          </Button>
         </div>
       </Card>
 
@@ -1379,11 +1534,11 @@ function ProjectDetail({
             onChange={(event) => onTodoDraftChange(event.target.value)}
           />
           <div className="todo-form-meta">
-            <Input
-              aria-label="待办截止日期"
-              type="date"
+            <JournalDatePicker
+              ariaLabel="待办截止日期"
+              datesWithEntries={[]}
               value={todoDueDate}
-              onChange={(event) => onTodoDueDateChange(event.target.value)}
+              onChange={onTodoDueDateChange}
             />
             <Select
               value={todoPriority}
@@ -1427,6 +1582,105 @@ function ProjectDetail({
         </div>
       </Card>
     </div>
+  )
+}
+
+function JournalDatePicker({
+  ariaLabel = '选择日期',
+  datesWithEntries,
+  onChange,
+  value,
+}: {
+  ariaLabel?: string
+  datesWithEntries: string[]
+  onChange: (date: string) => void
+  value: string
+}) {
+  const selectedDate = new Date(`${value}T00:00:00`)
+  const [displayMonth, setDisplayMonth] = useState(() => ({
+    month: selectedDate.getMonth(),
+    year: selectedDate.getFullYear(),
+  }))
+  const entryDates = useMemo(() => new Set(datesWithEntries), [datesWithEntries])
+  const firstDay = new Date(displayMonth.year, displayMonth.month, 1)
+  const firstWeekday = firstDay.getDay()
+  const daysInMonth = new Date(displayMonth.year, displayMonth.month + 1, 0).getDate()
+  const previousMonthDays = new Date(displayMonth.year, displayMonth.month, 0).getDate()
+  const calendarDays = Array.from({ length: 42 }, (_, index) => {
+    const dayOffset = index - firstWeekday + 1
+    const date =
+      dayOffset < 1
+        ? new Date(displayMonth.year, displayMonth.month - 1, previousMonthDays + dayOffset)
+        : dayOffset > daysInMonth
+          ? new Date(displayMonth.year, displayMonth.month + 1, dayOffset - daysInMonth)
+          : new Date(displayMonth.year, displayMonth.month, dayOffset)
+    return {
+      currentMonth: date.getMonth() === displayMonth.month,
+      day: date.getDate(),
+      stamp: formatDateStamp(date),
+    }
+  })
+
+  useEffect(() => {
+    const date = new Date(`${value}T00:00:00`)
+    setDisplayMonth({ month: date.getMonth(), year: date.getFullYear() })
+  }, [value])
+
+  function changeMonth(delta: number) {
+    setDisplayMonth((current) => {
+      const date = new Date(current.year, current.month + delta, 1)
+      return { month: date.getMonth(), year: date.getFullYear() }
+    })
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={ariaLabel}
+          className="journal-date-trigger"
+          type="button"
+          variant="outline"
+        >
+          {value}
+          <CaretDown size={13} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="journal-calendar" sideOffset={8}>
+        <div className="journal-calendar-header">
+          <button type="button" aria-label="上个月" onClick={() => changeMonth(-1)}>
+            <CaretLeft size={18} />
+          </button>
+          <strong>{formatMonthTitle(displayMonth.year, displayMonth.month)}</strong>
+          <button type="button" aria-label="下个月" onClick={() => changeMonth(1)}>
+            <CaretRight size={18} />
+          </button>
+        </div>
+        <div className="journal-calendar-weekdays">
+          {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
+            <span key={day}>{day}</span>
+          ))}
+        </div>
+        <div className="journal-calendar-grid">
+          {calendarDays.map((day) => (
+            <DropdownMenuItem
+              className={[
+                'journal-calendar-day',
+                day.currentMonth ? '' : 'outside',
+                entryDates.has(day.stamp) ? 'has-entry' : '',
+                day.stamp === value ? 'selected' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              key={day.stamp}
+              onSelect={() => onChange(day.stamp)}
+            >
+              {day.day}
+            </DropdownMenuItem>
+          ))}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1552,21 +1806,19 @@ function InboxView({
     <div className="inbox-layout">
       <Card className="panel capture-panel">
         <PanelTitle icon={<Tray size={18} />} title="快速捕捉" />
-        <Label className="textarea-label">
+        <Label className="textarea-label capture-textarea-label">
           新线索
-          <Textarea
-            placeholder="把会议记录、聊天片段、想法或解决方案先丢进来..."
-            value={inboxDraft}
-            onChange={(event) => onDraftChange(event.target.value)}
-          />
+          <span className="capture-input-wrap">
+            <Textarea
+              placeholder="把会议记录、聊天片段、想法或解决方案先丢进来..."
+              value={inboxDraft}
+              onChange={(event) => onDraftChange(event.target.value)}
+            />
+            <Button className="solid-button capture-submit-button" type="button" onClick={onAddInboxItem}>
+              <PaperPlaneTilt size={17} /> 放入今日草稿箱
+            </Button>
+          </span>
         </Label>
-        <Button className="solid-button" type="button" onClick={onAddInboxItem}>
-          <PaperPlaneTilt size={17} /> 放入今日草稿箱
-        </Button>
-        <div className="integration-note">
-          <Robot size={18} />
-          <p>飞书机器人入口已预留：第一版只接收并进入草稿箱，不自动挂项目。</p>
-        </div>
       </Card>
 
       <Card className="panel inbox-list-panel">
@@ -1767,7 +2019,10 @@ function SearchView({
         {filteredResults.map((project) => (
           <button key={project.id} className="result-item" type="button" onClick={() => onProjectClick(project.id)}>
             <div>
-              <Badge className={`status-pill ${project.status}`}>{statusCopy[project.status]}</Badge>
+              <div className="result-meta-row">
+                <Badge className={`status-pill ${project.status}`}>{statusCopy[project.status]}</Badge>
+                <span>创建于 {project.createdAt}</span>
+              </div>
               <h3>{project.name}</h3>
               <p>{project.journals[0]?.content}</p>
             </div>
@@ -1784,8 +2039,9 @@ function SummaryView({
   aiDraft,
   aiError,
   aiMessages,
-  generateSummary,
   onAiDraftChange,
+  onCreateSummaryFromAiMessage,
+  onResetAiChat,
   onSendAgentMessage,
   projects,
   summaries,
@@ -1793,9 +2049,10 @@ function SummaryView({
   aiBusy: boolean
   aiDraft: string
   aiError: string
-  aiMessages: AiChatMessage[]
-  generateSummary: (projectId: number, type: Summary['type']) => void
+  aiMessages: DisplayAiChatMessage[]
   onAiDraftChange: (value: string) => void
+  onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
+  onResetAiChat: () => void
   onSendAgentMessage: () => void
   projects: Project[]
   summaries: Summary[]
@@ -1813,13 +2070,23 @@ function SummaryView({
       <Card className="panel ai-agent-panel">
         <div className="agent-hero">
           <div className="agent-orb">
-            <Robot size={24} weight="duotone" />
+            V
           </div>
           <div>
-            <p className="eyebrow">VEGES AI AGENT</p>
             <h3>项目总结助理</h3>
-            <p>基于你的项目日记、待办、风险和草稿箱上下文，生成结构化总结和下一步建议。</p>
+            <p>Veges AI Agent</p>
           </div>
+          <Button
+            className="agent-new-chat-button"
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="新建对话"
+            title="新建对话"
+            onClick={onResetAiChat}
+          >
+            <Plus size={28} />
+          </Button>
         </div>
         <div className="agent-messages">
           {aiMessages.map((message, index) => (
@@ -1827,14 +2094,34 @@ function SummaryView({
               className={`agent-message ${message.role}`}
               key={`${message.role}-${index}`}
             >
-              <span>{message.role === 'assistant' ? 'Veges Agent' : '你'}</span>
-              <p>{message.content}</p>
+              <div className="agent-message-content">
+                <MarkdownPreview content={message.content} compact />
+              </div>
+              {message.role === 'assistant' && (
+                <div className="agent-message-footer">
+                  <time className="agent-message-time">{message.createdAt}</time>
+                  {index > 0 && (
+                    <Button
+                      className="agent-summary-button"
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="生成总结文档"
+                      title="生成总结文档"
+                      onClick={() => onCreateSummaryFromAiMessage(message)}
+                    >
+                      <FileText size={14} weight="bold" />
+                    </Button>
+                  )}
+                </div>
+              )}
             </article>
           ))}
           {aiBusy && (
             <article className="agent-message assistant">
-              <span>Veges Agent</span>
-              <p>正在整理项目上下文...</p>
+              <div className="agent-message-content">
+                <MarkdownPreview content="正在整理项目上下文..." compact />
+              </div>
             </article>
           )}
         </div>
@@ -1860,29 +2147,16 @@ function SummaryView({
             }}
           />
           <Button
-            className="solid-button"
+            className="agent-send-button"
             type="button"
             disabled={aiBusy || !aiDraft.trim()}
+            variant="ghost"
+            size="icon"
+            aria-label="发送消息"
             onClick={onSendAgentMessage}
           >
-            <PaperPlaneTilt size={16} /> 发送
+            <PaperPlaneTilt size={18} weight="bold" />
           </Button>
-        </div>
-        <div className="summary-shortcuts">
-          <p className="summary-shortcuts-title">快捷生成文档</p>
-          {projects.map((project) => (
-            <div className="summary-action-row" key={project.id}>
-              <span>{project.name}</span>
-              <div>
-                <Button variant="outline" type="button" onClick={() => generateSummary(project.id, 'weekly')}>
-                  周总结
-                </Button>
-                <Button variant="outline" type="button" onClick={() => generateSummary(project.id, 'monthly')}>
-                  月总结
-                </Button>
-              </div>
-            </div>
-          ))}
         </div>
       </Card>
       <Card className="panel summary-list">
@@ -1966,30 +2240,93 @@ function SummaryDocumentDetail({
   )
 }
 
-function MarkdownPreview({ content }: { content: string }) {
-  const blocks = content.split('\n').filter((line) => line.trim())
+function MarkdownPreview({
+  compact = false,
+  content,
+}: {
+  compact?: boolean
+  content: string
+}) {
+  const lines = content.split('\n')
+  const blocks: ReactNode[] = []
+  let index = 0
 
-  return (
-    <div className="markdown-preview">
-      {blocks.map((line, index) => {
-        const text = line.trim()
-        if (text.startsWith('### ')) return <h5 key={index}>{text.slice(4)}</h5>
-        if (text.startsWith('## ')) return <h4 key={index}>{text.slice(3)}</h4>
-        if (text.startsWith('# ')) return <h3 key={index}>{text.slice(2)}</h3>
-        if (/^[^：:]{2,12}[：:]/.test(text)) {
-          const [title, ...rest] = text.split(/[：:]/)
-          return (
-            <section className="markdown-section" key={index}>
-              <h4>{title}</h4>
-              <p>{rest.join('：').trim()}</p>
-            </section>
-          )
-        }
-        if (text.startsWith('- ')) return <p className="markdown-list-item" key={index}>{text.slice(2)}</p>
-        return <p key={index}>{text}</p>
-      })}
-    </div>
-  )
+  function parseInline(text: string) {
+    const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean)
+    return parts.map((part, partIndex) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={partIndex}>{part.slice(2, -2)}</strong>
+      }
+      return <span key={partIndex}>{part}</span>
+    })
+  }
+
+  function renderHeading(level: number, text: string, key: number) {
+    if (level <= 1) return <h3 key={key}>{parseInline(text)}</h3>
+    if (level === 2) return <h4 key={key}>{parseInline(text)}</h4>
+    return <h5 key={key}>{parseInline(text)}</h5>
+  }
+
+  while (index < lines.length) {
+    const text = lines[index].trim()
+
+    if (!text) {
+      index += 1
+      continue
+    }
+
+    if (/^---+$/.test(text)) {
+      blocks.push(<hr key={index} />)
+      index += 1
+      continue
+    }
+
+    const heading = text.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      blocks.push(renderHeading(heading[1].length, heading[2], index))
+      index += 1
+      continue
+    }
+
+    if (/^[-*]\s+/.test(text)) {
+      const items: ReactNode[] = []
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        const item = lines[index].trim().replace(/^[-*]\s+/, '')
+        items.push(<li key={index}>{parseInline(item)}</li>)
+        index += 1
+      }
+      blocks.push(<ul key={`ul-${index}`}>{items}</ul>)
+      continue
+    }
+
+    if (/^\d+[.)]\s+/.test(text)) {
+      const items: ReactNode[] = []
+      while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) {
+        const item = lines[index].trim().replace(/^\d+[.)]\s+/, '')
+        items.push(<li key={index}>{parseInline(item)}</li>)
+        index += 1
+      }
+      blocks.push(<ol key={`ol-${index}`}>{items}</ol>)
+      continue
+    }
+
+    if (/^[^：:]{2,12}[：:]/.test(text)) {
+      const [title, ...rest] = text.split(/[：:]/)
+      blocks.push(
+        <section className="markdown-section" key={index}>
+          <h4>{parseInline(title)}</h4>
+          {rest.join('：').trim() && <p>{parseInline(rest.join('：').trim())}</p>}
+        </section>,
+      )
+      index += 1
+      continue
+    }
+
+    blocks.push(<p key={index}>{parseInline(text)}</p>)
+    index += 1
+  }
+
+  return <div className={compact ? 'markdown-preview compact' : 'markdown-preview'}>{blocks}</div>
 }
 
 function TodoList({
@@ -2072,8 +2409,8 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
-  if (view === 'inbox') return '今日草稿箱'
-  if (view === 'search') return '搜索与回溯'
+  if (view === 'inbox') return '草稿箱'
+  if (view === 'search') return '项目篮子'
   return 'AI 总结文档'
 }
 

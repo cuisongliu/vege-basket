@@ -125,6 +125,17 @@ export function createJournalEntry(projectId: number, content: string) {
   })
 }
 
+export function updateJournalEntry(
+  projectId: number,
+  entryId: number,
+  content: string,
+) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/journals/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content }),
+  })
+}
+
 export function removeJournalEntry(projectId: number, entryId: number) {
   return request<WorkspaceData>(`/api/projects/${projectId}/journals/${entryId}`, {
     method: 'DELETE',
@@ -190,6 +201,18 @@ export function createSummary(projectId: number, type: Summary['type']) {
   return request<WorkspaceData>('/api/summaries', {
     method: 'POST',
     body: JSON.stringify({ projectId, type }),
+  })
+}
+
+export function createSummaryFromContent(payload: {
+  content: string
+  projectId: number
+  title?: string
+  type?: Summary['type']
+}) {
+  return request<WorkspaceData>('/api/summaries', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

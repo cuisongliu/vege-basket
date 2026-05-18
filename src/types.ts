@@ -39,6 +39,7 @@ export type Project = {
   id: number
   name: string
   status: ProjectStatus
+  createdAt: string
   updatedAt: string
   tags: string[]
   journals: JournalEntry[]

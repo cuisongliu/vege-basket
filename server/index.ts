@@ -182,10 +182,11 @@ async function getWorkspace(userId: number) {
       name: string
       status: ProjectStatus
       tags: string[]
+      created_at: Date
       updated_at: Date
     }>(
       `
-      select id, name, status, tags, updated_at
+      select id, name, status, tags, created_at, updated_at
       from projects
       where user_id = $1
       order by updated_at desc, id desc
@@ -284,6 +285,7 @@ async function getWorkspace(userId: number) {
       id: Number(project.id),
       name: project.name,
       status: project.status,
+      createdAt: formatUpdatedAt(project.created_at),
       updatedAt: formatUpdatedAt(project.updated_at),
       tags: project.tags ?? [],
       journals: journalsByProject.get(Number(project.id)) ?? [],
@@ -531,6 +533,29 @@ app.post('/api/projects/:projectId/journals', asyncHandler(async (request, respo
   )
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.status(201).json(await getWorkspace(userId))
+}))
+
+app.patch('/api/projects/:projectId/journals/:entryId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const content = String(request.body.content ?? '').trim()
+  if (!content) {
+    response.status(400).json({ error: 'Journal content is required' })
+    return
+  }
+  const projectId = Number(request.params.projectId)
+  await query(
+    `
+    update journal_entries
+    set content = $1
+    where id = $2
+      and project_id = $3
+      and project_id in (select id from projects where user_id = $4)
+    `,
+    [content, Number(request.params.entryId), projectId, userId],
+  )
+  await query('update projects set updated_at = now() where id = $1', [projectId])
+  response.json(await getWorkspace(userId))
 }))
 
 app.delete('/api/projects/:projectId/journals/:entryId', asyncHandler(async (request, response) => {
@@ -822,6 +847,24 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
   const project = projectResult.rows[0]
   if (!project) {
     response.status(404).json({ error: 'Project not found' })
+    return
+  }
+
+  const providedContent = String(request.body.content ?? '').trim()
+  if (providedContent) {
+    const title = String(
+      request.body.title ?? `${formatDate(new Date())} AI 生成总结`,
+    )
+      .trim()
+      .slice(0, 80)
+    await query(
+      `
+      insert into summaries (project_id, type, title, period, content)
+      values ($1, $2, $3, $4, $5)
+      `,
+      [projectId, type, title || `${formatDate(new Date())} AI 生成总结`, 'AI 对话生成', providedContent],
+    )
+    response.status(201).json(await getWorkspace(userId))
     return
   }
 
