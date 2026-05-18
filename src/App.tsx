@@ -121,11 +121,6 @@ function getTodayStamp() {
   return getShanghaiDateParts().date
 }
 
-function getReadableToday() {
-  const [year, month, day] = getTodayStamp().split('-')
-  return `${year} 年 ${Number(month)} 月 ${Number(day)} 日 · 上海时间`
-}
-
 function getCurrentDateTimeStamp() {
   const parts = getShanghaiDateParts()
   return `${parts.date} ${parts.time}`
@@ -727,8 +722,20 @@ ${summariesText || '暂无总结'}`
       <section className={view === 'project' ? 'workspace cockpit-workspace' : 'workspace'}>
         <header className="topbar">
           <div>
-            <p className="eyebrow">{getReadableToday()}</p>
             <div className="topbar-title-row">
+              {view === 'project' && (
+                <Button
+                  className="detail-back-button"
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="返回项目篮子"
+                  title="返回项目篮子"
+                  onClick={() => setView('search')}
+                >
+                  <ArrowLeft size={18} />
+                </Button>
+              )}
               <h2>{getViewTitle(view, selectedProject?.name ?? '项目篮子')}</h2>
               {view === 'project' && selectedProject && (
                 <ProjectTags tags={selectedProject.tags} />
