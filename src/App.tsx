@@ -14,6 +14,8 @@ import {
   AddressBook,
   ArrowRight,
   Check,
+  CornersIn,
+  CornersOut,
   DotsThree,
   CaretDown,
   CaretLeft,
@@ -21,7 +23,6 @@ import {
   PencilSimple,
   DownloadSimple,
   FileText,
-  Lightbulb,
   ListChecks,
   MagnifyingGlass,
   NotePencil,
@@ -1494,6 +1495,7 @@ function ProjectDetail({
   const [projectNameDraft, setProjectNameDraft] = useState(project.name)
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
+  const [isJournalComposing, setIsJournalComposing] = useState(false)
   const journalDates = useMemo(
     () =>
       Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10))))
@@ -1536,7 +1538,15 @@ function ProjectDetail({
     event: React.KeyboardEvent<HTMLTextAreaElement>,
     save: () => void,
   ) {
-    if (event.key !== 'Enter' || event.shiftKey) return
+    const nativeEvent = event.nativeEvent as KeyboardEvent
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      isJournalComposing ||
+      nativeEvent.isComposing
+    ) {
+      return
+    }
     event.preventDefault()
     save()
   }
@@ -1629,6 +1639,8 @@ function ProjectDetail({
             placeholder="记录今天的进展、决策、问题或方案..."
             value={journalDraft}
             onChange={onDraftChange}
+            onCompositionEnd={() => setIsJournalComposing(false)}
+            onCompositionStart={() => setIsJournalComposing(true)}
             onKeyDown={(event) => handleJournalKeyDown(event, onSaveJournal)}
           />
         </Label>
@@ -1704,6 +1716,8 @@ function ProjectDetail({
                       aria-label="编辑日记内容"
                       value={journalEditDraft}
                       onChange={(event) => setJournalEditDraft(event.target.value)}
+                      onCompositionEnd={() => setIsJournalComposing(false)}
+                      onCompositionStart={() => setIsJournalComposing(true)}
                       onKeyDown={(event) =>
                         handleJournalKeyDown(event, () => {
                           const nextContent = journalEditDraft.trim()
@@ -2941,6 +2955,22 @@ function InboxView({
   onDraftChange: (value: string) => void
   projects: Project[]
 }) {
+  const [isComposing, setIsComposing] = useState(false)
+
+  function handleInboxKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    const nativeEvent = event.nativeEvent as KeyboardEvent
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      isComposing ||
+      nativeEvent.isComposing
+    ) {
+      return
+    }
+    event.preventDefault()
+    onAddInboxItem()
+  }
+
   return (
     <div className="inbox-layout">
       <Card className="panel capture-panel">
@@ -2953,6 +2983,9 @@ function InboxView({
               placeholder="把会议记录、聊天片段、想法或解决方案先丢进来..."
               value={inboxDraft}
               onChange={onDraftChange}
+              onCompositionEnd={() => setIsComposing(false)}
+              onCompositionStart={() => setIsComposing(true)}
+              onKeyDown={handleInboxKeyDown}
             />
             <Button className="solid-button capture-submit-button" type="button" onClick={onAddInboxItem}>
               <PaperPlaneTilt size={17} /> 放入今日草稿箱
@@ -2970,14 +3003,7 @@ function InboxView({
                 <span>{item.source === 'feishu' ? '飞书转发' : '手动记录'}</span>
                 <span>{item.createdAt}</span>
               </div>
-              <p>{item.content}</p>
-              {item.suggestedProjectId && (
-                <div className="suggestion">
-                  <Lightbulb size={16} />
-                  AI 建议归档到：
-                  {projects.find((project) => project.id === item.suggestedProjectId)?.name}
-                </div>
-              )}
+              <MarkdownPreview content={item.content} compact />
               {!item.processed && (
                 <ArchiveControl
                   item={item}
@@ -3163,7 +3189,10 @@ function SearchView({
                 <Badge className={`status-pill ${project.status}`}>{statusCopy[project.status]}</Badge>
                 <span>创建于 {project.createdAt}</span>
               </div>
-              <h3>{project.name}</h3>
+              <div className="result-title-row">
+                <h3>{project.name}</h3>
+                <ProjectTags tags={project.tags} compact />
+              </div>
               <p>{project.journals[0]?.content}</p>
             </div>
             <ArrowRight size={18} />
@@ -3198,6 +3227,7 @@ function SummaryView({
   summaries: Summary[]
 }) {
   const [selectedSummaryId, setSelectedSummaryId] = useState<number | null>(null)
+  const [isSummaryFullscreen, setIsSummaryFullscreen] = useState(false)
   const [isComposing, setIsComposing] = useState(false)
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
@@ -3205,8 +3235,21 @@ function SummaryView({
     ? projects.find((project) => project.id === selectedSummary.projectId)
     : null
 
+  useEffect(() => {
+    if (!isSummaryFullscreen) return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsSummaryFullscreen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isSummaryFullscreen])
+
   return (
-    <div className="summary-layout">
+    <div className={isSummaryFullscreen ? 'summary-layout is-document-fullscreen' : 'summary-layout'}>
       <Card className="panel ai-agent-panel">
         <div className="agent-hero">
           <div className="agent-orb">
@@ -3299,12 +3342,17 @@ function SummaryView({
           </Button>
         </div>
       </Card>
-      <Card className="panel summary-list">
+      <Card className={isSummaryFullscreen ? 'panel summary-list is-fullscreen' : 'panel summary-list'}>
         {selectedSummary ? (
           <SummaryDocumentDetail
+            isFullscreen={isSummaryFullscreen}
             projectName={selectedProject?.name ?? '未命名项目'}
             summary={selectedSummary}
-            onBack={() => setSelectedSummaryId(null)}
+            onBack={() => {
+              setIsSummaryFullscreen(false)
+              setSelectedSummaryId(null)
+            }}
+            onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
           />
         ) : (
           <SummaryDocumentList
@@ -3356,26 +3404,48 @@ function SummaryDocumentList({
 }
 
 function SummaryDocumentDetail({
+  isFullscreen,
   onBack,
+  onToggleFullscreen,
   projectName,
   summary,
 }: {
+  isFullscreen: boolean
   onBack: () => void
+  onToggleFullscreen: () => void
   projectName: string
   summary: Summary
 }) {
   return (
     <article className="summary-doc-detail">
-      <Button className="ghost-button summary-back-button" variant="outline" type="button" onClick={onBack}>
-        <ArrowLeft size={15} /> 返回列表
-      </Button>
-      <div className="summary-doc-meta">
-        <span>{projectName}</span>
-        <span>{summary.createdAt}</span>
+      <div className="summary-doc-header">
+        <div className="summary-doc-toolbar">
+          <Button className="ghost-button summary-back-button" variant="outline" type="button" onClick={onBack}>
+            <ArrowLeft size={15} /> 返回列表
+          </Button>
+          <Button
+            className="summary-fullscreen-button"
+            variant="ghost"
+            size="icon"
+            type="button"
+            aria-label={isFullscreen ? '退出全屏展示总结文档' : '全屏展示总结文档'}
+            aria-pressed={isFullscreen}
+            title={isFullscreen ? '退出全屏' : '全屏展示'}
+            onClick={onToggleFullscreen}
+          >
+            {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
+          </Button>
+        </div>
+        <div className="summary-doc-meta">
+          <span>{projectName}</span>
+          <span>{summary.createdAt}</span>
+        </div>
+        <h3>{summary.title}</h3>
+        <small>{summary.period}</small>
       </div>
-      <h3>{summary.title}</h3>
-      <small>{summary.period}</small>
-      <MarkdownPreview content={summary.content} />
+      <div className="summary-doc-body">
+        <MarkdownPreview content={summary.content} />
+      </div>
     </article>
   )
 }
