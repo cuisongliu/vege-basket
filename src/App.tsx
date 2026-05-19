@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ComponentProps,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import {
   Archive,
+  AddressBook,
   ArrowRight,
   Check,
   Clock,
@@ -12,6 +23,7 @@ import {
   DownloadSimple,
   FileText,
   Lightbulb,
+  ListChecks,
   MagnifyingGlass,
   NotePencil,
   PaperPlaneTilt,
@@ -19,6 +31,7 @@ import {
   SignIn,
   SignOut,
   Sparkle,
+  Sun,
   Target,
   Tray,
   Trash,
@@ -57,6 +70,7 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   archiveDraft,
   createDraft,
+  createCollaborator,
   createJournalEntry,
   createProject,
   createRiskFromJournal,
@@ -68,6 +82,7 @@ import {
   loginAccount,
   registerAccount,
   clearAuthToken,
+  removeCollaborator,
   removeDraft,
   removeJournalEntry,
   removeProject,
@@ -75,6 +90,7 @@ import {
   resolveRisk,
   updateJournalEntry,
   updateProject,
+  updateCollaborator,
   updateTodo,
   setAuthToken,
   sendAiChat,
@@ -84,6 +100,7 @@ import {
   type WorkspaceData,
 } from './api'
 import type {
+  Collaborator,
   InboxItem,
   JournalEntry,
   Priority,
@@ -94,8 +111,30 @@ import type {
 } from './types'
 import './App.css'
 
-type View = 'project' | 'inbox' | 'search' | 'summaries'
+type View = 'project' | 'collaborators' | 'inbox' | 'search' | 'summaries' | 'todos'
 type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
+type ThemeMode = 'dark' | 'light'
+type TodoUpdatePayload = Omit<Partial<Todo>, 'collaboratorId'> & {
+  collaboratorId?: number | null
+}
+type CollaboratorPerson = {
+  name: string
+  primaryId: number
+  projects: Project[]
+  roles: string[]
+}
+
+const themeStorageKey = 'veges.theme'
+
+function getInitialTheme(): ThemeMode {
+  if (typeof window === 'undefined') return 'dark'
+
+  try {
+    return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
+  } catch {
+    return 'dark'
+  }
+}
 
 function getShanghaiDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('zh-CN', {
@@ -161,6 +200,12 @@ const priorityCopy: Record<Priority, string> = {
   high: '高',
   medium: '中',
   low: '低',
+}
+
+const priorityRank: Record<Priority, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
 }
 
 const initialProjects: Project[] = [
@@ -243,6 +288,7 @@ const initialTodos: Todo[] = [
   {
     id: 1,
     projectId: 1,
+    collaboratorId: 1,
     title: '整理内容模板的评估维度',
     dueDate: today,
     priority: 'high',
@@ -251,6 +297,7 @@ const initialTodos: Todo[] = [
   {
     id: 2,
     projectId: 2,
+    collaboratorId: 3,
     title: '约业务方确认转化漏斗口径',
     dueDate: today,
     priority: 'high',
@@ -271,6 +318,27 @@ const initialTodos: Todo[] = [
     dueDate: '2026-05-13',
     priority: 'low',
     done: true,
+  },
+]
+
+const initialCollaborators: Collaborator[] = [
+  {
+    id: 1,
+    name: '潘仪豪',
+    role: '产品负责人',
+    projectId: 1,
+  },
+  {
+    id: 2,
+    name: '谢金虎',
+    role: '研发协作',
+    projectId: 1,
+  },
+  {
+    id: 3,
+    name: '达梦',
+    role: '数据口径确认',
+    projectId: 2,
   },
 ]
 
@@ -317,12 +385,14 @@ const initialSummaries: Summary[] = [
 ]
 
 function App() {
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authError, setAuthError] = useState('')
   const [view, setView] = useState<View>('search')
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
+  const [collaborators, setCollaborators] = useState(initialCollaborators)
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [selectedProjectId, setSelectedProjectId] = useState(1)
@@ -333,9 +403,11 @@ function App() {
   const [todoDraft, setTodoDraft] = useState('')
   const [todoDueDate, setTodoDueDate] = useState(today)
   const [todoPriority, setTodoPriority] = useState<Priority>('medium')
+  const [todoCollaboratorId, setTodoCollaboratorId] = useState<number | null>(null)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectTags, setNewProjectTags] = useState('')
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
+  const [isNewCollaboratorDialogOpen, setIsNewCollaboratorDialogOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
@@ -345,9 +417,21 @@ function App() {
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', themeMode === 'dark')
+    document.documentElement.dataset.theme = themeMode
+
+    try {
+      window.localStorage.setItem(themeStorageKey, themeMode)
+    } catch {
+      // Ignore storage failures so theme switching still works for the session.
+    }
+  }, [themeMode])
+
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
     setTodos(data.todos)
+    setCollaborators(data.collaborators)
     setInbox(data.inbox)
     setSummaries(data.summaries)
     setSelectedProjectId((current) => {
@@ -376,6 +460,10 @@ function App() {
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0]
+
+  const toggleThemeMode = useCallback(() => {
+    setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))
+  }, [])
 
   const todayJournal = selectedProject?.journals.find((entry) =>
     entry.createdAt.startsWith(today),
@@ -555,6 +643,45 @@ function App() {
     setInboxDraft('')
   }
 
+  async function addCollaborator(payload: {
+    name: string
+    projectIds: number[]
+    role: string
+  }) {
+    const name = payload.name.trim()
+    if (!name || payload.projectIds.length === 0) return
+    await runMutation(() =>
+      createCollaborator({
+        name,
+        projectIds: payload.projectIds,
+        role: payload.role.trim(),
+      }),
+    )
+  }
+
+  async function editCollaborator(
+    collaboratorId: number,
+    payload: {
+      name: string
+      projectIds: number[]
+      role: string
+    },
+  ) {
+    const name = payload.name.trim()
+    if (!name || payload.projectIds.length === 0) return
+    await runMutation(() =>
+      updateCollaborator(collaboratorId, {
+        name,
+        projectIds: payload.projectIds,
+        role: payload.role.trim(),
+      }),
+    )
+  }
+
+  async function deleteCollaborator(collaboratorId: number) {
+    await runMutation(() => removeCollaborator(collaboratorId))
+  }
+
   async function archiveInboxItem(item: InboxItem, projectId: number) {
     await runMutation(() => archiveDraft(item.id, projectId))
   }
@@ -569,6 +696,7 @@ function App() {
     if (!title || !targetProjectId) return
     await runMutation(() =>
       createTodo({
+        collaboratorId: todoCollaboratorId ?? undefined,
         projectId: targetProjectId,
         title,
         dueDate: todoDueDate,
@@ -578,12 +706,17 @@ function App() {
     setTodoDraft('')
     setTodoDueDate(today)
     setTodoPriority('medium')
+    setTodoCollaboratorId(null)
   }
 
   async function toggleTodo(todoId: number) {
     const todo = todos.find((item) => item.id === todoId)
     if (!todo) return
     await runMutation(() => updateTodo(todoId, { done: !todo.done }))
+  }
+
+  async function updateTodoDetails(todoId: number, payload: TodoUpdatePayload) {
+    await runMutation(() => updateTodo(todoId, payload))
   }
 
   async function deleteTodo(todoId: number) {
@@ -687,7 +820,7 @@ ${summariesText || '暂无总结'}`
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = projectId ? `${targets[0]?.name}.md` : '项目驾驶舱导出.md'
+    link.download = projectId ? `${targets[0]?.name}.md` : 'Veges-个人项目驾驶舱导出.md'
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -704,15 +837,21 @@ ${summariesText || '暂无总结'}`
     <main className="app-shell">
       <aside className="sidebar" aria-label="主导航">
         <div className="brand-block">
-          <div className="brand-mark">PM</div>
+          <img className="brand-mark" src="/favicon.svg" alt="Veges" />
           <div>
-            <p className="eyebrow">个人项目驾驶舱</p>
-            <h1>项目篮子</h1>
+            <p className="eyebrow">Veges</p>
+            <h1>个人项目驾驶舱</h1>
           </div>
         </div>
         <nav className="nav-list">
           <NavButton active={view === 'search'} onClick={() => setView('search')}>
             <Target size={18} weight="duotone" /> 项目篮子
+          </NavButton>
+          <NavButton active={view === 'todos'} onClick={() => setView('todos')}>
+            <ListChecks size={18} weight="duotone" /> 当前待办
+          </NavButton>
+          <NavButton active={view === 'collaborators'} onClick={() => setView('collaborators')}>
+            <AddressBook size={18} weight="duotone" /> 协作者
           </NavButton>
           <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
             <Tray size={18} weight="duotone" /> 草稿箱
@@ -723,8 +862,10 @@ ${summariesText || '暂无总结'}`
         </nav>
         <AccountMenu
           user={authUser}
+          themeMode={themeMode}
           onRename={updateDisplayName}
           onSignOut={signOut}
+          onToggleTheme={toggleThemeMode}
         />
       </aside>
 
@@ -752,7 +893,14 @@ ${summariesText || '暂无总结'}`
             </div>
           </div>
           <div className="topbar-actions">
-            <Button className="ghost-button" variant="outline" type="button" onClick={() => exportMarkdown()}>
+            <Button
+              className="ghost-button"
+              variant="outline"
+              type="button"
+              onClick={() =>
+                exportMarkdown(view === 'project' ? selectedProject?.id : undefined)
+              }
+            >
               <DownloadSimple size={17} /> 批量导出
             </Button>
             {view === 'search' ? (
@@ -815,6 +963,14 @@ ${summariesText || '暂无总结'}`
                   </form>
                 </DialogContent>
               </Dialog>
+            ) : view === 'collaborators' ? (
+              <Button
+                className="solid-button"
+                type="button"
+                onClick={() => setIsNewCollaboratorDialogOpen(true)}
+              >
+                <Plus size={17} /> 新增协作者
+              </Button>
             ) : (
               <Button className="solid-button" type="button" onClick={() => setView('inbox')}>
                 <Plus size={17} /> 快速捕捉
@@ -831,6 +987,7 @@ ${summariesText || '暂无总结'}`
 
         {view === 'project' && selectedProject && (
           <ProjectDetail
+            collaborators={collaborators}
             exportMarkdown={exportMarkdown}
             generateSummary={generateSummary}
             journalDraft={journalDraft}
@@ -845,6 +1002,7 @@ ${summariesText || '暂无总结'}`
             onMarkJournalAsRisk={markJournalAsRisk}
             onResolveRisk={resolveProjectRisk}
             onDeleteTodo={deleteTodo}
+            onTodoCollaboratorChange={setTodoCollaboratorId}
             onTodoDueDateChange={setTodoDueDate}
             onTodoDraftChange={setTodoDraft}
             onTodoPriorityChange={setTodoPriority}
@@ -852,6 +1010,7 @@ ${summariesText || '暂无总结'}`
             project={selectedProject}
             projects={projects}
             projectTodos={projectTodos}
+            todoCollaboratorId={todoCollaboratorId}
             todoDueDate={todoDueDate}
             todoDraft={todoDraft}
             todoPriority={todoPriority}
@@ -874,11 +1033,36 @@ ${summariesText || '暂无总结'}`
         {view === 'inbox' && (
           <InboxView
             archiveInboxItem={archiveInboxItem}
+            collaborators={collaborators}
             inbox={inbox}
             inboxDraft={inboxDraft}
             onAddInboxItem={addInboxItem}
             onDeleteInboxItem={deleteInboxItem}
             onDraftChange={setInboxDraft}
+            projects={projects}
+          />
+        )}
+
+        {view === 'todos' && (
+          <CurrentTodosView
+            collaborators={collaborators}
+            onDeleteTodo={deleteTodo}
+            onProjectClick={selectProject}
+            onToggleTodo={toggleTodo}
+            onUpdateTodo={updateTodoDetails}
+            projects={projects}
+            todos={todos}
+          />
+        )}
+
+        {view === 'collaborators' && (
+          <CollaboratorsPanel
+            collaborators={collaborators}
+            isNewCollaboratorDialogOpen={isNewCollaboratorDialogOpen}
+            onAddCollaborator={addCollaborator}
+            onDeleteCollaborator={deleteCollaborator}
+            onEditCollaborator={editCollaborator}
+            onNewCollaboratorDialogOpenChange={setIsNewCollaboratorDialogOpen}
             projects={projects}
           />
         )}
@@ -924,9 +1108,9 @@ function WorkspaceBootScreen() {
   return (
     <main className="workspace-boot-screen" aria-busy="true">
       <div className="workspace-boot-panel">
-        <div className="brand-mark">PM</div>
+        <img className="brand-mark" src="/favicon.svg" alt="Veges" />
         <div>
-          <p className="eyebrow">个人项目驾驶舱</p>
+          <p className="eyebrow">Veges - 个人项目驾驶舱</p>
           <h1>正在同步工作区</h1>
           <p>稍等一下，正在连接线上数据。</p>
         </div>
@@ -1069,12 +1253,16 @@ function getUserDisplayName(user: AuthUser | null) {
 
 function AccountMenu({
   user,
+  themeMode,
   onRename,
   onSignOut,
+  onToggleTheme,
 }: {
   user: AuthUser | null
+  themeMode: ThemeMode
   onRename: (displayName: string) => void
   onSignOut: () => void
+  onToggleTheme: () => void
 }) {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [displayNameDraft, setDisplayNameDraft] = useState(getUserDisplayName(user))
@@ -1102,6 +1290,21 @@ function AccountMenu({
             }}
           >
             <PencilSimple /> 修改昵称
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="theme-menu-item"
+            onSelect={(event) => {
+              event.preventDefault()
+              onToggleTheme()
+            }}
+          >
+            <span className="theme-menu-label">
+              <Sun /> 亮色模式
+            </span>
+            <span
+              className={themeMode === 'light' ? 'theme-toggle is-on' : 'theme-toggle'}
+              aria-hidden
+            />
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onSignOut} variant="destructive">
@@ -1241,6 +1444,7 @@ function EmptyWorkspace({
 }
 
 function ProjectDetail({
+  collaborators,
   exportMarkdown,
   generateSummary,
   journalDraft,
@@ -1255,6 +1459,7 @@ function ProjectDetail({
   onMarkJournalAsRisk,
   onResolveRisk,
   onDeleteTodo,
+  onTodoCollaboratorChange,
   onTodoDueDateChange,
   onTodoDraftChange,
   onTodoPriorityChange,
@@ -1262,11 +1467,13 @@ function ProjectDetail({
   project,
   projects,
   projectTodos,
+  todoCollaboratorId,
   todoDueDate,
   todoDraft,
   todoPriority,
   todayJournal,
 }: {
+  collaborators: Collaborator[]
   exportMarkdown: (projectId?: number) => void
   generateSummary: (projectId: number, type: Summary['type']) => void
   journalDraft: string
@@ -1285,6 +1492,7 @@ function ProjectDetail({
   onMarkJournalAsRisk: (projectId: number, entryId: number) => void
   onResolveRisk: (projectId: number, content: string) => void
   onDeleteTodo: (todoId: number) => void
+  onTodoCollaboratorChange: (id: number | null) => void
   onTodoDueDateChange: (value: string) => void
   onTodoDraftChange: (value: string) => void
   onTodoPriorityChange: (value: Priority) => void
@@ -1292,6 +1500,7 @@ function ProjectDetail({
   project: Project
   projects: Project[]
   projectTodos: Todo[]
+  todoCollaboratorId: number | null
   todoDueDate: string
   todoDraft: string
   todoPriority: Priority
@@ -1311,6 +1520,9 @@ function ProjectDetail({
   const [selectedJournalDate, setSelectedJournalDate] = useState(defaultJournalDate)
   const visibleJournals = project.journals.filter((entry) =>
     entry.createdAt.startsWith(selectedJournalDate),
+  )
+  const projectCollaborators = collaborators.filter(
+    (collaborator) => collaborator.projectId === project.id,
   )
 
   useEffect(() => {
@@ -1414,10 +1626,11 @@ function ProjectDetail({
         </article>
         <Label className="textarea-label">
           追加今日记录
-          <Textarea
+          <MentionTextarea
+            collaborators={collaborators}
             placeholder="记录今天的进展、决策、问题或方案..."
             value={journalDraft}
-            onChange={(event) => onDraftChange(event.target.value)}
+            onChange={onDraftChange}
           />
         </Label>
         <Button className="solid-button" type="button" onClick={onSaveJournal}>
@@ -1564,10 +1777,12 @@ function ProjectDetail({
       <Card className="panel side-panel">
         <PanelTitle icon={<Check size={18} />} title="项目待办" />
         <div className="todo-form">
-          <Input
+          <MentionTextarea
+            collaborators={projectCollaborators}
+            onSelectCollaborator={onTodoCollaboratorChange}
             placeholder="添加一个下一步..."
             value={todoDraft}
-            onChange={(event) => onTodoDraftChange(event.target.value)}
+            onChange={onTodoDraftChange}
           />
           <div className="todo-form-meta">
             <JournalDatePicker
@@ -1589,6 +1804,11 @@ function ProjectDetail({
                 <SelectItem value="low">低优先级</SelectItem>
               </SelectContent>
             </Select>
+            <CollaboratorPicker
+              collaborators={projectCollaborators}
+              value={todoCollaboratorId}
+              onChange={onTodoCollaboratorChange}
+            />
           </div>
           <Button className="solid-button wide" type="button" onClick={() => onAddTodo()}>
             <Plus size={17} /> 添加待办
@@ -1635,11 +1855,13 @@ function ProjectDetail({
 
 function JournalDatePicker({
   ariaLabel = '选择日期',
+  className,
   datesWithEntries,
   onChange,
   value,
 }: {
   ariaLabel?: string
+  className?: string
   datesWithEntries: string[]
   onChange: (date: string) => void
   value: string
@@ -1686,7 +1908,7 @@ function JournalDatePicker({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label={ariaLabel}
-          className="journal-date-trigger"
+          className={className ? `journal-date-trigger ${className}` : 'journal-date-trigger'}
           type="button"
           variant="outline"
         >
@@ -1833,8 +2055,864 @@ function ProjectActionsMenu({
   )
 }
 
+function CurrentTodosView({
+  collaborators,
+  onDeleteTodo,
+  onProjectClick,
+  onToggleTodo,
+  onUpdateTodo,
+  projects,
+  todos,
+}: {
+  collaborators: Collaborator[]
+  onDeleteTodo: (id: number) => void
+  onProjectClick: (id: number) => void
+  onToggleTodo: (id: number) => void
+  onUpdateTodo: (id: number, payload: TodoUpdatePayload) => void
+  projects: Project[]
+  todos: Todo[]
+}) {
+  const [todoStatusFilter, setTodoStatusFilter] = useState<'all' | 'open' | 'done'>('all')
+  const groupedTodos = useMemo(
+    () =>
+      projects
+        .map((project) => {
+          const projectTodos = todos
+            .filter(
+              (todo) =>
+                todo.projectId === project.id &&
+                (todoStatusFilter === 'all' ||
+                  (todoStatusFilter === 'open' && !todo.done) ||
+                  (todoStatusFilter === 'done' && todo.done)),
+            )
+            .sort((left, right) => {
+              if (left.done !== right.done) return left.done ? 1 : -1
+              const dueDiff = left.dueDate.localeCompare(right.dueDate)
+              if (dueDiff !== 0) return dueDiff
+              return priorityRank[left.priority] - priorityRank[right.priority]
+            })
+          return {
+            openCount: projectTodos.filter((todo) => !todo.done).length,
+            project,
+            todos: projectTodos,
+          }
+        })
+        .filter((group) => group.todos.length > 0),
+    [projects, todoStatusFilter, todos],
+  )
+  const openCount = todos.filter((todo) => !todo.done).length
+  const doneCount = todos.length - openCount
+  const toggleTodoStatusFilter = (status: 'open' | 'done') => {
+    setTodoStatusFilter((current) => (current === status ? 'all' : status))
+  }
+
+  return (
+      <Card className="panel current-todos-panel">
+        <div className="current-todos-header">
+          <PanelTitle icon={<ListChecks size={18} />} title="当前待办" />
+          <div className="current-todos-tools">
+            <div className="current-todos-metrics" aria-label="待办统计">
+              <button
+                className={
+                  todoStatusFilter === 'open' ? 'todo-metric active' : 'todo-metric'
+                }
+                type="button"
+                aria-pressed={todoStatusFilter === 'open'}
+                onClick={() => toggleTodoStatusFilter('open')}
+              >
+                <strong>{openCount}</strong>
+                未完成
+              </button>
+              <button
+                className={
+                  todoStatusFilter === 'done' ? 'todo-metric active' : 'todo-metric'
+                }
+                type="button"
+                aria-pressed={todoStatusFilter === 'done'}
+                onClick={() => toggleTodoStatusFilter('done')}
+              >
+                <strong>{doneCount}</strong>
+                已完成
+              </button>
+              <span>
+                <strong>{groupedTodos.length}</strong>
+                关联项目
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {groupedTodos.length === 0 ? (
+          <p className="empty-state">
+            {todoStatusFilter === 'open'
+              ? '当前没有未完成待办。'
+              : todoStatusFilter === 'done'
+                ? '当前没有已完成待办。'
+                : '所有项目暂时都没有待办。'}
+          </p>
+        ) : (
+          <div className="todo-board-table" role="table" aria-label="所有项目当前待办">
+            <div className="todo-board-head" role="row">
+              <span role="columnheader">项目/待办内容</span>
+              <span role="columnheader">负责人</span>
+              <span role="columnheader">优先级</span>
+              <span role="columnheader">截止</span>
+              <span role="columnheader">状态</span>
+              <span role="columnheader">操作</span>
+            </div>
+
+            {groupedTodos.map(({ openCount: projectOpenCount, project, todos: projectTodos }) => (
+              <section className="todo-project-group" key={project.id}>
+                <button
+                  className="todo-project-group-header"
+                  type="button"
+                  onClick={() => onProjectClick(project.id)}
+                >
+                  <span>
+                    <strong>{project.name}</strong>
+                    <Badge className={`status-pill ${project.status}`}>
+                      {statusCopy[project.status]}
+                    </Badge>
+                  </span>
+                  <small>
+                    {projectOpenCount} 未完成 / {projectTodos.length} 总计
+                  </small>
+                </button>
+                <div className="todo-board-rows" role="rowgroup">
+                  {projectTodos.map((todo) => {
+                    const projectCollaborators = collaborators.filter(
+                      (collaborator) => collaborator.projectId === project.id,
+                    )
+                    return (
+                      <article
+                        className={todo.done ? 'todo-board-row done' : 'todo-board-row'}
+                        key={todo.id}
+                        role="row"
+                      >
+                        <span className="todo-board-title-cell" role="cell">
+                          <button
+                            className="checkmark"
+                            type="button"
+                            onClick={() => onToggleTodo(todo.id)}
+                            aria-label={todo.done ? '标记为未完成' : '标记为已完成'}
+                          >
+                            {todo.done ? <Check size={14} /> : null}
+                          </button>
+                          <strong>{todo.title}</strong>
+                        </span>
+                        <span className="todo-board-assignee-cell" role="cell">
+                          <CollaboratorPicker
+                            collaborators={projectCollaborators}
+                            value={todo.collaboratorId ?? null}
+                            compact
+                            onChange={(collaboratorId) =>
+                              onUpdateTodo(todo.id, {
+                                collaboratorId,
+                              })
+                            }
+                          />
+                        </span>
+                        <span className="todo-board-priority-cell" role="cell">
+                          <Select
+                            value={todo.priority}
+                            onValueChange={(value) =>
+                              onUpdateTodo(todo.id, { priority: value as Priority })
+                            }
+                          >
+                            <SelectTrigger
+                              aria-label="修改待办优先级"
+                              className="todo-board-select-trigger"
+                            >
+                              <SelectValue placeholder="优先级" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="high">高</SelectItem>
+                              <SelectItem value="medium">中</SelectItem>
+                              <SelectItem value="low">低</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </span>
+                        <span className="todo-board-date-cell" role="cell">
+                          <JournalDatePicker
+                            ariaLabel="修改待办截止日期"
+                            className="todo-board-date-trigger"
+                            datesWithEntries={[]}
+                            value={todo.dueDate}
+                            onChange={(dueDate) => onUpdateTodo(todo.id, { dueDate })}
+                          />
+                        </span>
+                        <span
+                          className={todo.done ? 'todo-status-chip done' : 'todo-status-chip'}
+                          role="cell"
+                        >
+                          {todo.done ? '已完成' : '未完成'}
+                        </span>
+                        <span className="todo-board-action-cell" role="cell">
+                          <ConfirmDialog
+                            confirmLabel="删除待办"
+                            description={`删除「${todo.title}」后，这条待办将从「${project.name}」移除。`}
+                            onConfirm={() => onDeleteTodo(todo.id)}
+                            title="确认删除这条待办？"
+                            trigger={
+                              <Button
+                                className="todo-delete-button"
+                                variant="ghost"
+                                size="icon"
+                                type="button"
+                                aria-label="删除待办"
+                              >
+                                <Trash size={14} />
+                              </Button>
+                            }
+                          />
+                        </span>
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </Card>
+  )
+}
+
+function CollaboratorsPanel({
+  collaborators,
+  isNewCollaboratorDialogOpen,
+  onAddCollaborator,
+  onDeleteCollaborator,
+  onEditCollaborator,
+  onNewCollaboratorDialogOpenChange,
+  projects,
+}: {
+  collaborators: Collaborator[]
+  isNewCollaboratorDialogOpen: boolean
+  onAddCollaborator: (payload: {
+    name: string
+    projectIds: number[]
+    role: string
+  }) => void
+  onDeleteCollaborator: (collaboratorId: number) => void
+  onEditCollaborator: (
+    collaboratorId: number,
+    payload: {
+      name: string
+      projectIds: number[]
+      role: string
+    },
+  ) => void
+  onNewCollaboratorDialogOpenChange: (open: boolean) => void
+  projects: Project[]
+}) {
+  const [editingPerson, setEditingPerson] = useState<CollaboratorPerson | null>(null)
+  const collaboratorsByPerson = useMemo(() => {
+    const personMap = new Map<string, CollaboratorPerson & { projectIds: Set<number> }>()
+
+    collaborators.forEach((collaborator) => {
+      const key = collaborator.name.trim() || String(collaborator.id)
+      const current =
+        personMap.get(key) ??
+        {
+          primaryId: collaborator.id,
+          name: collaborator.name,
+          projectIds: new Set<number>(),
+          projects: [],
+          roles: [],
+        }
+      const project = projects.find((item) => item.id === collaborator.projectId)
+      current.primaryId = Math.min(current.primaryId, collaborator.id)
+      if (project && !current.projectIds.has(project.id)) {
+        current.projectIds.add(project.id)
+        current.projects.push(project)
+      }
+      if (collaborator.role && !current.roles.includes(collaborator.role)) {
+        current.roles.push(collaborator.role)
+      }
+      personMap.set(key, current)
+    })
+
+    return Array.from(personMap.values())
+      .map(({ projectIds: _projectIds, ...person }) => person)
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
+  }, [collaborators, projects])
+
+  return (
+    <Card className="panel collaborators-panel">
+      <div className="collaborators-header">
+        <PanelTitle icon={<SignIn size={18} />} title="协作者" />
+        <span>{collaboratorsByPerson.length} 人</span>
+      </div>
+      <NewCollaboratorDialog
+        open={isNewCollaboratorDialogOpen}
+        onAddCollaborator={onAddCollaborator}
+        onOpenChange={onNewCollaboratorDialogOpenChange}
+        projects={projects}
+      />
+
+      <div className="collaborator-groups">
+        {collaboratorsByPerson.length === 0 ? (
+          <p className="empty-state">还没有协作者。</p>
+        ) : (
+          collaboratorsByPerson.map((person) => (
+            <article className="collaborator-person-card" key={person.primaryId}>
+              <div className="collaborator-person-main">
+                <strong>@{person.name}</strong>
+                <small>
+                  {person.roles.length > 0 ? person.roles.join('、') : '未设置角色'}
+                </small>
+              </div>
+              <div className="collaborator-projects" aria-label={`${person.name} 参与的项目`}>
+                {person.projects.length === 0 ? (
+                  <span className="todo-board-muted">未关联项目</span>
+                ) : (
+                  person.projects.map((project) => (
+                    <span className="collaborator-project-chip" key={project.id}>
+                      {project.name}
+                    </span>
+                  ))
+                )}
+              </div>
+              <div className="collaborator-actions">
+                <Button
+                  className="collaborator-edit-button"
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  aria-label={`编辑 ${person.name}`}
+                  title="编辑协作者"
+                  onClick={() => setEditingPerson(person)}
+                >
+                  <PencilSimple size={16} />
+                </Button>
+                <ConfirmDialog
+                  confirmLabel="删除协作者"
+                  description={`删除「${person.name}」后，TA 会从所有关联项目中移除，相关待办的负责人会变为未指派。`}
+                  onConfirm={() => onDeleteCollaborator(person.primaryId)}
+                  title="确认删除这个协作者？"
+                  trigger={
+                    <Button
+                      className="todo-delete-button"
+                      variant="ghost"
+                      size="icon"
+                      type="button"
+                      aria-label={`删除 ${person.name}`}
+                      title="删除协作者"
+                    >
+                      <Trash size={16} />
+                    </Button>
+                  }
+                />
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+      <EditCollaboratorDialog
+        person={editingPerson}
+        onEditCollaborator={onEditCollaborator}
+        onOpenChange={(open) => {
+          if (!open) setEditingPerson(null)
+        }}
+        projects={projects}
+      />
+    </Card>
+  )
+}
+
+function NewCollaboratorDialog({
+  onAddCollaborator,
+  onOpenChange,
+  open,
+  projects,
+}: {
+  onAddCollaborator: (payload: {
+    name: string
+    projectIds: number[]
+    role: string
+  }) => void
+  onOpenChange: (open: boolean) => void
+  open: boolean
+  projects: Project[]
+}) {
+  const [name, setName] = useState('')
+  const [role, setRole] = useState('')
+  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([])
+
+  function resetForm() {
+    setName('')
+    setRole('')
+    setSelectedProjectIds([])
+  }
+
+  function closeDialog() {
+    resetForm()
+    onOpenChange(false)
+  }
+
+  function submitCollaborator(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!name.trim() || selectedProjectIds.length === 0) return
+    onAddCollaborator({
+      name,
+      projectIds: selectedProjectIds,
+      role,
+    })
+    resetForm()
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) resetForm()
+        onOpenChange(nextOpen)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>新增协作者</DialogTitle>
+          <DialogDescription>
+            添加协作者后，可以在日记、快速捕捉和待办里通过 @ 关联到对应的人。
+          </DialogDescription>
+        </DialogHeader>
+        <form className="collaborator-form" onSubmit={submitCollaborator}>
+          <Label>
+            姓名
+            <Input
+              autoFocus
+              placeholder="例如：张三"
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </Label>
+          <Label>
+            角色
+            <Input
+              placeholder="例如：产品负责人"
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+            />
+          </Label>
+          <Label>
+            所属项目
+            <ProjectMultiSelect
+              projects={projects}
+              selectedProjectIds={selectedProjectIds}
+              onChange={setSelectedProjectIds}
+            />
+          </Label>
+          <DialogFooter>
+            <Button
+              className="ghost-button"
+              variant="outline"
+              type="button"
+              onClick={closeDialog}
+            >
+              取消
+            </Button>
+            <Button
+              className="solid-button"
+              type="submit"
+              disabled={!name.trim() || selectedProjectIds.length === 0}
+            >
+              <Plus size={15} /> 添加协作者
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function EditCollaboratorDialog({
+  onEditCollaborator,
+  onOpenChange,
+  person,
+  projects,
+}: {
+  onEditCollaborator: (
+    collaboratorId: number,
+    payload: {
+      name: string
+      projectIds: number[]
+      role: string
+    },
+  ) => void
+  onOpenChange: (open: boolean) => void
+  person: CollaboratorPerson | null
+  projects: Project[]
+}) {
+  const [name, setName] = useState('')
+  const [role, setRole] = useState('')
+  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([])
+
+  useEffect(() => {
+    if (!person) return
+    setName(person.name)
+    setRole(person.roles[0] ?? '')
+    setSelectedProjectIds(person.projects.map((project) => project.id))
+  }, [person])
+
+  function submitCollaborator(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!person || !name.trim() || selectedProjectIds.length === 0) return
+    onEditCollaborator(person.primaryId, {
+      name,
+      projectIds: selectedProjectIds,
+      role,
+    })
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={Boolean(person)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>编辑协作者</DialogTitle>
+          <DialogDescription>
+            修改协作者信息和负责板块后，相关项目中的协作者信息会同步更新。
+          </DialogDescription>
+        </DialogHeader>
+        <form className="collaborator-form" onSubmit={submitCollaborator}>
+          <Label>
+            姓名
+            <Input
+              autoFocus
+              placeholder="例如：张三"
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </Label>
+          <Label>
+            角色
+            <Input
+              placeholder="例如：产品负责人"
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+            />
+          </Label>
+          <Label>
+            负责板块
+            <ProjectMultiSelect
+              projects={projects}
+              selectedProjectIds={selectedProjectIds}
+              onChange={setSelectedProjectIds}
+            />
+          </Label>
+          <DialogFooter>
+            <Button
+              className="ghost-button"
+              variant="outline"
+              type="button"
+              onClick={() => onOpenChange(false)}
+            >
+              取消
+            </Button>
+            <Button
+              className="solid-button"
+              type="submit"
+              disabled={!name.trim() || selectedProjectIds.length === 0}
+            >
+              保存修改
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ProjectMultiSelect({
+  onChange,
+  projects,
+  selectedProjectIds,
+}: {
+  onChange: (ids: number[]) => void
+  projects: Project[]
+  selectedProjectIds: number[]
+}) {
+  const selectedProjects = projects.filter((project) =>
+    selectedProjectIds.includes(project.id),
+  )
+  const label =
+    selectedProjects.length === 0
+      ? '选择项目'
+      : selectedProjects.length === 1
+        ? selectedProjects[0].name
+        : `已选 ${selectedProjects.length} 个项目`
+
+  function toggleProject(projectId: number) {
+    onChange(
+      selectedProjectIds.includes(projectId)
+        ? selectedProjectIds.filter((id) => id !== projectId)
+        : [...selectedProjectIds, projectId],
+    )
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="project-multi-trigger" type="button">
+          <span>{label}</span>
+          <CaretDown size={16} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="project-multi-menu">
+        {projects.map((project) => {
+          const checked = selectedProjectIds.includes(project.id)
+          return (
+            <button
+              className={checked ? 'project-multi-option selected' : 'project-multi-option'}
+              key={project.id}
+              type="button"
+              onClick={() => toggleProject(project.id)}
+            >
+              <span>{project.name}</span>
+              {checked ? <Check size={16} /> : null}
+            </button>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function MentionTextarea({
+  collaborators,
+  onChange,
+  onSelectCollaborator,
+  value,
+  ...props
+}: Omit<ComponentProps<typeof Textarea>, 'onChange' | 'value'> & {
+  collaborators: Collaborator[]
+  onChange: (value: string) => void
+  onSelectCollaborator?: (id: number) => void
+  value: string
+}) {
+  return (
+    <MentionInputShell
+      collaborators={collaborators}
+      multiline
+      onChange={onChange}
+      onSelectCollaborator={onSelectCollaborator}
+      value={value}
+      inputProps={props}
+    />
+  )
+}
+
+function MentionInputShell({
+  collaborators,
+  inputProps,
+  multiline = false,
+  onChange,
+  onSelectCollaborator,
+  value,
+}: {
+  collaborators: Collaborator[]
+  inputProps: Record<string, unknown>
+  multiline?: boolean
+  onChange: (value: string) => void
+  onSelectCollaborator?: (id: number) => void
+  value: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [mentionRange, setMentionRange] = useState<{ caret: number; index: number } | null>(null)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const shellRef = useRef<HTMLSpanElement | null>(null)
+  const mentionCollaborators = useMemo(() => {
+    const seen = new Set<string>()
+    return collaborators.filter((collaborator) => {
+      const key = collaborator.name.trim()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [collaborators])
+  const canMention = mentionCollaborators.length > 0
+  const shouldShow = open && canMention
+
+  function updateMentionMenu(
+    element: HTMLInputElement | HTMLTextAreaElement,
+    nextValue: string,
+  ) {
+    const caret = element.selectionStart ?? nextValue.length
+    const mentionIndex = nextValue.slice(0, caret).endsWith('@') ? caret - 1 : -1
+    const active = mentionIndex >= 0
+    setOpen(active)
+    setMentionRange(active ? { caret, index: mentionIndex } : null)
+    if (active) {
+      setMenuPosition(getCaretMenuPosition(element, shellRef.current, caret, nextValue))
+    }
+  }
+
+  function updateValue(
+    element: HTMLInputElement | HTMLTextAreaElement,
+    nextValue: string,
+  ) {
+    onChange(nextValue)
+    updateMentionMenu(element, nextValue)
+  }
+
+  function chooseCollaborator(collaborator: Collaborator) {
+    const range = mentionRange
+    const nextValue = range
+      ? `${value.slice(0, range.index)}@${collaborator.name} ${value.slice(range.caret)}`
+      : `${value}@${collaborator.name} `
+    onChange(nextValue)
+    onSelectCollaborator?.(collaborator.id)
+    setOpen(false)
+    setMentionRange(null)
+  }
+
+  return (
+    <span className="mention-input-shell" ref={shellRef}>
+      {multiline ? (
+        <Textarea
+          {...(inputProps as ComponentProps<typeof Textarea>)}
+          value={value}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => updateValue(event.currentTarget, event.target.value)}
+          onFocus={(event) => updateMentionMenu(event.currentTarget, value)}
+        />
+      ) : (
+        <Input
+          {...(inputProps as ComponentProps<typeof Input>)}
+          value={value}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => updateValue(event.currentTarget, event.target.value)}
+          onFocus={(event) => updateMentionMenu(event.currentTarget, value)}
+        />
+      )}
+      {shouldShow && (
+        <span
+          className="mention-menu"
+          style={{
+            left: menuPosition.left,
+            top: menuPosition.top,
+          } satisfies CSSProperties}
+        >
+          {mentionCollaborators.map((collaborator) => (
+            <button
+              className="mention-option"
+              key={collaborator.id}
+              type="button"
+              onMouseDown={(event) => {
+                event.preventDefault()
+                chooseCollaborator(collaborator)
+              }}
+            >
+              <strong>@{collaborator.name}</strong>
+              <small>{collaborator.role || '协作者'}</small>
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function getCaretMenuPosition(
+  element: HTMLInputElement | HTMLTextAreaElement,
+  shell: HTMLSpanElement | null,
+  caret: number,
+  value: string,
+) {
+  if (!shell || typeof document === 'undefined') return { left: 0, top: 0 }
+
+  const style = window.getComputedStyle(element)
+  const mirror = document.createElement('div')
+  const marker = document.createElement('span')
+  const shellRect = shell.getBoundingClientRect()
+  const elementRect = element.getBoundingClientRect()
+  const lineHeight =
+    Number.parseFloat(style.lineHeight) ||
+    Number.parseFloat(style.fontSize) * 1.3 ||
+    18
+
+  mirror.style.position = 'absolute'
+  mirror.style.visibility = 'hidden'
+  mirror.style.pointerEvents = 'none'
+  mirror.style.left = '-9999px'
+  mirror.style.top = '0'
+  mirror.style.boxSizing = style.boxSizing
+  mirror.style.width = `${element.clientWidth}px`
+  mirror.style.padding = style.padding
+  mirror.style.border = style.border
+  mirror.style.font = style.font
+  mirror.style.letterSpacing = style.letterSpacing
+  mirror.style.textTransform = style.textTransform
+  mirror.style.whiteSpace = element instanceof HTMLTextAreaElement ? 'pre-wrap' : 'pre'
+  mirror.style.overflowWrap = element instanceof HTMLTextAreaElement ? 'break-word' : 'normal'
+  mirror.textContent = value.slice(0, caret)
+  marker.textContent = '\u200b'
+  mirror.appendChild(marker)
+  document.body.appendChild(mirror)
+
+  const left =
+    elementRect.left - shellRect.left + marker.offsetLeft - element.scrollLeft
+  const top =
+    elementRect.top - shellRect.top + marker.offsetTop - element.scrollTop + lineHeight + 4
+  document.body.removeChild(mirror)
+
+  return {
+    left: Math.max(0, left),
+    top: Math.max(0, top),
+  }
+}
+
+function CollaboratorPicker({
+  collaborators,
+  compact = false,
+  onChange,
+  value,
+}: {
+  collaborators: Collaborator[]
+  compact?: boolean
+  onChange: (id: number | null) => void
+  value: number | null
+}) {
+  const selectedCollaborator = collaborators.find(
+    (collaborator) => collaborator.id === value,
+  )
+  return (
+    <span className={compact ? 'collaborator-picker compact' : 'collaborator-picker'}>
+      <Select
+        value={value ? String(value) : 'none'}
+        onValueChange={(nextValue) =>
+          onChange(nextValue === 'none' ? null : Number(nextValue))
+        }
+      >
+        <SelectTrigger aria-label="待办负责人">
+          <SelectValue placeholder="选择协作者">
+            {compact && selectedCollaborator
+              ? `@${selectedCollaborator.name}`
+              : compact
+                ? '未指派'
+                : undefined}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">未指派</SelectItem>
+          {collaborators.map((collaborator) => (
+            <SelectItem key={collaborator.id} value={String(collaborator.id)}>
+              @{collaborator.name} · {collaborator.role || '协作者'}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </span>
+  )
+}
+
 function InboxView({
   archiveInboxItem,
+  collaborators,
   inbox,
   inboxDraft,
   onAddInboxItem,
@@ -1843,6 +2921,7 @@ function InboxView({
   projects,
 }: {
   archiveInboxItem: (item: InboxItem, projectId: number) => void
+  collaborators: Collaborator[]
   inbox: InboxItem[]
   inboxDraft: string
   onAddInboxItem: () => void
@@ -1857,10 +2936,11 @@ function InboxView({
         <Label className="textarea-label capture-textarea-label">
           新线索
           <span className="capture-input-wrap">
-            <Textarea
+            <MentionTextarea
+              collaborators={collaborators}
               placeholder="把会议记录、聊天片段、想法或解决方案先丢进来..."
               value={inboxDraft}
-              onChange={(event) => onDraftChange(event.target.value)}
+              onChange={onDraftChange}
             />
             <Button className="solid-button capture-submit-button" type="button" onClick={onAddInboxItem}>
               <PaperPlaneTilt size={17} /> 放入今日草稿箱
@@ -2457,6 +3537,8 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
+  if (view === 'todos') return '当前待办'
+  if (view === 'collaborators') return '协作者'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'
   return 'AI 总结文档'

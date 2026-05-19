@@ -44,6 +44,19 @@ create table if not exists todos (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists collaborators (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  project_id bigint not null references projects(id) on delete cascade,
+  name text not null,
+  role text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table todos
+  add column if not exists collaborator_id bigint references collaborators(id) on delete set null;
+
 create table if not exists risks (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
@@ -78,6 +91,9 @@ create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
 create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
 create index if not exists idx_todos_project_id on todos(project_id);
+create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
+create index if not exists idx_collaborators_user_id on collaborators(user_id);
+create index if not exists idx_collaborators_project_id on collaborators(project_id);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);

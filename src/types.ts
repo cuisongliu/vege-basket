@@ -7,9 +7,17 @@ export type JournalEntry = {
   content: string
 }
 
+export type Collaborator = {
+  id: number
+  name: string
+  role: string
+  projectId: number
+}
+
 export type Todo = {
   id: number
   projectId: number
+  collaboratorId?: number
   title: string
   dueDate: string
   priority: Priority

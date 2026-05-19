@@ -1,4 +1,5 @@
 import type {
+  Collaborator,
   InboxItem,
   Priority,
   Project,
@@ -8,6 +9,7 @@ import type {
 } from './types'
 
 export type WorkspaceData = {
+  collaborators: Collaborator[]
   inbox: InboxItem[]
   projects: Project[]
   summaries: Summary[]
@@ -179,7 +181,35 @@ export function removeDraft(draftId: number) {
   })
 }
 
+export function createCollaborator(payload: {
+  name: string
+  projectIds: number[]
+  role: string
+}) {
+  return request<WorkspaceData>('/api/collaborators', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateCollaborator(
+  collaboratorId: number,
+  payload: { name: string; projectIds: number[]; role: string },
+) {
+  return request<WorkspaceData>(`/api/collaborators/${collaboratorId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeCollaborator(collaboratorId: number) {
+  return request<WorkspaceData>(`/api/collaborators/${collaboratorId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function createTodo(payload: {
+  collaboratorId?: number
   dueDate: string
   priority: Priority
   projectId: number
@@ -191,7 +221,10 @@ export function createTodo(payload: {
   })
 }
 
-export function updateTodo(todoId: number, payload: Partial<Todo>) {
+export function updateTodo(
+  todoId: number,
+  payload: Omit<Partial<Todo>, 'collaboratorId'> & { collaboratorId?: number | null },
+) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),

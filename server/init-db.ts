@@ -69,6 +69,28 @@ async function insertProject({
   return projectId
 }
 
+async function insertCollaborator({
+  name,
+  projectId,
+  role,
+  userId,
+}: {
+  name: string
+  projectId: number
+  role: string
+  userId: number
+}) {
+  const result = await query<{ id: string }>(
+    `
+    insert into collaborators (user_id, project_id, name, role)
+    values ($1, $2, $3, $4)
+    returning id
+    `,
+    [userId, projectId, name, role],
+  )
+  return Number(result.rows[0].id)
+}
+
 async function main() {
   await query(schemaSql)
 
@@ -138,6 +160,25 @@ async function main() {
           done: false,
         },
       ],
+    })
+
+    await insertCollaborator({
+      userId,
+      projectId: projectOneId,
+      name: '潘仪豪',
+      role: '产品负责人',
+    })
+    await insertCollaborator({
+      userId,
+      projectId: projectOneId,
+      name: '谢金虎',
+      role: '研发协作',
+    })
+    await insertCollaborator({
+      userId,
+      projectId: projectTwoId,
+      name: '达梦',
+      role: '数据口径确认',
     })
 
     await insertProject({
