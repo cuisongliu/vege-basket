@@ -14,7 +14,6 @@ import {
   AddressBook,
   ArrowRight,
   Check,
-  Clock,
   DotsThree,
   CaretDown,
   CaretLeft,
@@ -102,7 +101,6 @@ import {
 import type {
   Collaborator,
   InboxItem,
-  JournalEntry,
   Priority,
   Project,
   ProjectStatus,
@@ -164,13 +162,6 @@ function getTodayStamp() {
 function getCurrentDateTimeStamp() {
   const parts = getShanghaiDateParts()
   return `${parts.date} ${parts.time}`
-}
-
-function addDays(dateStamp: string, delta: number) {
-  const [year, month, day] = dateStamp.split('-').map(Number)
-  const date = new Date(year, month - 1, day)
-  date.setDate(date.getDate() + delta)
-  return formatDateStamp(date)
 }
 
 function formatDateStamp(date: Date) {
@@ -464,10 +455,6 @@ function App() {
   const toggleThemeMode = useCallback(() => {
     setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))
   }, [])
-
-  const todayJournal = selectedProject?.journals.find((entry) =>
-    entry.createdAt.startsWith(today),
-  )
 
   const projectTodos = selectedProject
     ? todos.filter((todo) => todo.projectId === selectedProject.id)
@@ -1014,7 +1001,6 @@ ${summariesText || '暂无总结'}`
             todoDueDate={todoDueDate}
             todoDraft={todoDraft}
             todoPriority={todoPriority}
-            todayJournal={todayJournal}
           />
         )}
 
@@ -1471,7 +1457,6 @@ function ProjectDetail({
   todoDueDate,
   todoDraft,
   todoPriority,
-  todayJournal,
 }: {
   collaborators: Collaborator[]
   exportMarkdown: (projectId?: number) => void
@@ -1504,14 +1489,15 @@ function ProjectDetail({
   todoDueDate: string
   todoDraft: string
   todoPriority: Priority
-  todayJournal?: JournalEntry
 }) {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [projectNameDraft, setProjectNameDraft] = useState(project.name)
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
   const journalDates = useMemo(
-    () => Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10)))),
+    () =>
+      Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10))))
+        .sort((left, right) => right.localeCompare(left)),
     [project.journals],
   )
   const defaultJournalDate = journalDates.includes(today)
@@ -1521,6 +1507,15 @@ function ProjectDetail({
   const visibleJournals = project.journals.filter((entry) =>
     entry.createdAt.startsWith(selectedJournalDate),
   )
+  const selectedJournalDateIndex = journalDates.indexOf(selectedJournalDate)
+  const previousJournalDate =
+    selectedJournalDateIndex >= 0
+      ? journalDates[selectedJournalDateIndex + 1]
+      : undefined
+  const nextJournalDate =
+    selectedJournalDateIndex > 0
+      ? journalDates[selectedJournalDateIndex - 1]
+      : undefined
   const projectCollaborators = collaborators.filter(
     (collaborator) => collaborator.projectId === project.id,
   )
@@ -1536,6 +1531,15 @@ function ProjectDetail({
       setSelectedJournalDate(defaultJournalDate)
     }
   }, [defaultJournalDate, journalDates, selectedJournalDate])
+
+  function handleJournalKeyDown(
+    event: React.KeyboardEvent<HTMLTextAreaElement>,
+    save: () => void,
+  ) {
+    if (event.key !== 'Enter' || event.shiftKey) return
+    event.preventDefault()
+    save()
+  }
 
   return (
     <div className="detail-layout">
@@ -1618,12 +1622,6 @@ function ProjectDetail({
             </DialogContent>
           </Dialog>
         </div>
-        <article className="today-note">
-          <div className="note-date">
-            <Clock size={17} /> 最新记录 · {todayJournal?.createdAt ?? today}
-          </div>
-          <p>{todayJournal?.content ?? '今天还没有项目日记。'}</p>
-        </article>
         <Label className="textarea-label">
           追加今日记录
           <MentionTextarea
@@ -1631,6 +1629,7 @@ function ProjectDetail({
             placeholder="记录今天的进展、决策、问题或方案..."
             value={journalDraft}
             onChange={onDraftChange}
+            onKeyDown={(event) => handleJournalKeyDown(event, onSaveJournal)}
           />
         </Label>
         <Button className="solid-button" type="button" onClick={onSaveJournal}>
@@ -1705,6 +1704,15 @@ function ProjectDetail({
                       aria-label="编辑日记内容"
                       value={journalEditDraft}
                       onChange={(event) => setJournalEditDraft(event.target.value)}
+                      onKeyDown={(event) =>
+                        handleJournalKeyDown(event, () => {
+                          const nextContent = journalEditDraft.trim()
+                          if (!nextContent) return
+                          onEditJournalEntry(project.id, entry.id, nextContent)
+                          setEditingJournalId(null)
+                          setJournalEditDraft('')
+                        })
+                      }
                     />
                     <div className="journal-edit-actions">
                       <Button
@@ -1728,7 +1736,7 @@ function ProjectDetail({
                     </div>
                   </form>
                 ) : (
-                  <p>{entry.content}</p>
+                  <MarkdownPreview content={entry.content} compact />
                 )}
               </article>
             ))
@@ -1739,10 +1747,12 @@ function ProjectDetail({
         <div className="journal-pagination" aria-label="日记日期选择">
           <Button
             className="ghost-button"
+            disabled={!previousJournalDate}
             type="button"
             variant="outline"
             onClick={() => {
-              setSelectedJournalDate((date) => addDays(date, -1))
+              if (!previousJournalDate) return
+              setSelectedJournalDate(previousJournalDate)
               setEditingJournalId(null)
               setJournalEditDraft('')
             }}
@@ -1761,10 +1771,12 @@ function ProjectDetail({
           <span>{visibleJournals.length} 条</span>
           <Button
             className="ghost-button"
+            disabled={!nextJournalDate}
             type="button"
             variant="outline"
             onClick={() => {
-              setSelectedJournalDate((date) => addDays(date, 1))
+              if (!nextJournalDate) return
+              setSelectedJournalDate(nextJournalDate)
               setEditingJournalId(null)
               setJournalEditDraft('')
             }}

@@ -5,12 +5,12 @@
     "app_host": "vege-basket-170451",
     "namespace": "ns-44bchscw",
     "region": "sealosgzg.site",
-    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-151550",
+    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-180256",
     "docker_hub_user": null,
     "repo_name": "vege-basket",
     "url": "https://vege-basket-170451.sealosgzg.site",
     "deployed_at": "2026-05-18T09:18:53.000Z",
-    "last_updated_at": "2026-05-19T07:17:57.510Z"
+    "last_updated_at": "2026-05-19T10:05:18.464Z"
   },
   "history": [
     {
@@ -164,6 +164,15 @@
       "method": "kubectl-set-image",
       "status": "success",
       "note": "Updated production with current todo inline editing and priority dropdown width fixes."
+    },
+    {
+      "at": "2026-05-19T10:05:18.464Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-151550",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-180256",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Updated production with latest journal layout, pagination, markdown list, and todo status styling fixes."
     }
   ]
 }

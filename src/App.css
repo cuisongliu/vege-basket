@@ -1215,11 +1215,11 @@ textarea:focus {
 
 .todo-status-chip {
   width: fit-content;
-  border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--brand) 72%, var(--line));
   border-radius: 999px;
   padding: 3px 8px;
-  color: var(--brand);
-  background: color-mix(in oklch, var(--brand) 8%, transparent);
+  color: color-mix(in srgb, var(--brand) 86%, var(--foreground));
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1582,6 +1582,8 @@ textarea:focus {
 }
 
 .journal-pagination {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1589,6 +1591,7 @@ textarea:focus {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
+  background: var(--card);
 }
 
 .journal-pagination span {
@@ -1603,6 +1606,13 @@ textarea:focus {
   height: 28px;
   flex: 0 0 auto;
   font-size: 13px;
+}
+
+.journal-pagination .ghost-button:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted-text);
+  opacity: 0.38;
 }
 
 .journal-date-trigger {
@@ -1718,10 +1728,21 @@ textarea:focus {
 .risk-item p,
 .history-item p,
 .inbox-item p,
-.summary-card p,
-.today-note p {
+.summary-card p {
   margin: 5px 0 0;
   color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.history-item .markdown-preview {
+  border-top: 0;
+  padding-top: 6px;
+  gap: 7px;
+}
+
+.history-item .markdown-preview p,
+.history-item .markdown-preview li {
   font-size: 14px;
   line-height: 1.65;
 }
@@ -1759,7 +1780,7 @@ textarea:focus {
 
 .journal-panel {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   align-content: start;
 }
 
@@ -1844,19 +1865,6 @@ textarea:focus {
   border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
 }
 
-.today-note {
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 12px;
-  background: var(--control-bg);
-  margin-bottom: 12px;
-}
-
-.cockpit-workspace .today-note {
-  padding: 9px;
-  margin-bottom: 8px;
-}
-
 .cockpit-workspace .textarea-label {
   margin-bottom: 8px;
 }
@@ -1910,15 +1918,6 @@ textarea:focus {
 .destructive-button:hover {
   background: color-mix(in oklch, var(--destructive) 86%, black);
   color: var(--destructive-foreground);
-}
-
-.note-date {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--brand);
-  font-size: 13px;
-  font-weight: 620;
 }
 
 .textarea-label {
@@ -2626,6 +2625,14 @@ textarea:focus {
   color: var(--text);
 }
 
+.markdown-preview ul {
+  list-style: disc;
+}
+
+.markdown-preview ol {
+  list-style: decimal;
+}
+
 .markdown-preview li {
   color: var(--text);
   font-size: 14px;
@@ -2706,7 +2713,6 @@ textarea:focus {
     min-height: clamp(58px, 10dvh, 82px);
   }
 
-  .cockpit-workspace .today-note p,
   .cockpit-workspace .history-item p,
   .cockpit-workspace .risk-item p {
     line-height: 1.48;
