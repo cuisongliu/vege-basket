@@ -668,7 +668,8 @@ textarea:focus {
   font-weight: 560;
 }
 
-.new-project-dialog-form input {
+.new-project-dialog-form input,
+.ai-settings-form input {
   background: var(--control-bg);
 }
 

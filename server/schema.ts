@@ -9,6 +9,14 @@ create table if not exists users (
 
 alter table users add column if not exists display_name text not null default '';
 
+create table if not exists ai_settings (
+  user_id bigint primary key references users(id) on delete cascade,
+  base_url text not null default '',
+  api_key text not null default '',
+  model text not null default '',
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists sessions (
   token text primary key,
   user_id bigint not null references users(id) on delete cascade,

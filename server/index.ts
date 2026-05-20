@@ -14,6 +14,11 @@ type SummaryType = 'weekly' | 'monthly'
 type UserRow = { id: string; email: string; display_name: string }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type IncomingChatMessage = { role?: unknown; content?: unknown }
+type AiSettingsRow = {
+  base_url: string
+  api_key: string
+  model: string
+}
 type CollaboratorRow = {
   id: string
   user_id: string
@@ -90,13 +95,17 @@ function serializeUser(row: UserRow) {
   }
 }
 
-function getAiEndpoint() {
-  const base = process.env.AI_API_BASE ?? ''
-  return `${base.replace(/\/$/, '')}/v1/chat/completions`
+function serializeAiSettings(row?: AiSettingsRow) {
+  return {
+    baseUrl: row?.base_url ?? '',
+    hasApiKey: Boolean(row?.api_key),
+    model: row?.model ?? '',
+  }
 }
 
-function isAiEnabled() {
-  return process.env.AI_ENABLED === 'true'
+function getAiEndpoint(baseUrl: string) {
+  const base = baseUrl.trim()
+  return `${base.replace(/\/$/, '')}/v1/chat/completions`
 }
 
 function trimForAi(value: string, maxLength = aiMaxMessageLength) {
@@ -504,6 +513,55 @@ app.patch('/api/auth/me', asyncHandler(async (request, response) => {
     [displayName, userId],
   )
   response.json({ user: serializeUser(user.rows[0]) })
+}))
+
+app.get('/api/ai/settings', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const result = await query<AiSettingsRow>(
+    'select base_url, api_key, model from ai_settings where user_id = $1',
+    [userId],
+  )
+  response.json({ settings: serializeAiSettings(result.rows[0]) })
+}))
+
+app.put('/api/ai/settings', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const baseUrl = String(request.body.baseUrl ?? '').trim().replace(/\/+$/, '')
+  const apiKey = String(request.body.apiKey ?? '').trim()
+  const model = String(request.body.model ?? '').trim()
+  if (!baseUrl || !model) {
+    response.status(400).json({ error: 'AI base URL and model are required' })
+    return
+  }
+
+  const current = await query<AiSettingsRow>(
+    'select base_url, api_key, model from ai_settings where user_id = $1',
+    [userId],
+  )
+  const nextApiKey = apiKey || current.rows[0]?.api_key || ''
+  if (!nextApiKey) {
+    response.status(400).json({ error: 'AI API key is required' })
+    return
+  }
+
+  const result = await query<AiSettingsRow>(
+    `
+    insert into ai_settings (user_id, base_url, api_key, model)
+    values ($1, $2, $3, $4)
+    on conflict (user_id) do update
+      set base_url = excluded.base_url,
+          api_key = excluded.api_key,
+          model = excluded.model,
+          updated_at = now()
+    returning base_url, api_key, model
+    `,
+    [userId, baseUrl, nextApiKey, model],
+  )
+  response.json({ settings: serializeAiSettings(result.rows[0]) })
 }))
 
 app.get('/api/workspace', asyncHandler(async (request, response) => {
@@ -1049,19 +1107,17 @@ app.post('/api/ai/chat', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  if (!isAiEnabled()) {
-    response.status(503).json({ error: 'AI feature is disabled' })
-    return
-  }
-
   if (!checkAiRateLimit(userId)) {
     response.status(429).json({ error: 'AI rate limit exceeded' })
     return
   }
 
-  const apiKey = process.env.AI_API_KEY
-  const model = process.env.AI_MODEL ?? 'deepseek-v3.2'
-  if (!apiKey || !process.env.AI_API_BASE) {
+  const settingsResult = await query<AiSettingsRow>(
+    'select base_url, api_key, model from ai_settings where user_id = $1',
+    [userId],
+  )
+  const aiSettings = settingsResult.rows[0]
+  if (!aiSettings?.base_url || !aiSettings.api_key || !aiSettings.model) {
     response.status(503).json({ error: 'AI API is not configured' })
     return
   }
@@ -1086,14 +1142,14 @@ app.post('/api/ai/chat', asyncHandler(async (request, response) => {
   const timeout = setTimeout(() => controller.abort(), 45000)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(), {
+    const aiResponse = await fetch(getAiEndpoint(aiSettings.base_url), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${aiSettings.api_key}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model,
+        model: aiSettings.model,
         temperature: 0.3,
         messages: [
           {
@@ -1221,7 +1277,7 @@ app.get(/^(?!\/api).*/, (_request, response) => {
   response.sendFile(path.join(clientDistPath, 'index.html'))
 })
 
-app.use((error: unknown, _request: express.Request, response: express.Response) => {
+app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   console.error(error)
   response.status(500).json({ error: 'Internal server error' })
 })

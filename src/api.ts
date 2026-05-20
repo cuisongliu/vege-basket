@@ -33,6 +33,12 @@ export type AiChatMessage = {
   content: string
 }
 
+export type AiSettings = {
+  baseUrl: string
+  hasApiKey: boolean
+  model: string
+}
+
 const tokenStorageKey = 'veges.authToken'
 let authToken =
   typeof window === 'undefined' ? '' : localStorage.getItem(tokenStorageKey) ?? ''
@@ -93,6 +99,21 @@ export function loginAccount(payload: { email: string; password: string }) {
 export function updateCurrentUser(payload: { displayName: string }) {
   return request<{ user: AuthUser }>('/api/auth/me', {
     method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchAiSettings() {
+  return request<{ settings: AiSettings }>('/api/ai/settings')
+}
+
+export function updateAiSettings(payload: {
+  apiKey?: string
+  baseUrl: string
+  model: string
+}) {
+  return request<{ settings: AiSettings }>('/api/ai/settings', {
+    method: 'PUT',
     body: JSON.stringify(payload),
   })
 }

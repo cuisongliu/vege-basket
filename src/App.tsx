@@ -77,6 +77,7 @@ import {
   createSummary,
   createSummaryFromContent,
   createTodo,
+  fetchAiSettings,
   fetchCurrentUser,
   getAuthToken,
   loginAccount,
@@ -92,10 +93,12 @@ import {
   updateProject,
   updateCollaborator,
   updateTodo,
+  updateAiSettings,
   setAuthToken,
   sendAiChat,
   updateCurrentUser,
   type AiChatMessage,
+  type AiSettings,
   type AuthUser,
   type WorkspaceData,
 } from './api'
@@ -177,6 +180,10 @@ function formatMonthTitle(year: number, month: number) {
     month: 'long',
     year: 'numeric',
   }).format(new Date(year, month, 1))
+}
+
+function getProjectJournalSortKey(project: Project) {
+  return project.journals[0]?.createdAt ?? project.updatedAt ?? project.createdAt
 }
 
 const today = getTodayStamp()
@@ -464,27 +471,35 @@ function App() {
 
   const filteredResults = useMemo(() => {
     const query = search.trim().toLowerCase()
-    return projects.filter((project) => {
-      const matchesStatus = statusFilter === 'all' || project.status === statusFilter
-      const matchesTag = tagFilter === '全部' || project.tags.includes(tagFilter)
-      const projectText = [
-        project.name,
-        project.tags.join(' '),
-        project.journals.map((entry) => entry.content).join(' '),
-        todos
-          .filter((todo) => todo.projectId === project.id)
-          .map((todo) => todo.title)
-          .join(' '),
-        summaries
-          .filter((summary) => summary.projectId === project.id)
-          .map((summary) => summary.content)
-          .join(' '),
-      ]
-        .join(' ')
-        .toLowerCase()
-      const matchesQuery = !query || projectText.includes(query)
-      return matchesStatus && matchesTag && matchesQuery
-    })
+    return projects
+      .filter((project) => {
+        const matchesStatus = statusFilter === 'all' || project.status === statusFilter
+        const matchesTag = tagFilter === '全部' || project.tags.includes(tagFilter)
+        const projectText = [
+          project.name,
+          project.tags.join(' '),
+          project.journals.map((entry) => entry.content).join(' '),
+          todos
+            .filter((todo) => todo.projectId === project.id)
+            .map((todo) => todo.title)
+            .join(' '),
+          summaries
+            .filter((summary) => summary.projectId === project.id)
+            .map((summary) => summary.content)
+            .join(' '),
+        ]
+          .join(' ')
+          .toLowerCase()
+        const matchesQuery = !query || projectText.includes(query)
+        return matchesStatus && matchesTag && matchesQuery
+      })
+      .sort((left, right) => {
+        const journalDiff = getProjectJournalSortKey(right).localeCompare(
+          getProjectJournalSortKey(left),
+        )
+        if (journalDiff !== 0) return journalDiff
+        return right.id - left.id
+      })
   }, [projects, search, statusFilter, summaries, tagFilter, todos])
 
   async function signIn(email: string, password: string, mode: 'login' | 'register') {
@@ -760,7 +775,7 @@ function App() {
         },
       ])
     } catch {
-      setAiError('AI Agent 暂时没有响应，请检查后端服务或 API 配置。')
+      setAiError('AI Agent 暂时没有响应，请先在左下角账号菜单的「AI 配置」里填写 Base URL、API Key 和模型。')
     } finally {
       setAiBusy(false)
     }
@@ -851,6 +866,8 @@ ${summariesText || '暂无总结'}`
         <AccountMenu
           user={authUser}
           themeMode={themeMode}
+          onSaveAiSettings={updateAiSettings}
+          onLoadAiSettings={fetchAiSettings}
           onRename={updateDisplayName}
           onSignOut={signOut}
           onToggleTheme={toggleThemeMode}
@@ -1239,22 +1256,83 @@ function getUserDisplayName(user: AuthUser | null) {
 }
 
 function AccountMenu({
+  onLoadAiSettings,
   user,
   themeMode,
   onRename,
+  onSaveAiSettings,
   onSignOut,
   onToggleTheme,
 }: {
+  onLoadAiSettings: () => Promise<{ settings: AiSettings }>
   user: AuthUser | null
   themeMode: ThemeMode
   onRename: (displayName: string) => void
+  onSaveAiSettings: (payload: {
+    apiKey?: string
+    baseUrl: string
+    model: string
+  }) => Promise<{ settings: AiSettings }>
   onSignOut: () => void
   onToggleTheme: () => void
 }) {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
+  const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [displayNameDraft, setDisplayNameDraft] = useState(getUserDisplayName(user))
+  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
+  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
+  const [aiModelDraft, setAiModelDraft] = useState('')
+  const [aiHasApiKey, setAiHasApiKey] = useState(false)
+  const [aiSettingsBusy, setAiSettingsBusy] = useState(false)
+  const [aiSettingsError, setAiSettingsError] = useState('')
   const displayName = getUserDisplayName(user)
   const accountMeta = user?.email ?? '尚未登录'
+
+  async function openAiSettingsDialog() {
+    setAiSettingsError('')
+    setAiDialogOpen(true)
+    setAiSettingsBusy(true)
+    try {
+      const result = await onLoadAiSettings()
+      setAiBaseUrlDraft(result.settings.baseUrl)
+      setAiApiKeyDraft('')
+      setAiModelDraft(result.settings.model)
+      setAiHasApiKey(result.settings.hasApiKey)
+    } catch {
+      setAiSettingsError('AI 配置读取失败，请稍后重试。')
+    } finally {
+      setAiSettingsBusy(false)
+    }
+  }
+
+  async function saveAiSettings() {
+    const baseUrl = aiBaseUrlDraft.trim()
+    const apiKey = aiApiKeyDraft.trim()
+    const model = aiModelDraft.trim()
+    if (!baseUrl || !model || (!apiKey && !aiHasApiKey)) {
+      setAiSettingsError('请填写 Base URL、API Key 和模型。')
+      return
+    }
+
+    setAiSettingsBusy(true)
+    setAiSettingsError('')
+    try {
+      const result = await onSaveAiSettings({
+        baseUrl,
+        model,
+        ...(apiKey ? { apiKey } : {}),
+      })
+      setAiBaseUrlDraft(result.settings.baseUrl)
+      setAiApiKeyDraft('')
+      setAiModelDraft(result.settings.model)
+      setAiHasApiKey(result.settings.hasApiKey)
+      setAiDialogOpen(false)
+    } catch {
+      setAiSettingsError('AI 配置保存失败，请确认信息后重试。')
+    } finally {
+      setAiSettingsBusy(false)
+    }
+  }
 
   return (
     <div className="sidebar-footer">
@@ -1292,6 +1370,14 @@ function AccountMenu({
               className={themeMode === 'light' ? 'theme-toggle is-on' : 'theme-toggle'}
               aria-hidden
             />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              openAiSettingsDialog()
+            }}
+          >
+            <Sparkle /> AI 配置
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onSignOut} variant="destructive">
@@ -1335,6 +1421,70 @@ function AccountMenu({
                 取消
               </Button>
               <Button type="submit">保存昵称</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={aiDialogOpen} onOpenChange={setAiDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>AI 配置</DialogTitle>
+            <DialogDescription>
+              配置后才可以使用 AI 总结。API Key 只会保存在你的账号配置里，重新打开时不会明文展示。
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="new-project-dialog-form ai-settings-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              saveAiSettings()
+            }}
+          >
+            <Label>
+              Base URL
+              <Input
+                autoFocus
+                placeholder="https://api.openai.com"
+                required
+                value={aiBaseUrlDraft}
+                onChange={(event) => setAiBaseUrlDraft(event.target.value)}
+              />
+            </Label>
+            <Label>
+              API Key
+              <Input
+                placeholder={aiHasApiKey ? '已保存，留空则继续使用原 Key' : '请输入 API Key'}
+                required={!aiHasApiKey}
+                type="password"
+                value={aiApiKeyDraft}
+                onChange={(event) => setAiApiKeyDraft(event.target.value)}
+              />
+            </Label>
+            <Label>
+              模型
+              <Input
+                placeholder="例如：gpt-4.1-mini"
+                required
+                value={aiModelDraft}
+                onChange={(event) => setAiModelDraft(event.target.value)}
+              />
+            </Label>
+            {aiSettingsError && <p className="form-error">{aiSettingsError}</p>}
+            {aiHasApiKey && !aiApiKeyDraft && (
+              <p className="form-note">当前已有 API Key，保存时留空会继续使用原 Key。</p>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => setAiDialogOpen(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={aiSettingsBusy}>
+                {aiSettingsBusy ? '保存中...' : '保存配置'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -2099,11 +2249,23 @@ function CurrentTodosView({
   todos: Todo[]
 }) {
   const [todoStatusFilter, setTodoStatusFilter] = useState<'all' | 'open' | 'done'>('all')
+  const currentProjects = useMemo(
+    () => projects.filter((project) => project.status !== 'archived'),
+    [projects],
+  )
+  const currentProjectIds = useMemo(
+    () => new Set(currentProjects.map((project) => project.id)),
+    [currentProjects],
+  )
+  const currentTodos = useMemo(
+    () => todos.filter((todo) => currentProjectIds.has(todo.projectId)),
+    [currentProjectIds, todos],
+  )
   const groupedTodos = useMemo(
     () =>
-      projects
+      currentProjects
         .map((project) => {
-          const projectTodos = todos
+          const projectTodos = currentTodos
             .filter(
               (todo) =>
                 todo.projectId === project.id &&
@@ -2124,10 +2286,10 @@ function CurrentTodosView({
           }
         })
         .filter((group) => group.todos.length > 0),
-    [projects, todoStatusFilter, todos],
+    [currentProjects, currentTodos, todoStatusFilter],
   )
-  const openCount = todos.filter((todo) => !todo.done).length
-  const doneCount = todos.length - openCount
+  const openCount = currentTodos.filter((todo) => !todo.done).length
+  const doneCount = currentTodos.length - openCount
   const toggleTodoStatusFilter = (status: 'open' | 'done') => {
     setTodoStatusFilter((current) => (current === status ? 'all' : status))
   }
