@@ -35,7 +35,7 @@ export type InboxItem = {
 
 export type Summary = {
   id: number
-  projectId: number
+  projectId?: number
   type: 'weekly' | 'monthly'
   title: string
   period: string

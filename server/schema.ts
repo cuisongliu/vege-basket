@@ -86,6 +86,7 @@ create table if not exists draft_items (
 
 create table if not exists summaries (
   id bigserial primary key,
+  user_id bigint references users(id) on delete cascade,
   project_id bigint not null references projects(id) on delete cascade,
   type text not null,
   title text not null,
@@ -93,6 +94,40 @@ create table if not exists summaries (
   content text not null,
   created_at timestamptz not null default now()
 );
+
+alter table summaries
+  add column if not exists user_id bigint references users(id) on delete cascade;
+
+update summaries
+set user_id = projects.user_id
+from projects
+where summaries.project_id = projects.id
+  and summaries.user_id is null;
+
+update summaries
+set user_id = projects.user_id,
+    project_id = null,
+    period = '飞书对话分析'
+from projects
+where summaries.project_id = projects.id
+  and projects.name = '飞书对话分析'
+  and projects.tags @> array['飞书', '对话分析']::text[];
+
+alter table summaries
+  alter column project_id drop not null;
+
+delete from projects
+where projects.name = '飞书对话分析'
+  and projects.tags @> array['飞书', '对话分析']::text[]
+  and not exists (select 1 from todos where todos.project_id = projects.id)
+  and not exists (select 1 from collaborators where collaborators.project_id = projects.id)
+  and not exists (select 1 from risks where risks.project_id = projects.id)
+  and not exists (
+    select 1
+    from journal_entries
+    where journal_entries.project_id = projects.id
+      and journal_entries.content <> '用于保存从飞书转发的群聊对话分析结果。'
+  );
 
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_sessions_user_id on sessions(user_id);
@@ -104,5 +139,6 @@ create index if not exists idx_collaborators_user_id on collaborators(user_id);
 create index if not exists idx_collaborators_project_id on collaborators(project_id);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
+create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
 `

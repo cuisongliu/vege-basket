@@ -33,6 +33,8 @@ export type AiChatMessage = {
   content: string
 }
 
+export type AiAgentType = 'project-summary' | 'conversation-analysis'
+
 export type AiSettings = {
   baseUrl: string
   hasApiKey: boolean
@@ -118,7 +120,7 @@ export function updateAiSettings(payload: {
   })
 }
 
-export function createProject(payload: { name: string; tags: string[] }) {
+export function createProject(payload: { collaboratorIds?: number[]; name: string; tags: string[] }) {
   return request<WorkspaceData>('/api/projects', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -277,9 +279,9 @@ export function createSummaryFromContent(payload: {
   })
 }
 
-export function sendAiChat(messages: AiChatMessage[]) {
+export function sendAiChat(messages: AiChatMessage[], agentType: AiAgentType) {
   return request<{ message: string }>('/api/ai/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ agentType, messages }),
   })
 }

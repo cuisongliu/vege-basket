@@ -97,6 +97,7 @@ import {
   setAuthToken,
   sendAiChat,
   updateCurrentUser,
+  type AiAgentType,
   type AiChatMessage,
   type AiSettings,
   type AuthUser,
@@ -124,6 +125,19 @@ type CollaboratorPerson = {
   primaryId: number
   projects: Project[]
   roles: string[]
+}
+
+const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
+  'project-summary': {
+    avatar: 'V',
+    subtitle: 'Veges AI Agent',
+    title: '项目总结助理',
+  },
+  'conversation-analysis': {
+    avatar: '析',
+    subtitle: '群聊对话分析 Agent',
+    title: '对话分析助理',
+  },
 }
 
 const themeStorageKey = 'veges.theme'
@@ -405,6 +419,7 @@ function App() {
   const [todoCollaboratorId, setTodoCollaboratorId] = useState<number | null>(null)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectTags, setNewProjectTags] = useState('')
+  const [newProjectCollaboratorIds, setNewProjectCollaboratorIds] = useState<number[]>([])
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
   const [isNewCollaboratorDialogOpen, setIsNewCollaboratorDialogOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -413,6 +428,7 @@ function App() {
   const initialAiMessages: DisplayAiChatMessage[] = []
   const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
   const [aiDraft, setAiDraft] = useState('')
+  const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
 
@@ -564,6 +580,7 @@ function App() {
     if (!open) {
       setNewProjectName('')
       setNewProjectTags('')
+      setNewProjectCollaboratorIds([])
     }
   }
 
@@ -577,12 +594,18 @@ function App() {
       .filter(Boolean)
 
     const data = await runMutation(() =>
-      createProject({ name, tags: tags.length > 0 ? tags : ['新项目'] }),
+      createProject({
+        collaboratorIds: newProjectCollaboratorIds,
+        name,
+        tags: tags.length > 0 ? tags : ['新项目'],
+      }),
     )
+    if (!data) return
     const createdProject = data?.projects.find((project) => project.name === name)
     if (createdProject) setSelectedProjectId(createdProject.id)
     setNewProjectName('')
     setNewProjectTags('')
+    setNewProjectCollaboratorIds([])
     setJournalDraft('')
     setIsNewProjectDialogOpen(false)
     setView(createdProject ? 'project' : 'search')
@@ -760,12 +783,13 @@ function App() {
     setAiError('')
 
     try {
-      const result = await sendAiChat(
-        nextMessages.map(({ role, content: messageContent }) => ({
-          role,
-          content: messageContent,
-        })),
-      )
+	      const result = await sendAiChat(
+	        nextMessages.map(({ role, content: messageContent }) => ({
+	          role,
+	          content: messageContent,
+	        })),
+	        activeAiAgent,
+	      )
       setAiMessages([
         ...nextMessages,
         {
@@ -777,11 +801,18 @@ function App() {
     } catch {
       setAiError('AI Agent 暂时没有响应，请先在左下角账号菜单的「AI 配置」里填写 Base URL、API Key 和模型。')
     } finally {
-      setAiBusy(false)
-    }
-  }
+	    setAiBusy(false)
+	  }
+	}
 
-  function exportMarkdown(projectId?: number) {
+	function changeActiveAiAgent(agentType: AiAgentType) {
+	  setActiveAiAgent(agentType)
+	  setAiMessages([])
+	  setAiDraft('')
+	  setAiError('')
+	}
+
+	function exportMarkdown(projectId?: number) {
     const targets = projectId
       ? projects.filter((project) => project.id === projectId)
       : projects
@@ -925,47 +956,17 @@ ${summariesText || '暂无总结'}`
                       先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
                     </DialogDescription>
                   </DialogHeader>
-                  <form
-                    className="new-project-dialog-form"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      addProject()
-                    }}
-                  >
-                    <Label>
-                      项目名称
-                      <Input
-                        autoFocus
-                        aria-label="新项目名称"
-                        placeholder="例如：增长实验复盘"
-                        required
-                        value={newProjectName}
-                        onChange={(event) => setNewProjectName(event.target.value)}
-                      />
-                    </Label>
-                    <Label>
-                      标签
-                      <Input
-                        aria-label="项目标签"
-                        placeholder="可选，用逗号或空格分隔"
-                        value={newProjectTags}
-                        onChange={(event) => setNewProjectTags(event.target.value)}
-                      />
-                    </Label>
-                    <DialogFooter>
-                      <Button
-                        className="ghost-button"
-                        variant="outline"
-                        type="button"
-                        onClick={() => changeNewProjectDialogOpen(false)}
-                      >
-                        取消
-                      </Button>
-                      <Button className="solid-button" type="submit">
-                        <Plus size={15} /> 创建项目
-                      </Button>
-                    </DialogFooter>
-                  </form>
+                  <NewProjectForm
+                    collaborators={collaborators}
+                    newProjectCollaboratorIds={newProjectCollaboratorIds}
+                    newProjectName={newProjectName}
+                    newProjectTags={newProjectTags}
+                    onCancel={() => changeNewProjectDialogOpen(false)}
+                    onNewProjectCollaboratorIdsChange={setNewProjectCollaboratorIds}
+                    onNewProjectNameChange={setNewProjectName}
+                    onNewProjectTagsChange={setNewProjectTags}
+                    onSubmit={addProject}
+                  />
                 </DialogContent>
               </Dialog>
             ) : view === 'collaborators' ? (
@@ -1024,10 +1025,13 @@ ${summariesText || '暂无总结'}`
 
         {view === 'project' && !selectedProject && (
           <EmptyWorkspace
+            collaborators={collaborators}
             isNewProjectDialogOpen={isNewProjectDialogOpen}
+            newProjectCollaboratorIds={newProjectCollaboratorIds}
             newProjectName={newProjectName}
             newProjectTags={newProjectTags}
             onAddProject={addProject}
+            onNewProjectCollaboratorIdsChange={setNewProjectCollaboratorIds}
             onNewProjectDialogOpenChange={changeNewProjectDialogOpen}
             onNewProjectNameChange={setNewProjectName}
             onNewProjectTagsChange={setNewProjectTags}
@@ -1085,14 +1089,16 @@ ${summariesText || '暂无总结'}`
           />
         )}
 
-        {view === 'summaries' && (
-          <SummaryView
-            aiBusy={aiBusy}
-            aiDraft={aiDraft}
-            aiError={aiError}
-            aiMessages={aiMessages}
-            onAiDraftChange={setAiDraft}
-            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
+	        {view === 'summaries' && (
+	          <SummaryView
+	            activeAiAgent={activeAiAgent}
+	            aiBusy={aiBusy}
+	            aiDraft={aiDraft}
+	            aiError={aiError}
+	            aiMessages={aiMessages}
+	            onAiDraftChange={setAiDraft}
+	            onAgentChange={changeActiveAiAgent}
+	            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
             onResetAiChat={() => {
               setAiMessages(initialAiMessages)
               setAiDraft('')
@@ -1494,18 +1500,24 @@ function AccountMenu({
 }
 
 function EmptyWorkspace({
+  collaborators,
   isNewProjectDialogOpen,
+  newProjectCollaboratorIds,
   newProjectName,
   newProjectTags,
   onAddProject,
+  onNewProjectCollaboratorIdsChange,
   onNewProjectDialogOpenChange,
   onNewProjectNameChange,
   onNewProjectTagsChange,
 }: {
+  collaborators: Collaborator[]
   isNewProjectDialogOpen: boolean
+  newProjectCollaboratorIds: number[]
   newProjectName: string
   newProjectTags: string
   onAddProject: () => void
+  onNewProjectCollaboratorIdsChange: (value: number[]) => void
   onNewProjectDialogOpenChange: (open: boolean) => void
   onNewProjectNameChange: (value: string) => void
   onNewProjectTagsChange: (value: string) => void
@@ -1533,50 +1545,163 @@ function EmptyWorkspace({
               先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
             </DialogDescription>
           </DialogHeader>
-          <form
-            className="new-project-dialog-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              onAddProject()
-            }}
-          >
-            <Label>
-              项目名称
-              <Input
-                autoFocus
-                aria-label="新项目名称"
-                placeholder="例如：增长实验复盘"
-                required
-                value={newProjectName}
-                onChange={(event) => onNewProjectNameChange(event.target.value)}
-              />
-            </Label>
-            <Label>
-              标签
-              <Input
-                aria-label="项目标签"
-                placeholder="可选，用逗号或空格分隔"
-                value={newProjectTags}
-                onChange={(event) => onNewProjectTagsChange(event.target.value)}
-              />
-            </Label>
-            <DialogFooter>
-              <Button
-                className="ghost-button"
-                variant="outline"
-                type="button"
-                onClick={() => onNewProjectDialogOpenChange(false)}
-              >
-                取消
-              </Button>
-              <Button className="solid-button" type="submit">
-                <Plus size={15} /> 创建项目
-              </Button>
-            </DialogFooter>
-          </form>
+          <NewProjectForm
+            collaborators={collaborators}
+            newProjectCollaboratorIds={newProjectCollaboratorIds}
+            newProjectName={newProjectName}
+            newProjectTags={newProjectTags}
+            onCancel={() => onNewProjectDialogOpenChange(false)}
+            onNewProjectCollaboratorIdsChange={onNewProjectCollaboratorIdsChange}
+            onNewProjectNameChange={onNewProjectNameChange}
+            onNewProjectTagsChange={onNewProjectTagsChange}
+            onSubmit={onAddProject}
+          />
         </DialogContent>
       </Dialog>
     </Card>
+  )
+}
+
+function NewProjectForm({
+  collaborators,
+  newProjectCollaboratorIds,
+  newProjectName,
+  newProjectTags,
+  onCancel,
+  onNewProjectCollaboratorIdsChange,
+  onNewProjectNameChange,
+  onNewProjectTagsChange,
+  onSubmit,
+}: {
+  collaborators: Collaborator[]
+  newProjectCollaboratorIds: number[]
+  newProjectName: string
+  newProjectTags: string
+  onCancel: () => void
+  onNewProjectCollaboratorIdsChange: (value: number[]) => void
+  onNewProjectNameChange: (value: string) => void
+  onNewProjectTagsChange: (value: string) => void
+  onSubmit: () => void
+}) {
+  const collaboratorOptions = useMemo(() => {
+    const collaboratorMap = new Map<string, Collaborator>()
+    collaborators.forEach((collaborator) => {
+      const key = collaborator.name.trim()
+      if (!key) return
+      const current = collaboratorMap.get(key)
+      if (!current || collaborator.id < current.id) {
+        collaboratorMap.set(key, collaborator)
+      }
+    })
+    return Array.from(collaboratorMap.values()).sort((left, right) =>
+      left.name.localeCompare(right.name, 'zh-Hans-CN'),
+    )
+  }, [collaborators])
+
+  function toggleCollaborator(collaboratorId: number) {
+    onNewProjectCollaboratorIdsChange(
+      newProjectCollaboratorIds.includes(collaboratorId)
+        ? newProjectCollaboratorIds.filter((id) => id !== collaboratorId)
+        : [...newProjectCollaboratorIds, collaboratorId],
+    )
+  }
+
+  const selectedCollaborators = collaboratorOptions.filter((collaborator) =>
+    newProjectCollaboratorIds.includes(collaborator.id),
+  )
+  const collaboratorSummary =
+    selectedCollaborators.length === 0
+      ? '未指定'
+      : selectedCollaborators.length <= 2
+        ? selectedCollaborators.map((collaborator) => `@${collaborator.name}`).join('、')
+        : `已选择 ${selectedCollaborators.length} 人`
+
+  return (
+    <form
+      className="new-project-dialog-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSubmit()
+      }}
+    >
+      <Label>
+        项目名称
+        <Input
+          autoFocus
+          aria-label="新项目名称"
+          placeholder="例如：增长实验复盘"
+          required
+          value={newProjectName}
+          onChange={(event) => onNewProjectNameChange(event.target.value)}
+        />
+      </Label>
+      <Label>
+        标签
+        <Input
+          aria-label="项目标签"
+          placeholder="可选，用逗号或空格分隔"
+          value={newProjectTags}
+          onChange={(event) => onNewProjectTagsChange(event.target.value)}
+        />
+      </Label>
+      <div className="new-project-collaborators">
+        <div className="new-project-collaborators-header">
+          <span>指定协作者</span>
+          {newProjectCollaboratorIds.length > 0 && (
+            <button type="button" onClick={() => onNewProjectCollaboratorIdsChange([])}>
+              清空
+            </button>
+          )}
+        </div>
+        {collaboratorOptions.length === 0 ? (
+          <p>暂无已有协作者。</p>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="new-project-collaborator-trigger" type="button">
+                <span>{collaboratorSummary}</span>
+                <CaretDown size={18} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="new-project-collaborator-menu"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              {collaboratorOptions.map((collaborator) => {
+                const checked = newProjectCollaboratorIds.includes(collaborator.id)
+                return (
+                  <DropdownMenuItem
+                    key={collaborator.id}
+                    data-selected={checked}
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      toggleCollaborator(collaborator.id)
+                    }}
+                  >
+                    <span className={checked ? 'dropdown-check selected' : 'dropdown-check'}>
+                      {checked && <Check size={13} weight="bold" />}
+                    </span>
+                    <span className="new-project-collaborator-option">
+                      <strong>@{collaborator.name}</strong>
+                      <small>{collaborator.role || '协作者'}</small>
+                    </span>
+                  </DropdownMenuItem>
+                )
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+      <DialogFooter>
+        <Button className="ghost-button" variant="outline" type="button" onClick={onCancel}>
+          取消
+        </Button>
+        <Button className="solid-button" type="submit">
+          <Plus size={15} /> 创建项目
+        </Button>
+      </DialogFooter>
+    </form>
   )
 }
 
@@ -3159,23 +3284,38 @@ function InboxView({
       <Card className="panel inbox-list-panel">
       <PanelTitle icon={<Archive size={18} />} title="待归档内容" />
         <div className="inbox-list">
-          {inbox.map((item) => (
-            <article className={item.processed ? 'inbox-item processed' : 'inbox-item'} key={item.id}>
-              <div className="inbox-meta">
-                <span>{item.source === 'feishu' ? '飞书转发' : '手动记录'}</span>
-                <span>{item.createdAt}</span>
-              </div>
-              <MarkdownPreview content={item.content} compact />
-              {!item.processed && (
-                <ArchiveControl
-                  item={item}
-                  projects={projects}
-                  onArchive={archiveInboxItem}
-                  onDelete={onDeleteInboxItem}
-                />
-              )}
-            </article>
-          ))}
+          {inbox.map((item) => {
+            const isAiAnalyzing = item.content.includes('AI 分析中')
+            return (
+              <article
+                className={
+                  item.processed
+                    ? 'inbox-item processed'
+                    : isAiAnalyzing
+                      ? 'inbox-item is-ai-analyzing'
+                      : 'inbox-item'
+                }
+                key={item.id}
+              >
+                <div className="inbox-meta">
+                  <span>{item.source === 'feishu' ? '飞书转发' : '手动记录'}</span>
+                  <span className="inbox-meta-right">
+                    {isAiAnalyzing && <Badge className="ai-analyzing-badge">AI 分析中</Badge>}
+                    <span>{item.createdAt}</span>
+                  </span>
+                </div>
+                <MarkdownPreview content={item.content} compact />
+                {!item.processed && (
+                  <ArchiveControl
+                    item={item}
+                    projects={projects}
+                    onArchive={archiveInboxItem}
+                    onDelete={onDeleteInboxItem}
+                  />
+                )}
+              </article>
+            )
+          })}
         </div>
       </Card>
     </div>
@@ -3366,22 +3506,26 @@ function SearchView({
 }
 
 function SummaryView({
+  activeAiAgent,
   aiBusy,
   aiDraft,
   aiError,
   aiMessages,
   onAiDraftChange,
+  onAgentChange,
   onCreateSummaryFromAiMessage,
   onResetAiChat,
   onSendAgentMessage,
   projects,
   summaries,
 }: {
+  activeAiAgent: AiAgentType
   aiBusy: boolean
   aiDraft: string
   aiError: string
   aiMessages: DisplayAiChatMessage[]
   onAiDraftChange: (value: string) => void
+  onAgentChange: (agentType: AiAgentType) => void
   onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
   onResetAiChat: () => void
   onSendAgentMessage: () => void
@@ -3391,11 +3535,13 @@ function SummaryView({
   const [selectedSummaryId, setSelectedSummaryId] = useState<number | null>(null)
   const [isSummaryFullscreen, setIsSummaryFullscreen] = useState(false)
   const [isComposing, setIsComposing] = useState(false)
+  const activeAgentMeta = aiAgentMeta[activeAiAgent]
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
   const selectedProject = selectedSummary
     ? projects.find((project) => project.id === selectedSummary.projectId)
     : null
+  const selectedDocumentOwner = selectedProject?.name ?? selectedSummary?.period ?? 'AI 总结文档'
 
   useEffect(() => {
     if (!isSummaryFullscreen) return
@@ -3413,26 +3559,63 @@ function SummaryView({
   return (
     <div className={isSummaryFullscreen ? 'summary-layout is-document-fullscreen' : 'summary-layout'}>
       <Card className="panel ai-agent-panel">
-        <div className="agent-hero">
-          <div className="agent-orb">
-            V
-          </div>
-          <div>
-            <h3>项目总结助理</h3>
-            <p>Veges AI Agent</p>
-          </div>
-          <Button
-            className="agent-new-chat-button"
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="新建对话"
-            title="新建对话"
-            onClick={onResetAiChat}
-          >
-            <Plus size={28} />
-          </Button>
-        </div>
+	        <div className="agent-hero">
+	          <div className="agent-orb">
+	            {activeAgentMeta.avatar}
+	          </div>
+	          <div>
+	            <h3>{activeAgentMeta.title}</h3>
+	            <p>{activeAgentMeta.subtitle}</p>
+	          </div>
+	          <DropdownMenu>
+	            <DropdownMenuTrigger asChild>
+	              <Button
+	                className="agent-new-chat-button"
+	                type="button"
+	                variant="ghost"
+	                size="icon"
+	                aria-label="选择 AI 助理"
+	                title="选择 AI 助理"
+	              >
+	                <Plus size={28} />
+	              </Button>
+	            </DropdownMenuTrigger>
+	            <DropdownMenuContent align="end" className="agent-menu-content">
+	              <DropdownMenuItem
+	                data-selected={activeAiAgent === 'project-summary'}
+	                onSelect={() => onAgentChange('project-summary')}
+	              >
+	                <span className="agent-menu-check">
+	                  {activeAiAgent === 'project-summary' && <Check size={13} weight="bold" />}
+	                </span>
+	                <span>
+	                  <strong>项目总结助理</strong>
+	                  <small>整理项目、待办、风险与总结</small>
+	                </span>
+	              </DropdownMenuItem>
+	              <DropdownMenuItem
+	                data-selected={activeAiAgent === 'conversation-analysis'}
+	                onSelect={() => onAgentChange('conversation-analysis')}
+	              >
+	                <span className="agent-menu-check">
+	                  {activeAiAgent === 'conversation-analysis' && <Check size={13} weight="bold" />}
+	                </span>
+	                <span>
+	                  <strong>对话分析助理</strong>
+	                  <small>分析群聊中其他人的对话</small>
+	                </span>
+	              </DropdownMenuItem>
+	              <DropdownMenuSeparator />
+	              <DropdownMenuItem onSelect={onResetAiChat}>
+	                <span className="agent-menu-spacer" />
+	                <span>
+	                  <strong>清空当前对话</strong>
+	                  <small>保留当前助理类型</small>
+	                </span>
+	              </DropdownMenuItem>
+	            </DropdownMenuContent>
+	          </DropdownMenu>
+	        </div>
         <div className="agent-messages">
           {aiMessages.map((message, index) => (
             <article
@@ -3508,7 +3691,7 @@ function SummaryView({
         {selectedSummary ? (
           <SummaryDocumentDetail
             isFullscreen={isSummaryFullscreen}
-            projectName={selectedProject?.name ?? '未命名项目'}
+            projectName={selectedDocumentOwner}
             summary={selectedSummary}
             onBack={() => {
               setIsSummaryFullscreen(false)
@@ -3546,6 +3729,7 @@ function SummaryDocumentList({
         ) : (
           summaries.map((summary) => {
             const project = projects.find((item) => item.id === summary.projectId)
+            const ownerName = project?.name ?? (summary.period === '飞书对话分析' ? '飞书对话分析' : 'AI 总结文档')
             return (
               <button
                 className="summary-doc-item"
@@ -3553,7 +3737,7 @@ function SummaryDocumentList({
                 type="button"
                 onClick={() => onSelect(summary.id)}
               >
-                <span>{project?.name ?? '未命名项目'}</span>
+                <span>{ownerName}</span>
                 <strong>{summary.title}</strong>
                 <small>{summary.period} · {summary.createdAt}</small>
               </button>
@@ -3623,6 +3807,20 @@ function MarkdownPreview({
   const blocks: ReactNode[] = []
   let index = 0
 
+  function parseTableCells(text: string) {
+    if (!text.startsWith('|') || !text.endsWith('|')) return null
+    const cells = text
+      .slice(1, -1)
+      .split('|')
+      .map((cell) => cell.trim())
+      .filter(Boolean)
+    return cells.length >= 2 ? cells : null
+  }
+
+  function isMarkdownTableDivider(text: string) {
+    return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(text)
+  }
+
   function parseInline(text: string) {
     const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean)
     return parts.map((part, partIndex) => {
@@ -3657,6 +3855,31 @@ function MarkdownPreview({
     if (heading) {
       blocks.push(renderHeading(heading[1].length, heading[2], index))
       index += 1
+      continue
+    }
+
+    const tableCells = parseTableCells(text)
+    if (tableCells) {
+      const tableItems: ReactNode[] = []
+      while (index < lines.length) {
+        const rowText = lines[index].trim()
+        if (!rowText) {
+          index += 1
+          continue
+        }
+        if (isMarkdownTableDivider(rowText)) {
+          index += 1
+          continue
+        }
+        const rowCells = parseTableCells(rowText)
+        if (!rowCells) break
+        const item = rowCells.length >= 3
+          ? `${rowCells[0]}：${rowCells[1]}；${rowCells.slice(2).join('；')}`
+          : rowCells.join('：')
+        tableItems.push(<li key={index}>{parseInline(item)}</li>)
+        index += 1
+      }
+      blocks.push(<ul key={`table-${index}`}>{tableItems}</ul>)
       continue
     }
 
