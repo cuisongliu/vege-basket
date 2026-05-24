@@ -3806,6 +3806,13 @@ function MarkdownPreview({
   const lines = content.split('\n')
   const blocks: ReactNode[] = []
   let index = 0
+  let nextOrderedListStart = 1
+  let canContinueOrderedList = false
+
+  function resetOrderedListSequence() {
+    nextOrderedListStart = 1
+    canContinueOrderedList = false
+  }
 
   function parseTableCells(text: string) {
     if (!text.startsWith('|') || !text.endsWith('|')) return null
@@ -3848,6 +3855,7 @@ function MarkdownPreview({
     if (/^---+$/.test(text)) {
       blocks.push(<hr key={index} />)
       index += 1
+      resetOrderedListSequence()
       continue
     }
 
@@ -3855,6 +3863,7 @@ function MarkdownPreview({
     if (heading) {
       blocks.push(renderHeading(heading[1].length, heading[2], index))
       index += 1
+      resetOrderedListSequence()
       continue
     }
 
@@ -3880,6 +3889,7 @@ function MarkdownPreview({
         index += 1
       }
       blocks.push(<ul key={`table-${index}`}>{tableItems}</ul>)
+      resetOrderedListSequence()
       continue
     }
 
@@ -3894,14 +3904,23 @@ function MarkdownPreview({
       continue
     }
 
-    if (/^\d+[.)]\s+/.test(text)) {
+    const orderedListMatch = text.match(/^(\d+)[.)]\s+/)
+    if (orderedListMatch) {
       const items: ReactNode[] = []
+      const sourceStart = Number(orderedListMatch[1])
+      const listStart = canContinueOrderedList && sourceStart === 1 ? nextOrderedListStart : sourceStart
       while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) {
         const item = lines[index].trim().replace(/^\d+[.)]\s+/, '')
         items.push(<li key={index}>{parseInline(item)}</li>)
         index += 1
       }
-      blocks.push(<ol key={`ol-${index}`}>{items}</ol>)
+      blocks.push(
+        <ol key={`ol-${index}`} start={listStart}>
+          {items}
+        </ol>,
+      )
+      nextOrderedListStart = listStart + items.length
+      canContinueOrderedList = true
       continue
     }
 
@@ -3914,11 +3933,13 @@ function MarkdownPreview({
         </section>,
       )
       index += 1
+      resetOrderedListSequence()
       continue
     }
 
     blocks.push(<p key={index}>{parseInline(text)}</p>)
     index += 1
+    resetOrderedListSequence()
   }
 
   return <div className={compact ? 'markdown-preview compact' : 'markdown-preview'}>{blocks}</div>
