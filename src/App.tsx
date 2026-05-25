@@ -120,6 +120,14 @@ type ThemeMode = 'dark' | 'light'
 type TodoUpdatePayload = Omit<Partial<Todo>, 'collaboratorId'> & {
   collaboratorId?: number | null
 }
+type AdaptivePageSizeOptions = {
+  compact: boolean
+  defaultPageSize: number
+  itemHeight: number
+  maxPageSize: number
+  minPageSize: number
+  reservedHeight: (viewportHeight: number) => number
+}
 type CollaboratorPerson = {
   name: string
   primaryId: number
@@ -198,6 +206,49 @@ function formatMonthTitle(year: number, month: number) {
 
 function getProjectJournalSortKey(project: Project) {
   return project.journals[0]?.createdAt ?? project.updatedAt ?? project.createdAt
+}
+
+function useAdaptivePageSize({
+  compact,
+  defaultPageSize,
+  itemHeight,
+  maxPageSize,
+  minPageSize,
+  reservedHeight,
+}: AdaptivePageSizeOptions) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [itemsPerPage, setItemsPerPage] = useState(defaultPageSize)
+
+  useEffect(() => {
+    if (!compact) return
+    const containerElement = containerRef.current
+    if (!containerElement) return
+
+    function updatePageSize() {
+      const viewportHeight = window.innerHeight
+      const containerTop = containerElement!.getBoundingClientRect().top
+      const availableHeight = Math.max(
+        itemHeight * minPageSize,
+        viewportHeight - containerTop - reservedHeight(viewportHeight),
+      )
+      const nextItemsPerPage = Math.max(
+        minPageSize,
+        Math.min(maxPageSize, Math.floor(availableHeight / itemHeight)),
+      )
+      setItemsPerPage(nextItemsPerPage)
+    }
+
+    const resizeObserver = new ResizeObserver(updatePageSize)
+    resizeObserver.observe(containerElement)
+    updatePageSize()
+    window.addEventListener('resize', updatePageSize)
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', updatePageSize)
+    }
+  }, [compact, itemHeight, maxPageSize, minPageSize, reservedHeight])
+
+  return { containerRef, itemsPerPage }
 }
 
 const today = getTodayStamp()
@@ -2115,38 +2166,17 @@ function ProjectDetail({
             <Plus size={17} /> 添加待办
           </Button>
         </div>
-        <TodoList
-          todos={projectTodos}
-          projects={projects}
-          onDeleteTodo={onDeleteTodo}
-          onToggleTodo={onToggleTodo}
-          compact
-        />
-        <div className="side-section">
-          <PanelTitle icon={<WarningCircle size={18} />} title="风险与阻塞" />
-          <div className="risk-list">
-            {project.risks.length > 0 ? (
-              project.risks.map((risk) => (
-                <article key={risk} className="risk-item">
-                  <div className="risk-item-header">
-                    <strong>{project.name}</strong>
-                    <Button
-                      className="risk-resolve-button"
-                      variant="ghost"
-                      type="button"
-                      aria-label="解决风险"
-                      title="解决风险"
-                      onClick={() => onResolveRisk(project.id, risk)}
-                    >
-                      解决
-                    </Button>
-                  </div>
-                  <p>{risk}</p>
-                </article>
-              ))
-            ) : (
-              <p className="empty-state">当前项目还没有记录风险。</p>
-            )}
+        <div className="side-panel-scroll-area">
+          <TodoList
+            todos={projectTodos}
+            projects={projects}
+            onDeleteTodo={onDeleteTodo}
+            onToggleTodo={onToggleTodo}
+            compact
+          />
+          <div className="side-section">
+            <PanelTitle icon={<WarningCircle size={18} />} title="风险与阻塞" />
+            <RiskList project={project} onResolveRisk={onResolveRisk} />
           </div>
         </div>
       </Card>
@@ -3958,13 +3988,38 @@ function TodoList({
   projects: Project[]
   todos: Todo[]
 }) {
+  const [page, setPage] = useState(0)
+  const { containerRef, itemsPerPage } = useAdaptivePageSize({
+    compact,
+    defaultPageSize: compact ? 3 : 6,
+    itemHeight: 64,
+    maxPageSize: 5,
+    minPageSize: 2,
+    reservedHeight: (viewportHeight) => (viewportHeight < 820 ? 320 : 380),
+  })
+
+  const totalPages = Math.max(1, Math.ceil(todos.length / itemsPerPage))
+  const safePage = Math.min(page, totalPages - 1)
+  const visibleTodos = compact
+    ? todos.slice(safePage * itemsPerPage, safePage * itemsPerPage + itemsPerPage)
+    : todos
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(0, totalPages - 1)))
+  }, [totalPages])
+
+  useEffect(() => {
+    setPage(0)
+  }, [todos])
+
   if (todos.length === 0) {
     return <p className="empty-state">暂时没有待办。</p>
   }
 
   return (
-    <div className={compact ? 'todo-list compact' : 'todo-list'}>
-      {todos.map((todo) => {
+    <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
+      <div className={compact ? 'todo-list compact' : 'todo-list'}>
+      {visibleTodos.map((todo) => {
         const project = projects.find((item) => item.id === todo.projectId)
         return (
           <article
@@ -4010,6 +4065,126 @@ function TodoList({
           </article>
         )
       })}
+      </div>
+      {compact && totalPages > 1 && (
+        <SidePager
+          label="待办翻页"
+          page={safePage}
+          totalPages={totalPages}
+          onPrevious={() => setPage((current) => Math.max(0, current - 1))}
+          onNext={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+        />
+      )}
+    </div>
+  )
+}
+
+function RiskList({
+  onResolveRisk,
+  project,
+}: {
+  onResolveRisk: (projectId: number, risk: string) => void
+  project: Project
+}) {
+  const [page, setPage] = useState(0)
+  const { containerRef, itemsPerPage } = useAdaptivePageSize({
+    compact: true,
+    defaultPageSize: 2,
+    itemHeight: 108,
+    maxPageSize: 4,
+    minPageSize: 1,
+    reservedHeight: () => 104,
+  })
+  const totalPages = Math.max(1, Math.ceil(project.risks.length / itemsPerPage))
+  const safePage = Math.min(page, totalPages - 1)
+  const visibleRisks = project.risks.slice(
+    safePage * itemsPerPage,
+    safePage * itemsPerPage + itemsPerPage,
+  )
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(0, totalPages - 1)))
+  }, [totalPages])
+
+  useEffect(() => {
+    setPage(0)
+  }, [project.id, project.risks])
+
+  if (project.risks.length === 0) {
+    return <p className="empty-state">当前项目还没有记录风险。</p>
+  }
+
+  return (
+    <div className="risk-list-shell" ref={containerRef}>
+      <div className="risk-list">
+        {visibleRisks.map((risk) => (
+          <article key={risk} className="risk-item">
+            <div className="risk-item-header">
+              <strong>{project.name}</strong>
+              <Button
+                className="risk-resolve-button"
+                variant="ghost"
+                type="button"
+                aria-label="解决风险"
+                title="解决风险"
+                onClick={() => onResolveRisk(project.id, risk)}
+              >
+                解决
+              </Button>
+            </div>
+            <p>{risk}</p>
+          </article>
+        ))}
+      </div>
+      {totalPages > 1 && (
+        <SidePager
+          label="风险翻页"
+          page={safePage}
+          totalPages={totalPages}
+          onPrevious={() => setPage((current) => Math.max(0, current - 1))}
+          onNext={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+        />
+      )}
+    </div>
+  )
+}
+
+function SidePager({
+  label,
+  onNext,
+  onPrevious,
+  page,
+  totalPages,
+}: {
+  label: string
+  onNext: () => void
+  onPrevious: () => void
+  page: number
+  totalPages: number
+}) {
+  return (
+    <div className="side-pager" aria-label={label}>
+      <Button
+        className="ghost-button side-pager-button"
+        disabled={page === 0}
+        type="button"
+        variant="outline"
+        onClick={onPrevious}
+      >
+        上一页
+      </Button>
+      <span>
+        {page + 1} / {totalPages}
+      </span>
+      <Button
+        className="ghost-button side-pager-button"
+        disabled={page >= totalPages - 1}
+        type="button"
+        variant="outline"
+        onClick={onNext}
+      >
+        下一页
+      </Button>
     </div>
   )
 }
