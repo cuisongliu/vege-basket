@@ -26,7 +26,13 @@ npm run dev
 
 ```bash
 APP_ENCRYPTION_ACTIVE_KEY_ID=v1
-APP_ENCRYPTION_KEYS=v1:$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+APP_ENCRYPTION_KEYS=v1:<32-byte-base64-key>
+```
+
+可用下面的命令生成 32 字节 base64 密钥：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 已有明文数据可执行一次迁移：
