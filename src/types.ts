@@ -25,6 +25,10 @@ export type Todo = {
   collaboratorId?: number
   createdByUserId?: number
   creatorName?: string
+  assigneeUserId?: number
+  assigneeName?: string
+  assignedByUserId?: number
+  assignedByName?: string
   title: string
   dueDate: string
   priority: Priority
@@ -37,9 +41,40 @@ export type ProjectMembership = {
   invitedEmail: string
   invitedUserId?: number
   role: ProjectAccessRole
-  status: 'active'
+  status: 'pending' | 'active' | 'declined'
   memberName: string
   createdAt: string
+}
+
+export type NotificationState = {
+  readAt?: string
+  dismissedAt?: string
+}
+
+export type ProjectInviteNotification = NotificationState & {
+  id: number
+  projectId: number
+  projectName: string
+  invitedByName: string
+  createdAt: string
+}
+
+export type TodoNotification = NotificationState & {
+  id: number
+  projectId: number
+  projectName: string
+  title: string
+  dueDate: string
+  priority: Priority
+  done?: boolean
+  assignedAt?: string
+  assignedByName?: string
+}
+
+export type NotificationCenterData = {
+  assignedTodos: TodoNotification[]
+  dueTomorrowTodos: TodoNotification[]
+  invites: ProjectInviteNotification[]
 }
 
 export type InboxItem = {

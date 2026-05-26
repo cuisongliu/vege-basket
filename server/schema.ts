@@ -52,11 +52,15 @@ create table if not exists project_memberships (
   status text not null default 'active',
   created_at timestamptz not null default now(),
   accepted_at timestamptz,
+  declined_at timestamptz,
   unique (project_id, invited_email)
 );
 
 alter table project_memberships
   add column if not exists invited_email_lookup text;
+
+alter table project_memberships
+  add column if not exists declined_at timestamptz;
 
 create table if not exists journal_entries (
   id bigserial primary key,
@@ -106,6 +110,11 @@ alter table todos
 alter table todos
   add column if not exists created_by_user_id bigint references users(id) on delete set null;
 
+alter table todos
+  add column if not exists assignee_user_id bigint references users(id) on delete set null,
+  add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
+  add column if not exists assigned_at timestamptz;
+
 update todos
 set created_by_user_id = projects.user_id
 from projects
@@ -154,6 +163,18 @@ where summaries.project_id = projects.id
 alter table summaries
   alter column project_id drop not null;
 
+create table if not exists notification_states (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null,
+  source_id bigint not null,
+  read_at timestamptz,
+  dismissed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, kind, source_id)
+);
+
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_project_memberships_project_id on project_memberships(project_id);
 create index if not exists idx_project_memberships_owner_user_id on project_memberships(owner_user_id);
@@ -170,6 +191,8 @@ create index if not exists idx_journal_entries_author_user_id on journal_entries
 create index if not exists idx_todos_project_id on todos(project_id);
 create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
 create index if not exists idx_todos_created_by_user_id on todos(created_by_user_id);
+create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
+create index if not exists idx_todos_due_date on todos(due_date);
 create index if not exists idx_collaborators_user_id on collaborators(user_id);
 create index if not exists idx_collaborators_project_id on collaborators(project_id);
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
@@ -177,4 +200,6 @@ create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
 create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
+create index if not exists idx_notification_states_user_kind
+  on notification_states(user_id, kind);
 `

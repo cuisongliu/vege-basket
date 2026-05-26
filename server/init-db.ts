@@ -60,10 +60,10 @@ async function insertProject({
   for (const todo of todos) {
     await query(
       `
-      insert into todos (project_id, title, due_date, priority, done)
-      values ($1, $2, $3, $4, $5)
+      insert into todos (project_id, title, due_date, priority, done, created_by_user_id)
+      values ($1, $2, $3, $4, $5, $6)
       `,
-      [projectId, encryptText(todo.title), todo.dueDate, todo.priority, todo.done],
+      [projectId, encryptText(todo.title), todo.dueDate, todo.priority, todo.done, userId],
     )
   }
 

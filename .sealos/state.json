@@ -5,12 +5,12 @@
     "app_host": "vege-basket-170451",
     "namespace": "ns-44bchscw",
     "region": "sealosgzg.site",
-    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-202902-amd64",
+    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
     "docker_hub_user": null,
     "repo_name": "vege-basket",
     "url": "https://vege-basket-170451.sealosgzg.site",
     "deployed_at": "2026-05-18T09:18:53.000Z",
-    "last_updated_at": "2026-05-26T12:32:25.485Z"
+    "last_updated_at": "2026-05-26T13:52:12.943Z"
   },
   "history": [
     {
@@ -245,6 +245,15 @@
       "method": "kubectl-set-env-kubectl-set-image-kubectl-exec",
       "status": "success",
       "note": "Updated production with collaboration UI/API changes and field-level application encryption; configured encryption env vars and encrypted existing sensitive database fields."
+    },
+    {
+      "at": "2026-05-26T13:52:12.943Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-202902-amd64",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Updated production with notification center, invitation confirmation, assigned todo notifications, todo assignee display fixes, and notification card layout refinements."
     }
   ]
 }

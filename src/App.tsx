@@ -12,6 +12,7 @@ import {
 import {
   Archive,
   AddressBook,
+  Bell,
   ArrowRight,
   Check,
   CornersIn,
@@ -69,6 +70,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import {
   archiveDraft,
+  acceptProjectInvitation,
   createDraft,
   createCollaborator,
   createJournalEntry,
@@ -79,8 +81,10 @@ import {
   createTodo,
   fetchAiSettings,
   fetchCurrentUser,
+  fetchNotifications,
   getAuthToken,
   inviteProjectMember,
+  markNotificationRead,
   loginAccount,
   registerAccount,
   clearAuthToken,
@@ -91,6 +95,7 @@ import {
   removeProjectMember,
   removeTodo,
   resolveRisk,
+  declineProjectInvitation,
   updateJournalEntry,
   updateProject,
   updateCollaborator,
@@ -109,6 +114,7 @@ import type {
   Collaborator,
   InboxItem,
   JournalVisibility,
+  NotificationCenterData,
   Priority,
   Project,
   ProjectMembership,
@@ -118,10 +124,11 @@ import type {
 } from './types'
 import './App.css'
 
-type View = 'project' | 'collaborators' | 'inbox' | 'search' | 'summaries' | 'todos'
+type View = 'project' | 'collaborators' | 'inbox' | 'notifications' | 'search' | 'summaries' | 'todos'
 type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
 type ThemeMode = 'dark' | 'light'
-type TodoUpdatePayload = Omit<Partial<Todo>, 'collaboratorId'> & {
+type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'collaboratorId'> & {
+  assigneeUserId?: number | null
   collaboratorId?: number | null
 }
 type AdaptivePageSizeOptions = {
@@ -137,6 +144,11 @@ type CollaboratorPerson = {
   primaryId: number
   projects: Project[]
   roles: string[]
+}
+type MentionOption = {
+  id: number
+  name: string
+  role: string
 }
 
 const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
@@ -438,6 +450,11 @@ const initialCollaborators: Collaborator[] = [
 ]
 
 const initialMemberships: ProjectMembership[] = []
+const emptyNotifications: NotificationCenterData = {
+  assignedTodos: [],
+  dueTomorrowTodos: [],
+  invites: [],
+}
 
 const initialInbox: InboxItem[] = [
   {
@@ -491,6 +508,7 @@ function App() {
   const [todos, setTodos] = useState(initialTodos)
   const [collaborators, setCollaborators] = useState(initialCollaborators)
   const [memberships, setMemberships] = useState(initialMemberships)
+  const [notifications, setNotifications] = useState(emptyNotifications)
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [selectedProjectId, setSelectedProjectId] = useState(1)
@@ -542,6 +560,16 @@ function App() {
     })
   }, [])
 
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const result = await fetchNotifications()
+      setNotifications(result.notifications)
+      return result.notifications
+    } catch {
+      return emptyNotifications
+    }
+  }, [])
+
   useEffect(() => {
     if (!loggedIn) return
 
@@ -549,6 +577,7 @@ function App() {
       .then((data) => {
         setAuthUser(data.user)
         applyWorkspace(data.workspace)
+        void refreshNotifications()
         setWorkspaceError('')
       })
       .catch(() => {
@@ -558,7 +587,7 @@ function App() {
         setAuthError('登录状态已失效，请重新登录。')
       })
       .finally(() => setWorkspaceLoaded(true))
-  }, [applyWorkspace, loggedIn])
+  }, [applyWorkspace, loggedIn, refreshNotifications])
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0]
@@ -605,6 +634,14 @@ function App() {
       })
   }, [projects, search, statusFilter, summaries, tagFilter, todos])
 
+  const openNotificationCount = useMemo(
+    () =>
+      notifications.invites.filter((item) => !item.dismissedAt).length +
+      notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.done).length +
+      notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt).length,
+    [notifications],
+  )
+
   async function signIn(email: string, password: string, mode: 'login' | 'register') {
     setAuthError('')
     try {
@@ -617,6 +654,7 @@ function App() {
       applyWorkspace(result.workspace)
       setLoggedIn(true)
       setWorkspaceLoaded(true)
+      void refreshNotifications()
     } catch {
       setAuthError(mode === 'register' ? '注册失败，请确认邮箱未被使用且密码不少于 6 位。' : '登录失败，请检查邮箱和密码。')
     }
@@ -629,6 +667,7 @@ function App() {
     setAuthError('')
     setWorkspaceError('')
     setWorkspaceLoaded(false)
+    setNotifications(emptyNotifications)
   }
 
   async function updateDisplayName(displayName: string) {
@@ -648,6 +687,7 @@ function App() {
     try {
       const data = await operation()
       applyWorkspace(data)
+      void refreshNotifications()
       setWorkspaceError('')
       return data
     } catch {
@@ -822,12 +862,18 @@ function App() {
   }
 
   async function addTodo(projectId?: number) {
-    const title = todoDraft.trim()
     const targetProjectId = projectId ?? selectedProject?.id
+    const targetProject = projects.find((project) => project.id === targetProjectId)
+    const assigneeOptions = targetProject
+      ? getProjectAssignableUsers(targetProject, memberships)
+      : []
+    const mentionAssignee = extractMentionAssignee(todoDraft, assigneeOptions)
+    const assigneeUserId = todoCollaboratorId ?? mentionAssignee?.id
+    const title = stripTodoMentions(todoDraft, assigneeOptions).trim()
     if (!title || !targetProjectId) return
     await runMutation(() =>
       createTodo({
-        collaboratorId: todoCollaboratorId ?? undefined,
+        assigneeUserId: assigneeUserId ?? undefined,
         projectId: targetProjectId,
         title,
         dueDate: todoDueDate,
@@ -848,6 +894,41 @@ function App() {
 
   async function updateTodoDetails(todoId: number, payload: TodoUpdatePayload) {
     await runMutation(() => updateTodo(todoId, payload))
+  }
+
+  async function acceptInvitation(membershipId: number) {
+    try {
+      const result = await acceptProjectInvitation(membershipId)
+      applyWorkspace(result.workspace)
+      setNotifications(result.notifications)
+      setWorkspaceError('')
+    } catch {
+      setWorkspaceError('邀请处理失败，请稍后再试。')
+    }
+  }
+
+  async function declineInvitation(membershipId: number) {
+    try {
+      const result = await declineProjectInvitation(membershipId)
+      applyWorkspace(result.workspace)
+      setNotifications(result.notifications)
+      setWorkspaceError('')
+    } catch {
+      setWorkspaceError('邀请处理失败，请稍后再试。')
+    }
+  }
+
+  async function dismissNotification(
+    kind: 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow',
+    sourceId: number,
+  ) {
+    try {
+      const result = await markNotificationRead(kind, sourceId, true)
+      setNotifications(result.notifications)
+      setWorkspaceError('')
+    } catch {
+      setWorkspaceError('通知状态更新失败，请稍后再试。')
+    }
   }
 
   async function deleteTodo(todoId: number) {
@@ -989,19 +1070,21 @@ ${summariesText || '暂无总结'}`
           <NavButton active={view === 'todos'} onClick={() => setView('todos')}>
             <ListChecks size={18} weight="duotone" /> 当前待办
           </NavButton>
+          <NavButton active={view === 'notifications'} onClick={() => setView('notifications')}>
+            <Bell size={18} weight="duotone" /> 通知中心
+            {openNotificationCount > 0 && (
+              <Badge className="nav-badge">{openNotificationCount}</Badge>
+            )}
+          </NavButton>
           <NavButton active={view === 'collaborators'} onClick={() => setView('collaborators')}>
             <AddressBook size={18} weight="duotone" /> 协作者
           </NavButton>
-          {projects.some((project) => project.accessRole === 'owner') && (
-            <>
-              <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-                <Tray size={18} weight="duotone" /> 草稿箱
-              </NavButton>
-              <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
-                <FileText size={18} weight="duotone" /> AI 总结
-              </NavButton>
-            </>
-          )}
+          <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
+            <Tray size={18} weight="duotone" /> 草稿箱
+          </NavButton>
+          <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
+            <FileText size={18} weight="duotone" /> AI 总结
+          </NavButton>
         </nav>
         <AccountMenu
           user={authUser}
@@ -1154,6 +1237,7 @@ ${summariesText || '暂无总结'}`
             onToggleTodo={toggleTodo}
             project={selectedProject}
             currentUser={authUser}
+            memberships={memberships}
             projects={projects}
             projectTodos={projectTodos}
             todoCollaboratorId={todoCollaboratorId}
@@ -1194,6 +1278,7 @@ ${summariesText || '暂无总结'}`
         {view === 'todos' && (
           <CurrentTodosView
             collaborators={collaborators}
+            memberships={memberships}
             onDeleteTodo={deleteTodo}
             onProjectClick={selectProject}
             onToggleTodo={toggleTodo}
@@ -1201,6 +1286,18 @@ ${summariesText || '暂无总结'}`
             currentUserId={authUser?.id}
             projects={projects}
             todos={todos}
+          />
+        )}
+
+        {view === 'notifications' && (
+          <NotificationCenterView
+            currentUserId={authUser?.id}
+            notifications={notifications}
+            onAcceptInvitation={acceptInvitation}
+            onDeclineInvitation={declineInvitation}
+            onDismissNotification={dismissNotification}
+            onProjectClick={selectProject}
+            onToggleTodo={toggleTodo}
           />
         )}
 
@@ -1870,6 +1967,7 @@ function ProjectDetail({
   onToggleTodo,
   project,
   currentUser,
+  memberships,
   projects,
   projectTodos,
   todoCollaboratorId,
@@ -1908,6 +2006,7 @@ function ProjectDetail({
   onToggleTodo: (id: number) => void
   project: Project
   currentUser: AuthUser | null
+  memberships: ProjectMembership[]
   projects: Project[]
   projectTodos: Todo[]
   todoCollaboratorId: number | null
@@ -1945,6 +2044,7 @@ function ProjectDetail({
   const projectCollaborators = collaborators.filter(
     (collaborator) => collaborator.projectId === project.id,
   )
+  const projectMembers = getProjectAssignableUsers(project, memberships)
   const isOwner = project.accessRole === 'owner'
 
   useEffect(() => {
@@ -2277,6 +2377,7 @@ function ProjectDetail({
         <div className="todo-form">
           <MentionTextarea
             collaborators={projectCollaborators}
+            members={projectMembers}
             onSelectCollaborator={onTodoCollaboratorChange}
             placeholder="添加一个下一步..."
             value={todoDraft}
@@ -2289,24 +2390,26 @@ function ProjectDetail({
               value={todoDueDate}
               onChange={onTodoDueDateChange}
             />
-            <Select
-              value={todoPriority}
-              onValueChange={(value) => onTodoPriorityChange(value as Priority)}
-            >
-              <SelectTrigger aria-label="待办优先级">
-                <SelectValue placeholder="优先级" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="high">高优先级</SelectItem>
-                <SelectItem value="medium">中优先级</SelectItem>
-                <SelectItem value="low">低优先级</SelectItem>
-              </SelectContent>
-            </Select>
-            <CollaboratorPicker
-              collaborators={projectCollaborators}
-              value={todoCollaboratorId}
-              onChange={onTodoCollaboratorChange}
-            />
+            <div className="todo-form-tools">
+              <Select
+                value={todoPriority}
+                onValueChange={(value) => onTodoPriorityChange(value as Priority)}
+              >
+                <SelectTrigger aria-label="待办优先级">
+                  <SelectValue placeholder="优先级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="high">高优先级</SelectItem>
+                  <SelectItem value="medium">中优先级</SelectItem>
+                  <SelectItem value="low">低优先级</SelectItem>
+                </SelectContent>
+              </Select>
+              <ProjectMemberPicker
+                members={projectMembers}
+                value={todoCollaboratorId}
+                onChange={onTodoCollaboratorChange}
+              />
+            </div>
           </div>
           <Button className="solid-button wide" type="button" onClick={() => onAddTodo()}>
             <Plus size={17} /> 添加待办
@@ -2376,7 +2479,13 @@ function ProjectMembersPanel({
             <article className="member-item" key={membership.id}>
               <span>
                 <strong>{membership.memberName}</strong>
-                <small>{membership.invitedEmail}</small>
+                <small>
+                  {membership.invitedEmail} · {membership.status === 'pending'
+                    ? '待确认'
+                    : membership.status === 'declined'
+                      ? '已拒绝'
+                      : '已加入'}
+                </small>
               </span>
               <Button
                 className="todo-delete-button"
@@ -2605,6 +2714,7 @@ function ProjectActionsMenu({
 function CurrentTodosView({
   collaborators,
   currentUserId,
+  memberships,
   onDeleteTodo,
   onProjectClick,
   onToggleTodo,
@@ -2614,6 +2724,7 @@ function CurrentTodosView({
 }: {
   collaborators: Collaborator[]
   currentUserId?: number
+  memberships: ProjectMembership[]
   onDeleteTodo: (id: number) => void
   onProjectClick: (id: number) => void
   onToggleTodo: (id: number) => void
@@ -2744,8 +2855,11 @@ function CurrentTodosView({
                     const projectCollaborators = collaborators.filter(
                       (collaborator) => collaborator.projectId === project.id,
                     )
+                    const projectMembers = getProjectAssignableUsers(project, memberships)
                     const canManageTodo =
                       project.accessRole === 'owner' || todo.createdByUserId === currentUserId
+                    const canToggleTodo =
+                      canManageTodo || todo.assigneeUserId === currentUserId
                     return (
                       <article
                         className={todo.done ? 'todo-board-row done' : 'todo-board-row'}
@@ -2756,7 +2870,7 @@ function CurrentTodosView({
                           <button
                             className="checkmark"
                             type="button"
-                            disabled={!canManageTodo}
+                            disabled={!canToggleTodo}
                             onClick={() => onToggleTodo(todo.id)}
                             aria-label={todo.done ? '标记为未完成' : '标记为已完成'}
                           >
@@ -2765,17 +2879,23 @@ function CurrentTodosView({
                           <strong>{todo.title}</strong>
                         </span>
                         <span className="todo-board-assignee-cell" role="cell">
-                          <CollaboratorPicker
-                            collaborators={projectCollaborators}
-                            value={todo.collaboratorId ?? null}
+                          <ProjectMemberPicker
+                            members={projectMembers}
+                            value={todo.assigneeUserId ?? todo.collaboratorId ?? null}
                             compact
                             disabled={!canManageTodo}
-                            onChange={(collaboratorId) =>
-                              onUpdateTodo(todo.id, {
-                                collaboratorId,
-                              })
+                            onChange={(assigneeUserId) =>
+                              onUpdateTodo(
+                                todo.id,
+                                assigneeUserId ? { assigneeUserId } : { assigneeUserId: null },
+                              )
                             }
                           />
+                          {!todo.assigneeUserId && todo.collaboratorId && (
+                            <span className="todo-board-muted">
+                              {projectCollaborators.find((item) => item.id === todo.collaboratorId)?.name ?? '旧协作者'}
+                            </span>
+                          )}
                         </span>
                         <span className="todo-board-priority-cell" role="cell">
                           <Select
@@ -2844,6 +2964,180 @@ function CurrentTodosView({
           </div>
         )}
       </Card>
+  )
+}
+
+function NotificationCenterView({
+  currentUserId,
+  notifications,
+  onAcceptInvitation,
+  onDeclineInvitation,
+  onDismissNotification,
+  onProjectClick,
+  onToggleTodo,
+}: {
+  currentUserId?: number
+  notifications: NotificationCenterData
+  onAcceptInvitation: (membershipId: number) => void
+  onDeclineInvitation: (membershipId: number) => void
+  onDismissNotification: (
+    kind: 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow',
+    sourceId: number,
+  ) => void
+  onProjectClick: (id: number) => void
+  onToggleTodo: (todoId: number) => void
+}) {
+  const visibleInvites = notifications.invites.filter((item) => !item.dismissedAt)
+  const visibleAssignedTodos = notifications.assignedTodos.filter(
+    (item) => !item.dismissedAt && !item.done,
+  )
+  const visibleDueTomorrowTodos = notifications.dueTomorrowTodos.filter(
+    (item) => !item.dismissedAt,
+  )
+  const isEmpty =
+    visibleInvites.length === 0 &&
+    visibleAssignedTodos.length === 0 &&
+    visibleDueTomorrowTodos.length === 0
+
+  return (
+    <Card className="panel notification-center-panel">
+      <div className="current-todos-header">
+        <PanelTitle icon={<Bell size={18} />} title="通知中心" />
+        <div className="current-todos-metrics" aria-label="通知统计">
+          <span>
+            <strong>{visibleInvites.length}</strong>
+            邀请
+          </span>
+          <span>
+            <strong>{visibleAssignedTodos.length}</strong>
+            指派
+          </span>
+          <span>
+            <strong>{visibleDueTomorrowTodos.length}</strong>
+            明日到期
+          </span>
+        </div>
+      </div>
+
+      {isEmpty ? (
+        <p className="empty-state">暂时没有需要处理的通知。</p>
+      ) : (
+        <div className="notification-sections">
+          {visibleInvites.length > 0 && (
+            <section className="notification-section">
+              <h3>项目邀请</h3>
+              <div className="notification-list">
+                {visibleInvites.map((invite) => (
+                  <article className="notification-item" key={invite.id}>
+                    <div>
+                      <span className="notification-kind">邀请</span>
+                      <strong>{invite.projectName}</strong>
+                      <p>{invite.invitedByName} 邀请你加入项目。</p>
+                      <small>{invite.createdAt}</small>
+                    </div>
+                    <div className="notification-actions">
+                      <Button
+                        className="ghost-button"
+                        type="button"
+                        variant="outline"
+                        onClick={() => onDeclineInvitation(invite.id)}
+                      >
+                        拒绝
+                      </Button>
+                      <Button
+                        className="solid-button"
+                        type="button"
+                        onClick={() => onAcceptInvitation(invite.id)}
+                      >
+                        接受
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {visibleAssignedTodos.length > 0 && (
+            <section className="notification-section">
+              <h3 className="notification-section-title">
+                指派给我
+                <span className="notification-kind">待办</span>
+              </h3>
+              <div className="notification-list">
+                {visibleAssignedTodos.map((todo) => (
+                  <article className="notification-item" key={todo.id}>
+                    <div>
+                      <strong>{todo.title}</strong>
+                      <p className="notification-meta-line">
+                        {todo.projectName} · 截止 {todo.dueDate}
+                        {todo.assignedByName ? ` · ${todo.assignedByName} 指派` : ''}
+                        <span className={`notification-priority ${todo.priority}`}>
+                          {priorityCopy[todo.priority]}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="notification-actions">
+                      <Button
+                        className="ghost-button"
+                        type="button"
+                        variant="outline"
+                        onClick={() => onProjectClick(todo.projectId)}
+                      >
+                        查看项目
+                      </Button>
+                      <Button
+                        className="solid-button"
+                        type="button"
+                        disabled={!currentUserId}
+                        onClick={() => onToggleTodo(todo.id)}
+                      >
+                        完成
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {visibleDueTomorrowTodos.length > 0 && (
+            <section className="notification-section">
+              <h3>明日到期</h3>
+              <div className="notification-list">
+                {visibleDueTomorrowTodos.map((todo) => (
+                  <article className="notification-item" key={todo.id}>
+                    <div>
+                      <span className="notification-kind">提醒</span>
+                      <strong>{todo.title}</strong>
+                      <p>{todo.projectName} · 明天截止</p>
+                      <small>{priorityCopy[todo.priority]}</small>
+                    </div>
+                    <div className="notification-actions">
+                      <Button
+                        className="ghost-button"
+                        type="button"
+                        variant="outline"
+                        onClick={() => onDismissNotification('todo_due_tomorrow', todo.id)}
+                      >
+                        忽略
+                      </Button>
+                      <Button
+                        className="solid-button"
+                        type="button"
+                        onClick={() => onProjectClick(todo.projectId)}
+                      >
+                        查看项目
+                      </Button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -3256,12 +3550,14 @@ function ProjectMultiSelect({
 
 function MentionTextarea({
   collaborators,
+  members,
   onChange,
   onSelectCollaborator,
   value,
   ...props
 }: Omit<ComponentProps<typeof Textarea>, 'onChange' | 'value'> & {
   collaborators: Collaborator[]
+  members?: Array<{ id: number; name: string }>
   onChange: (value: string) => void
   onSelectCollaborator?: (id: number) => void
   value: string
@@ -3269,6 +3565,7 @@ function MentionTextarea({
   return (
     <MentionInputShell
       collaborators={collaborators}
+      members={members}
       multiline
       onChange={onChange}
       onSelectCollaborator={onSelectCollaborator}
@@ -3281,6 +3578,7 @@ function MentionTextarea({
 function MentionInputShell({
   collaborators,
   inputProps,
+  members = [],
   multiline = false,
   onChange,
   onSelectCollaborator,
@@ -3288,6 +3586,7 @@ function MentionInputShell({
 }: {
   collaborators: Collaborator[]
   inputProps: Record<string, unknown>
+  members?: Array<{ id: number; name: string }>
   multiline?: boolean
   onChange: (value: string) => void
   onSelectCollaborator?: (id: number) => void
@@ -3299,13 +3598,27 @@ function MentionInputShell({
   const shellRef = useRef<HTMLSpanElement | null>(null)
   const mentionCollaborators = useMemo(() => {
     const seen = new Set<string>()
+    if (members.length > 0) {
+      return members
+        .filter((member) => {
+          const key = member.name.trim()
+          if (!key || seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        .map((member) => ({
+          id: member.id,
+          name: member.name,
+          role: '项目成员',
+        }))
+    }
     return collaborators.filter((collaborator) => {
       const key = collaborator.name.trim()
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
     })
-  }, [collaborators])
+  }, [collaborators, members])
   const canMention = mentionCollaborators.length > 0
   const shouldShow = open && canMention
 
@@ -3331,7 +3644,7 @@ function MentionInputShell({
     updateMentionMenu(element, nextValue)
   }
 
-  function chooseCollaborator(collaborator: Collaborator) {
+  function chooseCollaborator(collaborator: MentionOption) {
     const range = mentionRange
     const nextValue = range
       ? `${value.slice(0, range.index)}@${collaborator.name} ${value.slice(range.caret)}`
@@ -3438,22 +3751,61 @@ function getCaretMenuPosition(
   }
 }
 
-function CollaboratorPicker({
-  collaborators,
+function getProjectAssignableUsers(project: Project, memberships: ProjectMembership[]) {
+  const users = new Map<number, string>()
+  users.set(project.ownerUserId, `${project.ownerName}（Owner）`)
+  memberships
+    .filter(
+      (membership) =>
+        membership.projectId === project.id &&
+        membership.status === 'active' &&
+        membership.invitedUserId,
+    )
+    .forEach((membership) => {
+      users.set(membership.invitedUserId!, membership.memberName)
+    })
+  return Array.from(users, ([id, name]) => ({ id, name }))
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function stripTodoMentions(
+  value: string,
+  members: Array<{ id: number; name: string }>,
+) {
+  return members.reduce((current, member) => {
+    const name = member.name.trim()
+    if (!name) return current
+    return current.replace(new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)`, 'g'), '$1')
+  }, value).replace(/\s{2,}/g, ' ')
+}
+
+function extractMentionAssignee(
+  value: string,
+  members: Array<{ id: number; name: string }>,
+) {
+  return members.find((member) => {
+    const name = member.name.trim()
+    return name && new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)`).test(value)
+  })
+}
+
+function ProjectMemberPicker({
   compact = false,
   disabled = false,
+  members,
   onChange,
   value,
 }: {
-  collaborators: Collaborator[]
   compact?: boolean
   disabled?: boolean
+  members: Array<{ id: number; name: string }>
   onChange: (id: number | null) => void
   value: number | null
 }) {
-  const selectedCollaborator = collaborators.find(
-    (collaborator) => collaborator.id === value,
-  )
+  const selectedMember = members.find((member) => member.id === value)
   return (
     <span className={compact ? 'collaborator-picker compact' : 'collaborator-picker'}>
       <Select
@@ -3463,10 +3815,10 @@ function CollaboratorPicker({
           onChange(nextValue === 'none' ? null : Number(nextValue))
         }
       >
-        <SelectTrigger aria-label="待办负责人">
-          <SelectValue placeholder="选择协作者">
-            {compact && selectedCollaborator
-              ? `@${selectedCollaborator.name}`
+        <SelectTrigger aria-label="待办指派对象">
+          <SelectValue placeholder="选择成员">
+            {compact && selectedMember
+              ? `@${selectedMember.name}`
               : compact
                 ? '未指派'
                 : undefined}
@@ -3474,9 +3826,9 @@ function CollaboratorPicker({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="none">未指派</SelectItem>
-          {collaborators.map((collaborator) => (
-            <SelectItem key={collaborator.id} value={String(collaborator.id)}>
-              @{collaborator.name} · {collaborator.role || '协作者'}
+          {members.map((member) => (
+            <SelectItem key={member.id} value={String(member.id)}>
+              @{member.name}
             </SelectItem>
           ))}
         </SelectContent>
@@ -4276,6 +4628,9 @@ function TodoList({
               <strong>{todo.title}</strong>
               <small>
                 {compact ? `截止 ${todo.dueDate}` : `${project?.name} · 截止 ${todo.dueDate}`}
+                {todo.assigneeName && (
+                  <span className="todo-assignee-inline">@{todo.assigneeName}</span>
+                )}
               </small>
             </span>
             <span className="todo-actions">
@@ -4445,6 +4800,7 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'todos') return '当前待办'
+  if (view === 'notifications') return '通知中心'
   if (view === 'collaborators') return '协作者'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'

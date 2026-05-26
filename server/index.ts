@@ -21,6 +21,8 @@ type Priority = 'high' | 'medium' | 'low'
 type SummaryType = 'weekly' | 'monthly'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
+type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
+type NotificationKind = 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow'
 type UserRow = { id: string; email: string; display_name: string }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type AiAgentType = 'project-summary' | 'conversation-analysis'
@@ -66,10 +68,16 @@ type ProjectMembershipRow = {
   invited_user_id: string | null
   invited_email: string
   role: ProjectAccessRole
-  status: 'active'
+  status: ProjectMembershipStatus
   created_at: Date
   member_display_name: string | null
   member_email: string | null
+}
+type NotificationStateRow = {
+  kind: NotificationKind
+  source_id: string
+  read_at: Date | null
+  dismissed_at: Date | null
 }
 
 function decryptTags(tagsEncrypted: string | null, legacyTags: string[] | null) {
@@ -182,6 +190,12 @@ function formatUpdatedAt(value: Date | string) {
   const [date, time] = timestamp.split(' ')
   const today = formatDate(new Date())
   return date === today ? `今天 ${time.slice(0, 5)}` : timestamp.slice(5, 16)
+}
+
+function addDays(value: Date, days: number) {
+  const date = new Date(value)
+  date.setDate(date.getDate() + days)
+  return date
 }
 
 function normalizeEmail(email: unknown) {
@@ -820,10 +834,10 @@ async function linkPendingMemberships(userId: number, email: string) {
     `
     update project_memberships
     set invited_user_id = $1,
-        accepted_at = coalesce(accepted_at, now())
+        invited_email_lookup = coalesce(invited_email_lookup, $3)
     where (invited_email_lookup = $3 or invited_email = $2)
       and invited_user_id is null
-      and status = 'active'
+      and status in ('pending', 'active')
     `,
     [userId, normalizeEmail(email), blindIndex(email)],
   )
@@ -874,6 +888,30 @@ async function ensureCollaboratorId(
     [Number(collaboratorId), projectId, userId],
   )
   return result.rows[0] ? Number(result.rows[0].id) : null
+}
+
+async function ensureProjectMemberUserId(
+  assigneeUserId: unknown,
+  projectId: number,
+  ownerUserId: number,
+) {
+  if (!assigneeUserId) return null
+  const assigneeId = Number(assigneeUserId)
+  if (!Number.isFinite(assigneeId)) return null
+  if (assigneeId === ownerUserId) return assigneeId
+
+  const result = await query<{ id: string }>(
+    `
+    select id
+    from project_memberships
+    where project_id = $1
+      and invited_user_id = $2
+      and status = 'active'
+    limit 1
+    `,
+    [projectId, assigneeId],
+  )
+  return result.rows[0] ? assigneeId : null
 }
 
 async function findCollaboratorIdsByName(userId: number, name: string) {
@@ -1004,6 +1042,12 @@ async function getWorkspace(userId: number) {
       priority: Priority
       done: boolean
       created_by_user_id: string | null
+      assignee_user_id: string | null
+      assigned_by_user_id: string | null
+      assignee_email: string | null
+      assignee_display_name: string | null
+      assigner_email: string | null
+      assigner_display_name: string | null
       creator_email: string | null
       creator_display_name: string | null
     }>(
@@ -1016,6 +1060,12 @@ async function getWorkspace(userId: number) {
              t.priority,
              t.done,
              t.created_by_user_id,
+             t.assignee_user_id,
+             t.assigned_by_user_id,
+             assignee.email as assignee_email,
+             assignee.display_name as assignee_display_name,
+             assigner.email as assigner_email,
+             assigner.display_name as assigner_display_name,
              creator.email as creator_email,
              creator.display_name as creator_display_name
       from todos t
@@ -1025,6 +1075,8 @@ async function getWorkspace(userId: number) {
        and pm.status = 'active'
        and pm.invited_user_id = $1
       left join users creator on creator.id = t.created_by_user_id
+      left join users assignee on assignee.id = t.assignee_user_id
+      left join users assigner on assigner.id = t.assigned_by_user_id
       where p.user_id = $1 or pm.id is not null
       order by t.done asc, t.due_date asc, t.id desc
       `,
@@ -1091,7 +1143,7 @@ async function getWorkspace(userId: number) {
              u.email as member_email
       from project_memberships pm
       left join users u on u.id = pm.invited_user_id
-      where pm.owner_user_id = $1
+      where pm.owner_user_id = $1 or pm.invited_user_id = $1
       order by pm.created_at desc, pm.id desc
       `,
       [userId],
@@ -1156,6 +1208,20 @@ async function getWorkspace(userId: number) {
       projectId: Number(todo.project_id),
       collaboratorId: todo.collaborator_id ? Number(todo.collaborator_id) : undefined,
       createdByUserId: todo.created_by_user_id ? Number(todo.created_by_user_id) : undefined,
+      assigneeUserId: todo.assignee_user_id ? Number(todo.assignee_user_id) : undefined,
+      assigneeName: todo.assignee_user_id
+        ? displayNameFromUser({
+          email: todo.assignee_email ?? '',
+          display_name: todo.assignee_display_name ?? '',
+        })
+        : undefined,
+      assignedByUserId: todo.assigned_by_user_id ? Number(todo.assigned_by_user_id) : undefined,
+      assignedByName: todo.assigned_by_user_id
+        ? displayNameFromUser({
+          email: todo.assigner_email ?? '',
+          display_name: todo.assigner_display_name ?? '',
+        })
+        : undefined,
       creatorName: todo.created_by_user_id
         ? displayNameFromUser({
           email: todo.creator_email ?? '',
@@ -1372,6 +1438,267 @@ app.get('/api/workspace', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   response.json(await getWorkspace(userId))
+}))
+
+async function getNotifications(userId: number) {
+  const tomorrow = formatDate(addDays(new Date(), 1))
+  const statesResult = await query<NotificationStateRow>(
+    `
+    select kind, source_id, read_at, dismissed_at
+    from notification_states
+    where user_id = $1
+    `,
+    [userId],
+  )
+  const stateMap = new Map(
+    statesResult.rows.map((row) => [
+      `${row.kind}:${row.source_id}`,
+      {
+        dismissedAt: row.dismissed_at ? formatDateTime(row.dismissed_at) : undefined,
+        readAt: row.read_at ? formatDateTime(row.read_at) : undefined,
+      },
+    ]),
+  )
+  const stateFor = (kind: NotificationKind, sourceId: string) =>
+    stateMap.get(`${kind}:${sourceId}`) ?? {}
+
+  const [invitesResult, assignedTodosResult, dueTomorrowResult] = await Promise.all([
+    query<{
+      id: string
+      project_id: string
+      project_name: string
+      owner_email: string
+      owner_display_name: string
+      created_at: Date
+    }>(
+      `
+      select pm.id,
+             pm.project_id,
+             p.name as project_name,
+             owner.email as owner_email,
+             owner.display_name as owner_display_name,
+             pm.created_at
+      from project_memberships pm
+      join projects p on p.id = pm.project_id
+      join users owner on owner.id = pm.owner_user_id
+      where pm.invited_user_id = $1
+        and pm.status = 'pending'
+      order by pm.created_at desc, pm.id desc
+      `,
+      [userId],
+    ),
+    query<{
+      id: string
+      project_id: string
+      project_name: string
+      title: string
+      due_date: Date
+      priority: Priority
+      done: boolean
+      assigned_at: Date | null
+      assigner_email: string | null
+      assigner_display_name: string | null
+    }>(
+      `
+      select t.id,
+             t.project_id,
+             p.name as project_name,
+             t.title,
+             t.due_date,
+             t.priority,
+             t.done,
+             t.assigned_at,
+             assigner.email as assigner_email,
+             assigner.display_name as assigner_display_name
+      from todos t
+      join projects p on p.id = t.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      left join users assigner on assigner.id = t.assigned_by_user_id
+      where t.assignee_user_id = $1
+        and (p.user_id = $1 or pm.id is not null)
+      order by t.done asc, t.due_date asc, t.id desc
+      `,
+      [userId],
+    ),
+    query<{
+      id: string
+      project_id: string
+      project_name: string
+      title: string
+      due_date: Date
+      priority: Priority
+      owner_user_id: string
+    }>(
+      `
+      select t.id,
+             t.project_id,
+             p.name as project_name,
+             t.title,
+             t.due_date,
+             t.priority,
+             p.user_id as owner_user_id
+      from todos t
+      join projects p on p.id = t.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      where t.done = false
+        and t.due_date = $2::date
+        and (
+          t.assignee_user_id = $1
+          or p.user_id = $1
+          or pm.id is not null
+        )
+      order by t.due_date asc, t.id desc
+      `,
+      [userId, tomorrow],
+    ),
+  ])
+
+  return {
+    assignedTodos: assignedTodosResult.rows.map((todo) => ({
+      ...stateFor('assigned_todo', todo.id),
+      assignedAt: todo.assigned_at ? formatUpdatedAt(todo.assigned_at) : undefined,
+      assignedByName: todo.assigner_email
+        ? displayNameFromUser({
+          email: todo.assigner_email,
+          display_name: todo.assigner_display_name ?? '',
+        })
+        : undefined,
+      done: todo.done,
+      dueDate: formatDate(todo.due_date),
+      id: Number(todo.id),
+      priority: todo.priority,
+      projectId: Number(todo.project_id),
+      projectName: decryptText(todo.project_name),
+      title: decryptText(todo.title),
+    })),
+    dueTomorrowTodos: dueTomorrowResult.rows.map((todo) => ({
+      ...stateFor('todo_due_tomorrow', todo.id),
+      dueDate: formatDate(todo.due_date),
+      id: Number(todo.id),
+      priority: todo.priority,
+      projectId: Number(todo.project_id),
+      projectName: decryptText(todo.project_name),
+      title: decryptText(todo.title),
+    })),
+    invites: invitesResult.rows.map((invite) => ({
+      ...stateFor('project_invite', invite.id),
+      createdAt: formatUpdatedAt(invite.created_at),
+      id: Number(invite.id),
+      invitedByName: displayNameFromUser({
+        email: invite.owner_email,
+        display_name: invite.owner_display_name,
+      }),
+      projectId: Number(invite.project_id),
+      projectName: decryptText(invite.project_name),
+    })),
+  }
+}
+
+app.get('/api/notifications', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json({ notifications: await getNotifications(userId) })
+}))
+
+app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const kind = String(request.params.kind) as NotificationKind
+  if (!['project_invite', 'assigned_todo', 'todo_due_tomorrow'].includes(kind)) {
+    response.status(400).json({ error: 'Unsupported notification kind' })
+    return
+  }
+  await query(
+    `
+    insert into notification_states (user_id, kind, source_id, read_at, dismissed_at, updated_at)
+    values ($1, $2, $3, now(), case when $4::boolean then now() else null end, now())
+    on conflict (user_id, kind, source_id) do update
+      set read_at = coalesce(notification_states.read_at, now()),
+          dismissed_at = case when $4::boolean then now() else notification_states.dismissed_at end,
+          updated_at = now()
+    `,
+    [userId, kind, Number(request.params.sourceId), Boolean(request.body.dismiss)],
+  )
+  response.json({ notifications: await getNotifications(userId) })
+}))
+
+app.post('/api/invitations/:membershipId/accept', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const result = await query<{ id: string }>(
+    `
+    update project_memberships
+    set status = 'active',
+        accepted_at = now(),
+        declined_at = null
+    where id = $1
+      and invited_user_id = $2
+      and status = 'pending'
+    returning id
+    `,
+    [Number(request.params.membershipId), userId],
+  )
+  if (!result.rows[0]) {
+    response.status(404).json({ error: 'Invitation not found' })
+    return
+  }
+  await query(
+    `
+    insert into notification_states (user_id, kind, source_id, read_at, dismissed_at, updated_at)
+    values ($1, 'project_invite', $2, now(), now(), now())
+    on conflict (user_id, kind, source_id) do update
+      set read_at = now(),
+          dismissed_at = now(),
+          updated_at = now()
+    `,
+    [userId, Number(request.params.membershipId)],
+  )
+  response.json({
+    notifications: await getNotifications(userId),
+    workspace: await getWorkspace(userId),
+  })
+}))
+
+app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const result = await query<{ id: string }>(
+    `
+    update project_memberships
+    set status = 'declined',
+        declined_at = now()
+    where id = $1
+      and invited_user_id = $2
+      and status = 'pending'
+    returning id
+    `,
+    [Number(request.params.membershipId), userId],
+  )
+  if (!result.rows[0]) {
+    response.status(404).json({ error: 'Invitation not found' })
+    return
+  }
+  await query(
+    `
+    insert into notification_states (user_id, kind, source_id, read_at, dismissed_at, updated_at)
+    values ($1, 'project_invite', $2, now(), now(), now())
+    on conflict (user_id, kind, source_id) do update
+      set read_at = now(),
+          dismissed_at = now(),
+          updated_at = now()
+    `,
+    [userId, Number(request.params.membershipId)],
+  )
+  response.json({
+    notifications: await getNotifications(userId),
+    workspace: await getWorkspace(userId),
+  })
 }))
 
 app.post('/api/projects', asyncHandler(async (request, response) => {
@@ -1701,9 +2028,10 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
       set invited_user_id = coalesce(invited_user_id, $1),
           invited_email = $2,
           invited_email_lookup = $3,
-          status = 'active',
+          status = 'pending',
           role = 'member',
-          accepted_at = coalesce(accepted_at, case when $1::bigint is null then null else now() end)
+          accepted_at = null,
+          declined_at = null
       where id = $4
       `,
       [invitedUserId, encryptText(email), emailLookup, Number(existingMembership.rows[0].id)],
@@ -1721,7 +2049,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
         status,
         accepted_at
       )
-      values ($1, $2, $3, $4, $5, 'member', 'active', case when $3::bigint is null then null else now() end)
+      values ($1, $2, $3, $4, $5, 'member', 'pending', null)
       `,
       [projectId, userId, invitedUserId, encryptText(email), emailLookup],
     )
@@ -1810,10 +2138,25 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     projectId,
     access.ownerUserId,
   )
+  const assigneeUserId = await ensureProjectMemberUserId(
+    request.body.assigneeUserId,
+    projectId,
+    access.ownerUserId,
+  )
   await query(
     `
-    insert into todos (project_id, collaborator_id, title, due_date, priority, created_by_user_id)
-    values ($1, $2, $3, $4, $5, $6)
+    insert into todos (
+      project_id,
+      collaborator_id,
+      title,
+      due_date,
+      priority,
+      created_by_user_id,
+      assignee_user_id,
+      assigned_by_user_id,
+      assigned_at
+    )
+    values ($1, $2, $3, $4, $5, $6, $7, case when $7::bigint is null then null else $6::bigint end, case when $7::bigint is null then null else now() end)
     `,
     [
       projectId,
@@ -1822,6 +2165,7 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
       userId,
+      assigneeUserId,
     ],
   )
   response.status(201).json(await getWorkspace(userId))
@@ -1830,9 +2174,13 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
 app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const existingTodo = await query<{ project_id: string; created_by_user_id: string | null }>(
+  const existingTodo = await query<{
+    assignee_user_id: string | null
+    created_by_user_id: string | null
+    project_id: string
+  }>(
     `
-    select project_id, created_by_user_id
+    select project_id, created_by_user_id, assignee_user_id
     from todos
     where id = $1
     `,
@@ -1851,13 +2199,25 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const createdByUserId = existingTodo.rows[0].created_by_user_id
     ? Number(existingTodo.rows[0].created_by_user_id)
     : access.ownerUserId
-  if (access.role !== 'owner' && createdByUserId !== userId) {
+  const assigneeUserId = existingTodo.rows[0].assignee_user_id
+    ? Number(existingTodo.rows[0].assignee_user_id)
+    : null
+  const canManageTodo = access.role === 'owner' || createdByUserId === userId
+  const canCompleteAssignedTodo =
+    assigneeUserId === userId &&
+    typeof request.body.done === 'boolean' &&
+    Object.keys(request.body).every((key) => key === 'done')
+  if (!canManageTodo && !canCompleteAssignedTodo) {
     response.status(403).json({ error: 'Only the owner or creator can update this todo' })
     return
   }
   const collaboratorId =
     'collaboratorId' in request.body
       ? await ensureCollaboratorId(request.body.collaboratorId, projectId, access.ownerUserId)
+      : undefined
+  const nextAssigneeUserId =
+    'assigneeUserId' in request.body
+      ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
       : undefined
   await query(
     `
@@ -1867,17 +2227,31 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
         due_date = coalesce($3, due_date),
         priority = coalesce($4, priority),
         collaborator_id = case when $5::boolean then $6 else collaborator_id end,
+        assignee_user_id = case when $7::boolean then $8 else assignee_user_id end,
+        assigned_by_user_id = case
+          when $7::boolean and $8::bigint is not null then $9
+          when $7::boolean then null
+          else assigned_by_user_id
+        end,
+        assigned_at = case
+          when $7::boolean and $8::bigint is not null then now()
+          when $7::boolean then null
+          else assigned_at
+        end,
         updated_at = now()
-    where id = $7
-      and project_id = $8
+    where id = $10
+      and project_id = $11
     `,
     [
       typeof request.body.done === 'boolean' ? request.body.done : null,
-      typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
-      request.body.dueDate ? String(request.body.dueDate) : null,
-      request.body.priority ? ensurePriority(request.body.priority) : null,
+      canManageTodo && typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
+      canManageTodo && request.body.dueDate ? String(request.body.dueDate) : null,
+      canManageTodo && request.body.priority ? ensurePriority(request.body.priority) : null,
       'collaboratorId' in request.body,
       collaboratorId,
+      canManageTodo && 'assigneeUserId' in request.body,
+      nextAssigneeUserId,
+      userId,
       Number(request.params.todoId),
       projectId,
     ],

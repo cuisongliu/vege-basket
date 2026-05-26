@@ -285,6 +285,19 @@ textarea:focus {
   font-weight: 520;
 }
 
+.nav-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  justify-content: center;
+  padding: 0 6px;
+  background: var(--brand);
+  color: var(--primary-foreground);
+  font-size: 11px;
+  line-height: 1;
+}
+
 .nav-button:hover,
 .nav-button.active {
   color: var(--strong);
@@ -997,8 +1010,17 @@ textarea:focus {
 
 .todo-form-meta {
   display: grid;
-  grid-template-columns: 212px 112px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 7px;
+  align-items: center;
+}
+
+.todo-form-tools {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 112px minmax(136px, 180px);
+  gap: 7px;
+  align-items: center;
 }
 
 .todo-form input,
@@ -1019,8 +1041,17 @@ textarea:focus {
 }
 
 .collaborator-picker {
+  width: 100%;
   min-width: 0;
   display: block;
+}
+
+.todo-form-tools > *,
+.todo-form-meta > *,
+.todo-form-meta .collaborator-picker [data-slot='select-trigger'],
+.todo-form-meta .journal-date-trigger {
+  width: 100%;
+  min-width: 0;
 }
 
 .collaborator-picker.compact {
@@ -1112,6 +1143,18 @@ textarea:focus {
   font-size: 12px;
 }
 
+.todo-main small {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.todo-assignee-inline {
+  color: var(--strong);
+  font-weight: 650;
+}
+
 .todo-actions {
   display: inline-flex;
   align-items: center;
@@ -1150,6 +1193,7 @@ textarea:focus {
 }
 
 .current-todos-panel,
+.notification-center-panel,
 .collaborators-panel {
   width: min(100%, var(--content-max));
   margin: 0 auto;
@@ -1158,6 +1202,120 @@ textarea:focus {
 .current-todos-panel {
   container: current-todos / inline-size;
   overflow: hidden;
+}
+
+.notification-center-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.notification-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.notification-section {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-section h3 {
+  margin: 0;
+  color: var(--strong);
+  font-size: 15px;
+  font-weight: 720;
+}
+
+.notification-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-list {
+  display: grid;
+  gap: 8px;
+}
+
+.notification-item {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.notification-item strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--strong);
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 720;
+  overflow-wrap: anywhere;
+}
+
+.notification-item p {
+  margin: 4px 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.notification-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.notification-priority {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted-text);
+  background: var(--field);
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.2;
+}
+
+.notification-priority.high {
+  color: var(--destructive);
+  border-color: color-mix(in oklch, var(--destructive) 28%, var(--line));
+}
+
+.notification-priority.medium {
+  color: var(--strong);
+}
+
+.notification-item small {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.notification-kind {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted-text);
+  background: var(--field);
+  font-size: 12px;
+  font-weight: 640;
+}
+
+.notification-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .current-todos-header {
   display: flex;
@@ -1537,6 +1695,16 @@ textarea:focus {
 
   .todo-status-chip::before {
     content: '状态';
+  }
+}
+
+@media (max-width: 760px) {
+  .notification-item {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-actions {
+    justify-content: flex-start;
   }
 }
 
@@ -3435,7 +3603,11 @@ textarea:focus {
   }
 
   .todo-form-meta {
-    grid-template-columns: minmax(0, 1fr) 92px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .todo-form-tools {
+    grid-template-columns: 92px minmax(118px, 156px);
   }
 
   .todo-item {
@@ -3766,6 +3938,10 @@ textarea:focus {
   }
 
   .todo-form-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .todo-form-tools {
     grid-template-columns: 1fr;
   }
 

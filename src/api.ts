@@ -2,6 +2,7 @@ import type {
   Collaborator,
   InboxItem,
   JournalVisibility,
+  NotificationCenterData,
   Priority,
   Project,
   ProjectMembership,
@@ -17,6 +18,10 @@ export type WorkspaceData = {
   projects: Project[]
   summaries: Summary[]
   todos: Todo[]
+}
+
+export type NotificationResponse = {
+  notifications: NotificationCenterData
 }
 
 export type AuthUser = {
@@ -81,6 +86,10 @@ async function request<T>(path: string, options: RequestInit = {}) {
 
 export function fetchWorkspace() {
   return request<WorkspaceData>('/api/workspace')
+}
+
+export function fetchNotifications() {
+  return request<NotificationResponse>('/api/notifications')
 }
 
 export function fetchCurrentUser() {
@@ -235,6 +244,7 @@ export function removeCollaborator(collaboratorId: number) {
 }
 
 export function createTodo(payload: {
+  assigneeUserId?: number
   collaboratorId?: number
   dueDate: string
   priority: Priority
@@ -260,9 +270,41 @@ export function removeProjectMember(projectId: number, membershipId: number) {
   })
 }
 
+export function acceptProjectInvitation(membershipId: number) {
+  return request<NotificationResponse & { workspace: WorkspaceData }>(
+    `/api/invitations/${membershipId}/accept`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function declineProjectInvitation(membershipId: number) {
+  return request<NotificationResponse & { workspace: WorkspaceData }>(
+    `/api/invitations/${membershipId}/decline`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function markNotificationRead(
+  kind: 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow',
+  sourceId: number,
+  dismiss = false,
+) {
+  return request<NotificationResponse>(`/api/notifications/${kind}/${sourceId}/read`, {
+    method: 'PATCH',
+    body: JSON.stringify({ dismiss }),
+  })
+}
+
 export function updateTodo(
   todoId: number,
-  payload: Omit<Partial<Todo>, 'collaboratorId'> & { collaboratorId?: number | null },
+  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'collaboratorId'> & {
+    assigneeUserId?: number | null
+    collaboratorId?: number | null
+  },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {
     method: 'PATCH',
