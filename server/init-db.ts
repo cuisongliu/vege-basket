@@ -1,4 +1,5 @@
 import { pool, query } from './db.ts'
+import { assertEncryptionConfigured, blindIndex, encryptJson, encryptText } from './crypto.ts'
 import { schemaSql } from './schema.ts'
 
 const today = new Intl.DateTimeFormat('en-CA', {
@@ -27,21 +28,21 @@ async function insertProject({
 }) {
   const projectResult = await query<{ id: string }>(
     `
-    insert into projects (user_id, name, status, tags)
-    values ($1, $2, $3, $4)
+    insert into projects (user_id, name, status, tags, tags_encrypted)
+    values ($1, $2, $3, '{}', $4)
     returning id
     `,
-    [userId, name, status, tags],
+    [userId, encryptText(name), status, encryptJson(tags)],
   )
   const projectId = Number(projectResult.rows[0].id)
 
   for (const journal of journals) {
     await query(
       `
-      insert into journal_entries (project_id, content, created_at)
-      values ($1, $2, $3::timestamp at time zone 'Asia/Shanghai')
+      insert into journal_entries (project_id, content, created_at, author_user_id, visibility)
+      values ($1, $2, $3::timestamp at time zone 'Asia/Shanghai', $4, 'private')
       `,
-      [projectId, journal.content, journal.createdAt],
+      [projectId, encryptText(journal.content), journal.createdAt, userId],
     )
   }
 
@@ -52,7 +53,7 @@ async function insertProject({
       values ($1, $2)
       on conflict (project_id, content) do nothing
       `,
-      [projectId, risk],
+      [projectId, encryptText(risk)],
     )
   }
 
@@ -62,7 +63,7 @@ async function insertProject({
       insert into todos (project_id, title, due_date, priority, done)
       values ($1, $2, $3, $4, $5)
       `,
-      [projectId, todo.title, todo.dueDate, todo.priority, todo.done],
+      [projectId, encryptText(todo.title), todo.dueDate, todo.priority, todo.done],
     )
   }
 
@@ -82,16 +83,17 @@ async function insertCollaborator({
 }) {
   const result = await query<{ id: string }>(
     `
-    insert into collaborators (user_id, project_id, name, role)
-    values ($1, $2, $3, $4)
+    insert into collaborators (user_id, project_id, name, name_lookup, role)
+    values ($1, $2, $3, $4, $5)
     returning id
     `,
-    [userId, projectId, name, role],
+    [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
   )
   return Number(result.rows[0].id)
 }
 
 async function main() {
+  assertEncryptionConfigured()
   await query(schemaSql)
 
   const userResult = await query<{ id: string }>(
@@ -236,22 +238,24 @@ async function main() {
       `,
       [
         userId,
-        '想到一个 AIGC 工作台的关键点：生成结果需要能按品牌语气做二次筛选，不只是批量产出。',
+        encryptText('想到一个 AIGC 工作台的关键点：生成结果需要能按品牌语气做二次筛选，不只是批量产出。'),
         projectOneId,
-        '飞书群转发：业务方反馈数据看板里“激活用户”的口径和周报不一致，希望本周先统一。',
+        encryptText('飞书群转发：业务方反馈数据看板里“激活用户”的口径和周报不一致，希望本周先统一。'),
         projectTwoId,
-        '知识库迁移可以先用 AI 做主题聚类，但不要自动改原文。',
+        encryptText('知识库迁移可以先用 AI 做主题聚类，但不要自动改原文。'),
       ],
     )
 
     await query(
       `
       insert into summaries (project_id, type, title, period, content)
-      values ($1, 'weekly', '第 20 周周总结', '2026-05-11 至 2026-05-15', $2)
+      values ($1, 'weekly', $2, $3, $4)
       `,
       [
         projectOneId,
-        '本周明确了 AIGC 内容工作台的第一版边界：批量生成、人工精修、模板评估。主要风险是模型输出质量稳定性，建议下周先建立小样本评估表。',
+        encryptText('第 20 周周总结'),
+        encryptText('2026-05-11 至 2026-05-15'),
+        encryptText('本周明确了 AIGC 内容工作台的第一版边界：批量生成、人工精修、模板评估。主要风险是模型输出质量稳定性，建议下周先建立小样本评估表。'),
       ],
     )
   }

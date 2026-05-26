@@ -885,6 +885,26 @@ textarea:focus {
   background: var(--muted);
 }
 
+.access-pill,
+.visibility-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+  border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--line));
+  background: color-mix(in oklch, var(--brand) 8%, var(--surface));
+  color: var(--brand);
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 620;
+}
+
+.visibility-pill.public {
+  border-color: color-mix(in oklch, var(--primary) 32%, var(--line));
+  background: color-mix(in oklch, var(--primary) 9%, var(--surface));
+  color: var(--primary);
+}
+
 .tag-row {
   display: flex;
   gap: 5px;
@@ -1823,6 +1843,20 @@ textarea:focus {
   gap: 10px;
 }
 
+.history-speaker {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.history-speaker span {
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .history-actions {
   display: inline-flex;
   align-items: center;
@@ -1831,10 +1865,20 @@ textarea:focus {
 
 .history-edit-button,
 .history-risk-button,
-.history-delete-button {
+.history-delete-button,
+.history-visibility-button {
   width: 26px;
   height: 26px;
   color: var(--muted-text);
+}
+
+.history-visibility-button {
+  width: auto;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .history-edit-button:hover {
@@ -1917,6 +1961,67 @@ textarea:focus {
   width: 100%;
   height: 32px;
   padding-right: 12px;
+}
+
+.project-members-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.project-members-trigger {
+  height: 40px;
+  padding: 0 12px;
+}
+
+.member-invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.member-invite-form .solid-button {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.member-list {
+  display: grid;
+  gap: 6px;
+}
+
+.member-item {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--surface) 86%, var(--muted));
+}
+
+.member-item span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.member-item strong,
+.member-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-item strong {
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.member-item small {
+  color: var(--muted-text);
+  font-size: 12px;
 }
 
 .journal-calendar {

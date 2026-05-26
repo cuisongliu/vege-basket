@@ -5,12 +5,22 @@ import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
 import cors from 'cors'
 import express from 'express'
+import {
+  assertEncryptionConfigured,
+  blindIndex,
+  decryptJson,
+  decryptText,
+  encryptJson,
+  encryptText,
+} from './crypto.ts'
 import { pool, query } from './db.ts'
 import { schemaSql } from './schema.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
 type SummaryType = 'weekly' | 'monthly'
+type ProjectAccessRole = 'owner' | 'member'
+type JournalVisibility = 'private' | 'public'
 type UserRow = { id: string; email: string; display_name: string }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type AiAgentType = 'project-summary' | 'conversation-analysis'
@@ -44,6 +54,31 @@ type CollaboratorRow = {
   role: string
   created_at: Date
   updated_at: Date
+}
+type ProjectAccess = {
+  id: number
+  ownerUserId: number
+  role: ProjectAccessRole
+}
+type ProjectMembershipRow = {
+  id: string
+  project_id: string
+  invited_user_id: string | null
+  invited_email: string
+  role: ProjectAccessRole
+  status: 'active'
+  created_at: Date
+  member_display_name: string | null
+  member_email: string | null
+}
+
+function decryptTags(tagsEncrypted: string | null, legacyTags: string[] | null) {
+  if (!tagsEncrypted) return legacyTags ?? []
+  return decryptJson<string[]>(tagsEncrypted, legacyTags ?? [])
+}
+
+function encryptTags(tags: string[]) {
+  return encryptJson(tags)
 }
 
 const app = express()
@@ -157,6 +192,11 @@ function sanitizeDisplayName(value: unknown) {
   return String(value ?? '').trim().slice(0, 32)
 }
 
+function displayNameFromUser(row?: Pick<UserRow, 'email' | 'display_name'> | null) {
+  if (!row) return '未知用户'
+  return row.display_name || row.email.split('@')[0] || row.email
+}
+
 function serializeUser(row: UserRow) {
   return {
     id: Number(row.id),
@@ -167,9 +207,9 @@ function serializeUser(row: UserRow) {
 
 function serializeAiSettings(row?: AiSettingsRow) {
   return {
-    baseUrl: row?.base_url ?? '',
+    baseUrl: row?.base_url ? decryptText(row.base_url) : '',
     hasApiKey: Boolean(row?.api_key),
-    model: row?.model ?? '',
+    model: row?.model ? decryptText(row.model) : '',
   }
 }
 
@@ -558,7 +598,10 @@ async function createAiAgentResponse(
     [userId],
   )
   const aiSettings = settingsResult.rows[0]
-  if (!aiSettings?.base_url || !aiSettings.api_key || !aiSettings.model) {
+  const baseUrl = aiSettings?.base_url ? decryptText(aiSettings.base_url) : ''
+  const apiKey = aiSettings?.api_key ? decryptText(aiSettings.api_key) : ''
+  const model = aiSettings?.model ? decryptText(aiSettings.model) : ''
+  if (!baseUrl || !apiKey || !model) {
     return { error: 'AI API is not configured', status: 503 as const }
   }
 
@@ -567,14 +610,14 @@ async function createAiAgentResponse(
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(aiSettings.base_url), {
+    const aiResponse = await fetch(getAiEndpoint(baseUrl), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${aiSettings.api_key}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: aiSettings.model,
+        model,
         temperature: 0.3,
         messages: [
           {
@@ -623,7 +666,7 @@ async function createFeishuAnalysisDraft(userId: number, title: string, content:
     values ($1, 'feishu', $2)
     returning id
     `,
-    [userId, draftContent],
+    [userId, encryptText(draftContent)],
   )
   return Number(result.rows[0].id)
 }
@@ -636,7 +679,7 @@ async function updateFeishuAnalysisDraft(userId: number, draftId: number, title:
     set content = $1
     where id = $2 and user_id = $3 and processed = false
     `,
-    [draftContent, draftId, userId],
+    [encryptText(draftContent), draftId, userId],
   )
 }
 
@@ -646,7 +689,7 @@ async function saveFeishuAnalysisSummary(userId: number, title: string, content:
     insert into summaries (user_id, project_id, type, title, period, content)
     values ($1, null, 'weekly', $2, $3, $4)
     `,
-    [userId, title, '飞书对话分析', content],
+    [userId, encryptText(title), encryptText('飞书对话分析'), encryptText(content)],
   )
 }
 
@@ -768,6 +811,54 @@ function ensureSummaryType(value: unknown): SummaryType {
   return value === 'monthly' ? 'monthly' : 'weekly'
 }
 
+function ensureJournalVisibility(value: unknown): JournalVisibility {
+  return value === 'public' ? 'public' : 'private'
+}
+
+async function linkPendingMemberships(userId: number, email: string) {
+  await query(
+    `
+    update project_memberships
+    set invited_user_id = $1,
+        accepted_at = coalesce(accepted_at, now())
+    where (invited_email_lookup = $3 or invited_email = $2)
+      and invited_user_id is null
+      and status = 'active'
+    `,
+    [userId, normalizeEmail(email), blindIndex(email)],
+  )
+}
+
+async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
+  const result = await query<{
+    id: string
+    owner_user_id: string
+    access_role: ProjectAccessRole
+  }>(
+    `
+    select p.id,
+           p.user_id as owner_user_id,
+           case when p.user_id = $2 then 'owner' else 'member' end as access_role
+    from projects p
+    left join project_memberships pm
+      on pm.project_id = p.id
+     and pm.status = 'active'
+     and pm.invited_user_id = $2
+    where p.id = $1
+      and (p.user_id = $2 or pm.id is not null)
+    limit 1
+    `,
+    [projectId, userId],
+  )
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    id: Number(row.id),
+    ownerUserId: Number(row.owner_user_id),
+    role: row.access_role,
+  }
+}
+
 async function ensureCollaboratorId(
   collaboratorId: unknown,
   projectId: number,
@@ -785,7 +876,29 @@ async function ensureCollaboratorId(
   return result.rows[0] ? Number(result.rows[0].id) : null
 }
 
+async function findCollaboratorIdsByName(userId: number, name: string) {
+  const nameLookup = blindIndex(name)
+  const indexed = await query<{ id: string }>(
+    'select id from collaborators where user_id = $1 and name_lookup = $2',
+    [userId, nameLookup],
+  )
+  if (indexed.rows.length > 0) return indexed.rows.map((row) => Number(row.id))
+
+  const legacy = await query<{ id: string; name: string }>(
+    'select id, name from collaborators where user_id = $1',
+    [userId],
+  )
+  return legacy.rows
+    .filter((row) => decryptText(row.name) === name)
+    .map((row) => Number(row.id))
+}
+
 async function getWorkspace(userId: number) {
+  const currentUser = await query<UserRow>(
+    'select id, email, display_name from users where id = $1',
+    [userId],
+  )
+  const currentUserName = displayNameFromUser(currentUser.rows[0])
   const [
     projectsResult,
     journalsResult,
@@ -794,38 +907,91 @@ async function getWorkspace(userId: number) {
     draftsResult,
     summariesResult,
     collaboratorsResult,
+    membershipsResult,
   ] = await Promise.all([
     query<{
       id: string
+      owner_user_id: string
+      owner_email: string
+      owner_display_name: string
+      access_role: ProjectAccessRole
       name: string
       status: ProjectStatus
       tags: string[]
+      tags_encrypted: string | null
       created_at: Date
       updated_at: Date
     }>(
       `
-      select id, name, status, tags, created_at, updated_at
-      from projects
-      where user_id = $1
+      select p.id,
+             p.user_id as owner_user_id,
+             u.email as owner_email,
+             u.display_name as owner_display_name,
+             case when p.user_id = $1 then 'owner' else 'member' end as access_role,
+             p.name,
+             p.status,
+             p.tags,
+             p.tags_encrypted,
+             p.created_at,
+             p.updated_at
+      from projects p
+      join users u on u.id = p.user_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      where p.user_id = $1 or pm.id is not null
       order by updated_at desc, id desc
       `,
       [userId],
     ),
-    query<{ id: string; project_id: string; content: string; created_at: Date }>(
+    query<{
+      id: string
+      project_id: string
+      content: string
+      created_at: Date
+      author_user_id: string | null
+      visibility: JournalVisibility
+      author_email: string | null
+      author_display_name: string | null
+    }>(
       `
-      select id, project_id, content, created_at
-      from journal_entries
-      where project_id in (select id from projects where user_id = $1)
-      order by created_at desc, id desc
+      select je.id,
+             je.project_id,
+             je.content,
+             je.created_at,
+             je.author_user_id,
+             je.visibility,
+             author.email as author_email,
+             author.display_name as author_display_name
+      from journal_entries je
+      join projects p on p.id = je.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      left join users author on author.id = je.author_user_id
+      where (p.user_id = $1 or pm.id is not null)
+        and (
+          je.author_user_id = $1
+          or je.visibility = 'public'
+          or (je.author_user_id is null and p.user_id = $1)
+        )
+      order by je.created_at desc, je.id desc
       `,
       [userId],
     ),
     query<{ project_id: string; content: string }>(
       `
-      select project_id, content
-      from risks
-      where project_id in (select id from projects where user_id = $1)
-      order by created_at desc, id desc
+      select r.project_id, r.content
+      from risks r
+      join projects p on p.id = r.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      where p.user_id = $1 or pm.id is not null
+      order by r.created_at desc, r.id desc
       `,
       [userId],
     ),
@@ -837,12 +1003,30 @@ async function getWorkspace(userId: number) {
       due_date: Date
       priority: Priority
       done: boolean
+      created_by_user_id: string | null
+      creator_email: string | null
+      creator_display_name: string | null
     }>(
       `
-      select id, project_id, collaborator_id, title, due_date, priority, done
-      from todos
-      where project_id in (select id from projects where user_id = $1)
-      order by done asc, due_date asc, id desc
+      select t.id,
+             t.project_id,
+             t.collaborator_id,
+             t.title,
+             t.due_date,
+             t.priority,
+             t.done,
+             t.created_by_user_id,
+             creator.email as creator_email,
+             creator.display_name as creator_display_name
+      from todos t
+      join projects p on p.id = t.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      left join users creator on creator.id = t.created_by_user_id
+      where p.user_id = $1 or pm.id is not null
+      order by t.done asc, t.due_date asc, t.id desc
       `,
       [userId],
     ),
@@ -882,23 +1066,64 @@ async function getWorkspace(userId: number) {
     ),
     query<CollaboratorRow>(
       `
-      select id, user_id, project_id, name, role, created_at, updated_at
-      from collaborators
-      where user_id = $1
+      select c.id, c.user_id, c.project_id, c.name, c.role, c.created_at, c.updated_at
+      from collaborators c
+      join projects p on p.id = c.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      where p.user_id = $1 or pm.id is not null
       order by updated_at desc, id desc
+      `,
+      [userId],
+    ),
+    query<ProjectMembershipRow>(
+      `
+      select pm.id,
+             pm.project_id,
+             pm.invited_user_id,
+             pm.invited_email,
+             pm.role,
+             pm.status,
+             pm.created_at,
+             u.display_name as member_display_name,
+             u.email as member_email
+      from project_memberships pm
+      left join users u on u.id = pm.invited_user_id
+      where pm.owner_user_id = $1
+      order by pm.created_at desc, pm.id desc
       `,
       [userId],
     ),
   ])
 
-  const journalsByProject = new Map<number, Array<{ id: number; createdAt: string; content: string }>>()
+  const journalsByProject = new Map<
+    number,
+    Array<{
+      id: number
+      createdAt: string
+      content: string
+      authorUserId?: number
+      speakerName: string
+      visibility: JournalVisibility
+    }>
+  >()
   for (const row of journalsResult.rows) {
     const projectId = Number(row.project_id)
     const rows = journalsByProject.get(projectId) ?? []
     rows.push({
       id: Number(row.id),
       createdAt: formatDateTime(row.created_at),
-      content: row.content,
+      content: decryptText(row.content),
+      authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
+      speakerName: row.author_user_id
+        ? displayNameFromUser({
+          email: row.author_email ?? '',
+          display_name: row.author_display_name ?? '',
+        })
+        : currentUserName,
+      visibility: row.visibility,
     })
     journalsByProject.set(projectId, rows)
   }
@@ -906,17 +1131,23 @@ async function getWorkspace(userId: number) {
   const risksByProject = new Map<number, string[]>()
   for (const row of risksResult.rows) {
     const projectId = Number(row.project_id)
-    risksByProject.set(projectId, [...(risksByProject.get(projectId) ?? []), row.content])
+    risksByProject.set(projectId, [...(risksByProject.get(projectId) ?? []), decryptText(row.content)])
   }
 
   return {
     projects: projectsResult.rows.map((project) => ({
       id: Number(project.id),
-      name: project.name,
+      accessRole: project.access_role,
+      name: decryptText(project.name),
+      ownerName: displayNameFromUser({
+        email: project.owner_email,
+        display_name: project.owner_display_name,
+      }),
+      ownerUserId: Number(project.owner_user_id),
       status: project.status,
       createdAt: formatUpdatedAt(project.created_at),
       updatedAt: formatUpdatedAt(project.updated_at),
-      tags: project.tags ?? [],
+      tags: decryptTags(project.tags_encrypted, project.tags ?? []),
       journals: journalsByProject.get(Number(project.id)) ?? [],
       risks: risksByProject.get(Number(project.id)) ?? [],
     })),
@@ -924,21 +1155,43 @@ async function getWorkspace(userId: number) {
       id: Number(todo.id),
       projectId: Number(todo.project_id),
       collaboratorId: todo.collaborator_id ? Number(todo.collaborator_id) : undefined,
-      title: todo.title,
+      createdByUserId: todo.created_by_user_id ? Number(todo.created_by_user_id) : undefined,
+      creatorName: todo.created_by_user_id
+        ? displayNameFromUser({
+          email: todo.creator_email ?? '',
+          display_name: todo.creator_display_name ?? '',
+        })
+        : undefined,
+      title: decryptText(todo.title),
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
     })),
     collaborators: collaboratorsResult.rows.map((collaborator) => ({
       id: Number(collaborator.id),
-      name: collaborator.name,
-      role: collaborator.role,
+      name: decryptText(collaborator.name),
+      role: collaborator.role ? decryptText(collaborator.role) : '',
       projectId: Number(collaborator.project_id),
+    })),
+    memberships: membershipsResult.rows.map((membership) => ({
+      id: Number(membership.id),
+      projectId: Number(membership.project_id),
+      invitedEmail: decryptText(membership.invited_email),
+      invitedUserId: membership.invited_user_id ? Number(membership.invited_user_id) : undefined,
+      role: membership.role,
+      status: membership.status,
+      memberName: membership.invited_user_id
+        ? displayNameFromUser({
+          email: membership.member_email ?? membership.invited_email,
+          display_name: membership.member_display_name ?? '',
+        })
+        : decryptText(membership.invited_email),
+      createdAt: formatUpdatedAt(membership.created_at),
     })),
     inbox: draftsResult.rows.map((draft) => ({
       id: Number(draft.id),
       source: draft.source,
-      content: draft.content,
+      content: decryptText(draft.content),
       createdAt: formatUpdatedAt(draft.created_at),
       suggestedProjectId: draft.suggested_project_id
         ? Number(draft.suggested_project_id)
@@ -949,9 +1202,9 @@ async function getWorkspace(userId: number) {
       id: Number(summary.id),
       projectId: summary.project_id ? Number(summary.project_id) : undefined,
       type: summary.type,
-      title: summary.title,
-      period: summary.period,
-      content: summary.content,
+      title: decryptText(summary.title),
+      period: decryptText(summary.period),
+      content: decryptText(summary.content),
       createdAt: formatUpdatedAt(summary.created_at),
     })),
   }
@@ -997,6 +1250,7 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
     [email, passwordHash, email.split('@')[0]],
   )
   const userId = Number(user.rows[0].id)
+  await linkPendingMemberships(userId, email)
   const token = await createSession(userId)
   response.status(201).json({
     token,
@@ -1020,6 +1274,7 @@ app.post('/api/auth/login', asyncHandler(async (request, response) => {
   }
 
   const userId = Number(row.id)
+  await linkPendingMemberships(userId, row.email)
   const token = await createSession(userId)
   response.json({
     token,
@@ -1091,7 +1346,7 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
     'select base_url, api_key, model from ai_settings where user_id = $1',
     [userId],
   )
-  const nextApiKey = apiKey || current.rows[0]?.api_key || ''
+  const nextApiKey = apiKey || (current.rows[0]?.api_key ? decryptText(current.rows[0].api_key) : '')
   if (!nextApiKey) {
     response.status(400).json({ error: 'AI API key is required' })
     return
@@ -1108,7 +1363,7 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
           updated_at = now()
     returning base_url, api_key, model
     `,
-    [userId, baseUrl, nextApiKey, model],
+    [userId, encryptText(baseUrl), encryptText(nextApiKey), encryptText(model)],
   )
   response.json({ settings: serializeAiSettings(result.rows[0]) })
 }))
@@ -1134,26 +1389,26 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
     : []
   const result = await query<{ id: string }>(
     `
-    insert into projects (user_id, name, status, tags)
-    values ($1, $2, 'active', $3)
+    insert into projects (user_id, name, status, tags, tags_encrypted)
+    values ($1, $2, 'active', '{}', $3)
     returning id
     `,
-    [userId, name, tags.length ? tags : ['新项目']],
+    [userId, encryptText(name), encryptTags(tags.length ? tags : ['新项目'])],
   )
   const projectId = Number(result.rows[0].id)
   await query(
     `
-    insert into journal_entries (project_id, content)
-    values ($1, $2)
+    insert into journal_entries (project_id, content, author_user_id, visibility)
+    values ($1, $2, $3, 'private')
     `,
-    [projectId, '项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'],
+    [projectId, encryptText('项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'), userId],
   )
 
   if (collaboratorIds.length > 0) {
     await query(
       `
-      insert into collaborators (user_id, project_id, name, role)
-      select user_id, $2, name, role
+      insert into collaborators (user_id, project_id, name, name_lookup, role)
+      select user_id, $2, name, name_lookup, role
       from collaborators
       where user_id = $1 and id = any($3::bigint[])
       `,
@@ -1168,11 +1423,20 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can update project settings' })
+    return
+  }
   const updates: string[] = []
   const values: unknown[] = []
 
   if (typeof request.body.name === 'string') {
-    values.push(request.body.name.trim())
+    values.push(encryptText(request.body.name.trim()))
     updates.push(`name = $${values.length}`)
   }
   if (request.body.status) {
@@ -1180,8 +1444,9 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
     updates.push(`status = $${values.length}`)
   }
   if (Array.isArray(request.body.tags)) {
-    values.push(request.body.tags.map(String))
-    updates.push(`tags = $${values.length}`)
+    values.push(encryptTags(request.body.tags.map(String)))
+    updates.push(`tags_encrypted = $${values.length}`)
+    updates.push(`tags = '{}'`)
   }
 
   if (updates.length === 0) {
@@ -1204,8 +1469,18 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
 app.delete('/api/projects/:projectId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can delete the project' })
+    return
+  }
   await query('delete from projects where id = $1 and user_id = $2', [
-    Number(request.params.projectId),
+    projectId,
     userId,
   ])
   response.json(await getWorkspace(userId))
@@ -1220,17 +1495,17 @@ app.post('/api/projects/:projectId/journals', asyncHandler(async (request, respo
     return
   }
   const projectId = Number(request.params.projectId)
-  const ownsProject = await query<{ id: string }>(
-    'select id from projects where id = $1 and user_id = $2',
-    [projectId, userId],
-  )
-  if (ownsProject.rows.length === 0) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
   await query(
-    'insert into journal_entries (project_id, content) values ($1, $2)',
-    [projectId, content],
+    `
+    insert into journal_entries (project_id, content, author_user_id, visibility)
+    values ($1, $2, $3, 'private')
+    `,
+    [projectId, encryptText(content), userId],
   )
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.status(201).json(await getWorkspace(userId))
@@ -1239,21 +1514,62 @@ app.post('/api/projects/:projectId/journals', asyncHandler(async (request, respo
 app.patch('/api/projects/:projectId/journals/:entryId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const content = String(request.body.content ?? '').trim()
-  if (!content) {
-    response.status(400).json({ error: 'Journal content is required' })
+  const projectId = Number(request.params.projectId)
+  const entryId = Number(request.params.entryId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
     return
   }
-  const projectId = Number(request.params.projectId)
+  const currentResult = await query<{ author_user_id: string | null }>(
+    `
+    select author_user_id
+    from journal_entries
+    where id = $1 and project_id = $2
+    `,
+    [entryId, projectId],
+  )
+  const current = currentResult.rows[0]
+  if (!current) {
+    response.status(404).json({ error: 'Journal not found' })
+    return
+  }
+  if (current.author_user_id && Number(current.author_user_id) !== userId) {
+    response.status(403).json({ error: 'Only the author can edit this journal entry' })
+    return
+  }
+  if (!current.author_user_id && access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the author can edit this journal entry' })
+    return
+  }
+  const updates: string[] = []
+  const values: unknown[] = []
+  if (typeof request.body.content === 'string') {
+    const content = request.body.content.trim()
+    if (!content) {
+      response.status(400).json({ error: 'Journal content is required' })
+      return
+    }
+    values.push(encryptText(content))
+    updates.push(`content = $${values.length}`)
+  }
+  if ('visibility' in request.body) {
+    values.push(ensureJournalVisibility(request.body.visibility))
+    updates.push(`visibility = $${values.length}`)
+  }
+  if (updates.length === 0) {
+    response.status(400).json({ error: 'No supported fields to update' })
+    return
+  }
+  values.push(entryId, projectId)
   await query(
     `
     update journal_entries
-    set content = $1
-    where id = $2
-      and project_id = $3
-      and project_id in (select id from projects where user_id = $4)
+    set ${updates.join(', ')}
+    where id = $${values.length - 1}
+      and project_id = $${values.length}
     `,
-    [content, Number(request.params.entryId), projectId, userId],
+    values,
   )
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
@@ -1263,14 +1579,32 @@ app.delete('/api/projects/:projectId/journals/:entryId', asyncHandler(async (req
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
+  const entryId = Number(request.params.entryId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const currentResult = await query<{ author_user_id: string | null }>(
+    'select author_user_id from journal_entries where id = $1 and project_id = $2',
+    [entryId, projectId],
+  )
+  const current = currentResult.rows[0]
+  if (!current) {
+    response.status(404).json({ error: 'Journal not found' })
+    return
+  }
+  if (access.role !== 'owner' && Number(current.author_user_id) !== userId) {
+    response.status(403).json({ error: 'Only the owner or author can delete this journal entry' })
+    return
+  }
   await query(
     `
     delete from journal_entries
     where id = $1
       and project_id = $2
-      and project_id in (select id from projects where user_id = $3)
     `,
-    [Number(request.params.entryId), projectId, userId],
+    [entryId, projectId],
   )
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
@@ -1280,11 +1614,8 @@ app.post('/api/projects/:projectId/risks', asyncHandler(async (request, response
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
-  const ownsProject = await query<{ id: string }>(
-    'select id from projects where id = $1 and user_id = $2',
-    [projectId, userId],
-  )
-  if (ownsProject.rows.length === 0) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
@@ -1292,10 +1623,16 @@ app.post('/api/projects/:projectId/risks', asyncHandler(async (request, response
 
   if (!content && request.body.journalEntryId) {
     const journal = await query<{ content: string }>(
-      'select content from journal_entries where id = $1 and project_id = $2',
-      [Number(request.body.journalEntryId), projectId],
+      `
+      select content
+      from journal_entries
+      where id = $1
+        and project_id = $2
+        and (author_user_id = $3 or ($4 = 'owner' and author_user_id is null))
+      `,
+      [Number(request.body.journalEntryId), projectId, userId, access.role],
     )
-    content = journal.rows[0]?.content ?? ''
+    content = journal.rows[0]?.content ? decryptText(journal.rows[0].content) : ''
   }
 
   if (!content) {
@@ -1303,22 +1640,131 @@ app.post('/api/projects/:projectId/risks', asyncHandler(async (request, response
     return
   }
 
-  await query(
-    `
-    insert into risks (project_id, content, journal_entry_id)
-    values ($1, $2, $3)
-    on conflict (project_id, content) do nothing
-    `,
-    [projectId, content, request.body.journalEntryId ? Number(request.body.journalEntryId) : null],
+  const existingRisks = await query<{ content: string }>(
+    'select content from risks where project_id = $1',
+    [projectId],
   )
+  if (!existingRisks.rows.some((risk) => decryptText(risk.content) === content)) {
+    await query(
+      `
+      insert into risks (project_id, content, journal_entry_id)
+      values ($1, $2, $3)
+      `,
+      [projectId, encryptText(content), request.body.journalEntryId ? Number(request.body.journalEntryId) : null],
+    )
+  }
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.status(201).json(await getWorkspace(userId))
+}))
+
+app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can invite members' })
+    return
+  }
+  const email = normalizeEmail(request.body.email)
+  if (!email) {
+    response.status(400).json({ error: 'Invite email is required' })
+    return
+  }
+  const invitedUser = await query<{ id: string }>(
+    'select id from users where email = $1',
+    [email],
+  )
+  const invitedUserId = invitedUser.rows[0] ? Number(invitedUser.rows[0].id) : null
+  if (invitedUserId === userId) {
+    response.status(400).json({ error: 'Owner already has access to this project' })
+    return
+  }
+
+  const emailLookup = blindIndex(email)
+  const existingMembership = await query<{ id: string }>(
+    `
+    select id
+    from project_memberships
+    where project_id = $1 and invited_email_lookup = $2
+    `,
+    [projectId, emailLookup],
+  )
+  if (existingMembership.rows[0]) {
+    await query(
+      `
+      update project_memberships
+      set invited_user_id = coalesce(invited_user_id, $1),
+          invited_email = $2,
+          invited_email_lookup = $3,
+          status = 'active',
+          role = 'member',
+          accepted_at = coalesce(accepted_at, case when $1::bigint is null then null else now() end)
+      where id = $4
+      `,
+      [invitedUserId, encryptText(email), emailLookup, Number(existingMembership.rows[0].id)],
+    )
+  } else {
+    await query(
+      `
+      insert into project_memberships (
+        project_id,
+        owner_user_id,
+        invited_user_id,
+        invited_email,
+        invited_email_lookup,
+        role,
+        status,
+        accepted_at
+      )
+      values ($1, $2, $3, $4, $5, 'member', 'active', case when $3::bigint is null then null else now() end)
+      `,
+      [projectId, userId, invitedUserId, encryptText(email), emailLookup],
+    )
+  }
+  response.status(201).json(await getWorkspace(userId))
+}))
+
+app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can remove members' })
+    return
+  }
+  await query(
+    `
+    delete from project_memberships
+    where id = $1 and project_id = $2 and owner_user_id = $3
+    `,
+    [Number(request.params.membershipId), projectId, userId],
+  )
+  response.json(await getWorkspace(userId))
 }))
 
 app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can resolve risks' })
+    return
+  }
   const content = String(request.body.content ?? '').trim()
 
   if (!content) {
@@ -1326,15 +1772,21 @@ app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, respon
     return
   }
 
-  await query(
+  const existingRisks = await query<{ id: string; content: string }>(
     `
-    delete from risks
+    select id, content
+    from risks
     where project_id = $1
-      and content = $2
-      and project_id in (select id from projects where user_id = $3)
+      and project_id in (select id from projects where user_id = $2)
     `,
-    [projectId, content, userId],
+    [projectId, userId],
   )
+  const matchingRiskIds = existingRisks.rows
+    .filter((risk) => decryptText(risk.content) === content)
+    .map((risk) => Number(risk.id))
+  if (matchingRiskIds.length > 0) {
+    await query('delete from risks where id = any($1::bigint[])', [matchingRiskIds])
+  }
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
 }))
@@ -1348,30 +1800,28 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     return
   }
   const projectId = Number(request.body.projectId)
-  const ownsProject = await query<{ id: string }>(
-    'select id from projects where id = $1 and user_id = $2',
-    [projectId, userId],
-  )
-  if (ownsProject.rows.length === 0) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
   const collaboratorId = await ensureCollaboratorId(
     request.body.collaboratorId,
     projectId,
-    userId,
+    access.ownerUserId,
   )
   await query(
     `
-    insert into todos (project_id, collaborator_id, title, due_date, priority)
-    values ($1, $2, $3, $4, $5)
+    insert into todos (project_id, collaborator_id, title, due_date, priority, created_by_user_id)
+    values ($1, $2, $3, $4, $5, $6)
     `,
     [
       projectId,
       collaboratorId,
-      title,
+      encryptText(title),
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
+      userId,
     ],
   )
   response.status(201).json(await getWorkspace(userId))
@@ -1380,23 +1830,34 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
 app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const existingTodo = await query<{ project_id: string }>(
+  const existingTodo = await query<{ project_id: string; created_by_user_id: string | null }>(
     `
-    select project_id
+    select project_id, created_by_user_id
     from todos
     where id = $1
-      and project_id in (select id from projects where user_id = $2)
     `,
-    [Number(request.params.todoId), userId],
+    [Number(request.params.todoId)],
   )
   if (existingTodo.rows.length === 0) {
     response.status(404).json({ error: 'Todo not found' })
     return
   }
   const projectId = Number(existingTodo.rows[0].project_id)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const createdByUserId = existingTodo.rows[0].created_by_user_id
+    ? Number(existingTodo.rows[0].created_by_user_id)
+    : access.ownerUserId
+  if (access.role !== 'owner' && createdByUserId !== userId) {
+    response.status(403).json({ error: 'Only the owner or creator can update this todo' })
+    return
+  }
   const collaboratorId =
     'collaboratorId' in request.body
-      ? await ensureCollaboratorId(request.body.collaboratorId, projectId, userId)
+      ? await ensureCollaboratorId(request.body.collaboratorId, projectId, access.ownerUserId)
       : undefined
   await query(
     `
@@ -1408,17 +1869,17 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
         collaborator_id = case when $5::boolean then $6 else collaborator_id end,
         updated_at = now()
     where id = $7
-      and project_id in (select id from projects where user_id = $8)
+      and project_id = $8
     `,
     [
       typeof request.body.done === 'boolean' ? request.body.done : null,
-      typeof request.body.title === 'string' ? request.body.title.trim() : null,
+      typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
       request.body.dueDate ? String(request.body.dueDate) : null,
       request.body.priority ? ensurePriority(request.body.priority) : null,
       'collaboratorId' in request.body,
       collaboratorId,
       Number(request.params.todoId),
-      userId,
+      projectId,
     ],
   )
   response.json(await getWorkspace(userId))
@@ -1453,10 +1914,10 @@ app.post('/api/collaborators', asyncHandler(async (request, response) => {
 
   await Promise.all(projectIds.map((projectId) => query(
     `
-    insert into collaborators (user_id, project_id, name, role)
-    values ($1, $2, $3, $4)
+    insert into collaborators (user_id, project_id, name, name_lookup, role)
+    values ($1, $2, $3, $4, $5)
     `,
-    [userId, projectId, name, role],
+    [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
   )))
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -1505,13 +1966,15 @@ app.patch('/api/collaborators/:collaboratorId', asyncHandler(async (request, res
   const client = await pool.connect()
   try {
     await client.query('begin')
+    const currentName = decryptText(current.name)
+    const targetIdsForName = await findCollaboratorIdsByName(userId, currentName)
     const existingResult = await client.query<{ id: string; project_id: string }>(
       `
       select id, project_id
       from collaborators
-      where user_id = $1 and name = $2
+      where id = any($1::bigint[]) and user_id = $2
       `,
-      [userId, current.name],
+      [targetIdsForName, userId],
     )
     const existingByProject = new Map(
       existingResult.rows.map((row) => [Number(row.project_id), Number(row.id)]),
@@ -1524,18 +1987,18 @@ app.patch('/api/collaborators/:collaboratorId', asyncHandler(async (request, res
         await client.query(
           `
           update collaborators
-          set name = $1, role = $2, updated_at = now()
-          where id = $3 and user_id = $4
+          set name = $1, name_lookup = $2, role = $3, updated_at = now()
+          where id = $4 and user_id = $5
           `,
-          [name, role, existingId, userId],
+          [encryptText(name), blindIndex(name), encryptText(role), existingId, userId],
         )
       } else {
         await client.query(
           `
-          insert into collaborators (user_id, project_id, name, role)
-          values ($1, $2, $3, $4)
+          insert into collaborators (user_id, project_id, name, name_lookup, role)
+          values ($1, $2, $3, $4, $5)
           `,
-          [userId, projectId, name, role],
+          [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
         )
       }
     }
@@ -1583,11 +2046,7 @@ app.delete('/api/collaborators/:collaboratorId', asyncHandler(async (request, re
     response.status(404).json({ error: 'Collaborator not found' })
     return
   }
-  const targetResult = await query<{ id: string }>(
-    'select id from collaborators where user_id = $1 and name = $2',
-    [userId, current.name],
-  )
-  const targetIds = targetResult.rows.map((row) => Number(row.id))
+  const targetIds = await findCollaboratorIdsByName(userId, decryptText(current.name))
   await query(
     `
     update todos
@@ -1607,13 +2066,31 @@ app.delete('/api/collaborators/:collaboratorId', asyncHandler(async (request, re
 app.delete('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const existingTodo = await query<{ project_id: string; created_by_user_id: string | null }>(
+    'select project_id, created_by_user_id from todos where id = $1',
+    [Number(request.params.todoId)],
+  )
+  const todo = existingTodo.rows[0]
+  if (!todo) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const access = await getProjectAccess(Number(todo.project_id), userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const createdByUserId = todo.created_by_user_id ? Number(todo.created_by_user_id) : access.ownerUserId
+  if (access.role !== 'owner' && createdByUserId !== userId) {
+    response.status(403).json({ error: 'Only the owner or creator can delete this todo' })
+    return
+  }
   await query(
     `
     delete from todos
     where id = $1
-      and project_id in (select id from projects where user_id = $2)
     `,
-    [Number(request.params.todoId), userId],
+    [Number(request.params.todoId)],
   )
   response.json(await getWorkspace(userId))
 }))
@@ -1631,7 +2108,7 @@ app.post('/api/drafts', asyncHandler(async (request, response) => {
     insert into draft_items (user_id, source, content, suggested_project_id)
     values ($1, 'manual', $2, $3)
     `,
-    [userId, content, request.body.suggestedProjectId ? Number(request.body.suggestedProjectId) : null],
+    [userId, encryptText(content), request.body.suggestedProjectId ? Number(request.body.suggestedProjectId) : null],
   )
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -1650,19 +2127,19 @@ app.post('/api/drafts/:draftId/archive', asyncHandler(async (request, response) 
     response.status(404).json({ error: 'Draft not found' })
     return
   }
-  const ownsProject = await query<{ id: string }>(
-    'select id from projects where id = $1 and user_id = $2',
-    [projectId, userId],
-  )
-  if (ownsProject.rows.length === 0) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
 
-  await query('insert into journal_entries (project_id, content) values ($1, $2)', [
-    projectId,
-    `来自今日草稿箱：${draft.content}`,
-  ])
+  await query(
+    `
+    insert into journal_entries (project_id, content, author_user_id, visibility)
+    values ($1, $2, $3, 'private')
+    `,
+    [projectId, encryptText(`来自今日草稿箱：${decryptText(draft.content)}`), userId],
+  )
   await query('update draft_items set processed = true where id = $1', [draftId])
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
@@ -1845,17 +2322,24 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
       insert into summaries (user_id, project_id, type, title, period, content)
       values ($1, $2, $3, $4, $5, $6)
       `,
-      [userId, projectId, type, title || `${formatDate(new Date())} AI 生成总结`, 'AI 对话生成', providedContent],
+      [
+        userId,
+        projectId,
+        type,
+        encryptText(title || `${formatDate(new Date())} AI 生成总结`),
+        encryptText('AI 对话生成'),
+        encryptText(providedContent),
+      ],
     )
     response.status(201).json(await getWorkspace(userId))
     return
   }
 
   const content = [
-    `## 进展\n${project.journal ?? '本周期暂无新增日记。'}`,
+    `## 进展\n${project.journal ? decryptText(project.journal) : '本周期暂无新增日记。'}`,
     '## 关键决策\n第一版继续围绕个人项目上下文整理，不扩展团队协作。',
-    `## 未解决问题\n${project.todo ?? '暂无明确待办阻塞。'}`,
-    `## 风险\n${project.risks ?? '当前没有记录中的高风险。'}`,
+    `## 未解决问题\n${project.todo ? decryptText(project.todo) : '暂无明确待办阻塞。'}`,
+    `## 风险\n${project.risks ? decryptText(project.risks) : '当前没有记录中的高风险。'}`,
     '## 下步建议\n- 优先处理高优先级待办\n- 在明天日记中补充结果',
     `## 状态变化\n项目当前为「${project.status}」。`,
   ].join('\n\n')
@@ -1869,9 +2353,9 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
       userId,
       projectId,
       type,
-      `${formatDate(new Date())} ${type === 'weekly' ? '周总结' : '月总结'}`,
-      type === 'weekly' ? '当前周' : '当前月',
-      content,
+      encryptText(`${formatDate(new Date())} ${type === 'weekly' ? '周总结' : '月总结'}`),
+      encryptText(type === 'weekly' ? '当前周' : '当前月'),
+      encryptText(content),
     ],
   )
   response.status(201).json(await getWorkspace(userId))
@@ -1883,11 +2367,13 @@ app.get(/^(?!\/api).*/, (_request, response) => {
   response.sendFile(path.join(clientDistPath, 'index.html'))
 })
 
-app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
+  void next
   console.error(error)
   response.status(500).json({ error: 'Internal server error' })
 })
 
+assertEncryptionConfigured()
 await query(schemaSql)
 
 app.listen(port, () => {

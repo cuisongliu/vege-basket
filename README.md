@@ -19,3 +19,20 @@ npm run dev
 ```
 
 开发服务使用 Vite 启动。如果 5173 端口被占用，Vite 会自动切换到下一个可用端口。
+
+## 敏感数据加密
+
+服务端会对项目名、标签、日记、待办标题、风险、草稿、总结、AI API Key、协作者姓名和邀请邮箱做应用层 AES-256-GCM 加密，数据库中只保存密文。首次运行前需要配置：
+
+```bash
+APP_ENCRYPTION_ACTIVE_KEY_ID=v1
+APP_ENCRYPTION_KEYS=v1:$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+```
+
+已有明文数据可执行一次迁移：
+
+```bash
+npm run db:encrypt-existing
+```
+
+请妥善备份 `APP_ENCRYPTION_KEYS`。如果密钥丢失，已加密的敏感数据无法恢复；生产环境应通过部署平台 Secret 注入，不要提交到 Git。

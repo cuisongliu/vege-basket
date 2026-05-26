@@ -80,6 +80,7 @@ import {
   fetchAiSettings,
   fetchCurrentUser,
   getAuthToken,
+  inviteProjectMember,
   loginAccount,
   registerAccount,
   clearAuthToken,
@@ -87,6 +88,7 @@ import {
   removeDraft,
   removeJournalEntry,
   removeProject,
+  removeProjectMember,
   removeTodo,
   resolveRisk,
   updateJournalEntry,
@@ -106,8 +108,10 @@ import {
 import type {
   Collaborator,
   InboxItem,
+  JournalVisibility,
   Priority,
   Project,
+  ProjectMembership,
   ProjectStatus,
   Summary,
   Todo,
@@ -275,7 +279,10 @@ const priorityRank: Record<Priority, number> = {
 const initialProjects: Project[] = [
   {
     id: 1,
+    accessRole: 'owner',
     name: 'AIGC 内容工作台',
+    ownerName: 'Felix',
+    ownerUserId: 1,
     status: 'active',
     createdAt: '2026-05-12 09:40',
     updatedAt: '今天 15:20',
@@ -285,12 +292,18 @@ const initialProjects: Project[] = [
       {
         id: 101,
         createdAt: `${today} 15:20:00`,
+        authorUserId: 1,
+        speakerName: 'Felix',
+        visibility: 'private',
         content:
           '确认第一版以批量生成和人工精修为核心，不做复杂团队协作。下一步需要整理内容模板和评估维度。',
       },
       {
         id: 102,
         createdAt: '2026-05-14 18:40:00',
+        authorUserId: 1,
+        speakerName: 'Felix',
+        visibility: 'private',
         content:
           '和设计侧讨论了编辑器结构，决定先保留单栏写作体验，把素材面板放到右侧抽屉。',
       },
@@ -298,7 +311,10 @@ const initialProjects: Project[] = [
   },
   {
     id: 2,
+    accessRole: 'owner',
     name: '数据看板重构',
+    ownerName: 'Felix',
+    ownerUserId: 1,
     status: 'active',
     createdAt: '2026-05-10 14:20',
     updatedAt: '今天 11:05',
@@ -308,6 +324,9 @@ const initialProjects: Project[] = [
       {
         id: 201,
         createdAt: `${today} 11:05:00`,
+        authorUserId: 1,
+        speakerName: 'Felix',
+        visibility: 'private',
         content:
           '梳理了核心指标口径，发现转化漏斗和留存报表的数据源不一致，需要约业务方统一定义。',
       },
@@ -315,7 +334,10 @@ const initialProjects: Project[] = [
   },
   {
     id: 3,
+    accessRole: 'owner',
     name: '内部知识库迁移',
+    ownerName: 'Felix',
+    ownerUserId: 1,
     status: 'paused',
     createdAt: '2026-05-08 10:15',
     updatedAt: '昨天 18:40',
@@ -325,6 +347,9 @@ const initialProjects: Project[] = [
       {
         id: 301,
         createdAt: '2026-05-14 19:06:00',
+        authorUserId: 1,
+        speakerName: 'Felix',
+        visibility: 'private',
         content:
           '导入了第一批历史 Markdown。暂时不做结构化解析，先进入草稿箱，后续用 AI 帮助归类。',
       },
@@ -332,7 +357,10 @@ const initialProjects: Project[] = [
   },
   {
     id: 4,
+    accessRole: 'owner',
     name: '支付链路稳定性',
+    ownerName: 'Felix',
+    ownerUserId: 1,
     status: 'completed',
     createdAt: '2026-05-01 16:30',
     updatedAt: '05-12 17:30',
@@ -342,6 +370,9 @@ const initialProjects: Project[] = [
       {
         id: 401,
         createdAt: '2026-05-12 17:30:00',
+        authorUserId: 1,
+        speakerName: 'Felix',
+        visibility: 'private',
         content: '完成异常重试策略复盘，产出上线后监控清单。',
       },
     ],
@@ -406,6 +437,8 @@ const initialCollaborators: Collaborator[] = [
   },
 ]
 
+const initialMemberships: ProjectMembership[] = []
+
 const initialInbox: InboxItem[] = [
   {
     id: 1,
@@ -457,6 +490,7 @@ function App() {
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
   const [collaborators, setCollaborators] = useState(initialCollaborators)
+  const [memberships, setMemberships] = useState(initialMemberships)
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [selectedProjectId, setSelectedProjectId] = useState(1)
@@ -473,6 +507,7 @@ function App() {
   const [newProjectCollaboratorIds, setNewProjectCollaboratorIds] = useState<number[]>([])
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
   const [isNewCollaboratorDialogOpen, setIsNewCollaboratorDialogOpen] = useState(false)
+  const [isProjectMembersDialogOpen, setIsProjectMembersDialogOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
@@ -498,6 +533,7 @@ function App() {
     setProjects(data.projects)
     setTodos(data.todos)
     setCollaborators(data.collaborators)
+    setMemberships(data.memberships)
     setInbox(data.inbox)
     setSummaries(data.summaries)
     setSelectedProjectId((current) => {
@@ -700,7 +736,15 @@ function App() {
     const nextContent = content.trim()
     if (!nextContent) return
 
-    await runMutation(() => updateJournalEntry(projectId, entryId, nextContent))
+    await runMutation(() => updateJournalEntry(projectId, entryId, { content: nextContent }))
+  }
+
+  async function updateJournalVisibility(
+    projectId: number,
+    entryId: number,
+    visibility: JournalVisibility,
+  ) {
+    await runMutation(() => updateJournalEntry(projectId, entryId, { visibility }))
   }
 
   async function markJournalAsRisk(projectId: number, entryId: number) {
@@ -757,6 +801,16 @@ function App() {
 
   async function deleteCollaborator(collaboratorId: number) {
     await runMutation(() => removeCollaborator(collaboratorId))
+  }
+
+  async function inviteMember(projectId: number, email: string) {
+    const nextEmail = email.trim()
+    if (!nextEmail) return
+    await runMutation(() => inviteProjectMember(projectId, { email: nextEmail }))
+  }
+
+  async function deleteMember(projectId: number, membershipId: number) {
+    await runMutation(() => removeProjectMember(projectId, membershipId))
   }
 
   async function archiveInboxItem(item: InboxItem, projectId: number) {
@@ -863,10 +917,10 @@ function App() {
 	  setAiError('')
 	}
 
-	function exportMarkdown(projectId?: number) {
+  function exportMarkdown(projectId?: number) {
     const targets = projectId
       ? projects.filter((project) => project.id === projectId)
-      : projects
+      : projects.filter((project) => project.accessRole === 'owner')
     const body = targets
       .map((project) => {
         const projectTodosText = todos
@@ -874,7 +928,7 @@ function App() {
           .map((todo) => `- [${todo.done ? 'x' : ' '}] ${todo.title}`)
           .join('\n')
         const journalsText = project.journals
-          .map((entry) => `### ${entry.createdAt}\n\n${entry.content}`)
+          .map((entry) => `### ${entry.speakerName} · ${entry.createdAt} · ${entry.visibility === 'public' ? '公开' : '私有'}\n\n${entry.content}`)
           .join('\n\n')
         const summariesText = summaries
           .filter((summary) => summary.projectId === project.id)
@@ -938,12 +992,16 @@ ${summariesText || '暂无总结'}`
           <NavButton active={view === 'collaborators'} onClick={() => setView('collaborators')}>
             <AddressBook size={18} weight="duotone" /> 协作者
           </NavButton>
-          <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-            <Tray size={18} weight="duotone" /> 草稿箱
-          </NavButton>
-          <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
-            <FileText size={18} weight="duotone" /> AI 总结
-          </NavButton>
+          {projects.some((project) => project.accessRole === 'owner') && (
+            <>
+              <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
+                <Tray size={18} weight="duotone" /> 草稿箱
+              </NavButton>
+              <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
+                <FileText size={18} weight="duotone" /> AI 总结
+              </NavButton>
+            </>
+          )}
         </nav>
         <AccountMenu
           user={authUser}
@@ -980,6 +1038,33 @@ ${summariesText || '暂无总结'}`
             </div>
           </div>
           <div className="topbar-actions">
+            {view === 'project' && selectedProject?.accessRole === 'owner' && (
+              <Dialog
+                open={isProjectMembersDialogOpen}
+                onOpenChange={setIsProjectMembersDialogOpen}
+              >
+                <DialogTrigger asChild>
+                  <Button className="ghost-button project-members-trigger" type="button" variant="outline">
+                    <AddressBook size={16} /> 成员
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>项目成员</DialogTitle>
+                    <DialogDescription>
+                      邀请成员加入后，TA 可以新增自己的日记和项目待办，但不能修改项目状态或名称。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <ProjectMembersPanel
+                    memberships={memberships.filter(
+                      (membership) => membership.projectId === selectedProject.id,
+                    )}
+                    onInvite={(email) => inviteMember(selectedProject.id, email)}
+                    onRemove={(membershipId) => deleteMember(selectedProject.id, membershipId)}
+                  />
+                </DialogContent>
+              </Dialog>
+            )}
             <Button
               className="ghost-button"
               variant="outline"
@@ -1021,13 +1106,15 @@ ${summariesText || '暂无总结'}`
                 </DialogContent>
               </Dialog>
             ) : view === 'collaborators' ? (
-              <Button
-                className="solid-button"
-                type="button"
-                onClick={() => setIsNewCollaboratorDialogOpen(true)}
-              >
-                <Plus size={17} /> 新增协作者
-              </Button>
+              projects.some((project) => project.accessRole === 'owner') && (
+                <Button
+                  className="solid-button"
+                  type="button"
+                  onClick={() => setIsNewCollaboratorDialogOpen(true)}
+                >
+                  <Plus size={17} /> 新增协作者
+                </Button>
+              )
             ) : (
               <Button className="solid-button" type="button" onClick={() => setView('inbox')}>
                 <Plus size={17} /> 快速捕捉
@@ -1058,6 +1145,7 @@ ${summariesText || '暂无总结'}`
             onEditJournalEntry={editJournalEntry}
             onMarkJournalAsRisk={markJournalAsRisk}
             onResolveRisk={resolveProjectRisk}
+            onUpdateJournalVisibility={updateJournalVisibility}
             onDeleteTodo={deleteTodo}
             onTodoCollaboratorChange={setTodoCollaboratorId}
             onTodoDueDateChange={setTodoDueDate}
@@ -1065,6 +1153,7 @@ ${summariesText || '暂无总结'}`
             onTodoPriorityChange={setTodoPriority}
             onToggleTodo={toggleTodo}
             project={selectedProject}
+            currentUser={authUser}
             projects={projects}
             projectTodos={projectTodos}
             todoCollaboratorId={todoCollaboratorId}
@@ -1109,6 +1198,7 @@ ${summariesText || '暂无总结'}`
             onProjectClick={selectProject}
             onToggleTodo={toggleTodo}
             onUpdateTodo={updateTodoDetails}
+            currentUserId={authUser?.id}
             projects={projects}
             todos={todos}
           />
@@ -1771,6 +1861,7 @@ function ProjectDetail({
   onEditJournalEntry,
   onMarkJournalAsRisk,
   onResolveRisk,
+  onUpdateJournalVisibility,
   onDeleteTodo,
   onTodoCollaboratorChange,
   onTodoDueDateChange,
@@ -1778,6 +1869,7 @@ function ProjectDetail({
   onTodoPriorityChange,
   onToggleTodo,
   project,
+  currentUser,
   projects,
   projectTodos,
   todoCollaboratorId,
@@ -1803,6 +1895,11 @@ function ProjectDetail({
   ) => void
   onMarkJournalAsRisk: (projectId: number, entryId: number) => void
   onResolveRisk: (projectId: number, content: string) => void
+  onUpdateJournalVisibility: (
+    projectId: number,
+    entryId: number,
+    visibility: JournalVisibility,
+  ) => void
   onDeleteTodo: (todoId: number) => void
   onTodoCollaboratorChange: (id: number | null) => void
   onTodoDueDateChange: (value: string) => void
@@ -1810,6 +1907,7 @@ function ProjectDetail({
   onTodoPriorityChange: (value: Priority) => void
   onToggleTodo: (id: number) => void
   project: Project
+  currentUser: AuthUser | null
   projects: Project[]
   projectTodos: Todo[]
   todoCollaboratorId: number | null
@@ -1847,6 +1945,7 @@ function ProjectDetail({
   const projectCollaborators = collaborators.filter(
     (collaborator) => collaborator.projectId === project.id,
   )
+  const isOwner = project.accessRole === 'owner'
 
   useEffect(() => {
     setSelectedJournalDate(defaultJournalDate)
@@ -1886,38 +1985,49 @@ function ProjectDetail({
             <div className="project-title-row">
               <h3>{project.name}</h3>
               <ProjectTags tags={project.tags} />
+              {project.accessRole === 'member' && (
+                <Badge className="access-pill">协作项目 · Owner {project.ownerName}</Badge>
+              )}
             </div>
           </div>
           <div className="project-header-actions">
-            <div className="project-status-control">
-              <span>项目状态</span>
-              <Select
-                value={project.status}
-                onValueChange={(value) =>
-                  onUpdateProjectStatus(project.id, value as ProjectStatus)
-                }
-              >
-                <SelectTrigger aria-label="修改项目状态">
-                  <SelectValue placeholder="选择状态" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">进行中</SelectItem>
-                  <SelectItem value="paused">暂停</SelectItem>
-                  <SelectItem value="completed">已结束</SelectItem>
-                  <SelectItem value="archived">归档</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <ProjectActionsMenu
-              exportProject={() => exportMarkdown(project.id)}
-              generateWeeklySummary={() => generateSummary(project.id, 'weekly')}
-              onDeleteProject={() => onDeleteProject(project.id)}
-              onRenameClick={() => {
-                setProjectNameDraft(project.name)
-                setRenameDialogOpen(true)
-              }}
-              projectName={project.name}
-            />
+            {isOwner ? (
+              <>
+                <div className="project-status-control">
+                  <span>项目状态</span>
+                  <Select
+                    value={project.status}
+                    onValueChange={(value) =>
+                      onUpdateProjectStatus(project.id, value as ProjectStatus)
+                    }
+                  >
+                    <SelectTrigger aria-label="修改项目状态">
+                      <SelectValue placeholder="选择状态" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">进行中</SelectItem>
+                      <SelectItem value="paused">暂停</SelectItem>
+                      <SelectItem value="completed">已结束</SelectItem>
+                      <SelectItem value="archived">归档</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <ProjectActionsMenu
+                  exportProject={() => exportMarkdown(project.id)}
+                  generateWeeklySummary={() => generateSummary(project.id, 'weekly')}
+                  onDeleteProject={() => onDeleteProject(project.id)}
+                  onRenameClick={() => {
+                    setProjectNameDraft(project.name)
+                    setRenameDialogOpen(true)
+                  }}
+                  projectName={project.name}
+                />
+              </>
+            ) : (
+              <Badge className={`status-pill ${project.status}`}>
+                {statusCopy[project.status]}
+              </Badge>
+            )}
           </div>
           <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
             <DialogContent>
@@ -1976,110 +2086,146 @@ function ProjectDetail({
 
         <div className="history-list">
           {visibleJournals.length > 0 ? (
-            visibleJournals.map((entry) => (
-              <article className="history-item" key={entry.id}>
-                <div className="history-item-header">
-                  <time>{entry.createdAt}</time>
-                  <span className="history-actions">
-                    <Button
-                      className="history-edit-button"
-                      variant="ghost"
-                      size="icon"
-                      type="button"
-                      aria-label="编辑日记"
-                      title="编辑日记"
-                      onClick={() => {
-                        setEditingJournalId(entry.id)
-                        setJournalEditDraft(entry.content)
-                      }}
-                    >
-                      <PencilSimple size={15} />
-                    </Button>
-                    <Button
-                      className="history-risk-button"
-                      variant="ghost"
-                      size="icon"
-                      type="button"
-                      aria-label="标记为风险"
-                      title="标记为风险"
-                      onClick={() => onMarkJournalAsRisk(project.id, entry.id)}
-                    >
-                      <WarningCircle size={15} />
-                    </Button>
-                    <ConfirmDialog
-                      confirmLabel="删除日记"
-                      description={`这条 ${entry.createdAt} 的日记删除后将无法在当前预览数据中恢复。`}
-                      onConfirm={() => onDeleteJournalEntry(project.id, entry.id)}
-                      title="确认删除这条日记？"
-                      trigger={
+            visibleJournals.map((entry) => {
+              const canEditEntry =
+                entry.authorUserId === currentUser?.id ||
+                (!entry.authorUserId && isOwner)
+              const canDeleteEntry = isOwner || canEditEntry
+              return (
+                <article className="history-item" key={entry.id}>
+                  <div className="history-item-header">
+                    <div className="history-speaker">
+                      <time>{entry.createdAt}</time>
+                      <span>{entry.speakerName}</span>
+                      <Badge className={entry.visibility === 'public' ? 'visibility-pill public' : 'visibility-pill'}>
+                        {entry.visibility === 'public' ? '公开' : '私有'}
+                      </Badge>
+                    </div>
+                    <span className="history-actions">
+                      {canEditEntry && (
                         <Button
-                          className="history-delete-button"
+                          className="history-visibility-button"
+                          variant="ghost"
+                          type="button"
+                          aria-label={entry.visibility === 'public' ? '改为私有日记' : '公开日记'}
+                          title={entry.visibility === 'public' ? '改为私有日记' : '公开日记'}
+                          onClick={() =>
+                            onUpdateJournalVisibility(
+                              project.id,
+                              entry.id,
+                              entry.visibility === 'public' ? 'private' : 'public',
+                            )
+                          }
+                        >
+                          {entry.visibility === 'public' ? '设私有' : '公开'}
+                        </Button>
+                      )}
+                      {canEditEntry && (
+                        <Button
+                          className="history-edit-button"
                           variant="ghost"
                           size="icon"
                           type="button"
-                          aria-label="删除日记"
+                          aria-label="编辑日记"
+                          title="编辑日记"
+                          onClick={() => {
+                            setEditingJournalId(entry.id)
+                            setJournalEditDraft(entry.content)
+                          }}
                         >
-                          <Trash size={15} />
+                          <PencilSimple size={15} />
                         </Button>
-                      }
-                    />
-                  </span>
-                </div>
-                {editingJournalId === entry.id ? (
-                  <form
-                    className="journal-edit-form"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      const nextContent = journalEditDraft.trim()
-                      if (!nextContent) return
-                      onEditJournalEntry(project.id, entry.id, nextContent)
-                      setEditingJournalId(null)
-                      setJournalEditDraft('')
-                    }}
-                  >
-                    <Textarea
-                      autoFocus
-                      aria-label="编辑日记内容"
-                      value={journalEditDraft}
-                      onChange={(event) => setJournalEditDraft(event.target.value)}
-                      onCompositionEnd={() => setIsJournalComposing(false)}
-                      onCompositionStart={() => setIsJournalComposing(true)}
-                      onKeyDown={(event) =>
-                        handleJournalKeyDown(event, () => {
-                          const nextContent = journalEditDraft.trim()
-                          if (!nextContent) return
-                          onEditJournalEntry(project.id, entry.id, nextContent)
-                          setEditingJournalId(null)
-                          setJournalEditDraft('')
-                        })
-                      }
-                    />
-                    <div className="journal-edit-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => {
-                          setEditingJournalId(null)
-                          setJournalEditDraft('')
-                        }}
-                      >
-                        取消
-                      </Button>
-                      <Button
-                        className="solid-button"
-                        type="submit"
-                        disabled={!journalEditDraft.trim()}
-                      >
-                        保存修改
-                      </Button>
-                    </div>
-                  </form>
-                ) : (
-                  <MarkdownPreview content={entry.content} compact />
-                )}
-              </article>
-            ))
+                      )}
+                      {canEditEntry && (
+                        <Button
+                          className="history-risk-button"
+                          variant="ghost"
+                          size="icon"
+                          type="button"
+                          aria-label="标记为项目风险"
+                          title="标记为项目风险"
+                          onClick={() => onMarkJournalAsRisk(project.id, entry.id)}
+                        >
+                          <WarningCircle size={15} />
+                        </Button>
+                      )}
+                      {canDeleteEntry && (
+                        <ConfirmDialog
+                          confirmLabel="删除日记"
+                          description={`这条 ${entry.createdAt} 的日记删除后将无法在当前预览数据中恢复。`}
+                          onConfirm={() => onDeleteJournalEntry(project.id, entry.id)}
+                          title="确认删除这条日记？"
+                          trigger={
+                            <Button
+                              className="history-delete-button"
+                              variant="ghost"
+                              size="icon"
+                              type="button"
+                              aria-label="删除日记"
+                            >
+                              <Trash size={15} />
+                            </Button>
+                          }
+                        />
+                      )}
+                    </span>
+                  </div>
+                  {editingJournalId === entry.id ? (
+                    <form
+                      className="journal-edit-form"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        const nextContent = journalEditDraft.trim()
+                        if (!nextContent) return
+                        onEditJournalEntry(project.id, entry.id, nextContent)
+                        setEditingJournalId(null)
+                        setJournalEditDraft('')
+                      }}
+                    >
+                      <Textarea
+                        autoFocus
+                        aria-label="编辑日记内容"
+                        value={journalEditDraft}
+                        onChange={(event) => setJournalEditDraft(event.target.value)}
+                        onCompositionEnd={() => setIsJournalComposing(false)}
+                        onCompositionStart={() => setIsJournalComposing(true)}
+                        onKeyDown={(event) =>
+                          handleJournalKeyDown(event, () => {
+                            const nextContent = journalEditDraft.trim()
+                            if (!nextContent) return
+                            onEditJournalEntry(project.id, entry.id, nextContent)
+                            setEditingJournalId(null)
+                            setJournalEditDraft('')
+                          })
+                        }
+                      />
+                      <div className="journal-edit-actions">
+                        <Button
+                          className="ghost-button"
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingJournalId(null)
+                            setJournalEditDraft('')
+                          }}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          className="solid-button"
+                          type="submit"
+                          disabled={!journalEditDraft.trim()}
+                        >
+                          保存修改
+                        </Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <MarkdownPreview content={entry.content} compact />
+                  )}
+                </article>
+              )
+            })
           ) : (
             <p className="empty-state">这一天还没有日记记录。</p>
           )}
@@ -2168,6 +2314,7 @@ function ProjectDetail({
         </div>
         <div className="side-panel-scroll-area">
           <TodoList
+            currentUserId={currentUser?.id}
             todos={projectTodos}
             projects={projects}
             onDeleteTodo={onDeleteTodo}
@@ -2176,10 +2323,76 @@ function ProjectDetail({
           />
           <div className="side-section">
             <PanelTitle icon={<WarningCircle size={18} />} title="风险与阻塞" />
-            <RiskList project={project} onResolveRisk={onResolveRisk} />
+            <RiskList
+              canResolve={isOwner}
+              project={project}
+              onResolveRisk={onResolveRisk}
+            />
           </div>
         </div>
       </Card>
+    </div>
+  )
+}
+
+function ProjectMembersPanel({
+  memberships,
+  onInvite,
+  onRemove,
+}: {
+  memberships: ProjectMembership[]
+  onInvite: (email: string) => void
+  onRemove: (membershipId: number) => void
+}) {
+  const [email, setEmail] = useState('')
+
+  function submitInvite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const nextEmail = email.trim()
+    if (!nextEmail) return
+    onInvite(nextEmail)
+    setEmail('')
+  }
+
+  return (
+    <div className="project-members-panel">
+      <PanelTitle icon={<AddressBook size={18} />} title="项目成员" />
+      <form className="member-invite-form" onSubmit={submitInvite}>
+        <Input
+          type="email"
+          placeholder="输入邮箱邀请"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+        />
+        <Button className="solid-button" type="submit" disabled={!email.trim()}>
+          邀请
+        </Button>
+      </form>
+      <div className="member-list">
+        {memberships.length === 0 ? (
+          <p className="empty-state">还没有邀请成员。</p>
+        ) : (
+          memberships.map((membership) => (
+            <article className="member-item" key={membership.id}>
+              <span>
+                <strong>{membership.memberName}</strong>
+                <small>{membership.invitedEmail}</small>
+              </span>
+              <Button
+                className="todo-delete-button"
+                variant="ghost"
+                size="icon"
+                type="button"
+                aria-label="移除成员"
+                title="移除成员"
+                onClick={() => onRemove(membership.id)}
+              >
+                <Trash size={14} />
+              </Button>
+            </article>
+          ))
+        )}
+      </div>
     </div>
   )
 }
@@ -2188,12 +2401,14 @@ function JournalDatePicker({
   ariaLabel = '选择日期',
   className,
   datesWithEntries,
+  disabled = false,
   onChange,
   value,
 }: {
   ariaLabel?: string
   className?: string
   datesWithEntries: string[]
+  disabled?: boolean
   onChange: (date: string) => void
   value: string
 }) {
@@ -2240,6 +2455,7 @@ function JournalDatePicker({
         <Button
           aria-label={ariaLabel}
           className={className ? `journal-date-trigger ${className}` : 'journal-date-trigger'}
+          disabled={disabled}
           type="button"
           variant="outline"
         >
@@ -2388,6 +2604,7 @@ function ProjectActionsMenu({
 
 function CurrentTodosView({
   collaborators,
+  currentUserId,
   onDeleteTodo,
   onProjectClick,
   onToggleTodo,
@@ -2396,6 +2613,7 @@ function CurrentTodosView({
   todos,
 }: {
   collaborators: Collaborator[]
+  currentUserId?: number
   onDeleteTodo: (id: number) => void
   onProjectClick: (id: number) => void
   onToggleTodo: (id: number) => void
@@ -2526,6 +2744,8 @@ function CurrentTodosView({
                     const projectCollaborators = collaborators.filter(
                       (collaborator) => collaborator.projectId === project.id,
                     )
+                    const canManageTodo =
+                      project.accessRole === 'owner' || todo.createdByUserId === currentUserId
                     return (
                       <article
                         className={todo.done ? 'todo-board-row done' : 'todo-board-row'}
@@ -2536,6 +2756,7 @@ function CurrentTodosView({
                           <button
                             className="checkmark"
                             type="button"
+                            disabled={!canManageTodo}
                             onClick={() => onToggleTodo(todo.id)}
                             aria-label={todo.done ? '标记为未完成' : '标记为已完成'}
                           >
@@ -2548,6 +2769,7 @@ function CurrentTodosView({
                             collaborators={projectCollaborators}
                             value={todo.collaboratorId ?? null}
                             compact
+                            disabled={!canManageTodo}
                             onChange={(collaboratorId) =>
                               onUpdateTodo(todo.id, {
                                 collaboratorId,
@@ -2558,6 +2780,7 @@ function CurrentTodosView({
                         <span className="todo-board-priority-cell" role="cell">
                           <Select
                             value={todo.priority}
+                            disabled={!canManageTodo}
                             onValueChange={(value) =>
                               onUpdateTodo(todo.id, { priority: value as Priority })
                             }
@@ -2579,6 +2802,7 @@ function CurrentTodosView({
                           <JournalDatePicker
                             ariaLabel="修改待办截止日期"
                             className="todo-board-date-trigger"
+                            disabled={!canManageTodo}
                             datesWithEntries={[]}
                             value={todo.dueDate}
                             onChange={(dueDate) => onUpdateTodo(todo.id, { dueDate })}
@@ -2591,23 +2815,25 @@ function CurrentTodosView({
                           {todo.done ? '已完成' : '未完成'}
                         </span>
                         <span className="todo-board-action-cell" role="cell">
-                          <ConfirmDialog
-                            confirmLabel="删除待办"
-                            description={`删除「${todo.title}」后，这条待办将从「${project.name}」移除。`}
-                            onConfirm={() => onDeleteTodo(todo.id)}
-                            title="确认删除这条待办？"
-                            trigger={
-                              <Button
-                                className="todo-delete-button"
-                                variant="ghost"
-                                size="icon"
-                                type="button"
-                                aria-label="删除待办"
-                              >
-                                <Trash size={14} />
-                              </Button>
-                            }
-                          />
+                          {canManageTodo && (
+                            <ConfirmDialog
+                              confirmLabel="删除待办"
+                              description={`删除「${todo.title}」后，这条待办将从「${project.name}」移除。`}
+                              onConfirm={() => onDeleteTodo(todo.id)}
+                              title="确认删除这条待办？"
+                              trigger={
+                                <Button
+                                  className="todo-delete-button"
+                                  variant="ghost"
+                                  size="icon"
+                                  type="button"
+                                  aria-label="删除待办"
+                                >
+                                  <Trash size={14} />
+                                </Button>
+                              }
+                            />
+                          )}
                         </span>
                       </article>
                     )
@@ -2677,7 +2903,10 @@ function CollaboratorsPanel({
     })
 
     return Array.from(personMap.values())
-      .map(({ projectIds: _projectIds, ...person }) => person)
+      .map((personWithProjectIds) => {
+        const { name, primaryId, projects, roles } = personWithProjectIds
+        return { name, primaryId, projects, roles }
+      })
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
   }, [collaborators, projects])
 
@@ -3212,11 +3441,13 @@ function getCaretMenuPosition(
 function CollaboratorPicker({
   collaborators,
   compact = false,
+  disabled = false,
   onChange,
   value,
 }: {
   collaborators: Collaborator[]
   compact?: boolean
+  disabled?: boolean
   onChange: (id: number | null) => void
   value: number | null
 }) {
@@ -3226,6 +3457,7 @@ function CollaboratorPicker({
   return (
     <span className={compact ? 'collaborator-picker compact' : 'collaborator-picker'}>
       <Select
+        disabled={disabled}
         value={value ? String(value) : 'none'}
         onValueChange={(nextValue) =>
           onChange(nextValue === 'none' ? null : Number(nextValue))
@@ -3519,6 +3751,7 @@ function SearchView({
             <div>
               <div className="result-meta-row">
                 <Badge className={`status-pill ${project.status}`}>{statusCopy[project.status]}</Badge>
+                {project.accessRole === 'member' && <Badge className="access-pill">协作</Badge>}
                 <span>创建于 {project.createdAt}</span>
               </div>
               <div className="result-title-row">
@@ -3977,12 +4210,14 @@ function MarkdownPreview({
 
 function TodoList({
   compact = false,
+  currentUserId,
   onDeleteTodo,
   onToggleTodo,
   projects,
   todos,
 }: {
   compact?: boolean
+  currentUserId?: number
   onDeleteTodo: (id: number) => void
   onToggleTodo: (id: number) => void
   projects: Project[]
@@ -4021,6 +4256,8 @@ function TodoList({
       <div className={compact ? 'todo-list compact' : 'todo-list'}>
       {visibleTodos.map((todo) => {
         const project = projects.find((item) => item.id === todo.projectId)
+        const canManageTodo =
+          project?.accessRole === 'owner' || todo.createdByUserId === currentUserId
         return (
           <article
             className={todo.done ? 'todo-item done' : 'todo-item'}
@@ -4029,6 +4266,7 @@ function TodoList({
             <button
               className="checkmark"
               type="button"
+              disabled={!canManageTodo}
               onClick={() => onToggleTodo(todo.id)}
               aria-label={todo.done ? '标记为未完成' : '标记为已完成'}
             >
@@ -4044,23 +4282,25 @@ function TodoList({
               <Badge className={`priority ${todo.priority}`}>
                 {priorityCopy[todo.priority]}
               </Badge>
-              <ConfirmDialog
-                confirmLabel="删除待办"
-                description={`删除「${todo.title}」后，这条待办将从当前项目移除。`}
-                onConfirm={() => onDeleteTodo(todo.id)}
-                title="确认删除这条待办？"
-                trigger={
-                  <Button
-                    className="todo-delete-button"
-                    variant="ghost"
-                    size="icon"
-                    type="button"
-                    aria-label="删除待办"
-                  >
-                    <Trash size={14} />
-                  </Button>
-                }
-              />
+              {canManageTodo && (
+                <ConfirmDialog
+                  confirmLabel="删除待办"
+                  description={`删除「${todo.title}」后，这条待办将从当前项目移除。`}
+                  onConfirm={() => onDeleteTodo(todo.id)}
+                  title="确认删除这条待办？"
+                  trigger={
+                    <Button
+                      className="todo-delete-button"
+                      variant="ghost"
+                      size="icon"
+                      type="button"
+                      aria-label="删除待办"
+                    >
+                      <Trash size={14} />
+                    </Button>
+                  }
+                />
+              )}
             </span>
           </article>
         )
@@ -4080,9 +4320,11 @@ function TodoList({
 }
 
 function RiskList({
+  canResolve = true,
   onResolveRisk,
   project,
 }: {
+  canResolve?: boolean
   onResolveRisk: (projectId: number, risk: string) => void
   project: Project
 }) {
@@ -4121,16 +4363,18 @@ function RiskList({
           <article key={risk} className="risk-item">
             <div className="risk-item-header">
               <strong>{project.name}</strong>
-              <Button
-                className="risk-resolve-button"
-                variant="ghost"
-                type="button"
-                aria-label="解决风险"
-                title="解决风险"
-                onClick={() => onResolveRisk(project.id, risk)}
-              >
-                解决
-              </Button>
+              {canResolve && (
+                <Button
+                  className="risk-resolve-button"
+                  variant="ghost"
+                  type="button"
+                  aria-label="解决风险"
+                  title="解决风险"
+                  onClick={() => onResolveRisk(project.id, risk)}
+                >
+                  解决
+                </Button>
+              )}
             </div>
             <p>{risk}</p>
           </article>

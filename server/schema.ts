@@ -34,12 +34,46 @@ create table if not exists projects (
   updated_at timestamptz not null default now()
 );
 
+alter table projects
+  add column if not exists tags_encrypted text;
+
+update projects
+set tags_encrypted = array_to_json(tags)::text
+where tags_encrypted is null;
+
+create table if not exists project_memberships (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  owner_user_id bigint not null references users(id) on delete cascade,
+  invited_user_id bigint references users(id) on delete cascade,
+  invited_email text not null,
+  invited_email_lookup text,
+  role text not null default 'member',
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  unique (project_id, invited_email)
+);
+
+alter table project_memberships
+  add column if not exists invited_email_lookup text;
+
 create table if not exists journal_entries (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
   content text not null,
   created_at timestamptz not null default now()
 );
+
+alter table journal_entries
+  add column if not exists author_user_id bigint references users(id) on delete set null,
+  add column if not exists visibility text not null default 'private';
+
+update journal_entries
+set author_user_id = projects.user_id
+from projects
+where journal_entries.project_id = projects.id
+  and journal_entries.author_user_id is null;
 
 create table if not exists todos (
   id bigserial primary key,
@@ -57,13 +91,26 @@ create table if not exists collaborators (
   user_id bigint not null references users(id) on delete cascade,
   project_id bigint not null references projects(id) on delete cascade,
   name text not null,
+  name_lookup text,
   role text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+alter table collaborators
+  add column if not exists name_lookup text;
+
 alter table todos
   add column if not exists collaborator_id bigint references collaborators(id) on delete set null;
+
+alter table todos
+  add column if not exists created_by_user_id bigint references users(id) on delete set null;
+
+update todos
+set created_by_user_id = projects.user_id
+from projects
+where todos.project_id = projects.id
+  and todos.created_by_user_id is null;
 
 create table if not exists risks (
   id bigserial primary key,
@@ -104,39 +151,28 @@ from projects
 where summaries.project_id = projects.id
   and summaries.user_id is null;
 
-update summaries
-set user_id = projects.user_id,
-    project_id = null,
-    period = '飞书对话分析'
-from projects
-where summaries.project_id = projects.id
-  and projects.name = '飞书对话分析'
-  and projects.tags @> array['飞书', '对话分析']::text[];
-
 alter table summaries
   alter column project_id drop not null;
 
-delete from projects
-where projects.name = '飞书对话分析'
-  and projects.tags @> array['飞书', '对话分析']::text[]
-  and not exists (select 1 from todos where todos.project_id = projects.id)
-  and not exists (select 1 from collaborators where collaborators.project_id = projects.id)
-  and not exists (select 1 from risks where risks.project_id = projects.id)
-  and not exists (
-    select 1
-    from journal_entries
-    where journal_entries.project_id = projects.id
-      and journal_entries.content <> '用于保存从飞书转发的群聊对话分析结果。'
-  );
-
 create index if not exists idx_projects_user_id on projects(user_id);
+create index if not exists idx_project_memberships_project_id on project_memberships(project_id);
+create index if not exists idx_project_memberships_owner_user_id on project_memberships(owner_user_id);
+create index if not exists idx_project_memberships_invited_user_id on project_memberships(invited_user_id);
+create index if not exists idx_project_memberships_invited_email on project_memberships(invited_email);
+create index if not exists idx_project_memberships_invited_email_lookup on project_memberships(invited_email_lookup);
+create unique index if not exists idx_project_memberships_project_email_lookup
+  on project_memberships(project_id, invited_email_lookup)
+  where invited_email_lookup is not null;
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
 create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
+create index if not exists idx_journal_entries_author_user_id on journal_entries(author_user_id);
 create index if not exists idx_todos_project_id on todos(project_id);
 create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
+create index if not exists idx_todos_created_by_user_id on todos(created_by_user_id);
 create index if not exists idx_collaborators_user_id on collaborators(user_id);
 create index if not exists idx_collaborators_project_id on collaborators(project_id);
+create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
 create index if not exists idx_summaries_user_id on summaries(user_id);

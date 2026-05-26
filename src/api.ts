@@ -1,8 +1,10 @@
 import type {
   Collaborator,
   InboxItem,
+  JournalVisibility,
   Priority,
   Project,
+  ProjectMembership,
   ProjectStatus,
   Summary,
   Todo,
@@ -11,6 +13,7 @@ import type {
 export type WorkspaceData = {
   collaborators: Collaborator[]
   inbox: InboxItem[]
+  memberships: ProjectMembership[]
   projects: Project[]
   summaries: Summary[]
   todos: Todo[]
@@ -153,11 +156,11 @@ export function createJournalEntry(projectId: number, content: string) {
 export function updateJournalEntry(
   projectId: number,
   entryId: number,
-  content: string,
+  payload: { content?: string; visibility?: JournalVisibility },
 ) {
   return request<WorkspaceData>(`/api/projects/${projectId}/journals/${entryId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(payload),
   })
 }
 
@@ -241,6 +244,19 @@ export function createTodo(payload: {
   return request<WorkspaceData>('/api/todos', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function inviteProjectMember(projectId: number, payload: { email: string }) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeProjectMember(projectId: number, membershipId: number) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/invitations/${membershipId}`, {
+    method: 'DELETE',
   })
 }
 
