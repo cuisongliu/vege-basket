@@ -5,12 +5,12 @@
     "app_host": "vege-basket-170451",
     "namespace": "ns-44bchscw",
     "region": "sealosgzg.site",
-    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
+    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-220437-amd64",
     "docker_hub_user": null,
     "repo_name": "vege-basket",
     "url": "https://vege-basket-170451.sealosgzg.site",
     "deployed_at": "2026-05-18T09:18:53.000Z",
-    "last_updated_at": "2026-05-26T13:52:12.943Z"
+    "last_updated_at": "2026-05-26T14:06:14.624Z"
   },
   "history": [
     {
@@ -254,6 +254,15 @@
       "method": "kubectl-set-image",
       "status": "success",
       "note": "Updated production with notification center, invitation confirmation, assigned todo notifications, todo assignee display fixes, and notification card layout refinements."
+    },
+    {
+      "at": "2026-05-26T14:06:14.624Z",
+      "action": "set-image",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-220437-amd64",
+      "method": "kubectl-set-image",
+      "status": "success",
+      "note": "Updated production notification center so invitation and reminder labels match assigned todo grouping."
     }
   ]
 }

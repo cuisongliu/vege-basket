@@ -3025,12 +3025,14 @@ function NotificationCenterView({
         <div className="notification-sections">
           {visibleInvites.length > 0 && (
             <section className="notification-section">
-              <h3>项目邀请</h3>
+              <h3 className="notification-section-title">
+                项目邀请
+                <span className="notification-kind">邀请</span>
+              </h3>
               <div className="notification-list">
                 {visibleInvites.map((invite) => (
                   <article className="notification-item" key={invite.id}>
                     <div>
-                      <span className="notification-kind">邀请</span>
                       <strong>{invite.projectName}</strong>
                       <p>{invite.invitedByName} 邀请你加入项目。</p>
                       <small>{invite.createdAt}</small>
@@ -3103,15 +3105,21 @@ function NotificationCenterView({
 
           {visibleDueTomorrowTodos.length > 0 && (
             <section className="notification-section">
-              <h3>明日到期</h3>
+              <h3 className="notification-section-title">
+                明日到期
+                <span className="notification-kind">提醒</span>
+              </h3>
               <div className="notification-list">
                 {visibleDueTomorrowTodos.map((todo) => (
                   <article className="notification-item" key={todo.id}>
                     <div>
-                      <span className="notification-kind">提醒</span>
                       <strong>{todo.title}</strong>
-                      <p>{todo.projectName} · 明天截止</p>
-                      <small>{priorityCopy[todo.priority]}</small>
+                      <p className="notification-meta-line">
+                        {todo.projectName} · 明天截止
+                        <span className={`notification-priority ${todo.priority}`}>
+                          {priorityCopy[todo.priority]}
+                        </span>
+                      </p>
                     </div>
                     <div className="notification-actions">
                       <Button
