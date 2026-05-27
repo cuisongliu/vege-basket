@@ -1398,12 +1398,13 @@ textarea:focus {
 .todo-board-row {
   display: grid;
   grid-template-columns:
-    minmax(260px, 1.9fr)
-    minmax(104px, 0.62fr)
-    minmax(70px, 0.45fr)
-    minmax(104px, 0.56fr)
-    minmax(74px, 0.48fr)
-    minmax(48px, 0.28fr);
+    minmax(240px, 1.75fr)
+    minmax(128px, 0.72fr)
+    minmax(104px, 0.58fr)
+    minmax(70px, 0.42fr)
+    minmax(104px, 0.54fr)
+    minmax(74px, 0.45fr)
+    minmax(48px, 0.24fr);
   gap: 10px;
   align-items: center;
 }
@@ -1482,6 +1483,7 @@ textarea:focus {
 
 .todo-board-project-cell,
 .todo-board-title-cell,
+.todo-board-collaborators-cell,
 .todo-board-assignee-cell,
 .todo-board-priority-cell,
 .todo-board-action-cell {
@@ -1518,6 +1520,39 @@ textarea:focus {
   background: color-mix(in oklch, var(--primary) 9%, transparent);
   font-size: 12px;
   font-weight: 640;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-board-collaborator-summary {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.todo-board-collaborator-summary strong {
+  flex: 0 0 auto;
+  min-width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--strong);
+  background: var(--field);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.todo-board-collaborator-summary span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1606,8 +1641,9 @@ textarea:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
     grid-template-areas:
       'title title title'
-      'assignee priority action'
-      'date status action';
+      'collaborators assignee action'
+      'priority date action'
+      'status status action';
     gap: 9px 10px;
     align-items: center;
     border: 1px solid var(--line);
@@ -1628,6 +1664,10 @@ textarea:focus {
     grid-area: assignee;
   }
 
+  .todo-board-collaborators-cell {
+    grid-area: collaborators;
+  }
+
   .todo-board-priority-cell {
     grid-area: priority;
   }
@@ -1645,6 +1685,7 @@ textarea:focus {
   }
 
   .todo-board-project-cell,
+  .todo-board-collaborators-cell,
   .todo-board-assignee-cell,
   .todo-board-priority-cell,
   .todo-board-date-cell,
@@ -1654,6 +1695,7 @@ textarea:focus {
   }
 
   .todo-board-priority-cell::before,
+  .todo-board-collaborators-cell::before,
   .todo-board-assignee-cell::before,
   .todo-board-date-cell::before,
   .todo-status-chip::before {
@@ -1687,6 +1729,10 @@ textarea:focus {
 
   .todo-board-assignee-cell::before {
     content: '负责人';
+  }
+
+  .todo-board-collaborators-cell::before {
+    content: '协作者';
   }
 
   .todo-board-date-cell::before {
@@ -3735,8 +3781,9 @@ textarea:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
     grid-template-areas:
       'title title title'
-      'assignee priority action'
-      'date status action';
+      'collaborators assignee action'
+      'priority date action'
+      'status status action';
     gap: 9px 10px;
     align-items: center;
     border: 1px solid var(--line);
@@ -3757,6 +3804,10 @@ textarea:focus {
     grid-area: assignee;
   }
 
+  .todo-board-collaborators-cell {
+    grid-area: collaborators;
+  }
+
   .todo-board-priority-cell {
     grid-area: priority;
   }
@@ -3774,6 +3825,7 @@ textarea:focus {
   }
 
   .todo-board-project-cell,
+  .todo-board-collaborators-cell,
   .todo-board-assignee-cell,
   .todo-board-priority-cell,
   .todo-board-date-cell,
@@ -3783,6 +3835,7 @@ textarea:focus {
   }
 
   .todo-board-priority-cell::before,
+  .todo-board-collaborators-cell::before,
   .todo-board-assignee-cell::before,
   .todo-board-date-cell::before,
   .todo-status-chip::before {
@@ -3816,6 +3869,10 @@ textarea:focus {
 
   .todo-board-assignee-cell::before {
     content: '负责人';
+  }
+
+  .todo-board-collaborators-cell::before {
+    content: '协作者';
   }
 
   .todo-board-date-cell::before {

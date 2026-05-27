@@ -150,6 +150,10 @@ type MentionOption = {
   name: string
   role: string
 }
+type ProjectCollaboratorSummary = {
+  count: number
+  names: string[]
+}
 
 const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
   'project-summary': {
@@ -863,17 +867,16 @@ function App() {
 
   async function addTodo(projectId?: number) {
     const targetProjectId = projectId ?? selectedProject?.id
-    const targetProject = projects.find((project) => project.id === targetProjectId)
-    const assigneeOptions = targetProject
-      ? getProjectAssignableUsers(targetProject, memberships)
-      : []
-    const mentionAssignee = extractMentionAssignee(todoDraft, assigneeOptions)
-    const assigneeUserId = todoCollaboratorId ?? mentionAssignee?.id
-    const title = stripTodoMentions(todoDraft, assigneeOptions).trim()
+    const mentionCollaborators = collaborators.filter(
+      (collaborator) => collaborator.projectId === targetProjectId,
+    )
+    const mentionCollaborator = extractMentionCollaborator(todoDraft, mentionCollaborators)
+    const title = stripTodoMentions(todoDraft, mentionCollaborators).trim()
     if (!title || !targetProjectId) return
     await runMutation(() =>
       createTodo({
-        assigneeUserId: assigneeUserId ?? undefined,
+        assigneeUserId: todoCollaboratorId ?? undefined,
+        collaboratorId: mentionCollaborator?.id,
         projectId: targetProjectId,
         title,
         dueDate: todoDueDate,
@@ -2377,8 +2380,6 @@ function ProjectDetail({
         <div className="todo-form">
           <MentionTextarea
             collaborators={projectCollaborators}
-            members={projectMembers}
-            onSelectCollaborator={onTodoCollaboratorChange}
             placeholder="添加一个下一步..."
             value={todoDraft}
             onChange={onTodoDraftChange}
@@ -2749,6 +2750,9 @@ function CurrentTodosView({
     () =>
       currentProjects
         .map((project) => {
+          const projectCollaborators = collaborators.filter(
+            (collaborator) => collaborator.projectId === project.id,
+          )
           const projectTodos = currentTodos
             .filter(
               (todo) =>
@@ -2764,13 +2768,14 @@ function CurrentTodosView({
               return priorityRank[left.priority] - priorityRank[right.priority]
             })
           return {
+            collaborators: summarizeProjectCollaborators(projectCollaborators),
             openCount: projectTodos.filter((todo) => !todo.done).length,
             project,
             todos: projectTodos,
           }
         })
         .filter((group) => group.todos.length > 0),
-    [currentProjects, currentTodos, todoStatusFilter],
+    [collaborators, currentProjects, currentTodos, todoStatusFilter],
   )
   const openCount = currentTodos.filter((todo) => !todo.done).length
   const doneCount = currentTodos.length - openCount
@@ -2826,6 +2831,7 @@ function CurrentTodosView({
           <div className="todo-board-table" role="table" aria-label="所有项目当前待办">
             <div className="todo-board-head" role="row">
               <span role="columnheader">项目/待办内容</span>
+              <span role="columnheader">协作者</span>
               <span role="columnheader">负责人</span>
               <span role="columnheader">优先级</span>
               <span role="columnheader">截止</span>
@@ -2833,7 +2839,12 @@ function CurrentTodosView({
               <span role="columnheader">操作</span>
             </div>
 
-            {groupedTodos.map(({ openCount: projectOpenCount, project, todos: projectTodos }) => (
+            {groupedTodos.map(({
+              collaborators: projectCollaboratorSummary,
+              openCount: projectOpenCount,
+              project,
+              todos: projectTodos,
+            }) => (
               <section className="todo-project-group" key={project.id}>
                 <button
                   className="todo-project-group-header"
@@ -2878,10 +2889,30 @@ function CurrentTodosView({
                           </button>
                           <strong>{todo.title}</strong>
                         </span>
+                        <span className="todo-board-collaborators-cell" role="cell">
+                          {todo.collaboratorId ? (
+                            <span className="collaborator-mini-chip">
+                              @{projectCollaborators.find((item) => item.id === todo.collaboratorId)?.name ?? '旧协作者'}
+                            </span>
+                          ) : projectCollaboratorSummary.count > 0 ? (
+                            <span
+                              className="todo-board-collaborator-summary"
+                              title={projectCollaboratorSummary.names.join('、')}
+                            >
+                              <strong>{projectCollaboratorSummary.count}</strong>
+                              <span>
+                                {projectCollaboratorSummary.names.slice(0, 2).join('、')}
+                                {projectCollaboratorSummary.count > 2 ? ' 等' : ''}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="todo-board-muted">暂无协作者</span>
+                          )}
+                        </span>
                         <span className="todo-board-assignee-cell" role="cell">
                           <ProjectMemberPicker
                             members={projectMembers}
-                            value={todo.assigneeUserId ?? todo.collaboratorId ?? null}
+                            value={todo.assigneeUserId ?? null}
                             compact
                             disabled={!canManageTodo}
                             onChange={(assigneeUserId) =>
@@ -2891,11 +2922,6 @@ function CurrentTodosView({
                               )
                             }
                           />
-                          {!todo.assigneeUserId && todo.collaboratorId && (
-                            <span className="todo-board-muted">
-                              {projectCollaborators.find((item) => item.id === todo.collaboratorId)?.name ?? '旧协作者'}
-                            </span>
-                          )}
                         </span>
                         <span className="todo-board-priority-cell" role="cell">
                           <Select
@@ -3779,25 +3805,36 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function stripTodoMentions(
-  value: string,
-  members: Array<{ id: number; name: string }>,
-) {
-  return members.reduce((current, member) => {
-    const name = member.name.trim()
+function stripTodoMentions(value: string, mentionOptions: Array<{ name: string }>) {
+  return mentionOptions.reduce((current, option) => {
+    const name = option.name.trim()
     if (!name) return current
     return current.replace(new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)`, 'g'), '$1')
   }, value).replace(/\s{2,}/g, ' ')
 }
 
-function extractMentionAssignee(
+function extractMentionCollaborator(
   value: string,
-  members: Array<{ id: number; name: string }>,
+  collaborators: Collaborator[],
 ) {
-  return members.find((member) => {
-    const name = member.name.trim()
+  return collaborators.find((collaborator) => {
+    const name = collaborator.name.trim()
     return name && new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)`).test(value)
   })
+}
+
+function summarizeProjectCollaborators(collaborators: Collaborator[]): ProjectCollaboratorSummary {
+  const names = Array.from(
+    new Set(
+      collaborators
+        .map((collaborator) => collaborator.name.trim())
+        .filter(Boolean),
+    ),
+  )
+  return {
+    count: names.length,
+    names,
+  }
 }
 
 function ProjectMemberPicker({
