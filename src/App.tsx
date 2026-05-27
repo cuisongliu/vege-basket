@@ -1049,7 +1049,7 @@ ${summariesText || '暂无总结'}`
   }
 
   if (!loggedIn) {
-    return <LoginScreen error={authError} onSignIn={signIn} />
+    return <LoginScreen error={authError} onClearError={() => setAuthError('')} onSignIn={signIn} />
   }
 
   if (!workspaceLoaded && !authUser) {
@@ -1372,14 +1372,33 @@ function WorkspaceBootScreen() {
 
 function LoginScreen({
   error,
+  onClearError,
   onSignIn,
 }: {
   error: string
+  onClearError: () => void
   onSignIn: (email: string, password: string, mode: 'login' | 'register') => void
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [formError, setFormError] = useState('')
+
+  function switchMode(nextMode: 'login' | 'register') {
+    if (nextMode === mode) return
+    setMode(nextMode)
+    setEmail('')
+    setPassword('')
+    setConfirmPassword('')
+    setFormError('')
+    onClearError()
+  }
+
+  function clearErrors() {
+    setFormError('')
+    onClearError()
+  }
 
   return (
     <main className="login-screen">
@@ -1398,6 +1417,10 @@ function LoginScreen({
           className="login-form"
           onSubmit={(event) => {
             event.preventDefault()
+            if (mode === 'register' && password !== confirmPassword) {
+              setFormError('两次输入的密码不一致。')
+              return
+            }
             onSignIn(email, password, mode)
           }}
         >
@@ -1406,7 +1429,7 @@ function LoginScreen({
               className={mode === 'login' ? 'auth-mode active' : 'auth-mode'}
               type="button"
               variant="ghost"
-              onClick={() => setMode('login')}
+              onClick={() => switchMode('login')}
             >
               登录
             </Button>
@@ -1414,7 +1437,7 @@ function LoginScreen({
               className={mode === 'register' ? 'auth-mode active' : 'auth-mode'}
               type="button"
               variant="ghost"
-              onClick={() => setMode('register')}
+              onClick={() => switchMode('register')}
             >
               注册
             </Button>
@@ -1427,7 +1450,10 @@ function LoginScreen({
               required
               type="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => {
+                setEmail(event.target.value)
+                clearErrors()
+              }}
             />
           </Label>
           <Label>
@@ -1439,10 +1465,30 @@ function LoginScreen({
               required
               type="password"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => {
+                setPassword(event.target.value)
+                clearErrors()
+              }}
             />
           </Label>
-          {error && <p className="form-error">{error}</p>}
+          {mode === 'register' && (
+            <Label>
+              确认密码
+              <Input
+                autoComplete="new-password"
+                minLength={6}
+                placeholder="再次输入密码"
+                required
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => {
+                  setConfirmPassword(event.target.value)
+                  clearErrors()
+                }}
+              />
+            </Label>
+          )}
+          {(formError || error) && <p className="form-error">{formError || error}</p>}
           <Button className="solid-button wide" type="submit">
             <SignIn size={18} /> {mode === 'register' ? '创建账号' : '进入驾驶舱'}
           </Button>
