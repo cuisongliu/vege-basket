@@ -16,6 +16,7 @@ dist-ssr
 !.env.example
 .sealos/deploy-args.json
 .sealos/canvas/
+oss-ui/
 
 # Editor directories and files
 .vscode/*
