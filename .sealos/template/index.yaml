@@ -3,11 +3,11 @@ kind: Template
 metadata:
   name: vege-basket
 spec:
-  title: Project Basket
+  title: Veges
   url: https://github.com/felixqiu014-wq/vege-basket
   gitRepo: https://github.com/felixqiu014-wq/vege-basket
   author: felixqiu014-wq
-  description: Personal project management workspace for projects, journals, drafts, todos, risks, and AI summaries.
+  description: Personal project workspace for journals, todos, drafts, package timelines, and AI summaries.
   readme: https://raw.githubusercontent.com/felixqiu014-wq/vege-basket/main/README.md
   icon: https://raw.githubusercontent.com/labring-actions/templates/main/template/sealos.svg
   templateType: inline
@@ -16,34 +16,114 @@ spec:
   locale: en
   i18n:
     zh:
-      description: 用于管理项目、日记、草稿、待办、风险和 AI 总结的个人项目工作台。
+      description: 用于管理项目、日记、待办、草稿、安装升级时间线和 AI 总结的个人项目工作台。
   defaults:
     app_name:
       type: string
-      value: vege-basket-170451
+      value: vege-basket-${{ random(8) }}
     app_host:
       type: string
-      value: vege-basket-170451
+      value: vege-basket-${{ random(8) }}
   inputs:
-    AI_ENABLED:
-      description: Set to true to enable AI endpoints after API credentials are configured.
+    APP_ENCRYPTION_ACTIVE_KEY_ID:
+      description: Active encryption key id used by the server.
       type: string
-      default: 'false'
-      required: false
+      default: v1
+      required: true
+    APP_ENCRYPTION_KEYS:
+      description: AES-256-GCM key mapping like v1:base64key used to decrypt and encrypt sensitive data.
+      type: string
+      default: ''
+      required: true
     AI_API_BASE:
-      description: OpenAI-compatible API base URL for AI summary features.
+      description: Optional OpenAI-compatible AI API base URL saved as the default per-instance provider endpoint.
       type: string
       default: ''
-      required: true
+      required: false
     AI_API_KEY:
-      description: API key for AI summary features. Store as a Sealos secret in updates.
+      description: Optional default AI API key for this instance.
       type: string
       default: ''
-      required: true
+      required: false
     AI_MODEL:
-      description: AI model name.
+      description: Optional default AI model name.
       type: string
-      default: deepseek-v3.2
+      default: ''
+      required: false
+    FEISHU_WEBHOOK_USER_EMAIL:
+      description: Username that receives Feishu conversation analysis drafts.
+      type: string
+      default: ''
+      required: false
+    FEISHU_WEBHOOK_BASIC_USER:
+      description: Optional HTTP basic auth username for the Feishu webhook endpoint.
+      type: string
+      default: ''
+      required: false
+    FEISHU_WEBHOOK_BASIC_PASSWORD:
+      description: Optional HTTP basic auth password for the Feishu webhook endpoint.
+      type: string
+      default: ''
+      required: false
+    FEISHU_APP_ID:
+      description: Optional Feishu application id for message fetch and sender lookup.
+      type: string
+      default: ''
+      required: false
+    FEISHU_APP_SECRET:
+      description: Optional Feishu application secret.
+      type: string
+      default: ''
+      required: false
+    FEISHU_VERIFICATION_TOKEN:
+      description: Optional Feishu webhook verification token.
+      type: string
+      default: ''
+      required: false
+    FEISHU_ENCRYPT_KEY:
+      description: Optional Feishu webhook encrypt key.
+      type: string
+      default: ''
+      required: false
+    OSS_ENDPOINT:
+      description: Optional Alibaba OSS endpoint for package timeline features.
+      type: string
+      default: ''
+      required: false
+    OSS_ACCESS_KEY_ID:
+      description: Optional Alibaba OSS access key id.
+      type: string
+      default: ''
+      required: false
+    OSS_ACCESS_KEY_SECRET:
+      description: Optional Alibaba OSS access key secret.
+      type: string
+      default: ''
+      required: false
+    OSS_BUCKET:
+      description: Optional Alibaba OSS bucket name.
+      type: string
+      default: ''
+      required: false
+    PACKAGE_MARKET_MIDDLEWARE_ROOT:
+      description: Optional OSS middleware root for package market browsing.
+      type: string
+      default: ''
+      required: false
+    PACKAGE_MARKET_BASE_OBJECT_TEMPLATE:
+      description: Optional OSS object template for package market downloads.
+      type: string
+      default: ''
+      required: false
+    PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE:
+      description: Optional OSS list prefix template for package market browsing.
+      type: string
+      default: ''
+      required: false
+    PACKAGE_MARKET_DOWNLOAD_EXPIRE_SECONDS:
+      description: Optional signed URL expiry time in seconds for package downloads.
+      type: string
+      default: '1800'
       required: false
 ---
 apiVersion: v1
@@ -169,6 +249,13 @@ spec:
               if ! psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DATABASE}'" | grep -q 1; then
                 psql "postgresql://postgres:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${PG_DATABASE}\";"
               fi
+          resources:
+            requests:
+              cpu: 20m
+              memory: 25Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
       restartPolicy: OnFailure
   ttlSecondsAfterFinished: 300
 ---
@@ -180,7 +267,7 @@ metadata:
     app: ${{ defaults.app_name }}
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
   annotations:
-    originImageName: ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b
+    originImageName: ghcr.io/felixqiu014-wq/vege-basket:20260630-120900
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
 spec:
@@ -238,7 +325,7 @@ spec:
               memory: 256Mi
       containers:
         - name: ${{ defaults.app_name }}
-          image: ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b
+          image: ghcr.io/felixqiu014-wq/vege-basket:20260630-120900
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8787
@@ -269,8 +356,10 @@ spec:
                   key: password
             - name: DATABASE_URL
               value: postgresql://$(PG_USER):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/vegebasket
-            - name: AI_ENABLED
-              value: ${{ inputs.AI_ENABLED }}
+            - name: APP_ENCRYPTION_ACTIVE_KEY_ID
+              value: ${{ inputs.APP_ENCRYPTION_ACTIVE_KEY_ID }}
+            - name: APP_ENCRYPTION_KEYS
+              value: ${{ inputs.APP_ENCRYPTION_KEYS }}
             - name: AI_API_BASE
               value: ${{ inputs.AI_API_BASE }}
             - name: AI_API_KEY
@@ -285,15 +374,47 @@ spec:
               value: '2000'
             - name: AI_MAX_CONTEXT_CHARS
               value: '12000'
+            - name: FEISHU_WEBHOOK_USER_EMAIL
+              value: ${{ inputs.FEISHU_WEBHOOK_USER_EMAIL }}
+            - name: FEISHU_WEBHOOK_BASIC_USER
+              value: ${{ inputs.FEISHU_WEBHOOK_BASIC_USER }}
+            - name: FEISHU_WEBHOOK_BASIC_PASSWORD
+              value: ${{ inputs.FEISHU_WEBHOOK_BASIC_PASSWORD }}
+            - name: FEISHU_APP_ID
+              value: ${{ inputs.FEISHU_APP_ID }}
+            - name: FEISHU_APP_SECRET
+              value: ${{ inputs.FEISHU_APP_SECRET }}
+            - name: FEISHU_VERIFICATION_TOKEN
+              value: ${{ inputs.FEISHU_VERIFICATION_TOKEN }}
+            - name: FEISHU_ENCRYPT_KEY
+              value: ${{ inputs.FEISHU_ENCRYPT_KEY }}
+            - name: OSS_ENDPOINT
+              value: ${{ inputs.OSS_ENDPOINT }}
+            - name: OSS_ACCESS_KEY_ID
+              value: ${{ inputs.OSS_ACCESS_KEY_ID }}
+            - name: OSS_ACCESS_KEY_SECRET
+              value: ${{ inputs.OSS_ACCESS_KEY_SECRET }}
+            - name: OSS_BUCKET
+              value: ${{ inputs.OSS_BUCKET }}
+            - name: PACKAGE_MARKET_RULES_FILE
+              value: /app/server/trial-combo-package-rules.yaml
+            - name: PACKAGE_MARKET_MIDDLEWARE_ROOT
+              value: ${{ inputs.PACKAGE_MARKET_MIDDLEWARE_ROOT }}
+            - name: PACKAGE_MARKET_BASE_OBJECT_TEMPLATE
+              value: ${{ inputs.PACKAGE_MARKET_BASE_OBJECT_TEMPLATE }}
+            - name: PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE
+              value: ${{ inputs.PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE }}
+            - name: PACKAGE_MARKET_DOWNLOAD_EXPIRE_SECONDS
+              value: ${{ inputs.PACKAGE_MARKET_DOWNLOAD_EXPIRE_SECONDS }}
           readinessProbe:
             httpGet:
-              path: /
+              path: /api/health
               port: 8787
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
+              path: /api/health
               port: 8787
             initialDelaySeconds: 30
             periodSeconds: 20
@@ -362,5 +483,5 @@ spec:
     url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
   displayType: normal
   icon: https://raw.githubusercontent.com/labring-actions/templates/main/template/sealos.svg
-  name: Project Basket
+  name: Veges
   type: link

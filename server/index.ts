@@ -14,6 +14,29 @@ import {
   encryptText,
 } from './crypto.ts'
 import { pool, query } from './db.ts'
+import {
+  createPackageItemDownloadUrl,
+  getPackageMarketDetail,
+  getPackageMarketExpireMinutes,
+  listPackageMarketCiVersions,
+  listPackageMarketReleaseVersions,
+  listPackageMarketRules,
+} from './package-market.ts'
+import {
+  addProjectPackageItems,
+  createProjectPackageEvent,
+  createProjectPackageOperation,
+  deleteProjectPackageEvent,
+  deleteProjectPackageGroup,
+  deleteProjectPackageOperation,
+  ensureProjectPackageEventType,
+  ensureProjectPackageOperationKind,
+  exportProjectPackageTimeline,
+  getProjectPackageItemObjectKey,
+  getProjectPackageTimeline,
+  updateProjectPackageEvent,
+  updateProjectPackageOperation,
+} from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
@@ -22,7 +45,8 @@ type SummaryType = 'weekly' | 'monthly'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
-type NotificationKind = 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow'
+type NotificationKind = 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow' | 'todo_note_mention'
+type PackageMarketChannel = 'release' | 'ci'
 type UserRow = { id: string; email: string; display_name: string }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type AiAgentType = 'project-summary' | 'conversation-analysis'
@@ -48,15 +72,6 @@ type AiSettingsRow = {
   api_key: string
   model: string
 }
-type CollaboratorRow = {
-  id: string
-  user_id: string
-  project_id: string
-  name: string
-  role: string
-  created_at: Date
-  updated_at: Date
-}
 type ProjectAccess = {
   id: number
   ownerUserId: number
@@ -78,6 +93,23 @@ type NotificationStateRow = {
   source_id: string
   read_at: Date | null
   dismissed_at: Date | null
+}
+type ProjectModuleRow = {
+  id: string
+  project_id: string
+  name: string
+  created_at: Date
+}
+type TodoNoteRow = {
+  id: string
+  todo_id: string
+  author_user_id: string | null
+  author_email: string | null
+  author_display_name: string | null
+  content: string
+  source_operation_id: string | null
+  created_at: Date
+  updated_at: Date
 }
 
 function decryptTags(tagsEncrypted: string | null, legacyTags: string[] | null) {
@@ -198,8 +230,8 @@ function addDays(value: Date, days: number) {
   return date
 }
 
-function normalizeEmail(email: unknown) {
-  return String(email ?? '').trim().toLowerCase()
+function normalizeUsername(username: unknown) {
+  return String(username ?? '').trim().toLowerCase()
 }
 
 function sanitizeDisplayName(value: unknown) {
@@ -208,14 +240,14 @@ function sanitizeDisplayName(value: unknown) {
 
 function displayNameFromUser(row?: Pick<UserRow, 'email' | 'display_name'> | null) {
   if (!row) return '未知用户'
-  return row.display_name || row.email.split('@')[0] || row.email
+  return row.display_name || row.email
 }
 
 function serializeUser(row: UserRow) {
   return {
     id: Number(row.id),
-    email: row.email,
     displayName: row.display_name,
+    username: row.email,
   }
 }
 
@@ -248,6 +280,12 @@ function stripMarkdownForSummary(value: string) {
     .replace(/\|/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function extractMentionNames(value: string) {
+  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】\[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】\[\]<>《》"'“”])/g))
+    .map((match) => match[1]?.trim() ?? '')
+    .filter(Boolean)
 }
 
 function extractCoreSummaryFromAnalysis(value: string) {
@@ -710,7 +748,7 @@ async function saveFeishuAnalysisSummary(userId: number, title: string, content:
 async function analyzeAndSaveFeishuConversation(messageId: string, messageType: string, event: ReturnType<typeof normalizeFeishuEventPayload>['event']) {
   const userResult = await query<{ id: string }>(
     'select id from users where email = $1',
-    [normalizeEmail(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'sealospm@163.com')],
+    [normalizeUsername(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'sealospm@163.com')],
   )
   const userId = userResult.rows[0] ? Number(userResult.rows[0].id) : null
   if (!userId) {
@@ -829,7 +867,11 @@ function ensureJournalVisibility(value: unknown): JournalVisibility {
   return value === 'public' ? 'public' : 'private'
 }
 
-async function linkPendingMemberships(userId: number, email: string) {
+function ensurePackageMarketChannel(value: unknown): PackageMarketChannel {
+  return value === 'ci' ? 'ci' : 'release'
+}
+
+async function linkPendingMemberships(userId: number, username: string) {
   await query(
     `
     update project_memberships
@@ -839,7 +881,7 @@ async function linkPendingMemberships(userId: number, email: string) {
       and invited_user_id is null
       and status in ('pending', 'active')
     `,
-    [userId, normalizeEmail(email), blindIndex(email)],
+    [userId, normalizeUsername(username), blindIndex(username)],
   )
 }
 
@@ -873,23 +915,6 @@ async function getProjectAccess(projectId: number, userId: number): Promise<Proj
   }
 }
 
-async function ensureCollaboratorId(
-  collaboratorId: unknown,
-  projectId: number,
-  userId: number,
-) {
-  if (!collaboratorId) return null
-  const result = await query<{ id: string }>(
-    `
-    select id
-    from collaborators
-    where id = $1 and project_id = $2 and user_id = $3
-    `,
-    [Number(collaboratorId), projectId, userId],
-  )
-  return result.rows[0] ? Number(result.rows[0].id) : null
-}
-
 async function ensureProjectMemberUserId(
   assigneeUserId: unknown,
   projectId: number,
@@ -914,21 +939,90 @@ async function ensureProjectMemberUserId(
   return result.rows[0] ? assigneeId : null
 }
 
-async function findCollaboratorIdsByName(userId: number, name: string) {
-  const nameLookup = blindIndex(name)
-  const indexed = await query<{ id: string }>(
-    'select id from collaborators where user_id = $1 and name_lookup = $2',
-    [userId, nameLookup],
+async function ensureProjectModuleId(
+  moduleId: unknown,
+  projectId: number,
+) {
+  if (moduleId == null || moduleId === '') return null
+  const normalizedModuleId = Number(moduleId)
+  if (!Number.isFinite(normalizedModuleId) || normalizedModuleId <= 0) return null
+  const result = await query<{ id: string }>(
+    `
+    select id
+    from project_modules
+    where id = $1
+      and project_id = $2
+    limit 1
+    `,
+    [normalizedModuleId, projectId],
   )
-  if (indexed.rows.length > 0) return indexed.rows.map((row) => Number(row.id))
+  return result.rows[0] ? normalizedModuleId : null
+}
 
-  const legacy = await query<{ id: string; name: string }>(
-    'select id, name from collaborators where user_id = $1',
-    [userId],
+async function listProjectMentionableUsers(projectId: number) {
+  const result = await query<{
+    user_id: string
+    email: string
+    display_name: string
+  }>(
+    `
+    select p.user_id, owner.email, owner.display_name
+    from projects p
+    join users owner on owner.id = p.user_id
+    where p.id = $1
+    union
+    select pm.invited_user_id as user_id, member.email, member.display_name
+    from project_memberships pm
+    join users member on member.id = pm.invited_user_id
+    where pm.project_id = $1
+      and pm.status = 'active'
+      and pm.invited_user_id is not null
+    `,
+    [projectId],
   )
-  return legacy.rows
-    .filter((row) => decryptText(row.name) === name)
-    .map((row) => Number(row.id))
+  return result.rows.map((row) => ({
+    id: Number(row.user_id),
+    name: displayNameFromUser({
+      email: row.email,
+      display_name: row.display_name,
+    }),
+  }))
+}
+
+async function syncTodoNoteMentions(params: {
+  content: string
+  noteId: number
+  projectId: number
+}) {
+  const mentionableUsers = await listProjectMentionableUsers(params.projectId)
+  const nameToUserIds = new Map<string, number[]>()
+  for (const user of mentionableUsers) {
+    const key = user.name.trim().toLowerCase()
+    if (!key) continue
+    const current = nameToUserIds.get(key) ?? []
+    current.push(user.id)
+    nameToUserIds.set(key, current)
+  }
+
+  const mentionedUserIds = Array.from(
+    new Set(
+      extractMentionNames(params.content).flatMap(
+        (name) => nameToUserIds.get(name.trim().toLowerCase()) ?? [],
+      ),
+    ),
+  )
+
+  await query('delete from todo_note_mentions where todo_note_id = $1', [params.noteId])
+  for (const mentionedUserId of mentionedUserIds) {
+    await query(
+      `
+      insert into todo_note_mentions (todo_note_id, mentioned_user_id)
+      values ($1, $2)
+      on conflict (todo_note_id, mentioned_user_id) do nothing
+      `,
+      [params.noteId, mentionedUserId],
+    )
+  }
 }
 
 async function getWorkspace(userId: number) {
@@ -939,12 +1033,13 @@ async function getWorkspace(userId: number) {
   const currentUserName = displayNameFromUser(currentUser.rows[0])
   const [
     projectsResult,
+    projectModulesResult,
     journalsResult,
     risksResult,
     todosResult,
+    todoNotesResult,
     draftsResult,
     summariesResult,
-    collaboratorsResult,
     membershipsResult,
   ] = await Promise.all([
     query<{
@@ -980,6 +1075,23 @@ async function getWorkspace(userId: number) {
        and pm.invited_user_id = $1
       where p.user_id = $1 or pm.id is not null
       order by updated_at desc, id desc
+      `,
+      [userId],
+    ),
+    query<ProjectModuleRow>(
+      `
+      select pm.id,
+             pm.project_id,
+             pm.name,
+             pm.created_at
+      from project_modules pm
+      join projects p on p.id = pm.project_id
+      left join project_memberships membership
+        on membership.project_id = p.id
+       and membership.status = 'active'
+       and membership.invited_user_id = $1
+      where p.user_id = $1 or membership.id is not null
+      order by pm.created_at asc, pm.id asc
       `,
       [userId],
     ),
@@ -1019,9 +1131,9 @@ async function getWorkspace(userId: number) {
       `,
       [userId],
     ),
-    query<{ project_id: string; content: string }>(
+    query<{ project_id: string; content: string; journal_entry_id: string | null }>(
       `
-      select r.project_id, r.content
+      select r.project_id, r.content, r.journal_entry_id
       from risks r
       join projects p on p.id = r.project_id
       left join project_memberships pm
@@ -1036,11 +1148,14 @@ async function getWorkspace(userId: number) {
     query<{
       id: string
       project_id: string
-      collaborator_id: string | null
       title: string
+      created_at: Date
       due_date: Date
       priority: Priority
       done: boolean
+      confirmed: boolean
+      project_module_id: string | null
+      module_name: string | null
       created_by_user_id: string | null
       assignee_user_id: string | null
       assigned_by_user_id: string | null
@@ -1054,11 +1169,14 @@ async function getWorkspace(userId: number) {
       `
       select t.id,
              t.project_id,
-             t.collaborator_id,
              t.title,
+             t.created_at,
              t.due_date,
              t.priority,
              t.done,
+             t.confirmed,
+             t.project_module_id,
+             module.name as module_name,
              t.created_by_user_id,
              t.assignee_user_id,
              t.assigned_by_user_id,
@@ -1070,15 +1188,40 @@ async function getWorkspace(userId: number) {
              creator.display_name as creator_display_name
       from todos t
       join projects p on p.id = t.project_id
+      left join project_memberships membership
+        on membership.project_id = p.id
+       and membership.status = 'active'
+       and membership.invited_user_id = $1
+      left join users creator on creator.id = t.created_by_user_id
+      left join users assignee on assignee.id = t.assignee_user_id
+      left join users assigner on assigner.id = t.assigned_by_user_id
+      left join project_modules module on module.id = t.project_module_id
+      where p.user_id = $1 or membership.id is not null
+      order by t.created_at desc, t.id desc
+      `,
+      [userId],
+    ),
+    query<TodoNoteRow>(
+      `
+      select n.id,
+             n.todo_id,
+             n.author_user_id,
+             author.email as author_email,
+             author.display_name as author_display_name,
+             n.content,
+             n.source_operation_id,
+             n.created_at,
+             n.updated_at
+      from todo_notes n
+      join todos t on t.id = n.todo_id
+      join projects p on p.id = t.project_id
       left join project_memberships pm
         on pm.project_id = p.id
        and pm.status = 'active'
        and pm.invited_user_id = $1
-      left join users creator on creator.id = t.created_by_user_id
-      left join users assignee on assignee.id = t.assignee_user_id
-      left join users assigner on assigner.id = t.assigned_by_user_id
+      left join users author on author.id = n.author_user_id
       where p.user_id = $1 or pm.id is not null
-      order by t.done asc, t.due_date asc, t.id desc
+      order by n.created_at asc, n.id asc
       `,
       [userId],
     ),
@@ -1113,20 +1256,6 @@ async function getWorkspace(userId: number) {
       where user_id = $1
          or project_id in (select id from projects where user_id = $1)
       order by created_at desc, id desc
-      `,
-      [userId],
-    ),
-    query<CollaboratorRow>(
-      `
-      select c.id, c.user_id, c.project_id, c.name, c.role, c.created_at, c.updated_at
-      from collaborators c
-      join projects p on p.id = c.project_id
-      left join project_memberships pm
-        on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $1
-      where p.user_id = $1 or pm.id is not null
-      order by updated_at desc, id desc
       `,
       [userId],
     ),
@@ -1181,9 +1310,71 @@ async function getWorkspace(userId: number) {
   }
 
   const risksByProject = new Map<number, string[]>()
+  const riskJournalEntryIdsByProject = new Map<number, number[]>()
   for (const row of risksResult.rows) {
     const projectId = Number(row.project_id)
     risksByProject.set(projectId, [...(risksByProject.get(projectId) ?? []), decryptText(row.content)])
+    if (row.journal_entry_id) {
+      riskJournalEntryIdsByProject.set(projectId, [
+        ...(riskJournalEntryIdsByProject.get(projectId) ?? []),
+        Number(row.journal_entry_id),
+      ])
+    }
+  }
+
+  const modulesByProject = new Map<
+    number,
+    Array<{
+      id: number
+      projectId: number
+      name: string
+      createdAt: string
+    }>
+  >()
+  for (const row of projectModulesResult.rows) {
+    const projectId = Number(row.project_id)
+    const modules = modulesByProject.get(projectId) ?? []
+    modules.push({
+      id: Number(row.id),
+      projectId,
+      name: row.name,
+      createdAt: formatDateTime(row.created_at),
+    })
+    modulesByProject.set(projectId, modules)
+  }
+
+  const todoNotesByTodo = new Map<
+    number,
+    Array<{
+      id: number
+      todoId: number
+      authorUserId?: number
+      authorName: string
+      content: string
+      sourceOperationId?: number
+      createdAt: string
+      updatedAt: string
+    }>
+  >()
+  for (const row of todoNotesResult.rows) {
+    const todoId = Number(row.todo_id)
+    const notes = todoNotesByTodo.get(todoId) ?? []
+    notes.push({
+      id: Number(row.id),
+      todoId,
+      authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
+      authorName: row.author_user_id
+        ? displayNameFromUser({
+          email: row.author_email ?? '',
+          display_name: row.author_display_name ?? '',
+        })
+        : currentUserName,
+      content: decryptText(row.content),
+      sourceOperationId: row.source_operation_id ? Number(row.source_operation_id) : undefined,
+      createdAt: formatDateTime(row.created_at),
+      updatedAt: formatDateTime(row.updated_at),
+    })
+    todoNotesByTodo.set(todoId, notes)
   }
 
   return {
@@ -1202,11 +1393,13 @@ async function getWorkspace(userId: number) {
       tags: decryptTags(project.tags_encrypted, project.tags ?? []),
       journals: journalsByProject.get(Number(project.id)) ?? [],
       risks: risksByProject.get(Number(project.id)) ?? [],
+      riskJournalEntryIds: riskJournalEntryIdsByProject.get(Number(project.id)) ?? [],
+      modules: modulesByProject.get(Number(project.id)) ?? [],
     })),
     todos: todosResult.rows.map((todo) => ({
       id: Number(todo.id),
       projectId: Number(todo.project_id),
-      collaboratorId: todo.collaborator_id ? Number(todo.collaborator_id) : undefined,
+      createdAt: formatDateTime(todo.created_at),
       createdByUserId: todo.created_by_user_id ? Number(todo.created_by_user_id) : undefined,
       assigneeUserId: todo.assignee_user_id ? Number(todo.assignee_user_id) : undefined,
       assigneeName: todo.assignee_user_id
@@ -1232,17 +1425,15 @@ async function getWorkspace(userId: number) {
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
-    })),
-    collaborators: collaboratorsResult.rows.map((collaborator) => ({
-      id: Number(collaborator.id),
-      name: decryptText(collaborator.name),
-      role: collaborator.role ? decryptText(collaborator.role) : '',
-      projectId: Number(collaborator.project_id),
+      confirmed: todo.confirmed,
+      moduleId: todo.project_module_id ? Number(todo.project_module_id) : undefined,
+      moduleName: todo.module_name ?? undefined,
+      notes: todoNotesByTodo.get(Number(todo.id)) ?? [],
     })),
     memberships: membershipsResult.rows.map((membership) => ({
       id: Number(membership.id),
       projectId: Number(membership.project_id),
-      invitedEmail: decryptText(membership.invited_email),
+      invitedUsername: decryptText(membership.invited_email),
       invitedUserId: membership.invited_user_id ? Number(membership.invited_user_id) : undefined,
       role: membership.role,
       status: membership.status,
@@ -1289,20 +1480,20 @@ app.get('/api/health', (_request, response) => {
 })
 
 app.post('/api/auth/register', asyncHandler(async (request, response) => {
-  const email = normalizeEmail(request.body.email)
+  const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
 
-  if (!email || password.length < 6) {
-    response.status(400).json({ error: 'Email and a 6+ character password are required' })
+  if (!username || password.length < 6) {
+    response.status(400).json({ error: 'Username and a 6+ character password are required' })
     return
   }
 
   const existing = await query<{ id: string }>(
     'select id from users where email = $1',
-    [email],
+    [username],
   )
   if (existing.rows.length > 0) {
-    response.status(409).json({ error: 'Email already registered' })
+    response.status(409).json({ error: 'Username already registered' })
     return
   }
 
@@ -1313,10 +1504,10 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
     values ($1, $2, $3)
     returning id, email, display_name
     `,
-    [email, passwordHash, email.split('@')[0]],
+    [username, passwordHash, username],
   )
   const userId = Number(user.rows[0].id)
-  await linkPendingMemberships(userId, email)
+  await linkPendingMemberships(userId, username)
   const token = await createSession(userId)
   response.status(201).json({
     token,
@@ -1326,16 +1517,16 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
 }))
 
 app.post('/api/auth/login', asyncHandler(async (request, response) => {
-  const email = normalizeEmail(request.body.email)
+  const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
   const user = await query<UserRow & { password_hash: string }>(
     'select id, email, display_name, password_hash from users where email = $1',
-    [email],
+    [username],
   )
   const row = user.rows[0]
 
   if (!row || !(await bcrypt.compare(password, row.password_hash))) {
-    response.status(401).json({ error: 'Invalid email or password' })
+    response.status(401).json({ error: 'Invalid username or password' })
     return
   }
 
@@ -1383,6 +1574,35 @@ app.patch('/api/auth/me', asyncHandler(async (request, response) => {
     [displayName, userId],
   )
   response.json({ user: serializeUser(user.rows[0]) })
+}))
+
+app.patch('/api/auth/password', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const currentPassword = String(request.body.currentPassword ?? '')
+  const nextPassword = String(request.body.nextPassword ?? '')
+  if (!currentPassword || nextPassword.length < 6) {
+    response.status(400).json({ error: 'Current password and a 6+ character new password are required' })
+    return
+  }
+
+  const user = await query<{ password_hash: string }>(
+    'select password_hash from users where id = $1',
+    [userId],
+  )
+  const row = user.rows[0]
+  if (!row || !(await bcrypt.compare(currentPassword, row.password_hash))) {
+    response.status(401).json({ error: 'Current password is incorrect' })
+    return
+  }
+
+  const passwordHash = await bcrypt.hash(nextPassword, 12)
+  await query(
+    'update users set password_hash = $1 where id = $2',
+    [passwordHash, userId],
+  )
+  response.json({ ok: true })
 }))
 
 app.get('/api/ai/settings', asyncHandler(async (request, response) => {
@@ -1462,7 +1682,7 @@ async function getNotifications(userId: number) {
   const stateFor = (kind: NotificationKind, sourceId: string) =>
     stateMap.get(`${kind}:${sourceId}`) ?? {}
 
-  const [invitesResult, assignedTodosResult, dueTomorrowResult] = await Promise.all([
+  const [invitesResult, assignedTodosResult, dueTomorrowResult, noteMentionsResult] = await Promise.all([
     query<{
       id: string
       project_id: string
@@ -1557,6 +1777,41 @@ async function getNotifications(userId: number) {
       `,
       [userId, tomorrow],
     ),
+    query<{
+      note_id: string
+      todo_id: string
+      project_id: string
+      project_name: string
+      title: string
+      due_date: Date
+      priority: Priority
+      author_email: string | null
+      author_display_name: string | null
+      content: string
+      created_at: Date
+    }>(
+      `
+      select n.id as note_id,
+             t.id as todo_id,
+             t.project_id,
+             p.name as project_name,
+             t.title,
+             t.due_date,
+             t.priority,
+             author.email as author_email,
+             author.display_name as author_display_name,
+             n.content,
+             m.created_at
+      from todo_note_mentions m
+      join todo_notes n on n.id = m.todo_note_id
+      join todos t on t.id = n.todo_id
+      join projects p on p.id = t.project_id
+      left join users author on author.id = n.author_user_id
+      where m.mentioned_user_id = $1
+      order by m.created_at desc, m.id desc
+      `,
+      [userId],
+    ),
   ])
 
   return {
@@ -1586,6 +1841,25 @@ async function getNotifications(userId: number) {
       projectName: decryptText(todo.project_name),
       title: decryptText(todo.title),
     })),
+    noteMentions: noteMentionsResult.rows.map((note) => ({
+      ...stateFor('todo_note_mention', note.note_id),
+      createdAt: formatDateTime(note.created_at),
+      dueDate: formatDate(note.due_date),
+      id: Number(note.todo_id),
+      noteAuthorName: note.author_email
+        ? displayNameFromUser({
+          email: note.author_email,
+          display_name: note.author_display_name ?? '',
+        })
+        : '未知用户',
+      noteId: Number(note.note_id),
+      notePreview: decryptText(note.content).slice(0, 120),
+      priority: note.priority,
+      projectId: Number(note.project_id),
+      projectName: decryptText(note.project_name),
+      title: decryptText(note.title),
+      type: 'note_mention',
+    })),
     invites: invitesResult.rows.map((invite) => ({
       ...stateFor('project_invite', invite.id),
       createdAt: formatUpdatedAt(invite.created_at),
@@ -1610,7 +1884,7 @@ app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const kind = String(request.params.kind) as NotificationKind
-  if (!['project_invite', 'assigned_todo', 'todo_due_tomorrow'].includes(kind)) {
+  if (!['project_invite', 'assigned_todo', 'todo_due_tomorrow', 'todo_note_mention'].includes(kind)) {
     response.status(400).json({ error: 'Unsupported notification kind' })
     return
   }
@@ -1711,9 +1985,6 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
   }
 
   const tags = Array.isArray(request.body.tags) ? request.body.tags.map(String) : ['新项目']
-  const collaboratorIds = Array.isArray(request.body.collaboratorIds)
-    ? Array.from(new Set(request.body.collaboratorIds.map(Number))).filter(Number.isFinite)
-    : []
   const result = await query<{ id: string }>(
     `
     insert into projects (user_id, name, status, tags, tags_encrypted)
@@ -1730,18 +2001,6 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
     `,
     [projectId, encryptText('项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'), userId],
   )
-
-  if (collaboratorIds.length > 0) {
-    await query(
-      `
-      insert into collaborators (user_id, project_id, name, name_lookup, role)
-      select user_id, $2, name, name_lookup, role
-      from collaborators
-      where user_id = $1 and id = any($3::bigint[])
-      `,
-      [userId, projectId, collaboratorIds],
-    )
-  }
 
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -1967,17 +2226,27 @@ app.post('/api/projects/:projectId/risks', asyncHandler(async (request, response
     return
   }
 
-  const existingRisks = await query<{ content: string }>(
-    'select content from risks where project_id = $1',
+  const existingRisks = await query<{ id: string; content: string; journal_entry_id: string | null }>(
+    'select id, content, journal_entry_id from risks where project_id = $1',
     [projectId],
   )
-  if (!existingRisks.rows.some((risk) => decryptText(risk.content) === content)) {
+  const matchingRisk = existingRisks.rows.find((risk) => decryptText(risk.content) === content)
+  const journalEntryId = request.body.journalEntryId ? Number(request.body.journalEntryId) : null
+  if (!matchingRisk) {
     await query(
       `
       insert into risks (project_id, content, journal_entry_id)
       values ($1, $2, $3)
       `,
-      [projectId, encryptText(content), request.body.journalEntryId ? Number(request.body.journalEntryId) : null],
+      [projectId, encryptText(content), journalEntryId],
+    )
+  } else if (
+    journalEntryId &&
+    (!matchingRisk.journal_entry_id || Number(matchingRisk.journal_entry_id) !== journalEntryId)
+  ) {
+    await query(
+      'update risks set journal_entry_id = $1 where id = $2',
+      [journalEntryId, Number(matchingRisk.id)],
     )
   }
   await query('update projects set updated_at = now() where id = $1', [projectId])
@@ -1997,14 +2266,14 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
     response.status(403).json({ error: 'Only the project owner can invite members' })
     return
   }
-  const email = normalizeEmail(request.body.email)
-  if (!email) {
-    response.status(400).json({ error: 'Invite email is required' })
+  const username = normalizeUsername(request.body.username ?? request.body.email)
+  if (!username) {
+    response.status(400).json({ error: 'Invite username is required' })
     return
   }
   const invitedUser = await query<{ id: string }>(
     'select id from users where email = $1',
-    [email],
+    [username],
   )
   const invitedUserId = invitedUser.rows[0] ? Number(invitedUser.rows[0].id) : null
   if (invitedUserId === userId) {
@@ -2012,7 +2281,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
     return
   }
 
-  const emailLookup = blindIndex(email)
+  const emailLookup = blindIndex(username)
   const existingMembership = await query<{ id: string }>(
     `
     select id
@@ -2034,7 +2303,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
           declined_at = null
       where id = $4
       `,
-      [invitedUserId, encryptText(email), emailLookup, Number(existingMembership.rows[0].id)],
+      [invitedUserId, encryptText(username), emailLookup, Number(existingMembership.rows[0].id)],
     )
   } else {
     await query(
@@ -2051,7 +2320,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
       )
       values ($1, $2, $3, $4, $5, 'member', 'pending', null)
       `,
-      [projectId, userId, invitedUserId, encryptText(email), emailLookup],
+      [projectId, userId, invitedUserId, encryptText(username), emailLookup],
     )
   }
   response.status(201).json(await getWorkspace(userId))
@@ -2080,7 +2349,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
   response.json(await getWorkspace(userId))
 }))
 
-app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, response) => {
+app.post('/api/projects/:projectId/modules', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
@@ -2090,30 +2359,116 @@ app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, respon
     return
   }
   if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can resolve risks' })
+    response.status(403).json({ error: 'Only the project owner can manage modules' })
     return
   }
+  const name = String(request.body.name ?? '').trim().slice(0, 40)
+  if (!name) {
+    response.status(400).json({ error: 'Module name is required' })
+    return
+  }
+  await query(
+    `
+    insert into project_modules (project_id, name)
+    values ($1, $2)
+    on conflict (project_id, name) do nothing
+    `,
+    [projectId, name],
+  )
+  response.status(201).json(await getWorkspace(userId))
+}))
+
+app.delete('/api/projects/:projectId/modules/:moduleId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const moduleId = Number(request.params.moduleId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can manage modules' })
+    return
+  }
+  await query(
+    `
+    delete from project_modules
+    where id = $1
+      and project_id = $2
+    `,
+    [moduleId, projectId],
+  )
+  response.json(await getWorkspace(userId))
+}))
+
+app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const requestedJournalEntryId = Number(request.body.journalEntryId)
+  const journalEntryId =
+    Number.isFinite(requestedJournalEntryId) && requestedJournalEntryId > 0
+      ? requestedJournalEntryId
+      : null
   const content = String(request.body.content ?? '').trim()
 
-  if (!content) {
+  if (!journalEntryId && !content) {
     response.status(400).json({ error: 'Risk content is required' })
     return
   }
 
-  const existingRisks = await query<{ id: string; content: string }>(
-    `
-    select id, content
-    from risks
-    where project_id = $1
-      and project_id in (select id from projects where user_id = $2)
-    `,
-    [projectId, userId],
-  )
-  const matchingRiskIds = existingRisks.rows
-    .filter((risk) => decryptText(risk.content) === content)
-    .map((risk) => Number(risk.id))
-  if (matchingRiskIds.length > 0) {
-    await query('delete from risks where id = any($1::bigint[])', [matchingRiskIds])
+  if (journalEntryId) {
+    const journal = await query<{ id: string }>(
+      `
+      select id
+      from journal_entries
+      where id = $1
+        and project_id = $2
+        and (author_user_id = $3 or ($4 = 'owner' and author_user_id is null))
+      `,
+      [journalEntryId, projectId, userId, access.role],
+    )
+    if (!journal.rows[0]) {
+      response.status(404).json({ error: 'Journal entry not found' })
+      return
+    }
+
+    await query(
+      `
+      delete from risks
+      where project_id = $1
+        and journal_entry_id = $2
+      `,
+      [projectId, journalEntryId],
+    )
+  } else {
+    if (access.role !== 'owner') {
+      response.status(403).json({ error: 'Only the project owner can resolve risks' })
+      return
+    }
+
+    const existingRisks = await query<{ id: string; content: string }>(
+      `
+      select id, content
+      from risks
+      where project_id = $1
+        and project_id in (select id from projects where user_id = $2)
+      `,
+      [projectId, userId],
+    )
+    const matchingRiskIds = existingRisks.rows
+      .filter((risk) => decryptText(risk.content) === content)
+      .map((risk) => Number(risk.id))
+    if (matchingRiskIds.length > 0) {
+      await query('delete from risks where id = any($1::bigint[])', [matchingRiskIds])
+    }
   }
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
@@ -2133,37 +2488,34 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  const collaboratorId = await ensureCollaboratorId(
-    request.body.collaboratorId,
-    projectId,
-    access.ownerUserId,
-  )
   const assigneeUserId = await ensureProjectMemberUserId(
     request.body.assigneeUserId,
     projectId,
     access.ownerUserId,
   )
+  const moduleId = await ensureProjectModuleId(request.body.moduleId, projectId)
   await query(
     `
     insert into todos (
       project_id,
-      collaborator_id,
       title,
       due_date,
       priority,
+      confirmed,
+      project_module_id,
       created_by_user_id,
       assignee_user_id,
       assigned_by_user_id,
       assigned_at
     )
-    values ($1, $2, $3, $4, $5, $6, $7, case when $7::bigint is null then null else $6::bigint end, case when $7::bigint is null then null else now() end)
+    values ($1, $2, $3, $4, false, $5, $6, $7, case when $7::bigint is null then null else $6::bigint end, case when $7::bigint is null then null else now() end)
     `,
     [
       projectId,
-      collaboratorId,
       encryptText(title),
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
+      moduleId,
       userId,
       assigneeUserId,
     ],
@@ -2174,6 +2526,7 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
 app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const todoId = Number(request.params.todoId)
   const existingTodo = await query<{
     assignee_user_id: string | null
     created_by_user_id: string | null
@@ -2184,7 +2537,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     from todos
     where id = $1
     `,
-    [Number(request.params.todoId)],
+    [todoId],
   )
   if (existingTodo.rows.length === 0) {
     response.status(404).json({ error: 'Todo not found' })
@@ -2203,21 +2556,24 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     ? Number(existingTodo.rows[0].assignee_user_id)
     : null
   const canManageTodo = access.role === 'owner' || createdByUserId === userId
+  const canConfirmTodo =
+    typeof request.body.confirmed === 'boolean' &&
+    Object.keys(request.body).every((key) => key === 'confirmed')
   const canCompleteAssignedTodo =
     assigneeUserId === userId &&
     typeof request.body.done === 'boolean' &&
     Object.keys(request.body).every((key) => key === 'done')
-  if (!canManageTodo && !canCompleteAssignedTodo) {
+  if (!canManageTodo && !canCompleteAssignedTodo && !canConfirmTodo) {
     response.status(403).json({ error: 'Only the owner or creator can update this todo' })
     return
   }
-  const collaboratorId =
-    'collaboratorId' in request.body
-      ? await ensureCollaboratorId(request.body.collaboratorId, projectId, access.ownerUserId)
-      : undefined
   const nextAssigneeUserId =
     'assigneeUserId' in request.body
       ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
+      : undefined
+  const nextModuleId =
+    canManageTodo && 'moduleId' in request.body
+      ? await ensureProjectModuleId(request.body.moduleId, projectId)
       : undefined
   await query(
     `
@@ -2226,213 +2582,37 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
         title = coalesce($2, title),
         due_date = coalesce($3, due_date),
         priority = coalesce($4, priority),
-        collaborator_id = case when $5::boolean then $6 else collaborator_id end,
-        assignee_user_id = case when $7::boolean then $8 else assignee_user_id end,
+        confirmed = coalesce($5, confirmed),
+        assignee_user_id = case when $6::boolean then $7 else assignee_user_id end,
         assigned_by_user_id = case
-          when $7::boolean and $8::bigint is not null then $9
-          when $7::boolean then null
+          when $6::boolean and $7::bigint is not null then $8
+          when $6::boolean then null
           else assigned_by_user_id
         end,
         assigned_at = case
-          when $7::boolean and $8::bigint is not null then now()
-          when $7::boolean then null
+          when $6::boolean and $7::bigint is not null then now()
+          when $6::boolean then null
           else assigned_at
         end,
+        project_module_id = case when $9::boolean then $10 else project_module_id end,
         updated_at = now()
-    where id = $10
-      and project_id = $11
+    where id = $11
+      and project_id = $12
     `,
     [
       typeof request.body.done === 'boolean' ? request.body.done : null,
       canManageTodo && typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
       canManageTodo && request.body.dueDate ? String(request.body.dueDate) : null,
       canManageTodo && request.body.priority ? ensurePriority(request.body.priority) : null,
-      'collaboratorId' in request.body,
-      collaboratorId,
+      typeof request.body.confirmed === 'boolean' ? request.body.confirmed : null,
       canManageTodo && 'assigneeUserId' in request.body,
       nextAssigneeUserId,
       userId,
-      Number(request.params.todoId),
+      canManageTodo && 'moduleId' in request.body,
+      nextModuleId,
+      todoId,
       projectId,
     ],
-  )
-  response.json(await getWorkspace(userId))
-}))
-
-app.post('/api/collaborators', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const name = String(request.body.name ?? '').trim().slice(0, 40)
-  const role = String(request.body.role ?? '').trim().slice(0, 40)
-  const projectIds: number[] = Array.from(
-    new Set(
-      (Array.isArray(request.body.projectIds)
-        ? request.body.projectIds
-        : [request.body.projectId])
-        .map((value: unknown) => Number(value))
-        .filter(Number.isFinite),
-    ),
-  )
-  if (!name || projectIds.length === 0) {
-    response.status(400).json({ error: 'Collaborator name and project are required' })
-    return
-  }
-  const ownsProjects = await query<{ id: string }>(
-    'select id from projects where id = any($1::bigint[]) and user_id = $2',
-    [projectIds, userId],
-  )
-  if (ownsProjects.rows.length !== projectIds.length) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-
-  await Promise.all(projectIds.map((projectId) => query(
-    `
-    insert into collaborators (user_id, project_id, name, name_lookup, role)
-    values ($1, $2, $3, $4, $5)
-    `,
-    [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
-  )))
-  response.status(201).json(await getWorkspace(userId))
-}))
-
-app.patch('/api/collaborators/:collaboratorId', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const collaboratorId = Number(request.params.collaboratorId)
-  const name = String(request.body.name ?? '').trim().slice(0, 40)
-  const role = String(request.body.role ?? '').trim().slice(0, 40)
-  const projectIds: number[] = Array.from(
-    new Set(
-      (Array.isArray(request.body.projectIds) ? request.body.projectIds : [])
-        .map((value: unknown) => Number(value))
-        .filter(Number.isFinite),
-    ),
-  )
-  if (!name || projectIds.length === 0) {
-    response.status(400).json({ error: 'Collaborator name and project are required' })
-    return
-  }
-
-  const currentResult = await query<CollaboratorRow>(
-    `
-    select id, user_id, project_id, name, role, created_at, updated_at
-    from collaborators
-    where id = $1 and user_id = $2
-    `,
-    [collaboratorId, userId],
-  )
-  const current = currentResult.rows[0]
-  if (!current) {
-    response.status(404).json({ error: 'Collaborator not found' })
-    return
-  }
-
-  const ownsProjects = await query<{ id: string }>(
-    'select id from projects where id = any($1::bigint[]) and user_id = $2',
-    [projectIds, userId],
-  )
-  if (ownsProjects.rows.length !== projectIds.length) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    const currentName = decryptText(current.name)
-    const targetIdsForName = await findCollaboratorIdsByName(userId, currentName)
-    const existingResult = await client.query<{ id: string; project_id: string }>(
-      `
-      select id, project_id
-      from collaborators
-      where id = any($1::bigint[]) and user_id = $2
-      `,
-      [targetIdsForName, userId],
-    )
-    const existingByProject = new Map(
-      existingResult.rows.map((row) => [Number(row.project_id), Number(row.id)]),
-    )
-    const nextProjectIds = new Set(projectIds)
-
-    for (const projectId of projectIds) {
-      const existingId = existingByProject.get(projectId)
-      if (existingId) {
-        await client.query(
-          `
-          update collaborators
-          set name = $1, name_lookup = $2, role = $3, updated_at = now()
-          where id = $4 and user_id = $5
-          `,
-          [encryptText(name), blindIndex(name), encryptText(role), existingId, userId],
-        )
-      } else {
-        await client.query(
-          `
-          insert into collaborators (user_id, project_id, name, name_lookup, role)
-          values ($1, $2, $3, $4, $5)
-          `,
-          [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
-        )
-      }
-    }
-
-    const removedIds = existingResult.rows
-      .filter((row) => !nextProjectIds.has(Number(row.project_id)))
-        .map((row) => Number(row.id))
-    if (removedIds.length > 0) {
-      await client.query(
-        `
-        update todos
-        set collaborator_id = null, updated_at = now()
-        where collaborator_id = any($1::bigint[])
-          and project_id in (select id from projects where user_id = $2)
-        `,
-        [removedIds, userId],
-      )
-      await client.query(
-        'delete from collaborators where id = any($1::bigint[]) and user_id = $2',
-        [removedIds, userId],
-      )
-    }
-
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally {
-    client.release()
-  }
-
-  response.json(await getWorkspace(userId))
-}))
-
-app.delete('/api/collaborators/:collaboratorId', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const collaboratorId = Number(request.params.collaboratorId)
-  const currentResult = await query<{ name: string }>(
-    'select name from collaborators where id = $1 and user_id = $2',
-    [collaboratorId, userId],
-  )
-  const current = currentResult.rows[0]
-  if (!current) {
-    response.status(404).json({ error: 'Collaborator not found' })
-    return
-  }
-  const targetIds = await findCollaboratorIdsByName(userId, decryptText(current.name))
-  await query(
-    `
-    update todos
-    set collaborator_id = null, updated_at = now()
-    where collaborator_id = any($1::bigint[])
-      and project_id in (select id from projects where user_id = $2)
-    `,
-    [targetIds, userId],
-  )
-  await query(
-    'delete from collaborators where id = any($1::bigint[]) and user_id = $2',
-    [targetIds, userId],
   )
   response.json(await getWorkspace(userId))
 }))
@@ -2467,6 +2647,412 @@ app.delete('/api/todos/:todoId', asyncHandler(async (request, response) => {
     [Number(request.params.todoId)],
   )
   response.json(await getWorkspace(userId))
+}))
+
+app.post('/api/todos/:todoId/notes', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  const content = typeof request.body.content === 'string' ? request.body.content.trim() : ''
+  if (!content) {
+    response.status(400).json({ error: 'Note content is required' })
+    return
+  }
+  const existingTodo = await query<{ project_id: string }>(
+    'select project_id from todos where id = $1',
+    [todoId],
+  )
+  if (existingTodo.rows.length === 0) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const projectId = Number(existingTodo.rows[0].project_id)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const noteResult = await query<{ id: string }>(
+    `
+    insert into todo_notes (todo_id, author_user_id, content)
+    values ($1, $2, $3)
+    returning id
+    `,
+    [todoId, userId, encryptText(content)],
+  )
+  if (noteResult.rows[0]) {
+    await syncTodoNoteMentions({
+      content,
+      noteId: Number(noteResult.rows[0].id),
+      projectId,
+    })
+  }
+  response.status(201).json(await getWorkspace(userId))
+}))
+
+app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  const noteId = Number(request.params.noteId)
+  const content = typeof request.body.content === 'string' ? request.body.content.trim() : ''
+  if (!content) {
+    response.status(400).json({ error: 'Note content is required' })
+    return
+  }
+  const noteResult = await query<{
+    author_user_id: string | null
+    project_id: string
+  }>(
+    `
+    select n.author_user_id, t.project_id
+    from todo_notes n
+    join todos t on t.id = n.todo_id
+    where n.id = $1
+      and n.todo_id = $2
+    `,
+    [noteId, todoId],
+  )
+  if (noteResult.rows.length === 0) {
+    response.status(404).json({ error: 'Todo note not found' })
+    return
+  }
+  const projectId = Number(noteResult.rows[0].project_id)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo note not found' })
+    return
+  }
+  const authorUserId = noteResult.rows[0].author_user_id ? Number(noteResult.rows[0].author_user_id) : null
+  if (access.role !== 'owner' && authorUserId !== userId) {
+    response.status(403).json({ error: 'Only the note author or owner can update this note' })
+    return
+  }
+  await query(
+    `
+    update todo_notes
+    set content = $1,
+        updated_at = now()
+    where id = $2
+      and todo_id = $3
+    `,
+    [encryptText(content), noteId, todoId],
+  )
+  await syncTodoNoteMentions({
+    content,
+    noteId,
+    projectId,
+  })
+  await query(
+    `
+    update project_package_operation_todos
+    set note = $1
+    where todo_id = $2
+      and project_package_operation_id = (
+        select source_operation_id
+        from todo_notes
+        where id = $3
+          and todo_id = $2
+          and source_operation_id is not null
+      )
+    `,
+    [content, todoId, noteId],
+  )
+  response.json(await getWorkspace(userId))
+}))
+
+app.get('/api/package-market/rules', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  void userId
+  response.json({
+    expireMinutes: getPackageMarketExpireMinutes(),
+    rules: await listPackageMarketRules(),
+  })
+}))
+
+app.get('/api/package-market/packages/base', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  response.json(await getPackageMarketDetail({
+    packageId,
+    deployType: String(request.query.deployType ?? ''),
+    arch: String(request.query.arch ?? 'amd64'),
+    channel: ensurePackageMarketChannel(request.query.channel),
+    releaseVersion: String(request.query.releaseVersion ?? request.query.version ?? ''),
+  }))
+}))
+
+app.get('/api/package-market/packages/base/release-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  response.json({
+    versions: await listPackageMarketReleaseVersions({
+      packageId,
+      deployType: String(request.query.deployType ?? ''),
+      arch: String(request.query.arch ?? 'amd64'),
+    }),
+  })
+}))
+
+app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json(await getPackageMarketDetail({
+    packageId: String(request.params.packageId),
+    deployType: String(request.query.deployType ?? ''),
+    arch: String(request.query.arch ?? 'amd64'),
+    channel: ensurePackageMarketChannel(request.query.channel),
+    ciVersion: String(request.query.ciVersion ?? ''),
+    releaseVersion: String(request.query.releaseVersion ?? ''),
+  }))
+}))
+
+app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json({
+    versions: await listPackageMarketCiVersions({
+      packageId: String(request.params.packageId),
+      arch: String(request.query.arch ?? 'amd64'),
+    }),
+  })
+}))
+
+app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json({
+    versions: await listPackageMarketReleaseVersions({
+      packageId: String(request.params.packageId),
+      arch: String(request.query.arch ?? 'amd64'),
+      deployType: String(request.query.deployType ?? ''),
+    }),
+  })
+}))
+
+app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await createProjectPackageEvent({
+    projectId,
+    createdByUserId: userId,
+    title: String(request.body.title ?? ''),
+    type: ensureProjectPackageEventType(request.body.type),
+  })
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await updateProjectPackageEvent({
+    projectId,
+    eventId: Number(request.params.eventId),
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    type: 'type' in request.body ? ensureProjectPackageEventType(request.body.type) : undefined,
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageEvent({
+    projectId,
+    eventId: Number(request.params.eventId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const items = Array.isArray(request.body.items)
+    ? request.body.items
+        .map((item: Record<string, unknown>) => ({
+          sourcePackageId: String(item?.sourcePackageId ?? ''),
+          sourcePackageName: String(item?.sourcePackageName ?? ''),
+          packageName: String(item?.packageName ?? ''),
+          channel: String(item?.channel ?? ''),
+          channelLabel: String(item?.channelLabel ?? ''),
+          arch: String(item?.arch ?? ''),
+          version: String(item?.version ?? ''),
+          objectKey: String(item?.objectKey ?? ''),
+          objectLastModified: item?.objectLastModified ? String(item.objectLastModified) : undefined,
+          sizeBytes: typeof item?.sizeBytes === 'number' ? item.sizeBytes : undefined,
+        }))
+        .filter((item: { objectKey: string; packageName: string }) => item.packageName && item.objectKey)
+    : []
+  await addProjectPackageItems({
+    projectId,
+    eventId: Number(request.params.eventId),
+    createdByUserId: userId,
+    items,
+  })
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/package-groups/:groupId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageGroup({
+    projectId,
+    groupId: Number(request.params.groupId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/operations', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await createProjectPackageOperation({
+    projectId,
+    createdByUserId: userId,
+    eventId: Number(request.body.eventId),
+    groupId: request.body.groupId ? Number(request.body.groupId) : null,
+    kind: ensureProjectPackageOperationKind(request.body.kind),
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
+    content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
+    completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    relatedTodoIds:
+      'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
+        ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
+        : undefined,
+    relatedTodoNotes:
+      'relatedTodoNotes' in request.body && request.body.relatedTodoNotes && typeof request.body.relatedTodoNotes === 'object'
+        ? request.body.relatedTodoNotes
+        : undefined,
+  })
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.patch('/api/projects/:projectId/package-timeline/operations/:operationId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await updateProjectPackageOperation({
+    projectId,
+    updatedByUserId: userId,
+    operationId: Number(request.params.operationId),
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
+    content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
+    completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    relatedTodoIds:
+      'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
+        ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
+        : undefined,
+    relatedTodoNotes:
+      'relatedTodoNotes' in request.body && request.body.relatedTodoNotes && typeof request.body.relatedTodoNotes === 'object'
+        ? request.body.relatedTodoNotes
+        : undefined,
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/operations/:operationId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageOperation({
+    projectId,
+    operationId: Number(request.params.operationId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.get('/api/projects/:projectId/package-timeline/export', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.json(await exportProjectPackageTimeline(projectId))
+}))
+
+app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const objectKey = await getProjectPackageItemObjectKey({
+    projectId,
+    itemId: Number(request.params.itemId),
+  })
+  if (!objectKey) {
+    response.status(404).json({ error: 'Package item not found' })
+    return
+  }
+  response.json({ downloadUrl: createPackageItemDownloadUrl(objectKey) })
 }))
 
 app.post('/api/drafts', asyncHandler(async (request, response) => {
@@ -2524,7 +3110,7 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
 
   const userResult = await query<{ id: string }>(
     'select id from users where email = $1',
-    [normalizeEmail(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'felix@vege.local')],
+    [normalizeUsername(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'felix@vege.local')],
   )
   const userId = userResult.rows[0] ? Number(userResult.rows[0].id) : null
   if (!userId) {

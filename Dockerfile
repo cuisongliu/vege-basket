@@ -14,7 +14,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8787
 RUN printf '%s\n' \
-  '{"type":"module","dependencies":{"bcryptjs":"^3.0.3","cors":"^2.8.6","dotenv":"^17.4.2","express":"^5.2.1","pg":"^8.20.0"}}' \
+  '{"type":"module","dependencies":{"ali-oss":"^6.23.0","bcryptjs":"^3.0.3","cors":"^2.8.6","dotenv":"^17.4.2","express":"^5.2.1","js-yaml":"^5.2.0","pg":"^8.20.0"}}' \
   > package.json \
   && npm install --omit=dev --no-audit --no-fund \
   && npm cache clean --force

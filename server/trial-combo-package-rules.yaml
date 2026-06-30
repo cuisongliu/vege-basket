@@ -1,0 +1,165 @@
+rules:
+  kite:
+    name: sealos-kite
+    release_roots:
+      - offline/sealos-apps/kite/release/
+    file_name_formats:
+      - kite-cluster-%s-%s.tar
+      - kite-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - kite-cluster-latest-%s-%s.tar
+      - kite-cluster-latest-%s-%s.tar.gz
+  admin:
+    name: admin
+    release_roots:
+      - offline/sealos-apps/admin/releases/
+    file_name_formats:
+      - admin-cluster-%s-%s.tar
+      - admin-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - admin-cluster-latest-%s-%s.tar
+      - admin-cluster-latest-%s-%s.tar.gz
+      - sealos-admin-cluster-latest-%s-%s.tar
+      - sealos-admin-cluster-latest-%s-%s.tar.gz
+  devbox-cache:
+    name: devbox-cache
+    flat_file_roots:
+      - offline/sealos-pro/devbox-cache/
+    file_name_formats:
+      - devbox-cache-%s-cuda-cache-%s.tar
+      - devbox-cache-%s-cache-%s.tar.gz
+    ci_file_name_formats:
+      - devbox-cache-latest-%s-cache-%s.tar
+      - devbox-cache-latest-%s-cache-%s.tar.gz
+      - devbox-cache-latest-%s-cuda-cache-%s.tar
+      - devbox-cache-latest-%s-cuda-cache-%s.tar.gz
+      - devbox-cache-main-%s-cache-%s.tar
+      - devbox-cache-main-%s-cache-%s.tar.gz
+      - devbox-cache-main-%s-cuda-cache-%s.tar
+      - devbox-cache-main-%s-cuda-cache-%s.tar.gz
+    flat_file_name_prefix: devbox-cache-
+    flat_file_name_suffix: -cache-%s.tar
+    flat_file_name_suffixes:
+      - -cuda-cache-%s.tar
+  sealaf:
+    name: sealaf
+    release_roots:
+      - offline/sealos-apps/sealaf/release/
+      - offline/sealos-apps/sealaf/releases/
+      - offline/sealaf/release/
+      - offline/sealaf/releases/
+    flat_file_roots:
+      - offline/sealos-apps/sealaf/
+      - offline/sealos-apps/sealaf/release/
+      - offline/sealos-apps/sealaf/releases/
+      - offline/sealaf/
+    file_name_formats:
+      - sealaf-cluster-%s-%s.tar
+      - sealaf-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - sealaf-cluster-latest-%s-%s.tar
+      - sealaf-cluster-latest-%s-%s.tar.gz
+      - sealaf-cluster-latest-%s.tar
+      - sealaf-cluster-latest-%s.tar.gz
+      - sealaf-cluster-main-%s-%s.tar
+      - sealaf-cluster-main-%s-%s.tar.gz
+    flat_file_name_prefix: sealaf-cluster-
+    flat_file_name_suffix: -%s.tar
+  aiproxy:
+    name: aiproxy
+    release_roots:
+      - offline/sealos-apps/aiproxy/release/
+    file_name_formats:
+      - aiproxy-cluster-%s-%s.tar
+      - aiproxy-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - aiproxy-cluster-main-%s-%s.tar
+      - aiproxy-cluster-main-%s-%s.tar.gz
+      - aiproxy-cluster-latest-%s-%s.tar
+      - aiproxy-cluster-latest-%s-%s.tar.gz
+  registry:
+    name: registry
+    release_roots:
+      - offline/sealos-apps/registry/release/
+    file_name_formats:
+      - registry-cluster-%s-%s.tar
+      - registry-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - registry-cluster-latest-%s-%s.tar
+      - registry-cluster-latest-%s-%s.tar.gz
+      - sealos-registry-cluster-latest-%s-%s.tar
+      - sealos-registry-cluster-latest-%s-%s.tar.gz
+      - registry-cluster-main-%s-%s.tar
+      - registry-cluster-main-%s-%s.tar.gz
+  objectstorage:
+    name: objectstorage
+    release_roots:
+      - offline/sealos-apps/objectstorage/release/
+    file_name_formats:
+      - objectstorage-cluster-%s-%s.tar
+      - objectstorage-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - objectstorage-cluster-main-%s-%s.tar
+      - objectstorage-cluster-main-%s-%s.tar.gz
+      - objectstorage-cluster-latest-%s-%s.tar
+      - objectstorage-cluster-latest-%s-%s.tar.gz
+  cronjob:
+    name: cronjob
+    release_roots:
+      - offline/sealos-apps/cronjob/release/
+    file_name_formats:
+      - cronjob-cluster-%s-%s.tar
+      - cronjob-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - cronjob-cluster-main-%s-%s.tar
+      - cronjob-cluster-main-%s-%s.tar.gz
+      - cronjob-cluster-latest-%s-%s.tar
+      - cronjob-cluster-latest-%s-%s.tar.gz
+  dataflow:
+    name: dataflow
+    release_roots:
+      - offline/sealos-apps/dataflow/release/
+    file_name_formats:
+      - dataflow-cluster-%s-%s.tar
+      - dataflow-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - dataflow-cluster-main-%s-%s.tar
+      - dataflow-cluster-main-%s-%s.tar.gz
+      - dataflow-cluster-latest-%s-%s.tar
+      - dataflow-cluster-latest-%s-%s.tar.gz
+  devbox:
+    name: devbox
+    release_roots:
+      - offline/sealos-apps/devbox/release/
+    file_name_formats:
+      - devbox-v1-cluster-%s-%s.tar
+      - devbox-v1-cluster-%s-%s.tar.gz
+      - devbox-v1-cri-shim-patch-%s-%s.tar
+      - devbox-v1-cri-shim-patch-%s-%s.tar.gz
+      - devbox-v2-cluster-%s-%s.tar
+      - devbox-v2-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - devbox-v1-cluster-main-%s-%s.tar
+      - devbox-v1-cluster-main-%s-%s.tar.gz
+      - devbox-v1-cri-shim-patch-main-%s-%s.tar
+      - devbox-v1-cri-shim-patch-main-%s-%s.tar.gz
+      - devbox-v2-cluster-main-%s-%s.tar
+      - devbox-v2-cluster-main-%s-%s.tar.gz
+      - devbox-v1-cluster-latest-%s-%s.tar
+      - devbox-v1-cluster-latest-%s-%s.tar.gz
+      - devbox-v1-cri-shim-patch-latest-%s-%s.tar
+      - devbox-v1-cri-shim-patch-latest-%s-%s.tar.gz
+      - devbox-v2-cluster-latest-%s-%s.tar
+      - devbox-v2-cluster-latest-%s-%s.tar.gz
+  storage-manager:
+    name: storage-manager
+    release_roots:
+      - offline/sealos-apps/storage-manager/release/
+    file_name_formats:
+      - storage-manager-cluster-%s-%s.tar
+      - storage-manager-cluster-%s-%s.tar.gz
+    ci_file_name_formats:
+      - storage-manager-cluster-main-%s-%s.tar
+      - storage-manager-cluster-main-%s-%s.tar.gz
+      - storage-manager-cluster-latest-%s-%s.tar
+      - storage-manager-cluster-latest-%s-%s.tar.gz

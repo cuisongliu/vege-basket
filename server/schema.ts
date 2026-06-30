@@ -86,8 +86,17 @@ create table if not exists todos (
   due_date date not null,
   priority text not null default 'medium',
   done boolean not null default false,
+  confirmed boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists project_modules (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  name text not null default '',
+  created_at timestamptz not null default now(),
+  unique (project_id, name)
 );
 
 create table if not exists collaborators (
@@ -114,6 +123,12 @@ alter table todos
   add column if not exists assignee_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_at timestamptz;
+
+alter table todos
+  add column if not exists project_module_id bigint references project_modules(id) on delete set null;
+
+alter table todos
+  add column if not exists confirmed boolean not null default false;
 
 update todos
 set created_by_user_id = projects.user_id
@@ -175,6 +190,95 @@ create table if not exists notification_states (
   unique (user_id, kind, source_id)
 );
 
+create table if not exists project_package_events (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  type text not null default 'upgrade',
+  title text not null,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists project_package_groups (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  package_name text not null,
+  created_at timestamptz not null default now(),
+  unique (project_package_event_id, package_name)
+);
+
+create table if not exists project_package_items (
+  id bigserial primary key,
+  project_package_group_id bigint not null references project_package_groups(id) on delete cascade,
+  source_package_id text not null default '',
+  source_package_name text not null default '',
+  channel text not null default 'release',
+  channel_label text not null default '',
+  arch text not null default 'amd64',
+  version text not null default '',
+  object_key text not null default '',
+  object_last_modified timestamptz,
+  size_bytes bigint,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists project_package_operations (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  project_package_group_id bigint references project_package_groups(id) on delete cascade,
+  kind text not null default 'document',
+  title text not null default '',
+  label text not null default '',
+  content text not null default '',
+  completed boolean not null default false,
+  auto_generated boolean not null default false,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table project_package_operations
+  add column if not exists completed boolean not null default false;
+
+create table if not exists project_package_operation_todos (
+  project_package_operation_id bigint not null references project_package_operations(id) on delete cascade,
+  todo_id bigint not null references todos(id) on delete cascade,
+  note text not null default '',
+  note_author_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (project_package_operation_id, todo_id)
+);
+
+alter table project_package_operation_todos
+  add column if not exists note text not null default '';
+
+alter table project_package_operation_todos
+  add column if not exists note_author_user_id bigint references users(id) on delete set null;
+
+create table if not exists todo_notes (
+  id bigserial primary key,
+  todo_id bigint not null references todos(id) on delete cascade,
+  author_user_id bigint references users(id) on delete set null,
+  content text not null default '',
+  source_operation_id bigint references project_package_operations(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists idx_todo_notes_source_operation_unique
+  on todo_notes(todo_id, source_operation_id)
+  where source_operation_id is not null;
+
+create table if not exists todo_note_mentions (
+  id bigserial primary key,
+  todo_note_id bigint not null references todo_notes(id) on delete cascade,
+  mentioned_user_id bigint not null references users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (todo_note_id, mentioned_user_id)
+);
+
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_project_memberships_project_id on project_memberships(project_id);
 create index if not exists idx_project_memberships_owner_user_id on project_memberships(owner_user_id);
@@ -193,6 +297,11 @@ create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
 create index if not exists idx_todos_created_by_user_id on todos(created_by_user_id);
 create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
 create index if not exists idx_todos_due_date on todos(due_date);
+create index if not exists idx_todos_project_module_id on todos(project_module_id);
+create index if not exists idx_project_modules_project_id on project_modules(project_id);
+create index if not exists idx_todo_notes_todo_id on todo_notes(todo_id);
+create index if not exists idx_todo_notes_author_user_id on todo_notes(author_user_id);
+create index if not exists idx_todo_note_mentions_user_id on todo_note_mentions(mentioned_user_id);
 create index if not exists idx_collaborators_user_id on collaborators(user_id);
 create index if not exists idx_collaborators_project_id on collaborators(project_id);
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
@@ -202,4 +311,18 @@ create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
 create index if not exists idx_notification_states_user_kind
   on notification_states(user_id, kind);
+create index if not exists idx_project_package_events_project_id
+  on project_package_events(project_id, created_at);
+create index if not exists idx_project_package_groups_event_id
+  on project_package_groups(project_package_event_id);
+create index if not exists idx_project_package_items_group_id
+  on project_package_items(project_package_group_id, created_at desc);
+create index if not exists idx_project_package_operations_event_id
+  on project_package_operations(project_package_event_id, created_at asc);
+create index if not exists idx_project_package_operations_group_id
+  on project_package_operations(project_package_group_id, created_at asc);
+create index if not exists idx_project_package_operation_todos_operation_id
+  on project_package_operation_todos(project_package_operation_id);
+create index if not exists idx_project_package_operation_todos_todo_id
+  on project_package_operation_todos(todo_id);
 `

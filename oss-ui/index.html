@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>安装包访问台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="loginView" class="login-view">
+        <div class="login-panel">
+          <p class="eyebrow">Internal Package Console</p>
+          <h1>安装包访问台</h1>
+          <form id="loginForm" class="login-form">
+            <label for="passwordInput">访问密码</label>
+            <div class="password-row">
+              <input id="passwordInput" name="password" type="password" autocomplete="current-password" />
+              <button type="submit">进入</button>
+            </div>
+            <p id="loginError" class="error-text" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
+
+      <section id="consoleView" class="console-view hidden">
+        <header class="topbar">
+          <div>
+            <p id="topbarEyebrow" class="eyebrow">project operation records</p>
+            <div class="topbar-title-row">
+              <button id="topbarBackIcon" class="back-icon-button hidden" type="button" aria-label="返回项目列表">←</button>
+              <h1 id="topbarTitle">项目列表</h1>
+              <span id="topbarTitleMeta" class="topbar-title-meta"></span>
+            </div>
+            <p id="topbarSubtitle" class="topbar-subtitle"></p>
+          </div>
+          <div class="topbar-actions">
+            <button id="marketButton" class="secondary-button" type="button">安装包市场</button>
+            <button id="openProjectModalButton" class="primary-button" type="button">新增项目</button>
+            <button id="exportProjectTimelineButton" class="secondary-button hidden" type="button">导出项目时间线</button>
+            <button id="cartButton" class="secondary-button cart-button hidden" type="button">
+              购物车
+              <span id="cartCount" class="cart-count">0</span>
+            </button>
+            <button id="backToProjectsButton" class="secondary-button hidden" type="button">返回项目列表</button>
+            <button id="lockButton" class="danger-button" type="button">锁定</button>
+          </div>
+        </header>
+
+        <section id="packagePage" class="hidden">
+          <section class="control-band" aria-label="包路径生成参数">
+          <div class="field-grid">
+            <label>
+              包类型
+              <select id="channel">
+                <option value="release">正式包</option>
+                <option value="ci">测试包</option>
+              </select>
+            </label>
+            <label>
+              架构
+              <select id="arch">
+                <option value="amd64">amd64</option>
+                <option value="arm64">arm64</option>
+              </select>
+            </label>
+            <label>
+              搜索包名/路径
+              <input id="searchInput" type="search" placeholder="kite / devbox / sealaf" />
+            </label>
+            <label id="ciVersionField" class="hidden">
+              测试版本
+              <select id="ciVersion"></select>
+            </label>
+            <div class="button-field">
+              <button id="refreshButton" class="secondary-button" type="button">刷新 OSS 数据</button>
+            </div>
+          </div>
+          <p id="statusText" class="status-text"></p>
+          </section>
+
+          <section class="summary-strip" aria-label="审批流实现摘要">
+          <article>
+            <strong>主包</strong>
+            <span>基础包按版本下拉切换；PRO 优先使用 sealos-pro，必要时兼容 sealos-commercial。</span>
+          </article>
+          <article>
+            <strong>正式包</strong>
+            <span>服务端读取外部规则配置，并在对象存储中查询当前可用对象。</span>
+          </article>
+          <article>
+            <strong>测试包</strong>
+            <span>从测试版本目录查询，版本选择显示为对象更新时间与版本标识。</span>
+          </article>
+          </section>
+
+          <section class="content-grid">
+          <aside class="package-list" aria-label="包列表">
+            <div class="package-group" data-group="base">
+              <button class="group-toggle" data-toggle-group="base" type="button" aria-expanded="true">
+                <span>基础包</span>
+                <span class="toggle-icon">▾</span>
+              </button>
+              <div class="group-content">
+                <button class="package-tab active" data-package="base-pro" type="button">
+                  <span>sealos-pro</span>
+                  <small>主包</small>
+                </button>
+                <button class="package-tab" data-package="base-oss" type="button">
+                  <span>sealos-oss</span>
+                  <small>主包</small>
+                </button>
+              </div>
+            </div>
+            <div class="package-group collapsed" data-group="apps">
+              <button class="group-toggle" data-toggle-group="apps" type="button" aria-expanded="false">
+                <span>Apps</span>
+                <span class="toggle-icon">▸</span>
+              </button>
+              <div id="appsTabs" class="group-content"></div>
+            </div>
+            <div class="package-group collapsed" data-group="middleware">
+              <button class="group-toggle" data-toggle-group="middleware" type="button" aria-expanded="false">
+                <span>sealos-pro 中间件</span>
+                <span class="toggle-icon">▸</span>
+              </button>
+              <div id="middlewareTabs" class="group-content"></div>
+            </div>
+          </aside>
+
+          <section class="detail-panel" aria-live="polite">
+            <div class="detail-head">
+              <div>
+                <p id="packageType" class="eyebrow"></p>
+                <h2 id="packageTitle"></h2>
+              </div>
+              <div class="detail-actions">
+                <button id="addPackageToCartButton" class="secondary-button primary-outline-button" type="button">添加到项目事件</button>
+                <button id="copyAllButton" class="secondary-button" type="button">复制全部下载链接</button>
+              </div>
+            </div>
+
+            <div id="packageMeta" class="meta-grid"></div>
+            <div id="detailControls" class="detail-controls"></div>
+            <div id="linkCards" class="link-cards"></div>
+          </section>
+          </section>
+        </section>
+
+        <section id="projectsPage" class="projects-page hidden" aria-label="项目列表">
+          <div id="projectsList" class="projects-list"></div>
+        </section>
+
+        <section id="projectDetailPage" class="project-detail-page hidden" aria-label="项目详情">
+          <div id="projectDetailContent"></div>
+        </section>
+      </section>
+
+      <div id="projectModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="projectModalTitle">
+        <section class="project-modal">
+          <div class="modal-head">
+            <div>
+              <p class="eyebrow">new project</p>
+              <h2 id="projectModalTitle">新增项目</h2>
+            </div>
+            <button id="closeProjectModalButton" class="icon-button" type="button" aria-label="关闭新增项目弹窗">×</button>
+          </div>
+          <form id="projectForm" class="project-form modal-form">
+            <label>
+              项目名称
+              <input id="projectNameInput" type="text" autocomplete="off" />
+            </label>
+            <label>
+              项目负责人
+              <input id="projectOwnerInput" type="text" autocomplete="off" />
+            </label>
+            <div class="modal-actions">
+              <button id="cancelProjectModalButton" class="secondary-button" type="button">取消</button>
+              <button type="submit">创建项目</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div id="cartDialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cartTitle">
+        <section class="cart-modal">
+          <div class="modal-head">
+            <div>
+              <p class="eyebrow">selected package actions</p>
+              <h2 id="cartTitle">购物车</h2>
+            </div>
+            <button id="closeCartButton" class="icon-button" type="button" aria-label="关闭购物车">×</button>
+          </div>
+          <div id="cartItems" class="cart-items"></div>
+          <div class="cart-footer">
+            <label>
+              <span id="cartProjectLabelText">记录到项目</span>
+              <select id="cartProjectSelect"></select>
+            </label>
+            <label>
+              <span id="cartEventLabelText">记录到事件</span>
+              <select id="cartEventSelect"></select>
+            </label>
+            <div class="cart-footer-actions">
+              <button id="clearCartButton" class="danger-button" type="button">清空购物车</button>
+              <button id="generateRecordButton" type="button">添加到项目事件</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div id="projectEventModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="projectEventModalTitle">
+        <section class="project-modal">
+          <div class="modal-head">
+            <div>
+              <p id="projectEventModalEyebrow" class="eyebrow">new project event</p>
+              <h2 id="projectEventModalTitle">新增项目事件</h2>
+            </div>
+            <button id="closeProjectEventModalButton" class="icon-button" type="button" aria-label="关闭新增项目事件弹窗">×</button>
+          </div>
+          <form id="projectEventForm" class="project-form modal-form">
+            <label>
+              事件类型
+              <select id="projectEventTypeInput">
+                <option value="" selected disabled>请选择事件类型</option>
+                <option value="init">初始化安装</option>
+                <option value="upgrade">升级</option>
+              </select>
+              <p id="projectEventTypeError" class="error-text form-error-inline" aria-live="polite"></p>
+            </label>
+            <label>
+              事件标题
+              <input id="projectEventNameInput" type="text" autocomplete="off" placeholder="例如：控制台升级到 v5.1.2-rc5" />
+            </label>
+            <div class="modal-actions">
+              <button id="cancelProjectEventModalButton" class="secondary-button" type="button">取消</button>
+              <button id="submitProjectEventButton" type="submit">创建事件</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div id="operationDocDialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="operationDocTitle">
+        <section class="doc-modal">
+          <div class="modal-head">
+            <div>
+              <p class="eyebrow">operation document</p>
+              <h2 id="operationDocTitle">添加操作文档</h2>
+            </div>
+            <button id="closeOperationDocButton" class="icon-button" type="button" aria-label="关闭操作文档弹窗">×</button>
+          </div>
+          <form id="operationDocForm" class="doc-form">
+            <label>
+              文档标题
+              <input id="operationDocNameInput" type="text" autocomplete="off" placeholder="例如：升级前检查事项" />
+            </label>
+            <div class="doc-editor-layout">
+              <section class="doc-editor-pane doc-surface-panel">
+                <div class="doc-editor-head">
+                  <label for="operationDocContentInput">Markdown 内容</label>
+                  <div id="operationDocToolbar" class="doc-toolbar" role="toolbar" aria-label="文档格式工具">
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="highlight">高亮</button>
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="inline-code">行内代码</button>
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="code-block">代码块</button>
+                  </div>
+                </div>
+                <textarea id="operationDocContentInput" class="doc-editor-textarea" rows="16" placeholder="支持 Markdown，也可以先选中文本再用上方工具栏插入格式。&#10;&#10;例如：&#10;## 操作事项&#10;- 检查版本&#10;- 记录执行人&#10;&#10;```bash&#10;kubectl get pods -A&#10;```"></textarea>
+              </section>
+              <section class="doc-preview-panel doc-surface-panel" aria-live="polite">
+                <div class="doc-preview-head">
+                  <span>实时预览</span>
+                  <small>支持 Markdown，也支持工具栏一键插入格式</small>
+                </div>
+                <div id="operationDocPreview" class="markdown-preview"></div>
+              </section>
+            </div>
+            <p class="doc-form-hint">支持直接输入 Markdown，也可以先选中文字再点击上方工具栏。高亮会自动转成 <code>==内容==</code>，行内代码会转成 <code>`命令`</code>，代码块会自动插入三反引号围栏。</p>
+            <div class="modal-actions">
+              <button id="cancelOperationDocButton" class="secondary-button" type="button">取消</button>
+              <button type="submit">保存文档</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div id="exportPreviewDialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="exportPreviewTitle">
+        <section class="doc-modal">
+          <div class="modal-head">
+            <div>
+              <p class="eyebrow">export project timeline</p>
+              <h2 id="exportPreviewTitle">导出项目时间线</h2>
+            </div>
+            <button id="closeExportPreviewButton" class="icon-button" type="button" aria-label="关闭导出预览弹窗">×</button>
+          </div>
+          <div class="doc-form">
+            <p id="exportPreviewMeta" class="doc-form-hint">确认内容无误后，再点击右下角导出 Markdown 文件。</p>
+            <div class="doc-editor-layout">
+              <section class="doc-editor-pane doc-surface-panel">
+                <div class="doc-editor-head">
+                  <label for="exportPreviewContentInput">导出内容</label>
+                  <div id="exportPreviewToolbar" class="doc-toolbar" role="toolbar" aria-label="导出内容格式工具">
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="highlight">高亮</button>
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="inline-code">行内代码</button>
+                    <button type="button" class="secondary-button compact-button doc-toolbar-button" data-doc-format="code-block">代码块</button>
+                  </div>
+                </div>
+                <textarea id="exportPreviewContentInput" class="doc-editor-textarea" rows="16" placeholder="这里会展示导出的项目时间线 Markdown 内容。"></textarea>
+              </section>
+              <section class="doc-preview-panel doc-surface-panel" aria-live="polite">
+                <div class="doc-preview-head">
+                  <span>实时预览</span>
+                  <small>确认无误后再导出</small>
+                </div>
+                <div id="exportPreviewContentPreview" class="markdown-preview"></div>
+              </section>
+            </div>
+            <div class="modal-actions">
+              <button id="cancelExportPreviewButton" class="secondary-button" type="button">取消</button>
+              <button id="confirmExportPreviewButton" class="primary-button" type="button">确认导出</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div id="operationDeleteDialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="operationDeleteTitle">
+        <section class="confirm-modal">
+          <div class="modal-head">
+            <div>
+              <p id="operationDeleteEyebrow" class="eyebrow">delete operation</p>
+              <h2 id="operationDeleteTitle">删除这条操作？</h2>
+            </div>
+            <button id="closeOperationDeleteButton" class="icon-button" type="button" aria-label="关闭删除确认弹窗">×</button>
+          </div>
+          <div class="confirm-body">
+            <p id="operationDeleteMessage">删除后不可恢复，请确认是否继续。</p>
+          </div>
+          <div class="modal-actions confirm-actions">
+            <button id="cancelOperationDeleteButton" class="secondary-button" type="button">取消</button>
+            <button id="confirmOperationDeleteButton" class="danger-button" type="button">确认删除</button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

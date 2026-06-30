@@ -1,5 +1,5 @@
 import { pool, query } from './db.ts'
-import { assertEncryptionConfigured, blindIndex, encryptJson, encryptText } from './crypto.ts'
+import { assertEncryptionConfigured, encryptJson, encryptText } from './crypto.ts'
 import { schemaSql } from './schema.ts'
 
 const today = new Intl.DateTimeFormat('en-CA', {
@@ -70,28 +70,6 @@ async function insertProject({
   return projectId
 }
 
-async function insertCollaborator({
-  name,
-  projectId,
-  role,
-  userId,
-}: {
-  name: string
-  projectId: number
-  role: string
-  userId: number
-}) {
-  const result = await query<{ id: string }>(
-    `
-    insert into collaborators (user_id, project_id, name, name_lookup, role)
-    values ($1, $2, $3, $4, $5)
-    returning id
-    `,
-    [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
-  )
-  return Number(result.rows[0].id)
-}
-
 async function main() {
   assertEncryptionConfigured()
   await query(schemaSql)
@@ -103,7 +81,7 @@ async function main() {
     on conflict (email) do update set email = excluded.email
     returning id
     `,
-    ['felix@example.com', 'project-baskets'],
+    ['felix', 'project-baskets'],
   )
   const userId = Number(userResult.rows[0].id)
 
@@ -162,25 +140,6 @@ async function main() {
           done: false,
         },
       ],
-    })
-
-    await insertCollaborator({
-      userId,
-      projectId: projectOneId,
-      name: '潘仪豪',
-      role: '产品负责人',
-    })
-    await insertCollaborator({
-      userId,
-      projectId: projectOneId,
-      name: '谢金虎',
-      role: '研发协作',
-    })
-    await insertCollaborator({
-      userId,
-      projectId: projectTwoId,
-      name: '达梦',
-      role: '数据口径确认',
     })
 
     await insertProject({
