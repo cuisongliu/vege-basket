@@ -13,8 +13,8 @@ import {
   Archive,
   AddressBook,
   Bell,
-  ArrowRight,
   Check,
+  BookOpenText,
   CornersIn,
   CornersOut,
   DotsThree,
@@ -72,7 +72,6 @@ import {
   archiveDraft,
   acceptProjectInvitation,
   createDraft,
-  createCollaborator,
   createJournalEntry,
   createProject,
   createRiskFromJournal,
@@ -88,7 +87,6 @@ import {
   loginAccount,
   registerAccount,
   clearAuthToken,
-  removeCollaborator,
   removeDraft,
   removeJournalEntry,
   removeProject,
@@ -98,7 +96,6 @@ import {
   declineProjectInvitation,
   updateJournalEntry,
   updateProject,
-  updateCollaborator,
   updateTodo,
   updateAiSettings,
   setAuthToken,
@@ -111,7 +108,6 @@ import {
   type WorkspaceData,
 } from './api'
 import type {
-  Collaborator,
   InboxItem,
   JournalVisibility,
   NotificationCenterData,
@@ -124,12 +120,11 @@ import type {
 } from './types'
 import './App.css'
 
-type View = 'project' | 'collaborators' | 'inbox' | 'notifications' | 'search' | 'summaries' | 'todos'
+type View = 'project' | 'inbox' | 'notifications' | 'search' | 'summaries' | 'todos'
 type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
 type ThemeMode = 'dark' | 'light'
-type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'collaboratorId'> & {
+type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId'> & {
   assigneeUserId?: number | null
-  collaboratorId?: number | null
 }
 type AdaptivePageSizeOptions = {
   compact: boolean
@@ -139,20 +134,10 @@ type AdaptivePageSizeOptions = {
   minPageSize: number
   reservedHeight: (viewportHeight: number) => number
 }
-type CollaboratorPerson = {
-  name: string
-  primaryId: number
-  projects: Project[]
-  roles: string[]
-}
 type MentionOption = {
   id: number
   name: string
   role: string
-}
-type ProjectCollaboratorSummary = {
-  count: number
-  names: string[]
 }
 
 const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
@@ -399,7 +384,6 @@ const initialTodos: Todo[] = [
   {
     id: 1,
     projectId: 1,
-    collaboratorId: 1,
     title: '整理内容模板的评估维度',
     dueDate: today,
     priority: 'high',
@@ -408,7 +392,6 @@ const initialTodos: Todo[] = [
   {
     id: 2,
     projectId: 2,
-    collaboratorId: 3,
     title: '约业务方确认转化漏斗口径',
     dueDate: today,
     priority: 'high',
@@ -429,27 +412,6 @@ const initialTodos: Todo[] = [
     dueDate: '2026-05-13',
     priority: 'low',
     done: true,
-  },
-]
-
-const initialCollaborators: Collaborator[] = [
-  {
-    id: 1,
-    name: '潘仪豪',
-    role: '产品负责人',
-    projectId: 1,
-  },
-  {
-    id: 2,
-    name: '谢金虎',
-    role: '研发协作',
-    projectId: 1,
-  },
-  {
-    id: 3,
-    name: '达梦',
-    role: '数据口径确认',
-    projectId: 2,
   },
 ]
 
@@ -510,7 +472,6 @@ function App() {
   const [view, setView] = useState<View>('search')
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
-  const [collaborators, setCollaborators] = useState(initialCollaborators)
   const [memberships, setMemberships] = useState(initialMemberships)
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [inbox, setInbox] = useState(initialInbox)
@@ -523,12 +484,10 @@ function App() {
   const [todoDraft, setTodoDraft] = useState('')
   const [todoDueDate, setTodoDueDate] = useState(today)
   const [todoPriority, setTodoPriority] = useState<Priority>('medium')
-  const [todoCollaboratorId, setTodoCollaboratorId] = useState<number | null>(null)
+  const [todoAssigneeId, setTodoAssigneeId] = useState<number | null>(null)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectTags, setNewProjectTags] = useState('')
-  const [newProjectCollaboratorIds, setNewProjectCollaboratorIds] = useState<number[]>([])
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
-  const [isNewCollaboratorDialogOpen, setIsNewCollaboratorDialogOpen] = useState(false)
   const [isProjectMembersDialogOpen, setIsProjectMembersDialogOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
@@ -554,7 +513,6 @@ function App() {
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
     setTodos(data.todos)
-    setCollaborators(data.collaborators)
     setMemberships(data.memberships)
     setInbox(data.inbox)
     setSummaries(data.summaries)
@@ -603,6 +561,17 @@ function App() {
   const projectTodos = selectedProject
     ? todos.filter((todo) => todo.projectId === selectedProject.id)
     : []
+  const projectMentionMembers = useMemo(() => {
+    const membersById = new Map<number, { id: number; name: string }>()
+    projects.forEach((project) => {
+      getProjectAssignableUsers(project, memberships).forEach((member) => {
+        membersById.set(member.id, member)
+      })
+    })
+    return Array.from(membersById.values()).sort((left, right) =>
+      left.name.localeCompare(right.name, 'zh-Hans-CN'),
+    )
+  }, [memberships, projects])
   const allTags = ['全部', ...Array.from(new Set(projects.flatMap((p) => p.tags)))]
 
   const filteredResults = useMemo(() => {
@@ -711,7 +680,6 @@ function App() {
     if (!open) {
       setNewProjectName('')
       setNewProjectTags('')
-      setNewProjectCollaboratorIds([])
     }
   }
 
@@ -726,7 +694,6 @@ function App() {
 
     const data = await runMutation(() =>
       createProject({
-        collaboratorIds: newProjectCollaboratorIds,
         name,
         tags: tags.length > 0 ? tags : ['新项目'],
       }),
@@ -736,7 +703,6 @@ function App() {
     if (createdProject) setSelectedProjectId(createdProject.id)
     setNewProjectName('')
     setNewProjectTags('')
-    setNewProjectCollaboratorIds([])
     setJournalDraft('')
     setIsNewProjectDialogOpen(false)
     setView(createdProject ? 'project' : 'search')
@@ -769,6 +735,7 @@ function App() {
     setTodoDraft('')
     setTodoDueDate(today)
     setTodoPriority('medium')
+    setTodoAssigneeId(null)
     setView('project')
   }
 
@@ -808,45 +775,6 @@ function App() {
     setInboxDraft('')
   }
 
-  async function addCollaborator(payload: {
-    name: string
-    projectIds: number[]
-    role: string
-  }) {
-    const name = payload.name.trim()
-    if (!name || payload.projectIds.length === 0) return
-    await runMutation(() =>
-      createCollaborator({
-        name,
-        projectIds: payload.projectIds,
-        role: payload.role.trim(),
-      }),
-    )
-  }
-
-  async function editCollaborator(
-    collaboratorId: number,
-    payload: {
-      name: string
-      projectIds: number[]
-      role: string
-    },
-  ) {
-    const name = payload.name.trim()
-    if (!name || payload.projectIds.length === 0) return
-    await runMutation(() =>
-      updateCollaborator(collaboratorId, {
-        name,
-        projectIds: payload.projectIds,
-        role: payload.role.trim(),
-      }),
-    )
-  }
-
-  async function deleteCollaborator(collaboratorId: number) {
-    await runMutation(() => removeCollaborator(collaboratorId))
-  }
-
   async function inviteMember(projectId: number, email: string) {
     const nextEmail = email.trim()
     if (!nextEmail) return
@@ -867,16 +795,16 @@ function App() {
 
   async function addTodo(projectId?: number) {
     const targetProjectId = projectId ?? selectedProject?.id
-    const mentionCollaborators = collaborators.filter(
-      (collaborator) => collaborator.projectId === targetProjectId,
-    )
-    const mentionCollaborator = extractMentionCollaborator(todoDraft, mentionCollaborators)
-    const title = stripTodoMentions(todoDraft, mentionCollaborators).trim()
+    const targetProject = projects.find((project) => project.id === targetProjectId)
+    const projectMembers = targetProject
+      ? getProjectAssignableUsers(targetProject, memberships)
+      : []
+    const mentionedAssignee = extractMentionMember(todoDraft, projectMembers)
+    const title = stripTodoMentions(todoDraft, projectMembers).trim()
     if (!title || !targetProjectId) return
     await runMutation(() =>
       createTodo({
-        assigneeUserId: todoCollaboratorId ?? undefined,
-        collaboratorId: mentionCollaborator?.id,
+        assigneeUserId: todoAssigneeId ?? mentionedAssignee?.id ?? undefined,
         projectId: targetProjectId,
         title,
         dueDate: todoDueDate,
@@ -886,7 +814,7 @@ function App() {
     setTodoDraft('')
     setTodoDueDate(today)
     setTodoPriority('medium')
-    setTodoCollaboratorId(null)
+    setTodoAssigneeId(null)
   }
 
   async function toggleTodo(todoId: number) {
@@ -1063,7 +991,7 @@ ${summariesText || '暂无总结'}`
           <img className="brand-mark" src="/favicon.svg" alt="Veges" />
           <div>
             <p className="eyebrow">Veges</p>
-            <h1>个人项目驾驶舱</h1>
+            <h1>项目篮子</h1>
           </div>
         </div>
         <nav className="nav-list">
@@ -1078,9 +1006,6 @@ ${summariesText || '暂无总结'}`
             {openNotificationCount > 0 && (
               <Badge className="nav-badge">{openNotificationCount}</Badge>
             )}
-          </NavButton>
-          <NavButton active={view === 'collaborators'} onClick={() => setView('collaborators')}>
-            <AddressBook size={18} weight="duotone" /> 协作者
           </NavButton>
           <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
             <Tray size={18} weight="duotone" /> 草稿箱
@@ -1131,7 +1056,7 @@ ${summariesText || '暂无总结'}`
               >
                 <DialogTrigger asChild>
                   <Button className="ghost-button project-members-trigger" type="button" variant="outline">
-                    <AddressBook size={16} /> 成员
+                    <AddressBook size={16} /> 项目成员
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
@@ -1179,28 +1104,15 @@ ${summariesText || '暂无总结'}`
                     </DialogDescription>
                   </DialogHeader>
                   <NewProjectForm
-                    collaborators={collaborators}
-                    newProjectCollaboratorIds={newProjectCollaboratorIds}
                     newProjectName={newProjectName}
                     newProjectTags={newProjectTags}
                     onCancel={() => changeNewProjectDialogOpen(false)}
-                    onNewProjectCollaboratorIdsChange={setNewProjectCollaboratorIds}
                     onNewProjectNameChange={setNewProjectName}
                     onNewProjectTagsChange={setNewProjectTags}
                     onSubmit={addProject}
                   />
                 </DialogContent>
               </Dialog>
-            ) : view === 'collaborators' ? (
-              projects.some((project) => project.accessRole === 'owner') && (
-                <Button
-                  className="solid-button"
-                  type="button"
-                  onClick={() => setIsNewCollaboratorDialogOpen(true)}
-                >
-                  <Plus size={17} /> 新增协作者
-                </Button>
-              )
             ) : (
               <Button className="solid-button" type="button" onClick={() => setView('inbox')}>
                 <Plus size={17} /> 快速捕捉
@@ -1217,23 +1129,17 @@ ${summariesText || '暂无总结'}`
 
         {view === 'project' && selectedProject && (
           <ProjectDetail
-            collaborators={collaborators}
-            exportMarkdown={exportMarkdown}
-            generateSummary={generateSummary}
             journalDraft={journalDraft}
             onAddTodo={addTodo}
             onDraftChange={setJournalDraft}
             onSaveJournal={saveJournal}
-            onRenameProject={renameProject}
-            onUpdateProjectStatus={updateProjectStatus}
-            onDeleteProject={deleteProject}
             onDeleteJournalEntry={deleteJournalEntry}
             onEditJournalEntry={editJournalEntry}
             onMarkJournalAsRisk={markJournalAsRisk}
             onResolveRisk={resolveProjectRisk}
             onUpdateJournalVisibility={updateJournalVisibility}
             onDeleteTodo={deleteTodo}
-            onTodoCollaboratorChange={setTodoCollaboratorId}
+            onTodoAssigneeChange={setTodoAssigneeId}
             onTodoDueDateChange={setTodoDueDate}
             onTodoDraftChange={setTodoDraft}
             onTodoPriorityChange={setTodoPriority}
@@ -1243,7 +1149,7 @@ ${summariesText || '暂无总结'}`
             memberships={memberships}
             projects={projects}
             projectTodos={projectTodos}
-            todoCollaboratorId={todoCollaboratorId}
+            todoAssigneeId={todoAssigneeId}
             todoDueDate={todoDueDate}
             todoDraft={todoDraft}
             todoPriority={todoPriority}
@@ -1252,13 +1158,10 @@ ${summariesText || '暂无总结'}`
 
         {view === 'project' && !selectedProject && (
           <EmptyWorkspace
-            collaborators={collaborators}
             isNewProjectDialogOpen={isNewProjectDialogOpen}
-            newProjectCollaboratorIds={newProjectCollaboratorIds}
             newProjectName={newProjectName}
             newProjectTags={newProjectTags}
             onAddProject={addProject}
-            onNewProjectCollaboratorIdsChange={setNewProjectCollaboratorIds}
             onNewProjectDialogOpenChange={changeNewProjectDialogOpen}
             onNewProjectNameChange={setNewProjectName}
             onNewProjectTagsChange={setNewProjectTags}
@@ -1268,19 +1171,18 @@ ${summariesText || '暂无总结'}`
         {view === 'inbox' && (
           <InboxView
             archiveInboxItem={archiveInboxItem}
-            collaborators={collaborators}
             inbox={inbox}
             inboxDraft={inboxDraft}
             onAddInboxItem={addInboxItem}
             onDeleteInboxItem={deleteInboxItem}
             onDraftChange={setInboxDraft}
+            projectMentionMembers={projectMentionMembers}
             projects={projects}
           />
         )}
 
         {view === 'todos' && (
           <CurrentTodosView
-            collaborators={collaborators}
             memberships={memberships}
             onDeleteTodo={deleteTodo}
             onProjectClick={selectProject}
@@ -1304,29 +1206,22 @@ ${summariesText || '暂无总结'}`
           />
         )}
 
-        {view === 'collaborators' && (
-          <CollaboratorsPanel
-            collaborators={collaborators}
-            isNewCollaboratorDialogOpen={isNewCollaboratorDialogOpen}
-            onAddCollaborator={addCollaborator}
-            onDeleteCollaborator={deleteCollaborator}
-            onEditCollaborator={editCollaborator}
-            onNewCollaboratorDialogOpenChange={setIsNewCollaboratorDialogOpen}
-            projects={projects}
-          />
-        )}
-
         {view === 'search' && (
           <SearchView
             allTags={allTags}
             filteredResults={filteredResults}
+            onDeleteProject={deleteProject}
             search={search}
+            onExportProject={exportMarkdown}
             statusFilter={statusFilter}
             tagFilter={tagFilter}
             onProjectClick={selectProject}
+            onRenameProject={renameProject}
             onSearchChange={setSearch}
             onStatusChange={setStatusFilter}
             onTagChange={setTagFilter}
+            onUpdateProjectStatus={updateProjectStatus}
+            onGenerateWeeklySummary={(projectId) => generateSummary(projectId, 'weekly')}
           />
         )}
 
@@ -1787,24 +1682,18 @@ function AccountMenu({
 }
 
 function EmptyWorkspace({
-  collaborators,
   isNewProjectDialogOpen,
-  newProjectCollaboratorIds,
   newProjectName,
   newProjectTags,
   onAddProject,
-  onNewProjectCollaboratorIdsChange,
   onNewProjectDialogOpenChange,
   onNewProjectNameChange,
   onNewProjectTagsChange,
 }: {
-  collaborators: Collaborator[]
   isNewProjectDialogOpen: boolean
-  newProjectCollaboratorIds: number[]
   newProjectName: string
   newProjectTags: string
   onAddProject: () => void
-  onNewProjectCollaboratorIdsChange: (value: number[]) => void
   onNewProjectDialogOpenChange: (open: boolean) => void
   onNewProjectNameChange: (value: string) => void
   onNewProjectTagsChange: (value: string) => void
@@ -1833,12 +1722,9 @@ function EmptyWorkspace({
             </DialogDescription>
           </DialogHeader>
           <NewProjectForm
-            collaborators={collaborators}
-            newProjectCollaboratorIds={newProjectCollaboratorIds}
             newProjectName={newProjectName}
             newProjectTags={newProjectTags}
             onCancel={() => onNewProjectDialogOpenChange(false)}
-            onNewProjectCollaboratorIdsChange={onNewProjectCollaboratorIdsChange}
             onNewProjectNameChange={onNewProjectNameChange}
             onNewProjectTagsChange={onNewProjectTagsChange}
             onSubmit={onAddProject}
@@ -1850,59 +1736,20 @@ function EmptyWorkspace({
 }
 
 function NewProjectForm({
-  collaborators,
-  newProjectCollaboratorIds,
   newProjectName,
   newProjectTags,
   onCancel,
-  onNewProjectCollaboratorIdsChange,
   onNewProjectNameChange,
   onNewProjectTagsChange,
   onSubmit,
 }: {
-  collaborators: Collaborator[]
-  newProjectCollaboratorIds: number[]
   newProjectName: string
   newProjectTags: string
   onCancel: () => void
-  onNewProjectCollaboratorIdsChange: (value: number[]) => void
   onNewProjectNameChange: (value: string) => void
   onNewProjectTagsChange: (value: string) => void
   onSubmit: () => void
 }) {
-  const collaboratorOptions = useMemo(() => {
-    const collaboratorMap = new Map<string, Collaborator>()
-    collaborators.forEach((collaborator) => {
-      const key = collaborator.name.trim()
-      if (!key) return
-      const current = collaboratorMap.get(key)
-      if (!current || collaborator.id < current.id) {
-        collaboratorMap.set(key, collaborator)
-      }
-    })
-    return Array.from(collaboratorMap.values()).sort((left, right) =>
-      left.name.localeCompare(right.name, 'zh-Hans-CN'),
-    )
-  }, [collaborators])
-
-  function toggleCollaborator(collaboratorId: number) {
-    onNewProjectCollaboratorIdsChange(
-      newProjectCollaboratorIds.includes(collaboratorId)
-        ? newProjectCollaboratorIds.filter((id) => id !== collaboratorId)
-        : [...newProjectCollaboratorIds, collaboratorId],
-    )
-  }
-
-  const selectedCollaborators = collaboratorOptions.filter((collaborator) =>
-    newProjectCollaboratorIds.includes(collaborator.id),
-  )
-  const collaboratorSummary =
-    selectedCollaborators.length === 0
-      ? '未指定'
-      : selectedCollaborators.length <= 2
-        ? selectedCollaborators.map((collaborator) => `@${collaborator.name}`).join('、')
-        : `已选择 ${selectedCollaborators.length} 人`
-
   return (
     <form
       className="new-project-dialog-form"
@@ -1931,55 +1778,6 @@ function NewProjectForm({
           onChange={(event) => onNewProjectTagsChange(event.target.value)}
         />
       </Label>
-      <div className="new-project-collaborators">
-        <div className="new-project-collaborators-header">
-          <span>指定协作者</span>
-          {newProjectCollaboratorIds.length > 0 && (
-            <button type="button" onClick={() => onNewProjectCollaboratorIdsChange([])}>
-              清空
-            </button>
-          )}
-        </div>
-        {collaboratorOptions.length === 0 ? (
-          <p>暂无已有协作者。</p>
-        ) : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="new-project-collaborator-trigger" type="button">
-                <span>{collaboratorSummary}</span>
-                <CaretDown size={18} />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="new-project-collaborator-menu"
-              onCloseAutoFocus={(event) => event.preventDefault()}
-            >
-              {collaboratorOptions.map((collaborator) => {
-                const checked = newProjectCollaboratorIds.includes(collaborator.id)
-                return (
-                  <DropdownMenuItem
-                    key={collaborator.id}
-                    data-selected={checked}
-                    onSelect={(event) => {
-                      event.preventDefault()
-                      toggleCollaborator(collaborator.id)
-                    }}
-                  >
-                    <span className={checked ? 'dropdown-check selected' : 'dropdown-check'}>
-                      {checked && <Check size={13} weight="bold" />}
-                    </span>
-                    <span className="new-project-collaborator-option">
-                      <strong>@{collaborator.name}</strong>
-                      <small>{collaborator.role || '协作者'}</small>
-                    </span>
-                  </DropdownMenuItem>
-                )
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
       <DialogFooter>
         <Button className="ghost-button" variant="outline" type="button" onClick={onCancel}>
           取消
@@ -1993,23 +1791,17 @@ function NewProjectForm({
 }
 
 function ProjectDetail({
-  collaborators,
-  exportMarkdown,
-  generateSummary,
   journalDraft,
   onAddTodo,
   onDraftChange,
   onSaveJournal,
-  onRenameProject,
-  onUpdateProjectStatus,
-  onDeleteProject,
   onDeleteJournalEntry,
   onEditJournalEntry,
   onMarkJournalAsRisk,
   onResolveRisk,
   onUpdateJournalVisibility,
   onDeleteTodo,
-  onTodoCollaboratorChange,
+  onTodoAssigneeChange,
   onTodoDueDateChange,
   onTodoDraftChange,
   onTodoPriorityChange,
@@ -2019,21 +1811,15 @@ function ProjectDetail({
   memberships,
   projects,
   projectTodos,
-  todoCollaboratorId,
+  todoAssigneeId,
   todoDueDate,
   todoDraft,
   todoPriority,
 }: {
-  collaborators: Collaborator[]
-  exportMarkdown: (projectId?: number) => void
-  generateSummary: (projectId: number, type: Summary['type']) => void
   journalDraft: string
   onAddTodo: () => void
   onDraftChange: (value: string) => void
   onSaveJournal: () => void
-  onRenameProject: (projectId: number, name: string) => void
-  onUpdateProjectStatus: (projectId: number, status: ProjectStatus) => void
-  onDeleteProject: (projectId: number) => void
   onDeleteJournalEntry: (projectId: number, entryId: number) => void
   onEditJournalEntry: (
     projectId: number,
@@ -2048,7 +1834,7 @@ function ProjectDetail({
     visibility: JournalVisibility,
   ) => void
   onDeleteTodo: (todoId: number) => void
-  onTodoCollaboratorChange: (id: number | null) => void
+  onTodoAssigneeChange: (id: number | null) => void
   onTodoDueDateChange: (value: string) => void
   onTodoDraftChange: (value: string) => void
   onTodoPriorityChange: (value: Priority) => void
@@ -2058,13 +1844,11 @@ function ProjectDetail({
   memberships: ProjectMembership[]
   projects: Project[]
   projectTodos: Todo[]
-  todoCollaboratorId: number | null
+  todoAssigneeId: number | null
   todoDueDate: string
   todoDraft: string
   todoPriority: Priority
 }) {
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false)
-  const [projectNameDraft, setProjectNameDraft] = useState(project.name)
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
   const [isJournalComposing, setIsJournalComposing] = useState(false)
@@ -2090,9 +1874,6 @@ function ProjectDetail({
     selectedJournalDateIndex > 0
       ? journalDates[selectedJournalDateIndex - 1]
       : undefined
-  const projectCollaborators = collaborators.filter(
-    (collaborator) => collaborator.projectId === project.id,
-  )
   const projectMembers = getProjectAssignableUsers(project, memberships)
   const isOwner = project.accessRole === 'owner'
 
@@ -2128,99 +1909,10 @@ function ProjectDetail({
   return (
     <div className="detail-layout">
       <Card className="panel journal-panel">
-        <div className="section-header">
-          <div>
-            <p className="eyebrow">项目日记</p>
-            <div className="project-title-row">
-              <h3>{project.name}</h3>
-              <ProjectTags tags={project.tags} />
-              {project.accessRole === 'member' && (
-                <Badge className="access-pill">协作项目 · Owner {project.ownerName}</Badge>
-              )}
-            </div>
-          </div>
-          <div className="project-header-actions">
-            {isOwner ? (
-              <>
-                <div className="project-status-control">
-                  <span>项目状态</span>
-                  <Select
-                    value={project.status}
-                    onValueChange={(value) =>
-                      onUpdateProjectStatus(project.id, value as ProjectStatus)
-                    }
-                  >
-                    <SelectTrigger aria-label="修改项目状态">
-                      <SelectValue placeholder="选择状态" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="active">进行中</SelectItem>
-                      <SelectItem value="paused">暂停</SelectItem>
-                      <SelectItem value="completed">已结束</SelectItem>
-                      <SelectItem value="archived">归档</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <ProjectActionsMenu
-                  exportProject={() => exportMarkdown(project.id)}
-                  generateWeeklySummary={() => generateSummary(project.id, 'weekly')}
-                  onDeleteProject={() => onDeleteProject(project.id)}
-                  onRenameClick={() => {
-                    setProjectNameDraft(project.name)
-                    setRenameDialogOpen(true)
-                  }}
-                  projectName={project.name}
-                />
-              </>
-            ) : (
-              <Badge className={`status-pill ${project.status}`}>
-                {statusCopy[project.status]}
-              </Badge>
-            )}
-          </div>
-          <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>重命名项目</DialogTitle>
-                <DialogDescription>
-                  修改后会同步更新项目列表和当前详情页标题。
-                </DialogDescription>
-              </DialogHeader>
-              <form
-                className="new-project-dialog-form"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  onRenameProject(project.id, projectNameDraft)
-                  setRenameDialogOpen(false)
-                }}
-              >
-                <Label>
-                  项目名称
-                  <Input
-                    autoFocus
-                    required
-                    value={projectNameDraft}
-                    onChange={(event) => setProjectNameDraft(event.target.value)}
-                  />
-                </Label>
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => setRenameDialogOpen(false)}
-                  >
-                    取消
-                  </Button>
-                  <Button type="submit">保存名称</Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-        <Label className="textarea-label">
-          追加今日记录
+        <PanelTitle icon={<BookOpenText size={18} />} title="项目日记" />
+        <Label className="textarea-label journal-entry-label">
           <MentionTextarea
-            collaborators={collaborators}
+            members={projectMembers}
             placeholder="记录今天的进展、决策、问题或方案..."
             value={journalDraft}
             onChange={onDraftChange}
@@ -2425,7 +2117,7 @@ function ProjectDetail({
         <PanelTitle icon={<Check size={18} />} title="项目待办" />
         <div className="todo-form">
           <MentionTextarea
-            collaborators={projectCollaborators}
+            members={projectMembers}
             placeholder="添加一个下一步..."
             value={todoDraft}
             onChange={onTodoDraftChange}
@@ -2453,8 +2145,8 @@ function ProjectDetail({
               </Select>
               <ProjectMemberPicker
                 members={projectMembers}
-                value={todoCollaboratorId}
-                onChange={onTodoCollaboratorChange}
+                value={todoAssigneeId}
+                onChange={onTodoAssigneeChange}
               />
             </div>
           </div>
@@ -2759,7 +2451,6 @@ function ProjectActionsMenu({
 }
 
 function CurrentTodosView({
-  collaborators,
   currentUserId,
   memberships,
   onDeleteTodo,
@@ -2769,7 +2460,6 @@ function CurrentTodosView({
   projects,
   todos,
 }: {
-  collaborators: Collaborator[]
   currentUserId?: number
   memberships: ProjectMembership[]
   onDeleteTodo: (id: number) => void
@@ -2796,9 +2486,6 @@ function CurrentTodosView({
     () =>
       currentProjects
         .map((project) => {
-          const projectCollaborators = collaborators.filter(
-            (collaborator) => collaborator.projectId === project.id,
-          )
           const projectTodos = currentTodos
             .filter(
               (todo) =>
@@ -2814,14 +2501,13 @@ function CurrentTodosView({
               return priorityRank[left.priority] - priorityRank[right.priority]
             })
           return {
-            collaborators: summarizeProjectCollaborators(projectCollaborators),
             openCount: projectTodos.filter((todo) => !todo.done).length,
             project,
             todos: projectTodos,
           }
         })
         .filter((group) => group.todos.length > 0),
-    [collaborators, currentProjects, currentTodos, todoStatusFilter],
+    [currentProjects, currentTodos, todoStatusFilter],
   )
   const openCount = currentTodos.filter((todo) => !todo.done).length
   const doneCount = currentTodos.length - openCount
@@ -2877,7 +2563,6 @@ function CurrentTodosView({
           <div className="todo-board-table" role="table" aria-label="所有项目当前待办">
             <div className="todo-board-head" role="row">
               <span role="columnheader">项目/待办内容</span>
-              <span role="columnheader">协作者</span>
               <span role="columnheader">负责人</span>
               <span role="columnheader">优先级</span>
               <span role="columnheader">截止</span>
@@ -2885,12 +2570,7 @@ function CurrentTodosView({
               <span role="columnheader">操作</span>
             </div>
 
-            {groupedTodos.map(({
-              collaborators: projectCollaboratorSummary,
-              openCount: projectOpenCount,
-              project,
-              todos: projectTodos,
-            }) => (
+            {groupedTodos.map(({ openCount: projectOpenCount, project, todos: projectTodos }) => (
               <section className="todo-project-group" key={project.id}>
                 <button
                   className="todo-project-group-header"
@@ -2909,9 +2589,6 @@ function CurrentTodosView({
                 </button>
                 <div className="todo-board-rows" role="rowgroup">
                   {projectTodos.map((todo) => {
-                    const projectCollaborators = collaborators.filter(
-                      (collaborator) => collaborator.projectId === project.id,
-                    )
                     const projectMembers = getProjectAssignableUsers(project, memberships)
                     const canManageTodo =
                       project.accessRole === 'owner' || todo.createdByUserId === currentUserId
@@ -2934,26 +2611,6 @@ function CurrentTodosView({
                             {todo.done ? <Check size={14} /> : null}
                           </button>
                           <strong>{todo.title}</strong>
-                        </span>
-                        <span className="todo-board-collaborators-cell" role="cell">
-                          {todo.collaboratorId ? (
-                            <span className="collaborator-mini-chip">
-                              @{projectCollaborators.find((item) => item.id === todo.collaboratorId)?.name ?? '旧协作者'}
-                            </span>
-                          ) : projectCollaboratorSummary.count > 0 ? (
-                            <span
-                              className="todo-board-collaborator-summary"
-                              title={projectCollaboratorSummary.names.join('、')}
-                            >
-                              <strong>{projectCollaboratorSummary.count}</strong>
-                              <span>
-                                {projectCollaboratorSummary.names.slice(0, 2).join('、')}
-                                {projectCollaboratorSummary.count > 2 ? ' 等' : ''}
-                              </span>
-                            </span>
-                          ) : (
-                            <span className="todo-board-muted">暂无协作者</span>
-                          )}
                         </span>
                         <span className="todo-board-assignee-cell" role="cell">
                           <ProjectMemberPicker
@@ -3221,434 +2878,24 @@ function NotificationCenterView({
   )
 }
 
-function CollaboratorsPanel({
-  collaborators,
-  isNewCollaboratorDialogOpen,
-  onAddCollaborator,
-  onDeleteCollaborator,
-  onEditCollaborator,
-  onNewCollaboratorDialogOpenChange,
-  projects,
-}: {
-  collaborators: Collaborator[]
-  isNewCollaboratorDialogOpen: boolean
-  onAddCollaborator: (payload: {
-    name: string
-    projectIds: number[]
-    role: string
-  }) => void
-  onDeleteCollaborator: (collaboratorId: number) => void
-  onEditCollaborator: (
-    collaboratorId: number,
-    payload: {
-      name: string
-      projectIds: number[]
-      role: string
-    },
-  ) => void
-  onNewCollaboratorDialogOpenChange: (open: boolean) => void
-  projects: Project[]
-}) {
-  const [editingPerson, setEditingPerson] = useState<CollaboratorPerson | null>(null)
-  const collaboratorsByPerson = useMemo(() => {
-    const personMap = new Map<string, CollaboratorPerson & { projectIds: Set<number> }>()
-
-    collaborators.forEach((collaborator) => {
-      const key = collaborator.name.trim() || String(collaborator.id)
-      const current =
-        personMap.get(key) ??
-        {
-          primaryId: collaborator.id,
-          name: collaborator.name,
-          projectIds: new Set<number>(),
-          projects: [],
-          roles: [],
-        }
-      const project = projects.find((item) => item.id === collaborator.projectId)
-      current.primaryId = Math.min(current.primaryId, collaborator.id)
-      if (project && !current.projectIds.has(project.id)) {
-        current.projectIds.add(project.id)
-        current.projects.push(project)
-      }
-      if (collaborator.role && !current.roles.includes(collaborator.role)) {
-        current.roles.push(collaborator.role)
-      }
-      personMap.set(key, current)
-    })
-
-    return Array.from(personMap.values())
-      .map((personWithProjectIds) => {
-        const { name, primaryId, projects, roles } = personWithProjectIds
-        return { name, primaryId, projects, roles }
-      })
-      .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
-  }, [collaborators, projects])
-
-  return (
-    <Card className="panel collaborators-panel">
-      <div className="collaborators-header">
-        <PanelTitle icon={<SignIn size={18} />} title="协作者" />
-        <span>{collaboratorsByPerson.length} 人</span>
-      </div>
-      <NewCollaboratorDialog
-        open={isNewCollaboratorDialogOpen}
-        onAddCollaborator={onAddCollaborator}
-        onOpenChange={onNewCollaboratorDialogOpenChange}
-        projects={projects}
-      />
-
-      <div className="collaborator-groups">
-        {collaboratorsByPerson.length === 0 ? (
-          <p className="empty-state">还没有协作者。</p>
-        ) : (
-          collaboratorsByPerson.map((person) => (
-            <article className="collaborator-person-card" key={person.primaryId}>
-              <div className="collaborator-person-main">
-                <strong>@{person.name}</strong>
-                <small>
-                  {person.roles.length > 0 ? person.roles.join('、') : '未设置角色'}
-                </small>
-              </div>
-              <div className="collaborator-projects" aria-label={`${person.name} 参与的项目`}>
-                {person.projects.length === 0 ? (
-                  <span className="todo-board-muted">未关联项目</span>
-                ) : (
-                  person.projects.map((project) => (
-                    <span className="collaborator-project-chip" key={project.id}>
-                      {project.name}
-                    </span>
-                  ))
-                )}
-              </div>
-              <div className="collaborator-actions">
-                <Button
-                  className="collaborator-edit-button"
-                  variant="ghost"
-                  size="icon"
-                  type="button"
-                  aria-label={`编辑 ${person.name}`}
-                  title="编辑协作者"
-                  onClick={() => setEditingPerson(person)}
-                >
-                  <PencilSimple size={16} />
-                </Button>
-                <ConfirmDialog
-                  confirmLabel="删除协作者"
-                  description={`删除「${person.name}」后，TA 会从所有关联项目中移除，相关待办的负责人会变为未指派。`}
-                  onConfirm={() => onDeleteCollaborator(person.primaryId)}
-                  title="确认删除这个协作者？"
-                  trigger={
-                    <Button
-                      className="todo-delete-button"
-                      variant="ghost"
-                      size="icon"
-                      type="button"
-                      aria-label={`删除 ${person.name}`}
-                      title="删除协作者"
-                    >
-                      <Trash size={16} />
-                    </Button>
-                  }
-                />
-              </div>
-            </article>
-          ))
-        )}
-      </div>
-      <EditCollaboratorDialog
-        person={editingPerson}
-        onEditCollaborator={onEditCollaborator}
-        onOpenChange={(open) => {
-          if (!open) setEditingPerson(null)
-        }}
-        projects={projects}
-      />
-    </Card>
-  )
-}
-
-function NewCollaboratorDialog({
-  onAddCollaborator,
-  onOpenChange,
-  open,
-  projects,
-}: {
-  onAddCollaborator: (payload: {
-    name: string
-    projectIds: number[]
-    role: string
-  }) => void
-  onOpenChange: (open: boolean) => void
-  open: boolean
-  projects: Project[]
-}) {
-  const [name, setName] = useState('')
-  const [role, setRole] = useState('')
-  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([])
-
-  function resetForm() {
-    setName('')
-    setRole('')
-    setSelectedProjectIds([])
-  }
-
-  function closeDialog() {
-    resetForm()
-    onOpenChange(false)
-  }
-
-  function submitCollaborator(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!name.trim() || selectedProjectIds.length === 0) return
-    onAddCollaborator({
-      name,
-      projectIds: selectedProjectIds,
-      role,
-    })
-    resetForm()
-    onOpenChange(false)
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) resetForm()
-        onOpenChange(nextOpen)
-      }}
-    >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>新增协作者</DialogTitle>
-          <DialogDescription>
-            添加协作者后，可以在日记、快速捕捉和待办里通过 @ 关联到对应的人。
-          </DialogDescription>
-        </DialogHeader>
-        <form className="collaborator-form" onSubmit={submitCollaborator}>
-          <Label>
-            姓名
-            <Input
-              autoFocus
-              placeholder="例如：张三"
-              required
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Label>
-          <Label>
-            角色
-            <Input
-              placeholder="例如：产品负责人"
-              value={role}
-              onChange={(event) => setRole(event.target.value)}
-            />
-          </Label>
-          <Label>
-            所属项目
-            <ProjectMultiSelect
-              projects={projects}
-              selectedProjectIds={selectedProjectIds}
-              onChange={setSelectedProjectIds}
-            />
-          </Label>
-          <DialogFooter>
-            <Button
-              className="ghost-button"
-              variant="outline"
-              type="button"
-              onClick={closeDialog}
-            >
-              取消
-            </Button>
-            <Button
-              className="solid-button"
-              type="submit"
-              disabled={!name.trim() || selectedProjectIds.length === 0}
-            >
-              <Plus size={15} /> 添加协作者
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function EditCollaboratorDialog({
-  onEditCollaborator,
-  onOpenChange,
-  person,
-  projects,
-}: {
-  onEditCollaborator: (
-    collaboratorId: number,
-    payload: {
-      name: string
-      projectIds: number[]
-      role: string
-    },
-  ) => void
-  onOpenChange: (open: boolean) => void
-  person: CollaboratorPerson | null
-  projects: Project[]
-}) {
-  const [name, setName] = useState('')
-  const [role, setRole] = useState('')
-  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([])
-
-  useEffect(() => {
-    if (!person) return
-    setName(person.name)
-    setRole(person.roles[0] ?? '')
-    setSelectedProjectIds(person.projects.map((project) => project.id))
-  }, [person])
-
-  function submitCollaborator(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!person || !name.trim() || selectedProjectIds.length === 0) return
-    onEditCollaborator(person.primaryId, {
-      name,
-      projectIds: selectedProjectIds,
-      role,
-    })
-    onOpenChange(false)
-  }
-
-  return (
-    <Dialog open={Boolean(person)} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>编辑协作者</DialogTitle>
-          <DialogDescription>
-            修改协作者信息和负责板块后，相关项目中的协作者信息会同步更新。
-          </DialogDescription>
-        </DialogHeader>
-        <form className="collaborator-form" onSubmit={submitCollaborator}>
-          <Label>
-            姓名
-            <Input
-              autoFocus
-              placeholder="例如：张三"
-              required
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Label>
-          <Label>
-            角色
-            <Input
-              placeholder="例如：产品负责人"
-              value={role}
-              onChange={(event) => setRole(event.target.value)}
-            />
-          </Label>
-          <Label>
-            负责板块
-            <ProjectMultiSelect
-              projects={projects}
-              selectedProjectIds={selectedProjectIds}
-              onChange={setSelectedProjectIds}
-            />
-          </Label>
-          <DialogFooter>
-            <Button
-              className="ghost-button"
-              variant="outline"
-              type="button"
-              onClick={() => onOpenChange(false)}
-            >
-              取消
-            </Button>
-            <Button
-              className="solid-button"
-              type="submit"
-              disabled={!name.trim() || selectedProjectIds.length === 0}
-            >
-              保存修改
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function ProjectMultiSelect({
-  onChange,
-  projects,
-  selectedProjectIds,
-}: {
-  onChange: (ids: number[]) => void
-  projects: Project[]
-  selectedProjectIds: number[]
-}) {
-  const selectedProjects = projects.filter((project) =>
-    selectedProjectIds.includes(project.id),
-  )
-  const label =
-    selectedProjects.length === 0
-      ? '选择项目'
-      : selectedProjects.length === 1
-        ? selectedProjects[0].name
-        : `已选 ${selectedProjects.length} 个项目`
-
-  function toggleProject(projectId: number) {
-    onChange(
-      selectedProjectIds.includes(projectId)
-        ? selectedProjectIds.filter((id) => id !== projectId)
-        : [...selectedProjectIds, projectId],
-    )
-  }
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button className="project-multi-trigger" type="button">
-          <span>{label}</span>
-          <CaretDown size={16} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="project-multi-menu">
-        {projects.map((project) => {
-          const checked = selectedProjectIds.includes(project.id)
-          return (
-            <button
-              className={checked ? 'project-multi-option selected' : 'project-multi-option'}
-              key={project.id}
-              type="button"
-              onClick={() => toggleProject(project.id)}
-            >
-              <span>{project.name}</span>
-              {checked ? <Check size={16} /> : null}
-            </button>
-          )
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
 function MentionTextarea({
-  collaborators,
   members,
   onChange,
-  onSelectCollaborator,
+  onSelectMember,
   value,
   ...props
 }: Omit<ComponentProps<typeof Textarea>, 'onChange' | 'value'> & {
-  collaborators: Collaborator[]
   members?: Array<{ id: number; name: string }>
   onChange: (value: string) => void
-  onSelectCollaborator?: (id: number) => void
+  onSelectMember?: (id: number) => void
   value: string
 }) {
   return (
     <MentionInputShell
-      collaborators={collaborators}
       members={members}
       multiline
       onChange={onChange}
-      onSelectCollaborator={onSelectCollaborator}
+      onSelectMember={onSelectMember}
       value={value}
       inputProps={props}
     />
@@ -3656,50 +2903,40 @@ function MentionTextarea({
 }
 
 function MentionInputShell({
-  collaborators,
   inputProps,
   members = [],
   multiline = false,
   onChange,
-  onSelectCollaborator,
+  onSelectMember,
   value,
 }: {
-  collaborators: Collaborator[]
   inputProps: Record<string, unknown>
   members?: Array<{ id: number; name: string }>
   multiline?: boolean
   onChange: (value: string) => void
-  onSelectCollaborator?: (id: number) => void
+  onSelectMember?: (id: number) => void
   value: string
 }) {
   const [open, setOpen] = useState(false)
   const [mentionRange, setMentionRange] = useState<{ caret: number; index: number } | null>(null)
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
   const shellRef = useRef<HTMLSpanElement | null>(null)
-  const mentionCollaborators = useMemo(() => {
+  const mentionMembers = useMemo(() => {
     const seen = new Set<string>()
-    if (members.length > 0) {
-      return members
-        .filter((member) => {
-          const key = member.name.trim()
-          if (!key || seen.has(key)) return false
-          seen.add(key)
-          return true
-        })
-        .map((member) => ({
-          id: member.id,
-          name: member.name,
-          role: '项目成员',
-        }))
-    }
-    return collaborators.filter((collaborator) => {
-      const key = collaborator.name.trim()
-      if (!key || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-  }, [collaborators, members])
-  const canMention = mentionCollaborators.length > 0
+    return members
+      .filter((member) => {
+        const key = member.name.trim()
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .map((member) => ({
+        id: member.id,
+        name: member.name,
+        role: '项目成员',
+      }))
+  }, [members])
+  const canMention = mentionMembers.length > 0
   const shouldShow = open && canMention
 
   function updateMentionMenu(
@@ -3724,13 +2961,13 @@ function MentionInputShell({
     updateMentionMenu(element, nextValue)
   }
 
-  function chooseCollaborator(collaborator: MentionOption) {
+  function chooseMember(member: MentionOption) {
     const range = mentionRange
     const nextValue = range
-      ? `${value.slice(0, range.index)}@${collaborator.name} ${value.slice(range.caret)}`
-      : `${value}@${collaborator.name} `
+      ? `${value.slice(0, range.index)}@${member.name} ${value.slice(range.caret)}`
+      : `${value}@${member.name} `
     onChange(nextValue)
-    onSelectCollaborator?.(collaborator.id)
+    onSelectMember?.(member.id)
     setOpen(false)
     setMentionRange(null)
   }
@@ -3762,18 +2999,18 @@ function MentionInputShell({
             top: menuPosition.top,
           } satisfies CSSProperties}
         >
-          {mentionCollaborators.map((collaborator) => (
+          {mentionMembers.map((member) => (
             <button
               className="mention-option"
-              key={collaborator.id}
+              key={member.id}
               type="button"
               onMouseDown={(event) => {
                 event.preventDefault()
-                chooseCollaborator(collaborator)
+                chooseMember(member)
               }}
             >
-              <strong>@{collaborator.name}</strong>
-              <small>{collaborator.role || '协作者'}</small>
+              <strong>@{member.name}</strong>
+              <small>{member.role || '项目成员'}</small>
             </button>
           ))}
         </span>
@@ -3859,28 +3096,14 @@ function stripTodoMentions(value: string, mentionOptions: Array<{ name: string }
   }, value).replace(/\s{2,}/g, ' ')
 }
 
-function extractMentionCollaborator(
+function extractMentionMember(
   value: string,
-  collaborators: Collaborator[],
+  members: Array<{ id: number; name: string }>,
 ) {
-  return collaborators.find((collaborator) => {
-    const name = collaborator.name.trim()
+  return members.find((member) => {
+    const name = member.name.trim()
     return name && new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)`).test(value)
   })
-}
-
-function summarizeProjectCollaborators(collaborators: Collaborator[]): ProjectCollaboratorSummary {
-  const names = Array.from(
-    new Set(
-      collaborators
-        .map((collaborator) => collaborator.name.trim())
-        .filter(Boolean),
-    ),
-  )
-  return {
-    count: names.length,
-    names,
-  }
 }
 
 function ProjectMemberPicker({
@@ -3930,21 +3153,21 @@ function ProjectMemberPicker({
 
 function InboxView({
   archiveInboxItem,
-  collaborators,
   inbox,
   inboxDraft,
   onAddInboxItem,
   onDeleteInboxItem,
   onDraftChange,
+  projectMentionMembers,
   projects,
 }: {
   archiveInboxItem: (item: InboxItem, projectId: number) => void
-  collaborators: Collaborator[]
   inbox: InboxItem[]
   inboxDraft: string
   onAddInboxItem: () => void
   onDeleteInboxItem: (itemId: number) => void
   onDraftChange: (value: string) => void
+  projectMentionMembers: Array<{ id: number; name: string }>
   projects: Project[]
 }) {
   const [isComposing, setIsComposing] = useState(false)
@@ -3971,7 +3194,7 @@ function InboxView({
           新线索
           <span className="capture-input-wrap">
             <MentionTextarea
-              collaborators={collaborators}
+              members={projectMentionMembers}
               placeholder="把会议记录、聊天片段、想法或解决方案先丢进来..."
               value={inboxDraft}
               onChange={onDraftChange}
@@ -4122,24 +3345,38 @@ function ArchiveControl({
 function SearchView({
   allTags,
   filteredResults,
+  onDeleteProject,
+  onExportProject,
+  onGenerateWeeklySummary,
   onProjectClick,
+  onRenameProject,
   onSearchChange,
   onStatusChange,
   onTagChange,
+  onUpdateProjectStatus,
   search,
   statusFilter,
   tagFilter,
 }: {
   allTags: string[]
   filteredResults: Project[]
+  onDeleteProject: (projectId: number) => void
+  onExportProject: (projectId?: number) => void
+  onGenerateWeeklySummary: (projectId: number) => void
   onProjectClick: (id: number) => void
+  onRenameProject: (projectId: number, name: string) => void
   onSearchChange: (value: string) => void
   onStatusChange: (value: ProjectStatus | 'all') => void
   onTagChange: (value: string) => void
+  onUpdateProjectStatus: (projectId: number, status: ProjectStatus) => void
   search: string
   statusFilter: ProjectStatus | 'all'
   tagFilter: string
 }) {
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false)
+  const [projectNameDraft, setProjectNameDraft] = useState('')
+  const [projectToRename, setProjectToRename] = useState<Project | null>(null)
+
   return (
     <Card className="panel search-panel">
       <div className="search-controls">
@@ -4190,23 +3427,117 @@ function SearchView({
       </div>
       <div className="search-results">
         {filteredResults.map((project) => (
-          <button key={project.id} className="result-item" type="button" onClick={() => onProjectClick(project.id)}>
-            <div>
-              <div className="result-meta-row">
-                <Badge className={`status-pill ${project.status}`}>{statusCopy[project.status]}</Badge>
-                {project.accessRole === 'member' && <Badge className="access-pill">协作</Badge>}
-                <span>创建于 {project.createdAt}</span>
+          <article key={project.id} className="result-item">
+            <button
+              className="result-item-main"
+              type="button"
+              onClick={() => onProjectClick(project.id)}
+            >
+              <div>
+                <div className="result-meta-row">
+                  <Badge className={`status-pill ${project.status}`}>
+                    {statusCopy[project.status]}
+                  </Badge>
+                  {project.accessRole === 'member' && <Badge className="access-pill">协作</Badge>}
+                  <span>创建于 {project.createdAt}</span>
+                </div>
+                <div className="result-title-row">
+                  <h3>{project.name}</h3>
+                  <ProjectTags tags={project.tags} compact />
+                </div>
+                <p>{project.journals[0]?.content}</p>
               </div>
-              <div className="result-title-row">
-                <h3>{project.name}</h3>
-                <ProjectTags tags={project.tags} compact />
+            </button>
+            {project.accessRole === 'owner' && (
+              <div className="result-item-actions">
+                <Select
+                  value={project.status}
+                  onValueChange={(value) =>
+                    onUpdateProjectStatus(project.id, value as ProjectStatus)
+                  }
+                >
+                  <SelectTrigger
+                    className="result-item-status-trigger"
+                    aria-label={`修改 ${project.name} 的项目状态`}
+                  >
+                    <SelectValue placeholder="选择状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">进行中</SelectItem>
+                    <SelectItem value="paused">暂停</SelectItem>
+                    <SelectItem value="completed">已结束</SelectItem>
+                    <SelectItem value="archived">归档</SelectItem>
+                  </SelectContent>
+                </Select>
+                <ProjectActionsMenu
+                  exportProject={() => onExportProject(project.id)}
+                  generateWeeklySummary={() => onGenerateWeeklySummary(project.id)}
+                  onDeleteProject={() => onDeleteProject(project.id)}
+                  onRenameClick={() => {
+                    setProjectToRename(project)
+                    setProjectNameDraft(project.name)
+                    setRenameDialogOpen(true)
+                  }}
+                  projectName={project.name}
+                />
               </div>
-              <p>{project.journals[0]?.content}</p>
-            </div>
-            <ArrowRight size={18} />
-          </button>
+            )}
+          </article>
         ))}
       </div>
+      <Dialog
+        open={renameDialogOpen}
+        onOpenChange={(open) => {
+          setRenameDialogOpen(open)
+          if (!open) {
+            setProjectToRename(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>重命名项目</DialogTitle>
+            <DialogDescription>
+              修改后会同步更新项目列表和项目详情页标题。
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="new-project-dialog-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (!projectToRename) {
+                return
+              }
+              onRenameProject(projectToRename.id, projectNameDraft)
+              setRenameDialogOpen(false)
+              setProjectToRename(null)
+            }}
+          >
+            <Label>
+              项目名称
+              <Input
+                autoFocus
+                required
+                value={projectNameDraft}
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+              />
+            </Label>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => {
+                  setRenameDialogOpen(false)
+                  setProjectToRename(null)
+                }}
+              >
+                取消
+              </Button>
+              <Button type="submit">保存名称</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }
@@ -4892,7 +4223,6 @@ function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'todos') return '当前待办'
   if (view === 'notifications') return '通知中心'
-  if (view === 'collaborators') return '协作者'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'
   return 'AI 总结文档'

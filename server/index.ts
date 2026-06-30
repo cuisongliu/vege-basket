@@ -48,15 +48,6 @@ type AiSettingsRow = {
   api_key: string
   model: string
 }
-type CollaboratorRow = {
-  id: string
-  user_id: string
-  project_id: string
-  name: string
-  role: string
-  created_at: Date
-  updated_at: Date
-}
 type ProjectAccess = {
   id: number
   ownerUserId: number
@@ -873,23 +864,6 @@ async function getProjectAccess(projectId: number, userId: number): Promise<Proj
   }
 }
 
-async function ensureCollaboratorId(
-  collaboratorId: unknown,
-  projectId: number,
-  userId: number,
-) {
-  if (!collaboratorId) return null
-  const result = await query<{ id: string }>(
-    `
-    select id
-    from collaborators
-    where id = $1 and project_id = $2 and user_id = $3
-    `,
-    [Number(collaboratorId), projectId, userId],
-  )
-  return result.rows[0] ? Number(result.rows[0].id) : null
-}
-
 async function ensureProjectMemberUserId(
   assigneeUserId: unknown,
   projectId: number,
@@ -914,23 +888,6 @@ async function ensureProjectMemberUserId(
   return result.rows[0] ? assigneeId : null
 }
 
-async function findCollaboratorIdsByName(userId: number, name: string) {
-  const nameLookup = blindIndex(name)
-  const indexed = await query<{ id: string }>(
-    'select id from collaborators where user_id = $1 and name_lookup = $2',
-    [userId, nameLookup],
-  )
-  if (indexed.rows.length > 0) return indexed.rows.map((row) => Number(row.id))
-
-  const legacy = await query<{ id: string; name: string }>(
-    'select id, name from collaborators where user_id = $1',
-    [userId],
-  )
-  return legacy.rows
-    .filter((row) => decryptText(row.name) === name)
-    .map((row) => Number(row.id))
-}
-
 async function getWorkspace(userId: number) {
   const currentUser = await query<UserRow>(
     'select id, email, display_name from users where id = $1',
@@ -944,7 +901,6 @@ async function getWorkspace(userId: number) {
     todosResult,
     draftsResult,
     summariesResult,
-    collaboratorsResult,
     membershipsResult,
   ] = await Promise.all([
     query<{
@@ -1036,7 +992,6 @@ async function getWorkspace(userId: number) {
     query<{
       id: string
       project_id: string
-      collaborator_id: string | null
       title: string
       due_date: Date
       priority: Priority
@@ -1054,7 +1009,6 @@ async function getWorkspace(userId: number) {
       `
       select t.id,
              t.project_id,
-             t.collaborator_id,
              t.title,
              t.due_date,
              t.priority,
@@ -1113,20 +1067,6 @@ async function getWorkspace(userId: number) {
       where user_id = $1
          or project_id in (select id from projects where user_id = $1)
       order by created_at desc, id desc
-      `,
-      [userId],
-    ),
-    query<CollaboratorRow>(
-      `
-      select c.id, c.user_id, c.project_id, c.name, c.role, c.created_at, c.updated_at
-      from collaborators c
-      join projects p on p.id = c.project_id
-      left join project_memberships pm
-        on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $1
-      where p.user_id = $1 or pm.id is not null
-      order by updated_at desc, id desc
       `,
       [userId],
     ),
@@ -1206,7 +1146,6 @@ async function getWorkspace(userId: number) {
     todos: todosResult.rows.map((todo) => ({
       id: Number(todo.id),
       projectId: Number(todo.project_id),
-      collaboratorId: todo.collaborator_id ? Number(todo.collaborator_id) : undefined,
       createdByUserId: todo.created_by_user_id ? Number(todo.created_by_user_id) : undefined,
       assigneeUserId: todo.assignee_user_id ? Number(todo.assignee_user_id) : undefined,
       assigneeName: todo.assignee_user_id
@@ -1232,12 +1171,6 @@ async function getWorkspace(userId: number) {
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
-    })),
-    collaborators: collaboratorsResult.rows.map((collaborator) => ({
-      id: Number(collaborator.id),
-      name: decryptText(collaborator.name),
-      role: collaborator.role ? decryptText(collaborator.role) : '',
-      projectId: Number(collaborator.project_id),
     })),
     memberships: membershipsResult.rows.map((membership) => ({
       id: Number(membership.id),
@@ -1711,9 +1644,6 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
   }
 
   const tags = Array.isArray(request.body.tags) ? request.body.tags.map(String) : ['新项目']
-  const collaboratorIds = Array.isArray(request.body.collaboratorIds)
-    ? Array.from(new Set(request.body.collaboratorIds.map(Number))).filter(Number.isFinite)
-    : []
   const result = await query<{ id: string }>(
     `
     insert into projects (user_id, name, status, tags, tags_encrypted)
@@ -1730,18 +1660,6 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
     `,
     [projectId, encryptText('项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'), userId],
   )
-
-  if (collaboratorIds.length > 0) {
-    await query(
-      `
-      insert into collaborators (user_id, project_id, name, name_lookup, role)
-      select user_id, $2, name, name_lookup, role
-      from collaborators
-      where user_id = $1 and id = any($3::bigint[])
-      `,
-      [userId, projectId, collaboratorIds],
-    )
-  }
 
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -2133,11 +2051,6 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  const collaboratorId = await ensureCollaboratorId(
-    request.body.collaboratorId,
-    projectId,
-    access.ownerUserId,
-  )
   const assigneeUserId = await ensureProjectMemberUserId(
     request.body.assigneeUserId,
     projectId,
@@ -2147,7 +2060,6 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     `
     insert into todos (
       project_id,
-      collaborator_id,
       title,
       due_date,
       priority,
@@ -2156,11 +2068,10 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
       assigned_by_user_id,
       assigned_at
     )
-    values ($1, $2, $3, $4, $5, $6, $7, case when $7::bigint is null then null else $6::bigint end, case when $7::bigint is null then null else now() end)
+    values ($1, $2, $3, $4, $5, $6, case when $6::bigint is null then null else $5::bigint end, case when $6::bigint is null then null else now() end)
     `,
     [
       projectId,
-      collaboratorId,
       encryptText(title),
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
@@ -2211,10 +2122,6 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     response.status(403).json({ error: 'Only the owner or creator can update this todo' })
     return
   }
-  const collaboratorId =
-    'collaboratorId' in request.body
-      ? await ensureCollaboratorId(request.body.collaboratorId, projectId, access.ownerUserId)
-      : undefined
   const nextAssigneeUserId =
     'assigneeUserId' in request.body
       ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
@@ -2226,213 +2133,32 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
         title = coalesce($2, title),
         due_date = coalesce($3, due_date),
         priority = coalesce($4, priority),
-        collaborator_id = case when $5::boolean then $6 else collaborator_id end,
-        assignee_user_id = case when $7::boolean then $8 else assignee_user_id end,
+        assignee_user_id = case when $5::boolean then $6 else assignee_user_id end,
         assigned_by_user_id = case
-          when $7::boolean and $8::bigint is not null then $9
-          when $7::boolean then null
+          when $5::boolean and $6::bigint is not null then $7
+          when $5::boolean then null
           else assigned_by_user_id
         end,
         assigned_at = case
-          when $7::boolean and $8::bigint is not null then now()
-          when $7::boolean then null
+          when $5::boolean and $6::bigint is not null then now()
+          when $5::boolean then null
           else assigned_at
         end,
         updated_at = now()
-    where id = $10
-      and project_id = $11
+    where id = $8
+      and project_id = $9
     `,
     [
       typeof request.body.done === 'boolean' ? request.body.done : null,
       canManageTodo && typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
       canManageTodo && request.body.dueDate ? String(request.body.dueDate) : null,
       canManageTodo && request.body.priority ? ensurePriority(request.body.priority) : null,
-      'collaboratorId' in request.body,
-      collaboratorId,
       canManageTodo && 'assigneeUserId' in request.body,
       nextAssigneeUserId,
       userId,
       Number(request.params.todoId),
       projectId,
     ],
-  )
-  response.json(await getWorkspace(userId))
-}))
-
-app.post('/api/collaborators', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const name = String(request.body.name ?? '').trim().slice(0, 40)
-  const role = String(request.body.role ?? '').trim().slice(0, 40)
-  const projectIds: number[] = Array.from(
-    new Set(
-      (Array.isArray(request.body.projectIds)
-        ? request.body.projectIds
-        : [request.body.projectId])
-        .map((value: unknown) => Number(value))
-        .filter(Number.isFinite),
-    ),
-  )
-  if (!name || projectIds.length === 0) {
-    response.status(400).json({ error: 'Collaborator name and project are required' })
-    return
-  }
-  const ownsProjects = await query<{ id: string }>(
-    'select id from projects where id = any($1::bigint[]) and user_id = $2',
-    [projectIds, userId],
-  )
-  if (ownsProjects.rows.length !== projectIds.length) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-
-  await Promise.all(projectIds.map((projectId) => query(
-    `
-    insert into collaborators (user_id, project_id, name, name_lookup, role)
-    values ($1, $2, $3, $4, $5)
-    `,
-    [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
-  )))
-  response.status(201).json(await getWorkspace(userId))
-}))
-
-app.patch('/api/collaborators/:collaboratorId', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const collaboratorId = Number(request.params.collaboratorId)
-  const name = String(request.body.name ?? '').trim().slice(0, 40)
-  const role = String(request.body.role ?? '').trim().slice(0, 40)
-  const projectIds: number[] = Array.from(
-    new Set(
-      (Array.isArray(request.body.projectIds) ? request.body.projectIds : [])
-        .map((value: unknown) => Number(value))
-        .filter(Number.isFinite),
-    ),
-  )
-  if (!name || projectIds.length === 0) {
-    response.status(400).json({ error: 'Collaborator name and project are required' })
-    return
-  }
-
-  const currentResult = await query<CollaboratorRow>(
-    `
-    select id, user_id, project_id, name, role, created_at, updated_at
-    from collaborators
-    where id = $1 and user_id = $2
-    `,
-    [collaboratorId, userId],
-  )
-  const current = currentResult.rows[0]
-  if (!current) {
-    response.status(404).json({ error: 'Collaborator not found' })
-    return
-  }
-
-  const ownsProjects = await query<{ id: string }>(
-    'select id from projects where id = any($1::bigint[]) and user_id = $2',
-    [projectIds, userId],
-  )
-  if (ownsProjects.rows.length !== projectIds.length) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    const currentName = decryptText(current.name)
-    const targetIdsForName = await findCollaboratorIdsByName(userId, currentName)
-    const existingResult = await client.query<{ id: string; project_id: string }>(
-      `
-      select id, project_id
-      from collaborators
-      where id = any($1::bigint[]) and user_id = $2
-      `,
-      [targetIdsForName, userId],
-    )
-    const existingByProject = new Map(
-      existingResult.rows.map((row) => [Number(row.project_id), Number(row.id)]),
-    )
-    const nextProjectIds = new Set(projectIds)
-
-    for (const projectId of projectIds) {
-      const existingId = existingByProject.get(projectId)
-      if (existingId) {
-        await client.query(
-          `
-          update collaborators
-          set name = $1, name_lookup = $2, role = $3, updated_at = now()
-          where id = $4 and user_id = $5
-          `,
-          [encryptText(name), blindIndex(name), encryptText(role), existingId, userId],
-        )
-      } else {
-        await client.query(
-          `
-          insert into collaborators (user_id, project_id, name, name_lookup, role)
-          values ($1, $2, $3, $4, $5)
-          `,
-          [userId, projectId, encryptText(name), blindIndex(name), encryptText(role)],
-        )
-      }
-    }
-
-    const removedIds = existingResult.rows
-      .filter((row) => !nextProjectIds.has(Number(row.project_id)))
-        .map((row) => Number(row.id))
-    if (removedIds.length > 0) {
-      await client.query(
-        `
-        update todos
-        set collaborator_id = null, updated_at = now()
-        where collaborator_id = any($1::bigint[])
-          and project_id in (select id from projects where user_id = $2)
-        `,
-        [removedIds, userId],
-      )
-      await client.query(
-        'delete from collaborators where id = any($1::bigint[]) and user_id = $2',
-        [removedIds, userId],
-      )
-    }
-
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally {
-    client.release()
-  }
-
-  response.json(await getWorkspace(userId))
-}))
-
-app.delete('/api/collaborators/:collaboratorId', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const collaboratorId = Number(request.params.collaboratorId)
-  const currentResult = await query<{ name: string }>(
-    'select name from collaborators where id = $1 and user_id = $2',
-    [collaboratorId, userId],
-  )
-  const current = currentResult.rows[0]
-  if (!current) {
-    response.status(404).json({ error: 'Collaborator not found' })
-    return
-  }
-  const targetIds = await findCollaboratorIdsByName(userId, decryptText(current.name))
-  await query(
-    `
-    update todos
-    set collaborator_id = null, updated_at = now()
-    where collaborator_id = any($1::bigint[])
-      and project_id in (select id from projects where user_id = $2)
-    `,
-    [targetIds, userId],
-  )
-  await query(
-    'delete from collaborators where id = any($1::bigint[]) and user_id = $2',
-    [targetIds, userId],
   )
   response.json(await getWorkspace(userId))
 }))

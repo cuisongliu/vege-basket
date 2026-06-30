@@ -12,17 +12,9 @@ export type JournalEntry = {
   visibility: JournalVisibility
 }
 
-export type Collaborator = {
-  id: number
-  name: string
-  role: string
-  projectId: number
-}
-
 export type Todo = {
   id: number
   projectId: number
-  collaboratorId?: number
   createdByUserId?: number
   creatorName?: string
   assigneeUserId?: number

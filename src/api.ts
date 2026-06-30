@@ -1,5 +1,4 @@
 import type {
-  Collaborator,
   InboxItem,
   JournalVisibility,
   NotificationCenterData,
@@ -12,7 +11,6 @@ import type {
 } from './types'
 
 export type WorkspaceData = {
-  collaborators: Collaborator[]
   inbox: InboxItem[]
   memberships: ProjectMembership[]
   projects: Project[]
@@ -132,7 +130,7 @@ export function updateAiSettings(payload: {
   })
 }
 
-export function createProject(payload: { collaboratorIds?: number[]; name: string; tags: string[] }) {
+export function createProject(payload: { name: string; tags: string[] }) {
   return request<WorkspaceData>('/api/projects', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -216,36 +214,8 @@ export function removeDraft(draftId: number) {
   })
 }
 
-export function createCollaborator(payload: {
-  name: string
-  projectIds: number[]
-  role: string
-}) {
-  return request<WorkspaceData>('/api/collaborators', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateCollaborator(
-  collaboratorId: number,
-  payload: { name: string; projectIds: number[]; role: string },
-) {
-  return request<WorkspaceData>(`/api/collaborators/${collaboratorId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function removeCollaborator(collaboratorId: number) {
-  return request<WorkspaceData>(`/api/collaborators/${collaboratorId}`, {
-    method: 'DELETE',
-  })
-}
-
 export function createTodo(payload: {
   assigneeUserId?: number
-  collaboratorId?: number
   dueDate: string
   priority: Priority
   projectId: number
@@ -301,9 +271,8 @@ export function markNotificationRead(
 
 export function updateTodo(
   todoId: number,
-  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'collaboratorId'> & {
+  payload: Omit<Partial<Todo>, 'assigneeUserId'> & {
     assigneeUserId?: number | null
-    collaboratorId?: number | null
   },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {

@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8787',
+      '/api': `http://127.0.0.1:${process.env.VITE_API_PORT ?? '8788'}`,
     },
   },
   resolve: {
