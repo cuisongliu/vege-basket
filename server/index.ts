@@ -218,6 +218,58 @@ function serializeAiSettings(row?: AiSettingsRow) {
   }
 }
 
+function isPrivateIpv4(hostname: string) {
+  const parts = hostname.split('.').map((part) => Number(part))
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false
+  }
+  const [first, second] = parts
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    first === 0
+  )
+}
+
+function isUnsafeAiHostname(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.endsWith('.local') ||
+    normalized === 'metadata.google.internal' ||
+    normalized === '169.254.169.254' ||
+    normalized === '::1' ||
+    normalized.startsWith('fe80:') ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    isPrivateIpv4(normalized)
+  )
+}
+
+function normalizeAiBaseUrl(value: string) {
+  const baseUrl = value.trim().replace(/\/+$/, '')
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    return { error: 'AI base URL must be a valid URL' as const }
+  }
+  if (parsed.protocol !== 'https:') {
+    return { error: 'AI base URL must use HTTPS' as const }
+  }
+  if (!parsed.hostname || isUnsafeAiHostname(parsed.hostname)) {
+    return { error: 'AI base URL host is not allowed' as const }
+  }
+  parsed.hash = ''
+  parsed.search = ''
+  return { baseUrl: parsed.toString().replace(/\/+$/, '') }
+}
+
 function getAiEndpoint(baseUrl: string) {
   const base = baseUrl.trim()
   return `${base.replace(/\/$/, '')}/v1/chat/completions`
@@ -609,13 +661,17 @@ async function createAiAgentResponse(
   if (!baseUrl || !apiKey || !model) {
     return { error: 'AI API is not configured', status: 503 as const }
   }
+  const normalizedBaseUrl = normalizeAiBaseUrl(baseUrl)
+  if ('error' in normalizedBaseUrl) {
+    return { error: normalizedBaseUrl.error, status: 400 as const }
+  }
 
   const workspace = agentType === 'project-summary' ? await getWorkspace(userId) : null
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(baseUrl), {
+    const aiResponse = await fetch(getAiEndpoint(normalizedBaseUrl.baseUrl), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -1333,10 +1389,11 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  const baseUrl = String(request.body.baseUrl ?? '').trim().replace(/\/+$/, '')
+  const baseUrlInput = String(request.body.baseUrl ?? '')
   const apiKey = String(request.body.apiKey ?? '').trim()
   const model = String(request.body.model ?? '').trim()
-  if (!baseUrl || !model) {
+  const normalizedBaseUrl = normalizeAiBaseUrl(baseUrlInput)
+  if ('error' in normalizedBaseUrl || !model) {
     response.status(400).json({ error: 'AI base URL and model are required' })
     return
   }
@@ -1362,7 +1419,7 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
           updated_at = now()
     returning base_url, api_key, model
     `,
-    [userId, encryptText(baseUrl), encryptText(nextApiKey), encryptText(model)],
+    [userId, encryptText(normalizedBaseUrl.baseUrl), encryptText(nextApiKey), encryptText(model)],
   )
   response.json({ settings: serializeAiSettings(result.rows[0]) })
 }))
