@@ -360,8 +360,8 @@ function extractConversationText(body: Record<string, unknown>) {
 }
 
 function verifyFeishuToken(token: unknown) {
-  const expectedToken = process.env.FEISHU_VERIFICATION_TOKEN ?? ''
-  return !expectedToken || token === expectedToken
+  const expectedToken = (process.env.FEISHU_VERIFICATION_TOKEN ?? '').trim()
+  return Boolean(expectedToken) && token === expectedToken
 }
 
 function normalizeFeishuEventPayload(body: Record<string, unknown>) {
@@ -2308,14 +2308,13 @@ app.post('/api/integrations/feishu/events', asyncHandler(async (request, respons
     ? request.body as Record<string, unknown>
     : {}
   const payload = normalizeFeishuEventPayload(body)
-  if (payload.challenge) {
-    response.json({ challenge: payload.challenge })
-    return
-  }
-
   const eventToken = payload.header?.token ?? payload.token
   if (!verifyFeishuToken(eventToken)) {
     response.status(401).json({ error: 'Invalid Feishu verification token' })
+    return
+  }
+  if (payload.challenge) {
+    response.json({ challenge: payload.challenge })
     return
   }
 
