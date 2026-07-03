@@ -91,7 +91,19 @@ export type TodoNotification = NotificationState & {
   type?: 'assigned' | 'due_tomorrow' | 'note_mention'
 }
 
+export type PackageEventNotification = NotificationState & {
+  assignedAt?: string
+  assignedByName?: string
+  eventStatus: ProjectPackageEventStatus
+  eventType: ProjectPackageEventType
+  id: number
+  projectId: number
+  projectName: string
+  title: string
+}
+
 export type NotificationCenterData = {
+  assignedPackageEvents: PackageEventNotification[]
   assignedTodos: TodoNotification[]
   dueTomorrowTodos: TodoNotification[]
   noteMentions: TodoNotification[]
@@ -118,6 +130,7 @@ export type Summary = {
 }
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
+export type ProjectPackageEventStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 export type PackageMarketChannel = 'release' | 'ci'
 
@@ -139,6 +152,7 @@ export type ProjectPackageItem = {
 export type ProjectPackageOperation = {
   id: number
   kind: ProjectPackageOperationKind
+  status: ProjectPackageEventStatus
   title: string
   label: string
   content: string
@@ -158,8 +172,14 @@ export type ProjectPackageGroup = {
 }
 
 export type ProjectPackageEvent = {
+  assignedAt?: string
+  assignedByName?: string
+  assignedByUserId?: number
+  assigneeName?: string
+  assigneeUserId?: number
   id: number
   type: ProjectPackageEventType
+  status: ProjectPackageEventStatus
   title: string
   createdAt: string
   updatedAt: string
@@ -197,6 +217,8 @@ export type PackageMarketLink = {
   size?: number
   lastModified?: string
   downloadUrl: string
+  expiresAt?: string
+  expiresInSeconds?: number
 }
 
 export type PackageMarketDetail = {
@@ -215,6 +237,8 @@ export type Project = {
   ownerName: string
   ownerUserId: number
   status: ProjectStatus
+  feishuChatEnabled?: boolean
+  feishuChatId?: string
   createdAt: string
   updatedAt: string
   tags: string[]

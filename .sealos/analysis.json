@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-05-18T10:45:03.673Z",
+  "generated_at": "2026-06-30T03:54:45Z",
   "project": {
     "github_url": "git@github.com:felixqiu014-wq/vege-basket.git",
-    "work_dir": "/Users/felixqiu/Documents/New project 5",
+    "work_dir": "/Users/felixqiu/Documents/vege-basket",
     "repo_name": "vege-basket",
     "branch": "main"
   },
@@ -34,53 +34,96 @@
   },
   "env_vars": {
     "DATABASE_URL": {
-      "description": "PostgreSQL connection string composed from Sealos PostgreSQL credentials",
-      "category": "auto"
+      "category": "auto",
+      "description": "PostgreSQL connection string assembled from the provisioned Sealos PostgreSQL instance."
     },
     "PORT": {
-      "description": "HTTP port",
-      "category": "auto"
+      "category": "auto",
+      "description": "HTTP port for the Express API and static frontend server."
+    },
+    "APP_ENCRYPTION_ACTIVE_KEY_ID": {
+      "category": "required",
+      "description": "Active key id used for AES-256-GCM application-level encryption."
+    },
+    "APP_ENCRYPTION_KEYS": {
+      "category": "required",
+      "description": "Comma-separated base64 encryption keys, for example v1:base64key."
     },
     "AI_API_BASE": {
-      "description": "OpenAI-compatible AI API base URL",
-      "category": "required"
+      "category": "optional",
+      "description": "Optional default OpenAI-compatible AI API base URL."
     },
     "AI_API_KEY": {
-      "description": "AI API key injected from a Kubernetes Secret",
-      "category": "required"
+      "category": "optional",
+      "description": "Optional default AI API key."
     },
     "AI_MODEL": {
-      "description": "AI model name",
       "category": "optional",
-      "default": "deepseek-v3.2"
+      "description": "Optional default AI model name."
     },
-    "AI_ENABLED": {
-      "description": "Feature flag for enabling production AI endpoints",
+    "FEISHU_WEBHOOK_USER_EMAIL": {
       "category": "optional",
-      "default": "false"
+      "description": "Optional Veges username that receives Feishu webhook output."
     },
-    "AI_RATE_LIMIT": {
-      "description": "Maximum AI requests per user within the rate window",
+    "FEISHU_WEBHOOK_BASIC_USER": {
       "category": "optional",
-      "default": "5"
+      "description": "Optional HTTP basic auth username for the Feishu webhook route."
     },
-    "AI_RATE_WINDOW_MS": {
-      "description": "AI rate limit window in milliseconds",
+    "FEISHU_WEBHOOK_BASIC_PASSWORD": {
       "category": "optional",
-      "default": "60000"
+      "description": "Optional HTTP basic auth password for the Feishu webhook route."
     },
-    "AI_MAX_MESSAGE_LENGTH": {
-      "description": "Maximum user or assistant message characters sent to the AI provider",
+    "FEISHU_APP_ID": {
       "category": "optional",
-      "default": "2000"
+      "description": "Optional Feishu app id for webhook expansion."
     },
-    "AI_MAX_CONTEXT_CHARS": {
-      "description": "Maximum workspace context characters sent to the AI provider",
+    "FEISHU_APP_SECRET": {
       "category": "optional",
-      "default": "12000"
+      "description": "Optional Feishu app secret for webhook expansion."
+    },
+    "FEISHU_VERIFICATION_TOKEN": {
+      "category": "optional",
+      "description": "Optional Feishu verification token."
+    },
+    "FEISHU_ENCRYPT_KEY": {
+      "category": "optional",
+      "description": "Optional Feishu encrypt key."
+    },
+    "OSS_ENDPOINT": {
+      "category": "optional",
+      "description": "Optional OSS endpoint for package market browsing."
+    },
+    "OSS_ACCESS_KEY_ID": {
+      "category": "optional",
+      "description": "Optional OSS access key id."
+    },
+    "OSS_ACCESS_KEY_SECRET": {
+      "category": "optional",
+      "description": "Optional OSS access key secret."
+    },
+    "OSS_BUCKET": {
+      "category": "optional",
+      "description": "Optional OSS bucket name."
+    },
+    "PACKAGE_MARKET_MIDDLEWARE_ROOT": {
+      "category": "optional",
+      "description": "Optional OSS middleware root prefix."
+    },
+    "PACKAGE_MARKET_BASE_OBJECT_TEMPLATE": {
+      "category": "optional",
+      "description": "Optional OSS object template for package downloads."
+    },
+    "PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE": {
+      "category": "optional",
+      "description": "Optional OSS listing prefix template."
+    },
+    "PACKAGE_MARKET_DOWNLOAD_EXPIRE_SECONDS": {
+      "category": "optional",
+      "description": "Optional signed URL expiry in seconds.",
+      "default": "1800"
     }
   },
   "has_dockerfile": true,
   "complexity_tier": "L2",
-  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439"
+  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260701-115844"
 }

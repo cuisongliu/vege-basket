@@ -1,8 +1,10 @@
 import type { QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { query } from './db.ts'
+import { createPackageItemDownloadUrl } from './package-market.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
+export type ProjectPackageEventStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 
 export type ProjectPackageItemInput = {
@@ -43,6 +45,7 @@ export type ProjectPackageOperation = {
   label: string
   relatedTodoIds: number[]
   relatedTodoNotes: Record<number, string>
+  status: ProjectPackageEventStatus
   title: string
   updatedAt: string
 }
@@ -55,10 +58,16 @@ export type ProjectPackageGroup = {
 }
 
 export type ProjectPackageEvent = {
+  assignedAt?: string
+  assignedByName?: string
+  assignedByUserId?: number
+  assigneeName?: string
+  assigneeUserId?: number
   createdAt: string
   groups: ProjectPackageGroup[]
   id: number
   operations: ProjectPackageOperation[]
+  status: ProjectPackageEventStatus
   title: string
   type: ProjectPackageEventType
   updatedAt: string
@@ -70,8 +79,16 @@ export type ProjectPackageTimeline = {
 }
 
 type EventRow = {
+  assigned_at: Date | null
+  assigned_by_user_id: string | null
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assignee_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
   created_at: Date
   id: string
+  status: ProjectPackageEventStatus
   title: string
   type: ProjectPackageEventType
   updated_at: Date
@@ -109,6 +126,7 @@ type OperationRow = {
   label: string
   project_package_event_id: string
   project_package_group_id: string | null
+  status: ProjectPackageEventStatus
   title: string
   updated_at: Date
 }
@@ -157,6 +175,11 @@ function formatDateTime(value: Date | string) {
   const pick = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`
+}
+
+function displayUserName(row?: { display_name?: string | null; email?: string | null } | null) {
+  if (!row) return ''
+  return row.display_name || row.email || ''
 }
 
 function eventTypeLabel(type: ProjectPackageEventType) {
@@ -208,6 +231,11 @@ function sanitizeExportFileName(value: string) {
 
 export function ensureProjectPackageEventType(value: unknown): ProjectPackageEventType {
   return value === 'init' ? 'init' : 'upgrade'
+}
+
+export function ensureProjectPackageEventStatus(value: unknown): ProjectPackageEventStatus {
+  if (value === 'success' || value === 'failed') return value
+  return 'pending'
 }
 
 export function ensureProjectPackageOperationKind(value: unknown): ProjectPackageOperationKind {
@@ -299,6 +327,67 @@ async function findOperationMeta(operationId: number, projectId: number) {
     [operationId, projectId],
   )
   return result.rows[0] ?? null
+}
+
+async function getEventOperationStatuses(eventId: number, projectId: number) {
+  const result = await query<{ status: ProjectPackageEventStatus }>(
+    `
+    select o.status
+    from project_package_operations o
+    join project_package_events e on e.id = o.project_package_event_id
+    where e.id = $1 and e.project_id = $2
+    `,
+    [eventId, projectId],
+  )
+  return result.rows.map((row) => ensureProjectPackageEventStatus(row.status))
+}
+
+function assertEventStatusAllowed(
+  nextStatus: ProjectPackageEventStatus,
+  operationStatuses: ProjectPackageEventStatus[],
+) {
+  if (operationStatuses.some((status) => status === 'pending') && nextStatus !== 'pending') {
+    throw new Error('Event status must stay pending while any document is pending')
+  }
+  if (operationStatuses.some((status) => status === 'failed') && nextStatus === 'success') {
+    throw new Error('Event status cannot be success while any document failed')
+  }
+  if (
+    nextStatus === 'success' &&
+    operationStatuses.length > 0 &&
+    operationStatuses.some((status) => status !== 'success')
+  ) {
+    throw new Error('All documents must be successful before marking event successful')
+  }
+}
+
+async function normalizeEventStatusAfterOperationChange(eventId: number, projectId: number) {
+  const event = await query<{ status: ProjectPackageEventStatus }>(
+    `
+    select status
+    from project_package_events
+    where id = $1 and project_id = $2
+    `,
+    [eventId, projectId],
+  )
+  const currentStatus = ensureProjectPackageEventStatus(event.rows[0]?.status)
+  const operationStatuses = await getEventOperationStatuses(eventId, projectId)
+  const nextStatus =
+    operationStatuses.some((status) => status === 'pending')
+      ? 'pending'
+      : currentStatus === 'success' && operationStatuses.some((status) => status === 'failed')
+        ? 'failed'
+        : currentStatus
+  if (nextStatus === currentStatus) return
+  await query(
+    `
+    update project_package_events
+    set status = $1,
+        updated_at = now()
+    where id = $2 and project_id = $3
+    `,
+    [nextStatus, eventId, projectId],
+  )
 }
 
 async function ensureProjectTodoIds(projectId: number, todoIds: number[]) {
@@ -626,6 +715,14 @@ function textValue(value: unknown, fallback = '-') {
   return normalized || fallback
 }
 
+function packageDownloadUrlValue(objectKey: string) {
+  try {
+    return createPackageItemDownloadUrl(objectKey)
+  } catch (error) {
+    return `临时下载链接生成失败：${String((error as Error).message ?? error)}`
+  }
+}
+
 function normalizeExportNoteText(value: unknown, fallback = '未填写') {
   const normalized = String(value ?? '').trim()
   if (!normalized) return fallback
@@ -734,6 +831,19 @@ function buildPackageTimelineMarkdown(
         .join(' · ')
     })
     lines.push(`${headingLevel} ${group.packageName} · ${details.join('；')}`, '')
+    lines.push(`${headingLevel}# 临时下载链接`, '')
+    packageRecords.forEach((node) => {
+      if (node.type !== 'package-operation') return
+      const item = node.item
+      const label = [
+        textValue(item.packageName),
+        textValue(item.channelLabel),
+        textValue(item.arch),
+        textValue(item.version, '未知版本'),
+      ].filter(Boolean).join(' · ')
+      lines.push(`- ${label}：${packageDownloadUrlValue(item.objectKey)}`)
+    })
+    lines.push('')
   } else {
     lines.push(`${headingLevel} ${group.packageName}`, '')
   }
@@ -793,6 +903,8 @@ function buildProjectPackageTimelineMarkdown(
       '',
       `### ${eventIndex + 1}. ${textValue(event.title, '未命名事件')}`,
       '',
+      `- 交付人：${textValue(event.assigneeName, '未指派')}`,
+      '',
       '### 事件文档',
       '',
     )
@@ -834,10 +946,24 @@ export async function getProjectPackageTimeline(projectId: number) {
   const [eventsResult, groupsResult, itemsResult, operationsResult, operationTodosResult] = await Promise.all([
     query<EventRow>(
       `
-      select id, type, title, created_at, updated_at
-      from project_package_events
-      where project_id = $1
-      order by created_at asc, id asc
+      select e.id,
+             e.type,
+             e.status,
+             e.title,
+             e.assignee_user_id,
+             e.assigned_by_user_id,
+             e.assigned_at,
+             e.created_at,
+             e.updated_at,
+             assignee.email as assignee_email,
+             assignee.display_name as assignee_display_name,
+             assigner.email as assigner_email,
+             assigner.display_name as assigner_display_name
+      from project_package_events e
+      left join users assignee on assignee.id = e.assignee_user_id
+      left join users assigner on assigner.id = e.assigned_by_user_id
+      where e.project_id = $1
+      order by e.created_at asc, e.id asc
       `,
       [projectId],
     ),
@@ -879,6 +1005,7 @@ export async function getProjectPackageTimeline(projectId: number) {
              o.project_package_event_id,
              o.project_package_group_id,
              o.kind,
+             o.status,
              o.title,
              o.label,
              o.content,
@@ -965,6 +1092,7 @@ export async function getProjectPackageTimeline(projectId: number) {
       title: row.title,
       label: row.label,
       content: row.content,
+      status: ensureProjectPackageEventStatus(row.status),
       relatedTodoIds: relatedTodoIdsByOperation.get(Number(row.id)) ?? [],
       relatedTodoNotes: relatedTodoNotesByOperation.get(Number(row.id)) ?? {},
       completed: row.completed,
@@ -986,8 +1114,24 @@ export async function getProjectPackageTimeline(projectId: number) {
   return {
     projectId,
     events: eventsResult.rows.map((row) => ({
+      assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
+      assignedByName: row.assigned_by_user_id
+        ? displayUserName({
+            email: row.assigner_email,
+            display_name: row.assigner_display_name,
+          })
+        : undefined,
+      assignedByUserId: row.assigned_by_user_id ? Number(row.assigned_by_user_id) : undefined,
+      assigneeName: row.assignee_user_id
+        ? displayUserName({
+            email: row.assignee_email,
+            display_name: row.assignee_display_name,
+          })
+        : undefined,
+      assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       id: Number(row.id),
       type: row.type,
+      status: ensureProjectPackageEventStatus(row.status),
       title: row.title,
       createdAt: formatDateTime(row.created_at),
       updatedAt: formatDateTime(row.updated_at),
@@ -998,6 +1142,8 @@ export async function getProjectPackageTimeline(projectId: number) {
 }
 
 export async function createProjectPackageEvent(params: {
+  assignedByUserId?: number | null
+  assigneeUserId?: number | null
   createdByUserId: number
   projectId: number
   title: string
@@ -1006,18 +1152,38 @@ export async function createProjectPackageEvent(params: {
   const title = normalizeText(params.title, 120)
   if (!title) throw new Error('Event title is required')
 
-  await query(
+  const result = await query<{ id: string }>(
     `
-    insert into project_package_events (project_id, type, title, created_by_user_id)
-    values ($1, $2, $3, $4)
+    insert into project_package_events (
+      project_id,
+      type,
+      title,
+      created_by_user_id,
+      assignee_user_id,
+      assigned_by_user_id,
+      assigned_at
+    )
+    values ($1, $2, $3, $4, $5, $6, case when $5::bigint is null then null else now() end)
+    returning id
     `,
-    [params.projectId, params.type, title, params.createdByUserId],
+    [
+      params.projectId,
+      params.type,
+      title,
+      params.createdByUserId,
+      params.assigneeUserId ?? null,
+      params.assigneeUserId ? (params.assignedByUserId ?? params.createdByUserId) : null,
+    ],
   )
+  return Number(result.rows[0].id)
 }
 
 export async function updateProjectPackageEvent(params: {
+  assignedByUserId?: number
+  assigneeUserId?: number | null
   eventId: number
   projectId: number
+  status?: ProjectPackageEventStatus
   title?: string
   type?: ProjectPackageEventType
 }) {
@@ -1032,6 +1198,25 @@ export async function updateProjectPackageEvent(params: {
   if (params.type != null) {
     values.push(params.type)
     updates.push(`type = $${values.length}`)
+  }
+  if (params.status != null) {
+    const operationStatuses = await getEventOperationStatuses(params.eventId, params.projectId)
+    if (params.status === 'success' && operationStatuses.length === 0) {
+      throw new Error('At least one document is required before marking event successful')
+    }
+    assertEventStatusAllowed(params.status, operationStatuses)
+    values.push(params.status)
+    updates.push(`status = $${values.length}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(params, 'assigneeUserId')) {
+    values.push(params.assigneeUserId ?? null)
+    updates.push(`assignee_user_id = $${values.length}`)
+    const assigneeValueIndex = values.length
+    values.push(params.assigneeUserId ? (params.assignedByUserId ?? null) : null)
+    updates.push(`assigned_by_user_id = $${values.length}`)
+    updates.push(
+      `assigned_at = case when $${assigneeValueIndex}::bigint is null then null when assignee_user_id is distinct from $${assigneeValueIndex} then now() else assigned_at end`,
+    )
   }
   if (updates.length === 0) {
     throw new Error('No supported fields to update')
@@ -1109,6 +1294,7 @@ export async function addProjectPackageItems(params: {
     )
   }
 
+  await normalizeEventStatusAfterOperationChange(params.eventId, params.projectId)
   await touchEvent(params.eventId)
 }
 
@@ -1133,6 +1319,7 @@ export async function createProjectPackageOperation(params: {
   projectId: number
   relatedTodoIds?: number[]
   relatedTodoNotes?: Record<number, string>
+  status?: ProjectPackageEventStatus
   title?: string
 }) {
   const event = await findEventMeta(params.eventId, params.projectId)
@@ -1157,6 +1344,7 @@ export async function createProjectPackageOperation(params: {
   )
   const relatedTodoNotes = normalizeTodoNotes(params.relatedTodoNotes)
   const completed = Boolean(params.completed)
+  const status = ensureProjectPackageEventStatus(params.status)
 
   if (kind === 'document' && !title) throw new Error('Operation title is required')
   if (kind === 'document' && !content) throw new Error('Operation content is required')
@@ -1168,6 +1356,7 @@ export async function createProjectPackageOperation(params: {
       project_package_event_id,
       project_package_group_id,
       kind,
+      status,
       title,
       label,
       content,
@@ -1175,13 +1364,14 @@ export async function createProjectPackageOperation(params: {
       auto_generated,
       created_by_user_id
     )
-    values ($1, $2, $3, $4, $5, $6, $7, false, $8)
+    values ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)
     returning id
     `,
     [
       params.eventId,
       params.groupId ?? null,
       kind,
+      status,
       title,
       label,
       content,
@@ -1214,6 +1404,7 @@ export async function updateProjectPackageOperation(params: {
   projectId: number
   relatedTodoIds?: number[]
   relatedTodoNotes?: Record<number, string>
+  status?: ProjectPackageEventStatus
   title?: string
 }) {
   const operation = await findOperationMeta(params.operationId, params.projectId)
@@ -1242,6 +1433,10 @@ export async function updateProjectPackageOperation(params: {
   if (params.completed != null) {
     values.push(Boolean(params.completed))
     updates.push(`completed = $${values.length}`)
+  }
+  if (params.status != null) {
+    values.push(params.status)
+    updates.push(`status = $${values.length}`)
   }
   const shouldUpdateRelatedTodos = params.relatedTodoIds != null
   const relatedTodoIds = shouldUpdateRelatedTodos
@@ -1290,6 +1485,7 @@ export async function updateProjectPackageOperation(params: {
       relatedTodoNotes,
     )
   }
+  await normalizeEventStatusAfterOperationChange(Number(operation.event_id), params.projectId)
   await touchEvent(Number(operation.event_id))
 }
 

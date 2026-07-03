@@ -15,12 +15,13 @@ import {
 } from './crypto.ts'
 import { pool, query } from './db.ts'
 import {
-  createPackageItemDownloadUrl,
+  createPackageItemDownloadLink,
   getPackageMarketDetail,
   getPackageMarketExpireMinutes,
   listPackageMarketCiVersions,
   listPackageMarketReleaseVersions,
   listPackageMarketRules,
+  normalizePackageMarketExpireMinutes,
 } from './package-market.ts'
 import {
   addProjectPackageItems,
@@ -29,6 +30,7 @@ import {
   deleteProjectPackageEvent,
   deleteProjectPackageGroup,
   deleteProjectPackageOperation,
+  ensureProjectPackageEventStatus,
   ensureProjectPackageEventType,
   ensureProjectPackageOperationKind,
   exportProjectPackageTimeline,
@@ -36,6 +38,10 @@ import {
   getProjectPackageTimeline,
   updateProjectPackageEvent,
   updateProjectPackageOperation,
+} from './project-package-timeline.ts'
+import type {
+  ProjectPackageEventStatus,
+  ProjectPackageEventType,
 } from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
 
@@ -45,15 +51,35 @@ type SummaryType = 'weekly' | 'monthly'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
-type NotificationKind = 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow' | 'todo_note_mention'
+type NotificationKind =
+  | 'project_invite'
+  | 'assigned_todo'
+  | 'package_event_assigned'
+  | 'todo_due_tomorrow'
+  | 'todo_note_mention'
 type PackageMarketChannel = 'release' | 'ci'
-type UserRow = { id: string; email: string; display_name: string }
+type UserRow = {
+  id: string
+  email: string
+  display_name: string
+  feishu_email?: string | null
+  feishu_receive_id_type?: string | null
+  feishu_user_id?: string | null
+}
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type AiAgentType = 'project-summary' | 'conversation-analysis'
 type IncomingChatMessage = { role?: unknown; content?: unknown }
 type FeishuTenantAccessToken = {
   expireAt: number
   token: string
+}
+type FeishuOAuthState = {
+  exp: number
+  intent: 'bind' | 'signin'
+  inviteToken?: string
+  redirectUri: string
+  returnTo: string
+  userId?: number
 }
 type FeishuMessageItem = {
   body?: { content?: unknown }
@@ -122,6 +148,7 @@ function encryptTags(tags: string[]) {
 }
 
 const app = express()
+app.set('trust proxy', true)
 const port = Number(process.env.PORT ?? 8787)
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
 const clientDistPath = path.resolve(serverDir, '../dist')
@@ -217,6 +244,20 @@ function formatDate(value: Date | string) {
   return `${pick('year')}-${pick('month')}-${pick('day')}`
 }
 
+function parseTodoCreatedDate(value: unknown) {
+  const rawDate = String(value ?? '').trim()
+  if (!rawDate) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    throw new Error('Created date must use YYYY-MM-DD')
+  }
+
+  const date = new Date(`${rawDate}T00:00:00+08:00`)
+  if (Number.isNaN(date.getTime()) || formatDate(date) !== rawDate) {
+    throw new Error('Created date is invalid')
+  }
+  return date.toISOString()
+}
+
 function formatUpdatedAt(value: Date | string) {
   const timestamp = formatDateTime(value)
   const [date, time] = timestamp.split(' ')
@@ -244,9 +285,12 @@ function displayNameFromUser(row?: Pick<UserRow, 'email' | 'display_name'> | nul
 }
 
 function serializeUser(row: UserRow) {
+  const feishuOpenId = String(row.feishu_user_id ?? '').trim()
   return {
     id: Number(row.id),
     displayName: row.display_name,
+    feishuEmail: row.feishu_email || (feishuOpenId.includes('@') ? feishuOpenId : ''),
+    feishuLinked: feishuOpenId.startsWith('ou_'),
     username: row.email,
   }
 }
@@ -355,6 +399,107 @@ function ensureFeishuWebhookAuth(request: express.Request, response: express.Res
     return false
   }
   return true
+}
+
+function getRequestOrigin(request: express.Request) {
+  const browserOrigin = String(request.headers.origin ?? '').trim()
+  if (/^https?:\/\//.test(browserOrigin)) return browserOrigin
+
+  const referer = String(request.headers.referer ?? '').trim()
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer)
+      if (refererUrl.protocol === 'http:' || refererUrl.protocol === 'https:') {
+        return refererUrl.origin
+      }
+    } catch {
+      // Fall back to proxy headers below.
+    }
+  }
+
+  const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim()
+  const forwardedHost = String(request.headers['x-forwarded-host'] ?? '').split(',')[0]?.trim()
+  const proto = forwardedProto || request.protocol || 'http'
+  const host = forwardedHost || request.get('host') || `127.0.0.1:${port}`
+  return `${proto}://${host}`
+}
+
+function getFeishuOAuthRedirectUri(request: express.Request) {
+  const configured = String(process.env.FEISHU_OAUTH_REDIRECT_URI ?? '').trim()
+  if (configured) return configured
+  return `${getRequestOrigin(request)}/api/auth/feishu/oauth/callback`
+}
+
+function sanitizeReturnTo(value: unknown) {
+  const raw = String(value ?? '').trim()
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/'
+  if (raw.startsWith('/api/auth/feishu/oauth')) return '/'
+  return raw.slice(0, 500)
+}
+
+function getFeishuOAuthStateSecret() {
+  return (
+    process.env.FEISHU_OAUTH_STATE_SECRET ||
+    process.env.FEISHU_APP_SECRET ||
+    process.env.APP_ENCRYPTION_KEYS ||
+    'veges-local-oauth-state'
+  )
+}
+
+function signFeishuOAuthState(payload: FeishuOAuthState) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signature = crypto
+    .createHmac('sha256', getFeishuOAuthStateSecret())
+    .update(encodedPayload)
+    .digest('base64url')
+  return `${encodedPayload}.${signature}`
+}
+
+function verifyFeishuOAuthState(value: unknown): FeishuOAuthState | null {
+  const state = String(value ?? '')
+  const [encodedPayload, signature] = state.split('.')
+  if (!encodedPayload || !signature) return null
+
+  const expectedSignature = crypto
+    .createHmac('sha256', getFeishuOAuthStateSecret())
+    .update(encodedPayload)
+    .digest('base64url')
+  if (!timingSafeTextEqual(signature, expectedSignature)) return null
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as FeishuOAuthState
+    if (!payload.intent || !payload.exp || payload.exp < Date.now()) return null
+    if (payload.intent === 'bind' && !payload.userId) return null
+    return {
+      exp: payload.exp,
+      intent: payload.intent === 'bind' ? 'bind' : 'signin',
+      inviteToken: String(payload.inviteToken ?? '').trim().slice(0, 128) || undefined,
+      redirectUri: String(payload.redirectUri ?? ''),
+      returnTo: sanitizeReturnTo(payload.returnTo),
+      userId: payload.userId ? Number(payload.userId) : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildFeishuOAuthRedirect(returnTo: string, status: 'success' | 'error', message?: string) {
+  const target = new URL(returnTo, 'http://veges.local')
+  target.searchParams.set('feishuBind', status)
+  if (message) target.searchParams.set('feishuBindMessage', message.slice(0, 120))
+  return `${target.pathname}${target.search}${target.hash}`
+}
+
+function buildFeishuOAuthSigninRedirect(
+  returnTo: string,
+  status: 'success' | 'error',
+  options: { message?: string; token?: string } = {},
+) {
+  const target = new URL(returnTo, 'http://veges.local')
+  target.searchParams.set('feishuAuth', status)
+  if (options.token) target.searchParams.set('token', options.token)
+  if (options.message) target.searchParams.set('feishuAuthMessage', options.message.slice(0, 120))
+  return `${target.pathname}${target.search}${target.hash}`
 }
 
 function extractTextFromUnknown(value: unknown): string {
@@ -473,6 +618,196 @@ async function getFeishuTenantAccessToken() {
     expireAt: now + Math.max(60, data.expire ?? 7_000) * 1_000,
   }
   return feishuTenantAccessToken.token
+}
+
+async function resolveFeishuOpenIdByEmail(email: string) {
+  const normalizedEmail = normalizeUsername(email)
+  if (!normalizedEmail) return ''
+
+  const token = await getFeishuTenantAccessToken()
+  const result = await fetch(
+    'https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        emails: [normalizedEmail],
+        include_resigned: false,
+      }),
+    },
+  )
+  const data = await result.json() as {
+    code?: number
+    data?: {
+      user_list?: Array<{
+        email?: string
+        user_id?: string
+      }>
+    }
+    msg?: string
+  }
+
+  if (!result.ok || data.code !== 0) {
+    const message = data.msg ?? result.statusText
+    throw new Error(`飞书邮箱解析失败：${message}`)
+  }
+
+  const matchedUser = data.data?.user_list?.find((user) => (
+    normalizeUsername(user.email) === normalizedEmail && String(user.user_id ?? '').startsWith('ou_')
+  )) ?? data.data?.user_list?.find((user) => String(user.user_id ?? '').startsWith('ou_'))
+  const openId = matchedUser?.user_id?.trim() ?? ''
+  if (!openId) {
+    throw new Error('飞书邮箱解析失败：当前飞书应用没有匹配到这个邮箱对应的用户。')
+  }
+  return openId
+}
+
+async function resolveAndPersistFeishuOpenId(userId: number, email: string) {
+  const openId = await resolveFeishuOpenIdByEmail(email)
+  await query(
+    `
+    update users
+    set feishu_user_id = $1,
+        feishu_receive_id_type = 'open_id'
+    where id = $2
+    `,
+    [openId, userId],
+  )
+  return openId
+}
+
+async function exchangeFeishuOAuthCode(code: string, redirectUri: string) {
+  const appId = process.env.FEISHU_APP_ID ?? ''
+  const appSecret = process.env.FEISHU_APP_SECRET ?? ''
+  if (!appId || !appSecret) {
+    throw new Error('飞书应用凭据未配置。')
+  }
+
+  const result = await fetch('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      client_id: appId,
+      client_secret: appSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }),
+  })
+  const data = await result.json() as {
+    access_token?: string
+    code?: number
+    data?: {
+      access_token?: string
+      token_type?: string
+    }
+    error?: string
+    error_description?: string
+    msg?: string
+  }
+  const accessToken = data.data?.access_token ?? data.access_token ?? ''
+  if (!result.ok || (typeof data.code === 'number' && data.code !== 0) || !accessToken) {
+    throw new Error(data.msg ?? data.error_description ?? data.error ?? result.statusText)
+  }
+  return accessToken
+}
+
+async function fetchFeishuOAuthUserInfo(accessToken: string) {
+  const result = await fetch('https://open.feishu.cn/open-apis/authen/v1/user_info', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+  const data = await result.json() as {
+    code?: number
+    data?: {
+      email?: string
+      name?: string
+      open_id?: string
+      union_id?: string
+    }
+    email?: string
+    msg?: string
+    name?: string
+    open_id?: string
+    union_id?: string
+  }
+  const openId = String(data.data?.open_id ?? data.open_id ?? '').trim()
+  if (!result.ok || data.code !== 0 || !openId.startsWith('ou_')) {
+    throw new Error(data.msg ?? result.statusText)
+  }
+  return {
+    email: normalizeUsername(data.data?.email ?? data.email),
+    name: sanitizeDisplayName(data.data?.name ?? data.name),
+    openId,
+    unionId: String(data.data?.union_id ?? data.union_id ?? '').trim(),
+  }
+}
+
+function getFeishuGeneratedUsername(openId: string) {
+  const suffix = crypto.createHash('sha256').update(openId).digest('hex').slice(0, 12)
+  return `feishu_${suffix}`
+}
+
+async function findOrCreateFeishuOAuthUser(
+  feishuUser: Awaited<ReturnType<typeof fetchFeishuOAuthUserInfo>>,
+  inviteToken?: string,
+) {
+  const byOpenId = await query<UserRow>(
+    `
+    select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    from users
+    where feishu_user_id = $1
+    limit 1
+    `,
+    [feishuUser.openId],
+  )
+  if (byOpenId.rows[0]) {
+    const userId = Number(byOpenId.rows[0].id)
+    await linkPendingMemberships(userId, byOpenId.rows[0].email)
+    await acceptProjectInviteToken(userId, inviteToken)
+    return byOpenId.rows[0]
+  }
+
+  if (feishuUser.email) {
+    const byEmail = await query<UserRow>(
+      `
+      update users
+      set feishu_email = $1,
+          feishu_user_id = $2,
+          feishu_receive_id_type = 'open_id'
+      where email = $1
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      `,
+      [feishuUser.email, feishuUser.openId],
+    )
+    if (byEmail.rows[0]) {
+      const userId = Number(byEmail.rows[0].id)
+      await linkPendingMemberships(userId, byEmail.rows[0].email)
+      await acceptProjectInviteToken(userId, inviteToken)
+      return byEmail.rows[0]
+    }
+  }
+
+  const username = feishuUser.email || getFeishuGeneratedUsername(feishuUser.openId)
+  const displayName = feishuUser.name || feishuUser.email || '飞书用户'
+  const created = await query<UserRow>(
+    `
+    insert into users (email, password_hash, display_name, feishu_email, feishu_user_id, feishu_receive_id_type)
+    values ($1, $2, $3, $4, $5, 'open_id')
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    `,
+    [username, '', displayName, feishuUser.email, feishuUser.openId],
+  )
+  const userId = Number(created.rows[0].id)
+  await linkPendingMemberships(userId, username)
+  await acceptProjectInviteToken(userId, inviteToken)
+  return created.rows[0]
 }
 
 async function fetchFeishuMessageContent(messageId: string) {
@@ -871,6 +1206,10 @@ function ensurePackageMarketChannel(value: unknown): PackageMarketChannel {
   return value === 'ci' ? 'ci' : 'release'
 }
 
+function ensurePackageMarketExpireMinutes(value: unknown) {
+  return normalizePackageMarketExpireMinutes(value)
+}
+
 async function linkPendingMemberships(userId: number, username: string) {
   await query(
     `
@@ -883,6 +1222,101 @@ async function linkPendingMemberships(userId: number, username: string) {
     `,
     [userId, normalizeUsername(username), blindIndex(username)],
   )
+}
+
+function createProjectInviteToken() {
+  return crypto.randomBytes(24).toString('base64url')
+}
+
+async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
+  const token = String(rawToken ?? '').trim()
+  if (!token) return false
+
+  const invite = await query<{
+    project_id: string
+    owner_user_id: string
+  }>(
+    `
+    select l.project_id,
+           p.user_id as owner_user_id
+    from project_invite_links l
+    join projects p on p.id = l.project_id
+    where l.token = $1
+      and l.revoked_at is null
+    limit 1
+    `,
+    [token],
+  )
+  const inviteRow = invite.rows[0]
+  if (!inviteRow) return false
+
+  const projectId = Number(inviteRow.project_id)
+  const ownerUserId = Number(inviteRow.owner_user_id)
+  if (ownerUserId === userId) return true
+
+  const existingAccess = await getProjectAccess(projectId, userId)
+  if (existingAccess) return true
+
+  const user = await query<UserRow>(
+    'select id, email, display_name from users where id = $1',
+    [userId],
+  )
+  const userRow = user.rows[0]
+  if (!userRow) return false
+
+  const username = normalizeUsername(userRow.email)
+  const emailLookup = blindIndex(username)
+  const existingMembership = await query<{ id: string }>(
+    `
+    select id
+    from project_memberships
+    where project_id = $1 and invited_email_lookup = $2
+    limit 1
+    `,
+    [projectId, emailLookup],
+  )
+
+  if (existingMembership.rows[0]) {
+    await query(
+      `
+      update project_memberships
+      set owner_user_id = $1,
+          invited_user_id = $2,
+          invited_email = $3,
+          invited_email_lookup = $4,
+          role = 'member',
+          status = 'active',
+          accepted_at = now(),
+          declined_at = null
+      where id = $5
+      `,
+      [
+        ownerUserId,
+        userId,
+        encryptText(username),
+        emailLookup,
+        Number(existingMembership.rows[0].id),
+      ],
+    )
+  } else {
+    await query(
+      `
+      insert into project_memberships (
+        project_id,
+        owner_user_id,
+        invited_user_id,
+        invited_email,
+        invited_email_lookup,
+        role,
+        status,
+        accepted_at
+      )
+      values ($1, $2, $3, $4, $5, 'member', 'active', now())
+      `,
+      [projectId, ownerUserId, userId, encryptText(username), emailLookup],
+    )
+  }
+  return true
 }
 
 async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
@@ -1050,11 +1484,13 @@ async function getWorkspace(userId: number) {
       access_role: ProjectAccessRole
       name: string
       status: ProjectStatus
-      tags: string[]
-      tags_encrypted: string | null
-      created_at: Date
-      updated_at: Date
-    }>(
+	      tags: string[]
+	      tags_encrypted: string | null
+	      feishu_chat_id: string | null
+	      feishu_chat_enabled: boolean | null
+	      created_at: Date
+	      updated_at: Date
+	    }>(
       `
       select p.id,
              p.user_id as owner_user_id,
@@ -1063,13 +1499,19 @@ async function getWorkspace(userId: number) {
              case when p.user_id = $1 then 'owner' else 'member' end as access_role,
              p.name,
              p.status,
-             p.tags,
-             p.tags_encrypted,
-             p.created_at,
-             p.updated_at
-      from projects p
-      join users u on u.id = p.user_id
-      left join project_memberships pm
+	             p.tags,
+	             p.tags_encrypted,
+	             pi.target_id as feishu_chat_id,
+	             pi.enabled as feishu_chat_enabled,
+	             p.created_at,
+	             p.updated_at
+	      from projects p
+	      join users u on u.id = p.user_id
+	      left join project_integrations pi
+	        on pi.project_id = p.id
+	       and pi.provider = 'feishu'
+	       and pi.target_type = 'chat'
+	      left join project_memberships pm
         on pm.project_id = p.id
        and pm.status = 'active'
        and pm.invited_user_id = $1
@@ -1389,9 +1831,11 @@ async function getWorkspace(userId: number) {
       ownerUserId: Number(project.owner_user_id),
       status: project.status,
       createdAt: formatUpdatedAt(project.created_at),
-      updatedAt: formatUpdatedAt(project.updated_at),
-      tags: decryptTags(project.tags_encrypted, project.tags ?? []),
-      journals: journalsByProject.get(Number(project.id)) ?? [],
+	      updatedAt: formatUpdatedAt(project.updated_at),
+	      tags: decryptTags(project.tags_encrypted, project.tags ?? []),
+	      feishuChatEnabled: Boolean(project.feishu_chat_enabled && project.feishu_chat_id),
+	      feishuChatId: project.feishu_chat_id ?? '',
+	      journals: journalsByProject.get(Number(project.id)) ?? [],
       risks: risksByProject.get(Number(project.id)) ?? [],
       riskJournalEntryIds: riskJournalEntryIdsByProject.get(Number(project.id)) ?? [],
       modules: modulesByProject.get(Number(project.id)) ?? [],
@@ -1502,12 +1946,13 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
     `
     insert into users (email, password_hash, display_name)
     values ($1, $2, $3)
-    returning id, email, display_name
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
     [username, passwordHash, username],
   )
   const userId = Number(user.rows[0].id)
   await linkPendingMemberships(userId, username)
+  await acceptProjectInviteToken(userId, request.body.inviteToken)
   const token = await createSession(userId)
   response.status(201).json({
     token,
@@ -1520,18 +1965,19 @@ app.post('/api/auth/login', asyncHandler(async (request, response) => {
   const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
   const user = await query<UserRow & { password_hash: string }>(
-    'select id, email, display_name, password_hash from users where email = $1',
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, password_hash from users where email = $1',
     [username],
   )
   const row = user.rows[0]
 
-  if (!row || !(await bcrypt.compare(password, row.password_hash))) {
+  if (!row || !row.password_hash || !(await bcrypt.compare(password, row.password_hash))) {
     response.status(401).json({ error: 'Invalid username or password' })
     return
   }
 
   const userId = Number(row.id)
   await linkPendingMemberships(userId, row.email)
+  await acceptProjectInviteToken(userId, request.body.inviteToken)
   const token = await createSession(userId)
   response.json({
     token,
@@ -1545,7 +1991,7 @@ app.get('/api/auth/me', asyncHandler(async (request, response) => {
   if (!userId) return
 
   const user = await query<UserRow>(
-    'select id, email, display_name from users where id = $1',
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type from users where id = $1',
     [userId],
   )
   response.json({
@@ -1567,11 +2013,115 @@ app.patch('/api/auth/me', asyncHandler(async (request, response) => {
   const user = await query<UserRow>(
     `
     update users
-    set display_name = $1
+    set display_name = $1,
+        feishu_receive_id_type = case
+          when feishu_user_id like 'ou_%' then 'open_id'
+          else feishu_receive_id_type
+        end
     where id = $2
-    returning id, email, display_name
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
     [displayName, userId],
+  )
+  response.json({ user: serializeUser(user.rows[0]) })
+}))
+
+app.post('/api/auth/feishu/oauth/url', asyncHandler(async (request, response) => {
+  const userId = await requireUserId(request)
+  const intent: FeishuOAuthState['intent'] = userId ? 'bind' : 'signin'
+
+  const appId = process.env.FEISHU_APP_ID ?? ''
+  const appSecret = process.env.FEISHU_APP_SECRET ?? ''
+  if (!appId || !appSecret) {
+    response.status(503).json({ error: '飞书应用凭据未配置。' })
+    return
+  }
+
+  const redirectUri = getFeishuOAuthRedirectUri(request)
+  const state = signFeishuOAuthState({
+    exp: Date.now() + 10 * 60 * 1_000,
+    intent,
+    inviteToken: String(request.body?.inviteToken ?? '').trim().slice(0, 128) || undefined,
+    redirectUri,
+    returnTo: sanitizeReturnTo(request.body?.returnTo),
+    ...(userId ? { userId } : {}),
+  })
+  const url = new URL('https://open.feishu.cn/open-apis/authen/v1/index')
+  url.searchParams.set('app_id', appId)
+  url.searchParams.set('redirect_uri', redirectUri)
+  url.searchParams.set('state', state)
+  response.json({ url: url.toString() })
+}))
+
+app.get('/api/auth/feishu/oauth/callback', asyncHandler(async (request, response) => {
+  const state = verifyFeishuOAuthState(request.query.state)
+  if (!state) {
+    response.redirect(buildFeishuOAuthSigninRedirect('/', 'error', {
+      message: '飞书授权已失效，请重新操作。',
+    }))
+    return
+  }
+
+  const code = String(request.query.code ?? '').trim()
+  if (!code) {
+    const message = '飞书没有返回授权码。'
+    response.redirect(
+      state.intent === 'bind'
+        ? buildFeishuOAuthRedirect(state.returnTo, 'error', message)
+        : buildFeishuOAuthSigninRedirect(state.returnTo, 'error', { message }),
+    )
+    return
+  }
+
+  try {
+    const accessToken = await exchangeFeishuOAuthCode(code, state.redirectUri)
+    const feishuUser = await fetchFeishuOAuthUserInfo(accessToken)
+    if (state.intent === 'bind') {
+      await query(
+        `
+        update users
+        set feishu_email = $1,
+            feishu_user_id = $2,
+            feishu_receive_id_type = 'open_id'
+        where id = $3
+        `,
+        [feishuUser.email, feishuUser.openId, state.userId],
+      )
+      response.redirect(buildFeishuOAuthRedirect(state.returnTo, 'success'))
+      return
+    }
+
+    const user = await findOrCreateFeishuOAuthUser(feishuUser, state.inviteToken)
+    const token = await createSession(Number(user.id))
+    response.redirect(buildFeishuOAuthSigninRedirect(state.returnTo, 'success', { token }))
+  } catch (error) {
+    const message = error instanceof Error && error.message
+      ? `飞书绑定失败：${error.message}`
+      : '飞书绑定失败，请稍后重试。'
+    response.redirect(
+      state.intent === 'bind'
+        ? buildFeishuOAuthRedirect(state.returnTo, 'error', message)
+        : buildFeishuOAuthSigninRedirect(state.returnTo, 'error', {
+            message: message.replace('飞书绑定失败', '飞书登录失败'),
+          }),
+    )
+  }
+}))
+
+app.delete('/api/auth/feishu/oauth', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const user = await query<UserRow>(
+    `
+    update users
+    set feishu_email = '',
+        feishu_user_id = '',
+        feishu_receive_id_type = 'open_id'
+    where id = $1
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    `,
+    [userId],
   )
   response.json({ user: serializeUser(user.rows[0]) })
 }))
@@ -1679,10 +2229,13 @@ async function getNotifications(userId: number) {
       },
     ]),
   )
-  const stateFor = (kind: NotificationKind, sourceId: string) =>
+  const stateFor = (
+    kind: NotificationKind,
+    sourceId: string,
+  ): { dismissedAt?: string; readAt?: string } =>
     stateMap.get(`${kind}:${sourceId}`) ?? {}
 
-  const [invitesResult, assignedTodosResult, dueTomorrowResult, noteMentionsResult] = await Promise.all([
+  const [invitesResult, assignedPackageEventsResult, assignedTodosResult, dueTomorrowResult, noteMentionsResult] = await Promise.all([
     query<{
       id: string
       project_id: string
@@ -1708,6 +2261,40 @@ async function getNotifications(userId: number) {
       [userId],
     ),
     query<{
+      assigned_at: Date | null
+      assigner_display_name: string | null
+      assigner_email: string | null
+      id: string
+      project_id: string
+      project_name: string
+      status: ProjectPackageEventStatus
+      title: string
+      type: ProjectPackageEventType
+    }>(
+      `
+      select e.id,
+             e.project_id,
+             p.name as project_name,
+             e.title,
+             e.type,
+             e.status,
+             e.assigned_at,
+             assigner.email as assigner_email,
+             assigner.display_name as assigner_display_name
+      from project_package_events e
+      join projects p on p.id = e.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      left join users assigner on assigner.id = e.assigned_by_user_id
+      where e.assignee_user_id = $1
+        and (p.user_id = $1 or pm.id is not null)
+      order by e.status asc, e.assigned_at desc nulls last, e.id desc
+      `,
+      [userId],
+    ),
+    query<{
       id: string
       project_id: string
       project_name: string
@@ -1718,6 +2305,10 @@ async function getNotifications(userId: number) {
       assigned_at: Date | null
       assigner_email: string | null
       assigner_display_name: string | null
+      assignee_email: string | null
+      assignee_feishu_email: string | null
+      assignee_feishu_user_id: string | null
+      assignee_display_name: string | null
     }>(
       `
       select t.id,
@@ -1729,14 +2320,19 @@ async function getNotifications(userId: number) {
              t.done,
              t.assigned_at,
              assigner.email as assigner_email,
-             assigner.display_name as assigner_display_name
+             assigner.display_name as assigner_display_name,
+             assignee.email as assignee_email,
+             assignee.feishu_email as assignee_feishu_email,
+             assignee.feishu_user_id as assignee_feishu_user_id,
+             assignee.display_name as assignee_display_name
       from todos t
       join projects p on p.id = t.project_id
       left join project_memberships pm
         on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $1
+      and pm.status = 'active'
+      and pm.invited_user_id = $1
       left join users assigner on assigner.id = t.assigned_by_user_id
+      left join users assignee on assignee.id = t.assignee_user_id
       where t.assignee_user_id = $1
         and (p.user_id = $1 or pm.id is not null)
       order by t.done asc, t.due_date asc, t.id desc
@@ -1824,6 +2420,15 @@ async function getNotifications(userId: number) {
           display_name: todo.assigner_display_name ?? '',
         })
         : undefined,
+      assigneeName: todo.assignee_email
+        ? displayNameFromUser({
+          email: todo.assignee_email,
+          display_name: todo.assignee_display_name ?? '',
+        })
+        : undefined,
+      assigneeFeishuEmail: todo.assignee_feishu_email || (
+        todo.assignee_feishu_user_id?.includes('@') ? todo.assignee_feishu_user_id : undefined
+      ),
       done: todo.done,
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
@@ -1831,6 +2436,22 @@ async function getNotifications(userId: number) {
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
       title: decryptText(todo.title),
+    })),
+    assignedPackageEvents: assignedPackageEventsResult.rows.map((event) => ({
+      ...stateFor('package_event_assigned', event.id),
+      assignedAt: event.assigned_at ? formatUpdatedAt(event.assigned_at) : undefined,
+      assignedByName: event.assigner_email
+        ? displayNameFromUser({
+          email: event.assigner_email,
+          display_name: event.assigner_display_name ?? '',
+        })
+        : undefined,
+      eventStatus: event.status,
+      eventType: event.type,
+      id: Number(event.id),
+      projectId: Number(event.project_id),
+      projectName: decryptText(event.project_name),
+      title: decryptText(event.title),
     })),
     dueTomorrowTodos: dueTomorrowResult.rows.map((todo) => ({
       ...stateFor('todo_due_tomorrow', todo.id),
@@ -1874,6 +2495,653 @@ async function getNotifications(userId: number) {
   }
 }
 
+type FeishuNotificationCandidate = {
+  body: string
+  dueDate?: string
+  eventStatus?: ProjectPackageEventStatus
+  eventTitle?: string
+  eventType?: ProjectPackageEventType
+  operatorName?: string
+  kind: NotificationKind
+  projectId: number
+  projectName?: string
+  recipientFeishuEmail?: string
+  recipientFeishuOpenId?: string
+  recipientName?: string
+  sourceId: number
+  title: string
+  todoTitle?: string
+  userId: number
+}
+
+type AssignedTodoNotificationRow = {
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assignee_feishu_email: string | null
+  assignee_feishu_user_id: string | null
+  assignee_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
+  due_date: Date
+  done: boolean
+  id: string
+  project_id: string
+  project_name: string
+  title: string
+}
+
+type AssignedPackageEventNotificationRow = {
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assignee_feishu_email: string | null
+  assignee_feishu_user_id: string | null
+  assignee_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
+  id: string
+  project_id: string
+  project_name: string
+  status: ProjectPackageEventStatus
+  title: string
+  type: ProjectPackageEventType
+}
+
+type FeishuDeliveryTarget = {
+  receiveIdType: 'chat_id' | 'open_id'
+  targetId: string
+  targetType: 'chat' | 'user'
+}
+
+function sanitizeFeishuMarkdownText(value: unknown) {
+  return String(value ?? '')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .trim()
+}
+
+function buildFeishuAtText(openId: string | undefined, fallbackName: string | undefined, mention = true) {
+  const normalizedOpenId = String(openId ?? '').trim()
+  if (mention && normalizedOpenId.startsWith('ou_')) {
+    return `<at id=${normalizedOpenId}></at>`
+  }
+  return sanitizeFeishuMarkdownText(fallbackName || '未配置')
+}
+
+function packageEventTypeLabel(type?: ProjectPackageEventType) {
+  return type === 'init' ? '初始化安装' : '升级'
+}
+
+function packageEventStatusLabel(status?: ProjectPackageEventStatus) {
+  if (status === 'success') return '已成功完成'
+  if (status === 'failed') return '失败'
+  return '未完成'
+}
+
+function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, target: FeishuDeliveryTarget) {
+  if (candidate.kind === 'assigned_todo') {
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 条待办指派：`,
+        `- 指派给：${candidate.recipientName ?? ''}`,
+        `- 项目名称：${candidate.projectName ?? ''}`,
+        `- 待办事项：${candidate.todoTitle ?? ''}`,
+        `- 截止日期：${candidate.dueDate ?? ''}`,
+      ].join('\n')
+    }
+
+    return [
+      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 条待办指派：`,
+      `- 项目名称：${candidate.projectName ?? ''}`,
+      `- 待办事项：${candidate.todoTitle ?? ''}`,
+      `- 截止日期：${candidate.dueDate ?? ''}`,
+    ].join('\n')
+  }
+
+  if (candidate.kind === 'package_event_assigned') {
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 个交付事件指派：`,
+        `- 指派给：${candidate.recipientName ?? ''}`,
+        `- 项目名称：${candidate.projectName ?? ''}`,
+        `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
+        `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
+        `- 事件状态：${packageEventStatusLabel(candidate.eventStatus)}`,
+      ].join('\n')
+    }
+
+    return [
+      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 个交付事件指派：`,
+      `- 项目名称：${candidate.projectName ?? ''}`,
+      `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
+      `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
+      `- 事件状态：${packageEventStatusLabel(candidate.eventStatus)}`,
+    ].join('\n')
+  }
+
+  return [
+    `【Veges 通知】${candidate.title}`,
+    candidate.body,
+  ].filter(Boolean).join('\n')
+}
+
+function buildFeishuInteractiveCard(
+  candidate: FeishuNotificationCandidate,
+  target: FeishuDeliveryTarget,
+  options: { mention?: boolean } = {},
+) {
+  if (candidate.kind === 'assigned_todo' && target.targetType === 'chat') {
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 条待办指派：`,
+              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
+              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
+              `- 待办事项：${sanitizeFeishuMarkdownText(candidate.todoTitle)}`,
+              `- 截止日期：${sanitizeFeishuMarkdownText(candidate.dueDate)}`,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: 'Veges 通知',
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  if (candidate.kind === 'package_event_assigned' && target.targetType === 'chat') {
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 个交付事件指派：`,
+              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
+              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
+              `- 交付事件：${sanitizeFeishuMarkdownText(candidate.eventTitle ?? candidate.title)}`,
+              `- 事件类型：${sanitizeFeishuMarkdownText(packageEventTypeLabel(candidate.eventType))}`,
+              `- 事件状态：${sanitizeFeishuMarkdownText(packageEventStatusLabel(candidate.eventStatus))}`,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: 'Veges 通知',
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  return null
+}
+
+async function sendFeishuMessage(params: {
+  content: Record<string, unknown> | string
+  msgType: 'interactive' | 'text'
+  receiveId: string
+  receiveIdType: FeishuDeliveryTarget['receiveIdType']
+}) {
+  const token = await getFeishuTenantAccessToken()
+  const result = await fetch(
+    `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${encodeURIComponent(params.receiveIdType)}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+	      body: JSON.stringify({
+	        receive_id: params.receiveId,
+	        msg_type: params.msgType,
+	        content: typeof params.content === 'string'
+            ? JSON.stringify({ text: params.content })
+            : JSON.stringify(params.content),
+	      }),
+    },
+  )
+  const data = await result.json() as { code?: number; msg?: string }
+  if (!result.ok || data.code !== 0) {
+    throw new Error(`Feishu message send failed: ${data.msg ?? result.statusText}`)
+  }
+}
+
+async function resolveFeishuDeliveryTargets(candidate: FeishuNotificationCandidate): Promise<FeishuDeliveryTarget[]> {
+  const targets: FeishuDeliveryTarget[] = []
+  const userTarget = await query<{
+    feishu_email: string | null
+    feishu_user_id: string | null
+  }>(
+    'select feishu_email, feishu_user_id from users where id = $1',
+    [candidate.userId],
+  )
+  const user = userTarget.rows[0]
+  let feishuOpenId = String(user?.feishu_user_id ?? '').trim()
+  const feishuEmail = normalizeUsername(user?.feishu_email)
+  if (!feishuOpenId.startsWith('ou_') && feishuEmail) {
+    try {
+      feishuOpenId = await resolveAndPersistFeishuOpenId(candidate.userId, feishuEmail)
+    } catch (error) {
+      console.warn('Feishu user id resolution failed', {
+        error: error instanceof Error ? error.message : error,
+        userId: candidate.userId,
+      })
+      feishuOpenId = ''
+    }
+  }
+  if (feishuOpenId.startsWith('ou_')) {
+    candidate.recipientFeishuOpenId = feishuOpenId
+    targets.push({
+      receiveIdType: 'open_id',
+      targetId: feishuOpenId,
+      targetType: 'user',
+    })
+  }
+
+  if (candidate.kind !== 'assigned_todo' && candidate.kind !== 'package_event_assigned') return targets
+
+  const projectTarget = await query<{ target_id: string }>(
+    `
+    select target_id
+    from project_integrations
+    where project_id = $1
+      and provider = 'feishu'
+      and target_type = 'chat'
+      and enabled = true
+      and target_id <> ''
+    `,
+    [candidate.projectId],
+  )
+  const chatId = projectTarget.rows[0]?.target_id
+  if (chatId) {
+    targets.push({
+      receiveIdType: 'chat_id',
+      targetId: chatId,
+      targetType: 'chat',
+    })
+  }
+
+  return targets
+}
+
+async function upsertFeishuDelivery(params: {
+  candidate: FeishuNotificationCandidate
+  target: FeishuDeliveryTarget
+}) {
+  const existing = await query<{
+    attempts: number
+    id: string
+    status: string
+  }>(
+    `
+    select id, status, attempts
+    from notification_deliveries
+    where kind = $1
+      and source_id = $2
+      and channel = 'feishu'
+      and target_type = $3
+      and target_id = $4
+    `,
+    [
+      params.candidate.kind,
+      params.candidate.sourceId,
+      params.target.targetType,
+      params.target.targetId,
+    ],
+  )
+  const current = existing.rows[0]
+  if (current) {
+    if (current.status === 'sent' || current.status === 'skipped' || current.attempts >= 3) {
+      return null
+    }
+    return Number(current.id)
+  }
+
+  const inserted = await query<{ id: string }>(
+    `
+    insert into notification_deliveries (
+      user_id,
+      kind,
+      source_id,
+      channel,
+      target_type,
+      target_id,
+      status
+    )
+    values ($1, $2, $3, 'feishu', $4, $5, 'pending')
+    returning id
+    `,
+    [
+      params.candidate.userId,
+      params.candidate.kind,
+      params.candidate.sourceId,
+      params.target.targetType,
+      params.target.targetId,
+    ],
+  )
+  return Number(inserted.rows[0].id)
+}
+
+async function markFeishuDeliverySkipped(candidate: FeishuNotificationCandidate, reason: string) {
+  await query(
+    `
+    insert into notification_deliveries (
+      user_id,
+      kind,
+      source_id,
+      channel,
+      target_type,
+      target_id,
+      status,
+      last_error,
+      updated_at
+    )
+    values ($1, $2, $3, 'feishu', 'none', 'none', 'skipped', $4, now())
+    on conflict (kind, source_id, channel, target_type, target_id) do nothing
+    `,
+    [candidate.userId, candidate.kind, candidate.sourceId, reason],
+  )
+}
+
+async function deliverFeishuNotification(candidate: FeishuNotificationCandidate) {
+  const targets = await resolveFeishuDeliveryTargets(candidate)
+  if (targets.length === 0) {
+    await markFeishuDeliverySkipped(candidate, 'No Feishu delivery target configured')
+    return { skipped: 1, sent: 0, failed: 0 }
+  }
+
+  const totals = { failed: 0, sent: 0, skipped: 0 }
+  for (const target of targets) {
+    const deliveryId = await upsertFeishuDelivery({ candidate, target })
+    if (!deliveryId) {
+      totals.skipped += 1
+      continue
+    }
+
+    try {
+      const interactiveCard = buildFeishuInteractiveCard(candidate, target)
+      await sendFeishuMessage({
+        content: interactiveCard ?? buildFeishuNotificationText(candidate, target),
+        msgType: interactiveCard ? 'interactive' : 'text',
+        receiveId: target.targetId,
+        receiveIdType: target.receiveIdType,
+      })
+      await query(
+        `
+        update notification_deliveries
+        set status = 'sent',
+            attempts = attempts + 1,
+            last_error = '',
+            delivered_at = now(),
+            updated_at = now()
+        where id = $1
+        `,
+        [deliveryId],
+      )
+      totals.sent += 1
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown Feishu delivery error'
+      const shouldRetryWithoutMention =
+        target.targetType === 'chat' &&
+        (candidate.kind === 'assigned_todo' || candidate.kind === 'package_event_assigned') &&
+        /invalid user resource|at\/person/i.test(errorMessage)
+      if (shouldRetryWithoutMention) {
+        try {
+          const fallbackCard = buildFeishuInteractiveCard(candidate, target, { mention: false })
+          await sendFeishuMessage({
+            content: fallbackCard ?? buildFeishuNotificationText(candidate, target),
+            msgType: fallbackCard ? 'interactive' : 'text',
+            receiveId: target.targetId,
+            receiveIdType: target.receiveIdType,
+          })
+          await query(
+            `
+            update notification_deliveries
+            set status = 'sent',
+                attempts = attempts + 1,
+                last_error = $2,
+                delivered_at = now(),
+                updated_at = now()
+            where id = $1
+            `,
+            [deliveryId, `Mention fallback used: ${errorMessage}`.slice(0, 500)],
+          )
+          totals.sent += 1
+          continue
+        } catch (fallbackError) {
+          await query(
+            `
+            update notification_deliveries
+            set status = 'failed',
+                attempts = attempts + 1,
+                last_error = $2,
+                updated_at = now()
+            where id = $1
+            `,
+            [
+              deliveryId,
+              fallbackError instanceof Error
+                ? fallbackError.message.slice(0, 500)
+                : 'Unknown Feishu delivery fallback error',
+            ],
+          )
+          totals.failed += 1
+          continue
+        }
+      }
+      await query(
+        `
+        update notification_deliveries
+        set status = 'failed',
+            attempts = attempts + 1,
+            last_error = $2,
+            updated_at = now()
+        where id = $1
+        `,
+        [deliveryId, errorMessage.slice(0, 500)],
+      )
+      totals.failed += 1
+    }
+  }
+  return totals
+}
+
+function buildAssignedTodoFeishuCandidate(todo: AssignedTodoNotificationRow): FeishuNotificationCandidate | null {
+  if (todo.done || !todo.assignee_user_id) return null
+  const recipientName = todo.assignee_email
+    ? displayNameFromUser({
+      email: todo.assignee_email,
+      display_name: todo.assignee_display_name ?? '',
+    })
+    : undefined
+  const operatorName = todo.assigner_email
+    ? displayNameFromUser({
+      email: todo.assigner_email,
+      display_name: todo.assigner_display_name ?? '',
+    })
+    : undefined
+  const assigneeFeishuEmail =
+    todo.assignee_feishu_email || (
+      todo.assignee_feishu_user_id?.includes('@') ? todo.assignee_feishu_user_id : undefined
+    )
+  const assigneeFeishuOpenId = todo.assignee_feishu_user_id?.startsWith('ou_')
+    ? todo.assignee_feishu_user_id
+    : undefined
+
+  return {
+    body: `${operatorName ? `${operatorName} 指派：` : ''}${decryptText(todo.project_name)} · ${decryptText(todo.title)} · 截止 ${formatDate(todo.due_date)}`,
+    dueDate: formatDate(todo.due_date),
+    kind: 'assigned_todo',
+    operatorName,
+    projectId: Number(todo.project_id),
+    projectName: decryptText(todo.project_name),
+    recipientFeishuEmail: assigneeFeishuEmail,
+    recipientFeishuOpenId: assigneeFeishuOpenId,
+    recipientName,
+    sourceId: Number(todo.id),
+    title: '新的待办指派',
+    todoTitle: decryptText(todo.title),
+    userId: Number(todo.assignee_user_id),
+  }
+}
+
+async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
+  const result = await query<AssignedTodoNotificationRow>(
+    `
+    select t.id,
+           t.project_id,
+           p.name as project_name,
+           t.title,
+           t.due_date,
+           t.done,
+           t.assignee_user_id,
+           assigner.email as assigner_email,
+           assigner.display_name as assigner_display_name,
+           assignee.email as assignee_email,
+           assignee.feishu_email as assignee_feishu_email,
+           assignee.feishu_user_id as assignee_feishu_user_id,
+           assignee.display_name as assignee_display_name
+    from todos t
+    join projects p on p.id = t.project_id
+    left join users assigner on assigner.id = t.assigned_by_user_id
+    left join users assignee on assignee.id = t.assignee_user_id
+    where t.id = $1
+      and t.assignee_user_id is not null
+    limit 1
+    `,
+    [todoId],
+  )
+  const todo = result.rows[0]
+  return todo ? buildAssignedTodoFeishuCandidate(todo) : null
+}
+
+async function deliverLatestAssignedTodoNotification(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildAssignedTodoFeishuCandidateByTodoId(todoId)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+function enqueueLatestAssignedTodoDelivery(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverLatestAssignedTodoNotification(todoId).catch((error) => {
+      console.error('Feishu assigned todo delivery failed', error)
+    })
+  }, 0)
+}
+
+function buildAssignedPackageEventFeishuCandidate(
+  event: AssignedPackageEventNotificationRow,
+): FeishuNotificationCandidate | null {
+  if (!event.assignee_user_id) return null
+  const recipientName = event.assignee_email
+    ? displayNameFromUser({
+      email: event.assignee_email,
+      display_name: event.assignee_display_name ?? '',
+    })
+    : undefined
+  const operatorName = event.assigner_email
+    ? displayNameFromUser({
+      email: event.assigner_email,
+      display_name: event.assigner_display_name ?? '',
+    })
+    : undefined
+  const assigneeFeishuEmail =
+    event.assignee_feishu_email || (
+      event.assignee_feishu_user_id?.includes('@') ? event.assignee_feishu_user_id : undefined
+    )
+  const assigneeFeishuOpenId = event.assignee_feishu_user_id?.startsWith('ou_')
+    ? event.assignee_feishu_user_id
+    : undefined
+  const eventTitle = decryptText(event.title)
+  const projectName = decryptText(event.project_name)
+
+  return {
+    body: `${operatorName ? `${operatorName} 指派：` : ''}${projectName} · ${eventTitle}`,
+    eventStatus: event.status,
+    eventTitle,
+    eventType: event.type,
+    kind: 'package_event_assigned',
+    operatorName,
+    projectId: Number(event.project_id),
+    projectName,
+    recipientFeishuEmail: assigneeFeishuEmail,
+    recipientFeishuOpenId: assigneeFeishuOpenId,
+    recipientName,
+    sourceId: Number(event.id),
+    title: '新的交付事件指派',
+    userId: Number(event.assignee_user_id),
+  }
+}
+
+async function buildAssignedPackageEventFeishuCandidateByEventId(eventId: number) {
+  const result = await query<AssignedPackageEventNotificationRow>(
+    `
+    select e.id,
+           e.project_id,
+           p.name as project_name,
+           e.title,
+           e.type,
+           e.status,
+           e.assignee_user_id,
+           assigner.email as assigner_email,
+           assigner.display_name as assigner_display_name,
+           assignee.email as assignee_email,
+           assignee.feishu_email as assignee_feishu_email,
+           assignee.feishu_user_id as assignee_feishu_user_id,
+           assignee.display_name as assignee_display_name
+    from project_package_events e
+    join projects p on p.id = e.project_id
+    left join users assigner on assigner.id = e.assigned_by_user_id
+    left join users assignee on assignee.id = e.assignee_user_id
+    where e.id = $1
+      and e.assignee_user_id is not null
+    limit 1
+    `,
+    [eventId],
+  )
+  const event = result.rows[0]
+  return event ? buildAssignedPackageEventFeishuCandidate(event) : null
+}
+
+async function deliverLatestAssignedPackageEventNotification(eventId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildAssignedPackageEventFeishuCandidateByEventId(eventId)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+function enqueueLatestAssignedPackageEventDelivery(eventId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverLatestAssignedPackageEventNotification(eventId).catch((error) => {
+      console.error('Feishu assigned package event delivery failed', error)
+    })
+  }, 0)
+}
+
 app.get('/api/notifications', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -1884,7 +3152,13 @@ app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const kind = String(request.params.kind) as NotificationKind
-  if (!['project_invite', 'assigned_todo', 'todo_due_tomorrow', 'todo_note_mention'].includes(kind)) {
+  if (![
+    'project_invite',
+    'assigned_todo',
+    'package_event_assigned',
+    'todo_due_tomorrow',
+    'todo_note_mention',
+  ].includes(kind)) {
     response.status(400).json({ error: 'Unsupported notification kind' })
     return
   }
@@ -1975,6 +3249,19 @@ app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, 
   })
 }))
 
+app.post('/api/project-invite-links/:token/accept', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const accepted = await acceptProjectInviteToken(userId, request.params.token)
+  if (!accepted) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+
+  response.json({ workspace: await getWorkspace(userId) })
+}))
+
 app.post('/api/projects', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -2051,6 +3338,36 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
   )
   response.json(await getWorkspace(userId))
 }))
+
+app.patch('/api/projects/:projectId/feishu', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can update Feishu integration' })
+    return
+  }
+
+  const chatId = String(request.body.feishuChatId ?? '').trim()
+  const enabled = Boolean(request.body.feishuChatEnabled) && Boolean(chatId)
+	  await query(
+	    `
+	    insert into project_integrations (project_id, provider, target_type, target_id, enabled)
+    values ($1, 'feishu', 'chat', $2, $3)
+    on conflict (project_id, provider, target_type) do update
+      set target_id = excluded.target_id,
+          enabled = excluded.enabled,
+          updated_at = now()
+	    `,
+	    [projectId, chatId, enabled],
+	  )
+		  response.json(await getWorkspace(userId))
+		}))
 
 app.delete('/api/projects/:projectId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
@@ -2326,6 +3643,66 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
   response.status(201).json(await getWorkspace(userId))
 }))
 
+app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can create invite links' })
+    return
+  }
+
+  const existingInviteLink = await query<{ token: string }>(
+    `
+    select token
+    from project_invite_links
+    where project_id = $1
+      and revoked_at is null
+    limit 1
+    `,
+    [projectId],
+  )
+  if (existingInviteLink.rows[0]) {
+    response.json({ token: existingInviteLink.rows[0].token })
+    return
+  }
+
+  const inviteLink = await query<{ token: string }>(
+    `
+    insert into project_invite_links (project_id, owner_user_id, token)
+    values ($1, $2, $3)
+    on conflict do nothing
+    returning token
+    `,
+    [projectId, userId, createProjectInviteToken()],
+  )
+  if (inviteLink.rows[0]) {
+    response.status(201).json({ token: inviteLink.rows[0].token })
+    return
+  }
+
+  const concurrentInviteLink = await query<{ token: string }>(
+    `
+    select token
+    from project_invite_links
+    where project_id = $1
+      and revoked_at is null
+    limit 1
+    `,
+    [projectId],
+  )
+  if (!concurrentInviteLink.rows[0]) {
+    response.status(409).json({ error: 'Invite link creation conflict, please retry' })
+    return
+  }
+  response.json({ token: concurrentInviteLink.rows[0].token })
+}))
+
 app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -2494,7 +3871,14 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     access.ownerUserId,
   )
   const moduleId = await ensureProjectModuleId(request.body.moduleId, projectId)
-  await query(
+  let createdAt: string | null = null
+  try {
+    createdAt = parseTodoCreatedDate(request.body.createdAt)
+  } catch {
+    response.status(400).json({ error: 'Created date must be a valid YYYY-MM-DD date' })
+    return
+  }
+  const createdTodo = await query<{ id: string }>(
     `
     insert into todos (
       project_id,
@@ -2502,24 +3886,30 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
       due_date,
       priority,
       confirmed,
+      created_at,
       project_module_id,
       created_by_user_id,
       assignee_user_id,
       assigned_by_user_id,
       assigned_at
     )
-    values ($1, $2, $3, $4, false, $5, $6, $7, case when $7::bigint is null then null else $6::bigint end, case when $7::bigint is null then null else now() end)
+    values ($1, $2, $3, $4, false, coalesce($5::timestamptz, now()), $6, $7, $8, case when $8::bigint is null then null else $7::bigint end, case when $8::bigint is null then null else now() end)
+    returning id
     `,
     [
       projectId,
       encryptText(title),
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
+      createdAt,
       moduleId,
       userId,
       assigneeUserId,
     ],
   )
+  if (createdTodo.rows[0] && assigneeUserId) {
+    enqueueLatestAssignedTodoDelivery(Number(createdTodo.rows[0].id))
+  }
   response.status(201).json(await getWorkspace(userId))
 }))
 
@@ -2575,6 +3965,15 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     canManageTodo && 'moduleId' in request.body
       ? await ensureProjectModuleId(request.body.moduleId, projectId)
       : undefined
+  let nextCreatedAt: string | null = null
+  if (canManageTodo && 'createdAt' in request.body) {
+    try {
+      nextCreatedAt = parseTodoCreatedDate(request.body.createdAt)
+    } catch {
+      response.status(400).json({ error: 'Created date must be a valid YYYY-MM-DD date' })
+      return
+    }
+  }
   await query(
     `
     update todos
@@ -2595,9 +3994,10 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
           else assigned_at
         end,
         project_module_id = case when $9::boolean then $10 else project_module_id end,
+        created_at = case when $11::boolean then $12::timestamptz else created_at end,
         updated_at = now()
-    where id = $11
-      and project_id = $12
+    where id = $13
+      and project_id = $14
     `,
     [
       typeof request.body.done === 'boolean' ? request.body.done : null,
@@ -2610,10 +4010,20 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
       userId,
       canManageTodo && 'moduleId' in request.body,
       nextModuleId,
+      canManageTodo && 'createdAt' in request.body,
+      nextCreatedAt,
       todoId,
       projectId,
     ],
   )
+  if (
+    canManageTodo &&
+    'assigneeUserId' in request.body &&
+    nextAssigneeUserId &&
+    nextAssigneeUserId !== assigneeUserId
+  ) {
+    enqueueLatestAssignedTodoDelivery(todoId)
+  }
   response.json(await getWorkspace(userId))
 }))
 
@@ -2780,6 +4190,7 @@ app.get('/api/package-market/packages/base', asyncHandler(async (request, respon
     deployType: String(request.query.deployType ?? ''),
     arch: String(request.query.arch ?? 'amd64'),
     channel: ensurePackageMarketChannel(request.query.channel),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
     releaseVersion: String(request.query.releaseVersion ?? request.query.version ?? ''),
   }))
 }))
@@ -2806,6 +4217,7 @@ app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, 
     arch: String(request.query.arch ?? 'amd64'),
     channel: ensurePackageMarketChannel(request.query.channel),
     ciVersion: String(request.query.ciVersion ?? ''),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
     releaseVersion: String(request.query.releaseVersion ?? ''),
   }))
 }))
@@ -2854,12 +4266,24 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  await createProjectPackageEvent({
+  const assigneeUserId = await ensureProjectMemberUserId(
+    request.body.assigneeUserId,
     projectId,
+    access.ownerUserId,
+  )
+  if (!assigneeUserId) {
+    response.status(400).json({ error: 'Package event assignee must be a project member' })
+    return
+  }
+  const eventId = await createProjectPackageEvent({
+    projectId,
+    assigneeUserId,
+    assignedByUserId: userId,
     createdByUserId: userId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
   })
+  enqueueLatestAssignedPackageEventDelivery(eventId)
   response.status(201).json(await getProjectPackageTimeline(projectId))
 }))
 
@@ -2872,12 +4296,54 @@ app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHand
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  const previousAssignee = await query<{ assignee_user_id: string | null }>(
+    `
+    select assignee_user_id
+    from project_package_events
+    where id = $1 and project_id = $2
+    `,
+    [Number(request.params.eventId), projectId],
+  )
+  const previousAssigneeUserId = previousAssignee.rows[0]?.assignee_user_id
+    ? Number(previousAssignee.rows[0].assignee_user_id)
+    : null
+  let nextAssigneeUserId: number | null | undefined
+  if ('assigneeUserId' in request.body) {
+    nextAssigneeUserId = await ensureProjectMemberUserId(
+      request.body.assigneeUserId,
+      projectId,
+      access.ownerUserId,
+    )
+    if (!nextAssigneeUserId) {
+      response.status(400).json({ error: 'Package event assignee must be a project member' })
+      return
+    }
+  }
   await updateProjectPackageEvent({
     projectId,
     eventId: Number(request.params.eventId),
+    ...('assigneeUserId' in request.body
+      ? {
+          assigneeUserId: nextAssigneeUserId,
+          assignedByUserId: userId,
+        }
+      : {}),
+    status: 'status' in request.body ? ensureProjectPackageEventStatus(request.body.status) : undefined,
     title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
     type: 'type' in request.body ? ensureProjectPackageEventType(request.body.type) : undefined,
   })
+  if (nextAssigneeUserId && nextAssigneeUserId !== previousAssigneeUserId) {
+    await query(
+      `
+      delete from notification_deliveries
+      where kind = 'package_event_assigned'
+        and source_id = $1
+        and channel = 'feishu'
+      `,
+      [Number(request.params.eventId)],
+    )
+    enqueueLatestAssignedPackageEventDelivery(Number(request.params.eventId))
+  }
   response.json(await getProjectPackageTimeline(projectId))
 }))
 
@@ -2966,6 +4432,7 @@ app.post('/api/projects/:projectId/package-timeline/operations', asyncHandler(as
     label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
     content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
     completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    status: 'status' in request.body ? ensureProjectPackageEventStatus(request.body.status) : undefined,
     relatedTodoIds:
       'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
         ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
@@ -2995,6 +4462,7 @@ app.patch('/api/projects/:projectId/package-timeline/operations/:operationId', a
     label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
     content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
     completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    status: 'status' in request.body ? ensureProjectPackageEventStatus(request.body.status) : undefined,
     relatedTodoIds:
       'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
         ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
@@ -3052,7 +4520,10 @@ app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHand
     response.status(404).json({ error: 'Package item not found' })
     return
   }
-  response.json({ downloadUrl: createPackageItemDownloadUrl(objectKey) })
+  response.json(createPackageItemDownloadLink(
+    objectKey,
+    ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+  ))
 }))
 
 app.post('/api/drafts', asyncHandler(async (request, response) => {
@@ -3160,6 +4631,14 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
     ok: true,
     title,
     savedTo: '草稿箱待归档内容 + AI总结文档',
+  })
+}))
+
+app.post('/api/integrations/feishu/deliver-notifications', asyncHandler(async (request, response) => {
+  if (!ensureFeishuWebhookAuth(request, response)) return
+  response.json({
+    disabled: true,
+    message: 'Feishu notifications are delivered only for newly assigned todos.',
   })
 }))
 

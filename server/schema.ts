@@ -8,6 +8,14 @@ create table if not exists users (
 );
 
 alter table users add column if not exists display_name text not null default '';
+alter table users add column if not exists feishu_user_id text not null default '';
+alter table users add column if not exists feishu_receive_id_type text not null default 'user_id';
+alter table users add column if not exists feishu_email text not null default '';
+
+update users
+set feishu_email = feishu_user_id
+where feishu_email = ''
+  and feishu_user_id like '%@%';
 
 create table if not exists ai_settings (
   user_id bigint primary key references users(id) on delete cascade,
@@ -61,6 +69,15 @@ alter table project_memberships
 
 alter table project_memberships
   add column if not exists declined_at timestamptz;
+
+create table if not exists project_invite_links (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  owner_user_id bigint not null references users(id) on delete cascade,
+  token text not null unique,
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz
+);
 
 create table if not exists journal_entries (
   id bigserial primary key,
@@ -190,15 +207,59 @@ create table if not exists notification_states (
   unique (user_id, kind, source_id)
 );
 
+create table if not exists project_integrations (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  provider text not null,
+  target_type text not null,
+  target_id text not null default '',
+  enabled boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (project_id, provider, target_type)
+);
+
+create table if not exists notification_deliveries (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null,
+  source_id bigint not null,
+  channel text not null,
+  target_type text not null,
+  target_id text not null,
+  status text not null default 'pending',
+  attempts integer not null default 0,
+  last_error text not null default '',
+  delivered_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (kind, source_id, channel, target_type, target_id)
+);
+
 create table if not exists project_package_events (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
   type text not null default 'upgrade',
+  status text not null default 'pending',
   title text not null,
   created_by_user_id bigint references users(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  assigned_by_user_id bigint references users(id) on delete set null,
+  assigned_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table project_package_events
+  add column if not exists status text not null default 'pending';
+
+alter table project_package_events
+  add column if not exists assignee_user_id bigint references users(id) on delete set null,
+  add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
+  add column if not exists assigned_at timestamptz;
+
+create index if not exists idx_project_package_events_assignee
+  on project_package_events (assignee_user_id, created_at desc);
 
 create table if not exists project_package_groups (
   id bigserial primary key,
@@ -229,6 +290,7 @@ create table if not exists project_package_operations (
   project_package_event_id bigint not null references project_package_events(id) on delete cascade,
   project_package_group_id bigint references project_package_groups(id) on delete cascade,
   kind text not null default 'document',
+  status text not null default 'pending',
   title text not null default '',
   label text not null default '',
   content text not null default '',
@@ -241,6 +303,9 @@ create table if not exists project_package_operations (
 
 alter table project_package_operations
   add column if not exists completed boolean not null default false;
+
+alter table project_package_operations
+  add column if not exists status text not null default 'pending';
 
 create table if not exists project_package_operation_todos (
   project_package_operation_id bigint not null references project_package_operations(id) on delete cascade,
@@ -288,6 +353,12 @@ create index if not exists idx_project_memberships_invited_email_lookup on proje
 create unique index if not exists idx_project_memberships_project_email_lookup
   on project_memberships(project_id, invited_email_lookup)
   where invited_email_lookup is not null;
+create index if not exists idx_project_invite_links_project_id on project_invite_links(project_id);
+create index if not exists idx_project_invite_links_owner_user_id on project_invite_links(owner_user_id);
+create index if not exists idx_project_invite_links_token on project_invite_links(token);
+create unique index if not exists idx_project_invite_links_active_project
+  on project_invite_links(project_id)
+  where revoked_at is null;
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
 create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
@@ -311,6 +382,12 @@ create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
 create index if not exists idx_notification_states_user_kind
   on notification_states(user_id, kind);
+create index if not exists idx_project_integrations_project_provider
+  on project_integrations(project_id, provider);
+create index if not exists idx_notification_deliveries_status
+  on notification_deliveries(channel, status, updated_at);
+create index if not exists idx_notification_deliveries_user_kind
+  on notification_deliveries(user_id, kind);
 create index if not exists idx_project_package_events_project_id
   on project_package_events(project_id, created_at);
 create index if not exists idx_project_package_groups_event_id

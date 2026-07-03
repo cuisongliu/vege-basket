@@ -17,6 +17,8 @@ export type PackageMarketRule = {
 
 export type PackageMarketLink = {
   downloadUrl: string
+  expiresAt: string
+  expiresInSeconds: number
   lastModified?: string
   name: string
   objectKey: string
@@ -53,6 +55,7 @@ const downloadExpireSeconds = Number(
     process.env.OSS_UI_DOWNLOAD_EXPIRE_SECONDS ??
     30 * 60,
 )
+export const packageMarketExpireMinuteOptions = [30, 60, 90, 120, 300, 600] as const
 const middlewareRoot = normalizePrefix(
   process.env.PACKAGE_MARKET_MIDDLEWARE_ROOT ?? process.env.OSS_UI_MIDDLEWARE_ROOT,
 )
@@ -241,9 +244,14 @@ async function listCommonPrefixes(client: OSS, prefix: string) {
   return prefixes
 }
 
-function signedDownloadUrl(client: OSS, objectKey: string) {
+function normalizeDownloadExpireSeconds(expireMinutes?: number) {
+  const minutes = normalizePackageMarketExpireMinutes(expireMinutes)
+  return minutes * 60
+}
+
+function signedDownloadUrl(client: OSS, objectKey: string, expireSeconds = downloadExpireSeconds) {
   try {
-    return client.signatureUrl(objectKey, { expires: downloadExpireSeconds, method: 'GET' })
+    return client.signatureUrl(objectKey, { expires: expireSeconds, method: 'GET' })
   } catch (error) {
     if (!String((error as Error).message ?? error).includes('endpoint is IP')) {
       throw error
@@ -251,21 +259,29 @@ function signedDownloadUrl(client: OSS, objectKey: string) {
     if (!lastClientConfig) {
       throw error
     }
-    const expires = Math.floor(Date.now() / 1000) + downloadExpireSeconds
+    const expires = Math.floor(Date.now() / 1000) + expireSeconds
     const endpoint = String(lastClientConfig.endpoint).replace(/\/+$/, '')
     const bucket = String(lastClientConfig.bucket)
     return `${endpoint}/${bucket}/${objectKey.split('/').map(encodeURIComponent).join('/')}?Expires=${expires}`
   }
 }
 
-function objectToLink(client: OSS, name: string, version: string, object: OssObject): PackageMarketLink {
+function objectToLink(
+  client: OSS,
+  name: string,
+  version: string,
+  object: OssObject,
+  expireSeconds = downloadExpireSeconds,
+): PackageMarketLink {
   return {
     name,
     version,
     objectKey: object.name,
     size: object.size,
     lastModified: object.lastModified,
-    downloadUrl: signedDownloadUrl(client, object.name),
+    downloadUrl: signedDownloadUrl(client, object.name, expireSeconds),
+    expiresAt: new Date(Date.now() + expireSeconds * 1000).toISOString(),
+    expiresInSeconds: expireSeconds,
   }
 }
 
@@ -475,6 +491,7 @@ async function buildProMiddlewarePackage(
   name: string,
   arch: string,
   requestedVersion: string,
+  expireSeconds = downloadExpireSeconds,
 ): Promise<PackageMarketDetail> {
   if (!middlewareRoot) throw new Error('PACKAGE_MARKET_MIDDLEWARE_ROOT must be set')
   const versions = await listProMiddlewareReleaseVersions(client, name, arch)
@@ -498,10 +515,10 @@ async function buildProMiddlewarePackage(
     meta: [
       { label: '目录', value: root },
       { label: '正式版本', value: version || '未找到' },
-      { label: '下载有效期', value: `${Math.round(downloadExpireSeconds / 60)} 分钟` },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
     ],
     releaseVersions: versions,
-    links: matched.map((object) => objectToLink(client, name, version, object)),
+    links: matched.map((object) => objectToLink(client, name, version, object, expireSeconds)),
   }
 }
 
@@ -538,6 +555,7 @@ async function buildProMiddlewareCiPackage(
   name: string,
   arch: string,
   requestedHash: string,
+  expireSeconds = downloadExpireSeconds,
 ): Promise<PackageMarketDetail> {
   if (!middlewareRoot) throw new Error('PACKAGE_MARKET_MIDDLEWARE_ROOT must be set')
   const versions = await listProMiddlewareCiVersions(client, name, arch)
@@ -556,10 +574,10 @@ async function buildProMiddlewareCiPackage(
     meta: [
       { label: '目录', value: root },
       { label: '测试版本', value: selected?.label || '未找到' },
-      { label: '下载有效期', value: `${Math.round(downloadExpireSeconds / 60)} 分钟` },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
     ],
     ciVersions: versions,
-    links: matched.map((object) => objectToLink(client, name, selected?.label || hash, object)),
+    links: matched.map((object) => objectToLink(client, name, selected?.label || hash, object, expireSeconds)),
   }
 }
 
@@ -602,6 +620,7 @@ async function buildBasePackage(
   deployType: string,
   releaseVersion: string,
   arch: string,
+  expireSeconds = downloadExpireSeconds,
 ): Promise<PackageMarketDetail> {
   if (!baseObjectTemplate) throw new Error('PACKAGE_MARKET_BASE_OBJECT_TEMPLATE must be set')
   const versions = await listBaseVersions(client, deployType, arch)
@@ -632,7 +651,7 @@ async function buildBasePackage(
             name: key,
             size: Number(headers['content-length']),
             lastModified: String(headers['last-modified'] ?? ''),
-          }),
+          }, expireSeconds),
         )
         break
       } catch (error) {
@@ -648,7 +667,7 @@ async function buildBasePackage(
     meta: [
       { label: '部署类型', value: normalizedDeployType.toUpperCase() },
       { label: '基础包版本', value: version },
-      { label: '下载有效期', value: `${Math.round(downloadExpireSeconds / 60)} 分钟` },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
     ],
     releaseVersions: versions,
     links,
@@ -737,6 +756,7 @@ async function buildCiPackage(
   rule: PackageMarketRule,
   arch: string,
   requestedHash: string,
+  expireSeconds = downloadExpireSeconds,
 ): Promise<PackageMarketDetail> {
   const versions = await listCiVersions(client, rule, arch)
   const hash = normalizeString(requestedHash) || versions[0]?.hash || ''
@@ -762,10 +782,10 @@ async function buildCiPackage(
     meta: [
       { label: '规则 key', value: rule.id },
       { label: '测试版本', value: selected?.label || '未找到' },
-      { label: '下载有效期', value: `${Math.round(downloadExpireSeconds / 60)} 分钟` },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
     ],
     ciVersions: versions,
-    links: matched.map((object) => objectToLink(client, rule.name, selected?.label || hash, object)),
+    links: matched.map((object) => objectToLink(client, rule.name, selected?.label || hash, object, expireSeconds)),
   }
 }
 
@@ -780,9 +800,10 @@ async function buildComboPackage(
   releaseVersion: string,
   channel: 'release' | 'ci',
   ciVersion: string,
+  expireSeconds = downloadExpireSeconds,
 ): Promise<PackageMarketDetail> {
   if (channel === 'ci') {
-    return buildCiPackage(client, rule, arch, ciVersion)
+    return buildCiPackage(client, rule, arch, ciVersion, expireSeconds)
   }
 
   const matched: Array<{ object: OssObject; version: string }> = []
@@ -823,15 +844,22 @@ async function buildComboPackage(
     meta: [
       { label: '规则 key', value: rule.id },
       { label: '最新版本', value: latest || '未找到' },
-      { label: '下载有效期', value: `${Math.round(downloadExpireSeconds / 60)} 分钟` },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
     ],
     releaseVersions,
-    links: latestObjects.map((item) => objectToLink(client, rule.name, item.version, item.object)),
+    links: latestObjects.map((item) => objectToLink(client, rule.name, item.version, item.object, expireSeconds)),
   }
 }
 
 export function getPackageMarketExpireMinutes() {
   return Math.round(downloadExpireSeconds / 60)
+}
+
+export function normalizePackageMarketExpireMinutes(value: unknown) {
+  const minutes = Number(value)
+  return packageMarketExpireMinuteOptions.includes(minutes as (typeof packageMarketExpireMinuteOptions)[number])
+    ? minutes
+    : getPackageMarketExpireMinutes()
 }
 
 export async function listPackageMarketRules() {
@@ -849,25 +877,28 @@ export async function getPackageMarketDetail(params: {
   channel: 'release' | 'ci'
   ciVersion?: string
   deployType?: string
+  expireMinutes?: number
   packageId: string
   releaseVersion?: string
 }) {
   const client = ossClient()
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
+  const expireSeconds = normalizeDownloadExpireSeconds(params.expireMinutes)
   if (params.packageId === 'base-pro' || params.packageId === 'base-oss') {
     return buildBasePackage(
       client,
       params.deployType || (params.packageId === 'base-oss' ? 'oss' : 'pro'),
       params.releaseVersion || '',
       arch,
+      expireSeconds,
     )
   }
 
   const middlewareName = proMiddlewareNameFromId(params.packageId)
   if (middlewareName) {
     return params.channel === 'ci'
-      ? buildProMiddlewareCiPackage(client, middlewareName, arch, params.ciVersion || '')
-      : buildProMiddlewarePackage(client, middlewareName, arch, params.releaseVersion || '')
+      ? buildProMiddlewareCiPackage(client, middlewareName, arch, params.ciVersion || '', expireSeconds)
+      : buildProMiddlewarePackage(client, middlewareName, arch, params.releaseVersion || '', expireSeconds)
   }
 
   const rule = parseRulesFile().find((item) => item.id === params.packageId)
@@ -882,6 +913,7 @@ export async function getPackageMarketDetail(params: {
     params.releaseVersion || '',
     params.channel,
     params.ciVersion || '',
+    expireSeconds,
   )
 }
 
@@ -930,6 +962,15 @@ export async function listPackageMarketCiVersions(params: {
   return listCiVersions(client, rule, arch)
 }
 
-export function createPackageItemDownloadUrl(objectKey: string) {
-  return signedDownloadUrl(ossClient(), objectKey)
+export function createPackageItemDownloadUrl(objectKey: string, expireMinutes?: number) {
+  return signedDownloadUrl(ossClient(), objectKey, normalizeDownloadExpireSeconds(expireMinutes))
+}
+
+export function createPackageItemDownloadLink(objectKey: string, expireMinutes?: number) {
+  const expiresInSeconds = normalizeDownloadExpireSeconds(expireMinutes)
+  return {
+    downloadUrl: signedDownloadUrl(ossClient(), objectKey, expiresInSeconds),
+    expiresAt: new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
+    expiresInSeconds,
+  }
 }

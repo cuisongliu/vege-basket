@@ -8,6 +8,7 @@ import type {
   NotificationCenterData,
   Priority,
   Project,
+  ProjectPackageEventStatus,
   ProjectPackageOperationKind,
   ProjectPackageTimeline,
   ProjectPackageEventType,
@@ -37,6 +38,8 @@ export type PackageMarketRulesResponse = {
 
 export type AuthUser = {
   displayName: string
+  feishuEmail: string
+  feishuLinked: boolean
   id: number
   username: string
 }
@@ -45,6 +48,10 @@ export type AuthResponse = {
   token: string
   user: AuthUser
   workspace: WorkspaceData
+}
+
+export type ProjectInviteLinkResponse = {
+  token: string
 }
 
 export type AiChatMessage = {
@@ -89,7 +96,14 @@ async function request<T>(path: string, options: RequestInit = {}) {
   })
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`)
+    const fallbackMessage = `Request failed: ${response.status}`
+    try {
+      const data = await response.json() as { error?: string }
+      throw new Error(data.error || fallbackMessage)
+    } catch (error) {
+      if (error instanceof Error && error.message !== fallbackMessage) throw error
+      throw new Error(fallbackMessage)
+    }
   }
 
   return response.json() as Promise<T>
@@ -107,24 +121,39 @@ export function fetchCurrentUser() {
   return request<{ user: AuthUser; workspace: WorkspaceData }>('/api/auth/me')
 }
 
-export function registerAccount(payload: { password: string; username: string }) {
+export function registerAccount(payload: { inviteToken?: string; password: string; username: string }) {
   return request<AuthResponse>('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function loginAccount(payload: { password: string; username: string }) {
+export function loginAccount(payload: { inviteToken?: string; password: string; username: string }) {
   return request<AuthResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateCurrentUser(payload: { displayName: string }) {
+export function updateCurrentUser(payload: {
+  displayName: string
+}) {
   return request<{ user: AuthUser }>('/api/auth/me', {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  })
+}
+
+export function createFeishuOAuthUrl(payload: { inviteToken?: string; returnTo: string }) {
+  return request<{ url: string }>('/api/auth/feishu/oauth/url', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function disconnectFeishuAccount() {
+  return request<{ user: AuthUser }>('/api/auth/feishu/oauth', {
+    method: 'DELETE',
   })
 }
 
@@ -178,6 +207,16 @@ export function updateProject(
   payload: Partial<{ name: string; status: ProjectStatus; tags: string[] }>,
 ) {
   return request<WorkspaceData>(`/api/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateProjectFeishuSettings(
+  projectId: number,
+  payload: { feishuChatEnabled: boolean; feishuChatId: string },
+) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/feishu`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -259,6 +298,7 @@ export function removeDraft(draftId: number) {
 
 export function createTodo(payload: {
   assigneeUserId?: number
+  createdAt?: string
   dueDate: string
   moduleId?: number | null
   priority: Priority
@@ -276,6 +316,21 @@ export function inviteProjectMember(projectId: number, payload: { username: stri
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function getProjectInviteLink(projectId: number) {
+  return request<ProjectInviteLinkResponse>(`/api/projects/${projectId}/invite-link`, {
+    method: 'POST',
+  })
+}
+
+export function acceptProjectInviteLink(token: string) {
+  return request<{ workspace: WorkspaceData }>(
+    `/api/project-invite-links/${encodeURIComponent(token)}/accept`,
+    {
+      method: 'POST',
+    },
+  )
 }
 
 export function removeProjectMember(projectId: number, membershipId: number) {
@@ -303,7 +358,7 @@ export function declineProjectInvitation(membershipId: number) {
 }
 
 export function markNotificationRead(
-  kind: 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow' | 'todo_note_mention',
+  kind: 'project_invite' | 'assigned_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
   sourceId: number,
   dismiss = false,
 ) {
@@ -317,6 +372,7 @@ export function updateTodo(
   todoId: number,
   payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
     assigneeUserId?: number | null
+    createdAt?: string
     moduleId?: number | null
   },
 ) {
@@ -378,7 +434,7 @@ export function fetchProjectPackageTimeline(projectId: number) {
 
 export function createProjectPackageEvent(
   projectId: number,
-  payload: { title: string; type: ProjectPackageEventType },
+  payload: { assigneeUserId: number; title: string; type: ProjectPackageEventType },
 ) {
   return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
     method: 'POST',
@@ -389,7 +445,12 @@ export function createProjectPackageEvent(
 export function updateProjectPackageEvent(
   projectId: number,
   eventId: number,
-  payload: Partial<{ title: string; type: ProjectPackageEventType }>,
+  payload: Partial<{
+    assigneeUserId: number
+    status: ProjectPackageEventStatus
+    title: string
+    type: ProjectPackageEventType
+  }>,
 ) {
   return request<ProjectPackageTimeline>(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
@@ -451,6 +512,7 @@ export function createProjectPackageOperation(
     eventId: number
     groupId?: number | null
     kind: ProjectPackageOperationKind
+    status?: ProjectPackageEventStatus
     title?: string
     label?: string
     content?: string
@@ -473,6 +535,7 @@ export function updateProjectPackageOperation(
     label: string
     content: string
     completed: boolean
+    status: ProjectPackageEventStatus
     relatedTodoIds: number[]
     relatedTodoNotes: Record<number, string>
   }>,
@@ -501,9 +564,16 @@ export function exportProjectPackageTimeline(projectId: number) {
   )
 }
 
-export function fetchProjectPackageItemDownloadUrl(projectId: number, itemId: number) {
-  return request<{ downloadUrl: string }>(
-    `/api/projects/${projectId}/package-items/${itemId}/download-url`,
+export function fetchProjectPackageItemDownloadUrl(
+  projectId: number,
+  itemId: number,
+  expireMinutes?: number,
+) {
+  const params = new URLSearchParams()
+  if (expireMinutes) params.set('expireMinutes', String(expireMinutes))
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return request<{ downloadUrl: string; expiresAt: string; expiresInSeconds: number }>(
+    `/api/projects/${projectId}/package-items/${itemId}/download-url${suffix}`,
   )
 }
 
@@ -515,6 +585,7 @@ export function fetchPackageMarketBaseDetail(payload: {
   arch: string
   channel: PackageMarketChannel
   deployType: 'pro' | 'oss'
+  expireMinutes?: number
   releaseVersion?: string
 }) {
   const params = new URLSearchParams({
@@ -522,6 +593,7 @@ export function fetchPackageMarketBaseDetail(payload: {
     channel: payload.channel,
     deployType: payload.deployType,
   })
+  if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
   if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
   return request<PackageMarketDetail>(`/api/package-market/packages/base?${params.toString()}`)
 }
@@ -544,6 +616,7 @@ export function fetchPackageMarketDetail(payload: {
   channel: PackageMarketChannel
   ciVersion?: string
   deployType?: string
+  expireMinutes?: number
   packageId: string
   releaseVersion?: string
 }) {
@@ -553,6 +626,7 @@ export function fetchPackageMarketDetail(payload: {
   })
   if (payload.ciVersion) params.set('ciVersion', payload.ciVersion)
   if (payload.deployType) params.set('deployType', payload.deployType)
+  if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
   if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
   return request<PackageMarketDetail>(
     `/api/package-market/packages/${encodeURIComponent(payload.packageId)}?${params.toString()}`,
