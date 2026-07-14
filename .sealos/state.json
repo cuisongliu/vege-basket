@@ -1,268 +1,97 @@
 {
   "version": "1.0",
   "last_deploy": {
-    "app_name": "vege-basket-170451",
-    "app_host": "vege-basket-170451",
+    "app_name": "vege-basket-isowyqqi",
+    "app_host": "vege-basket-aygatjla",
     "namespace": "ns-44bchscw",
     "region": "sealosgzg.site",
-    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-220437-amd64",
+    "image": "ghcr.io/felixqiu014-wq/vege-basket:20260704-001200",
     "docker_hub_user": null,
     "repo_name": "vege-basket",
-    "url": "https://vege-basket-170451.sealosgzg.site",
-    "deployed_at": "2026-05-18T09:18:53.000Z",
-    "last_updated_at": "2026-05-26T14:06:14.624Z"
+    "url": "https://vege-basket-aygatjla.sealosgzg.site",
+    "deployed_at": "2026-06-30T04:06:03Z",
+    "last_updated_at": "2026-07-03T16:14:48.000Z"
   },
   "history": [
     {
-      "at": "2026-05-18T09:18:53.000Z",
+      "at": "2026-06-30T04:06:03Z",
       "action": "deploy",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-170451",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260630-120900",
       "method": "template-api",
       "status": "success",
-      "note": "Initial Sealos Template API deployment; rollout blocked on private GHCR image pull."
+      "note": "Created a new Sealos application instance without overwriting the existing vege-basket-170451 deployment."
     },
     {
-      "at": "2026-05-18T09:54:38.788Z",
+      "at": "2026-06-30T12:06:01.835Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-170451",
-      "image": "ttl.sh/vege-basket-slim-20260518-1753:24h",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260630-120900",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260630-200314",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Switched to ultra-slim public ttl.sh fallback image after GHCR private image pull stalled."
+      "note": "Updated deployment to the June 30 package-timeline release."
     },
     {
-      "at": "2026-05-18T10:10:11.520Z",
+      "at": "2026-07-01T04:02:42Z",
       "action": "set-image",
-      "previous_image": "ttl.sh/vege-basket-slim-20260518-1753:24h",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260630-200314",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260701-115844",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Switched back to public GHCR image after package visibility was changed to public."
+      "note": "Published the operation-todo dialog interaction and styling fixes."
     },
     {
-      "at": "2026-05-18T10:55:12.108Z",
-      "action": "set-env",
-      "changes": [
-        "AI_ENABLED",
-        "AI_API_BASE",
-        "AI_API_KEY",
-        "AI_MODEL",
-        "AI_RATE_LIMIT",
-        "AI_RATE_WINDOW_MS",
-        "AI_MAX_MESSAGE_LENGTH",
-        "AI_MAX_CONTEXT_CHARS"
-      ],
-      "method": "kubectl-set-env",
-      "status": "success",
-      "note": "Enabled production AI using a Kubernetes Secret for provider credentials and safe server-side limits."
-    },
-    {
-      "at": "2026-05-18T10:55:12.108Z",
+      "at": "2026-07-02T14:57:06.746Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-173020b",
-      "image": "ttl.sh/vege-basket-20260518-184547:24h",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260701-115844",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260702-225401",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Built and pushed ghcr.io/felixqiu014-wq/vege-basket:20260518-184547; switched to ttl.sh fallback with the same digest after Sealos node GHCR pull stalled."
+      "note": "Published current known UI, todo date, Feishu notification, and project workflow changes."
     },
     {
-      "at": "2026-05-18T10:57:09.207Z",
-      "action": "patch",
-      "changes": [
-        "imagePullSecrets"
-      ],
-      "method": "kubectl-patch",
-      "status": "success",
-      "note": "Attached a GHCR image pull secret to make official GHCR image pulls reliable from Sealos nodes."
-    },
-    {
-      "at": "2026-05-18T10:57:09.207Z",
+      "at": "2026-07-03T06:01:43.000Z",
       "action": "set-image",
-      "previous_image": "ttl.sh/vege-basket-20260518-184547:24h",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-184547",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260702-225401",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-140048",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Switched from ttl.sh fallback to the official GHCR image after adding the pull secret."
+      "note": "Published todo batch selection, checkbox state cycling, and add-todo draft persistence changes."
     },
     {
-      "at": "2026-05-18T12:10:59.601Z",
+      "at": "2026-07-03T06:16:52.000Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-184547",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-200919",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-140048",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-141431",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Added risk resolve action and DELETE risk API, then updated the existing deployment."
+      "note": "Published project todo panel pagination sizing fix to remove internal scrolling and keep pager visible."
     },
     {
-      "at": "2026-05-18T12:22:33.864Z",
+      "at": "2026-07-03T06:57:38.000Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-200919",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202059",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-141431",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-145405",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Updated typography scale for improved readability."
+      "note": "Published project todo panel compact grid fix to prevent sparse pages from stretching detail content."
     },
     {
-      "at": "2026-05-18T12:26:01.531Z",
+      "at": "2026-07-03T10:36:12.000Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202059",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-145405",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-183347",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Added an authenticated boot loading screen to prevent demo data flashing on refresh."
+      "note": "Published the project todo advanced filter dialog fixes and removed quick filter shortcuts."
     },
     {
-      "at": "2026-05-19T03:36:12.556Z",
+      "at": "2026-07-03T16:14:48.000Z",
       "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260518-202439",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-113443",
+      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260703-183347",
+      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260704-001200",
       "method": "kubectl-set-image",
       "status": "success",
-      "note": "Updated production with current local frontend/backend changes, including light mode refinements, collaborators/todos updates, and contextual export behavior."
-    },
-    {
-      "at": "2026-05-19T04:54:34.928Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-113443",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-123531",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with the new product logo and display name: Veges - 个人项目驾驶舱."
-    },
-    {
-      "at": "2026-05-19T05:12:19.692Z",
-      "action": "set-image-and-desktop-metadata",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-123531",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-131001",
-      "method": "kubectl-set-image-and-cr-patch",
-      "status": "success",
-      "note": "Updated production image and Sealos desktop metadata: app name Veges, icon from /favicon.svg."
-    },
-    {
-      "at": "2026-05-19T05:28:29.492Z",
-      "action": "set-image-and-desktop-metadata",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-131001",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-132638",
-      "method": "kubectl-set-image-and-cr-patch",
-      "status": "success",
-      "note": "Updated production with the SVG logo from /Users/felixqiu/Downloads/veges.svg and kept Sealos desktop metadata pointed at /favicon.svg."
-    },
-    {
-      "at": "2026-05-19T06:21:00.005Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-132638",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-141921",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with collaborator edit/delete management, collaborator list refinements, current todo header alignment, and latest local changes."
-    },
-    {
-      "at": "2026-05-19T07:17:57.510Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-141921",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-151550",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with current todo inline editing and priority dropdown width fixes."
-    },
-    {
-      "at": "2026-05-19T10:05:18.464Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-151550",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-180256",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with latest journal layout, pagination, markdown list, and todo status styling fixes."
-    },
-    {
-      "at": "2026-05-19T11:07:32.926Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-180256",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-190600",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with latest AI summary document fullscreen refinements, draft inbox markdown/input behavior, internal inbox scrolling, and project tag display on the project list."
-    },
-    {
-      "at": "2026-05-19T11:16:38.432Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-190600",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-191517",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with Chinese IME Enter composition protection for journal create/edit inputs."
-    },
-    {
-      "at": "2026-05-20T03:56:20.000Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260519-191517",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-115334",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with user-configurable AI settings, archived-project todo filtering, journal-recency project sorting, and Express error-handler correction."
-    },
-    {
-      "at": "2026-05-20T09:30:17.000Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-162504",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-172055-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production so Feishu conversation drafts show <=200 character summaries, full reports are saved to AI summaries, and Feishu sender IDs are resolved or anonymized."
-    },
-    {
-      "at": "2026-05-20T09:49:40.000Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-172055-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-174746-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production to request non-table conversation-analysis output and improve Feishu sender ID extraction before user-name lookup."
-    },
-    {
-      "at": "2026-05-20T09:54:59.000Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-174746-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-175146-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production to render legacy Markdown tables as normal list rows in AI summary documents."
-    },
-    {
-      "at": "2026-05-21T02:11:54.000Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260520-175146-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260521-100954-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production so Feishu conversation analysis saves independent AI summary documents without creating a project basket item."
-    },
-    {
-      "at": "2026-05-26T12:32:25.485Z",
-      "action": "set-env-set-image-and-encrypt-existing-data",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260521-100954-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-202902-amd64",
-      "method": "kubectl-set-env-kubectl-set-image-kubectl-exec",
-      "status": "success",
-      "note": "Updated production with collaboration UI/API changes and field-level application encryption; configured encryption env vars and encrypted existing sensitive database fields."
-    },
-    {
-      "at": "2026-05-26T13:52:12.943Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-202902-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production with notification center, invitation confirmation, assigned todo notifications, todo assignee display fixes, and notification card layout refinements."
-    },
-    {
-      "at": "2026-05-26T14:06:14.624Z",
-      "action": "set-image",
-      "previous_image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-214943-amd64",
-      "image": "ghcr.io/felixqiu014-wq/vege-basket:20260526-220437-amd64",
-      "method": "kubectl-set-image",
-      "status": "success",
-      "note": "Updated production notification center so invitation and reminder labels match assigned todo grouping."
+      "note": "Published current delivery event, package download expiry, timeline export, and todo pagination fixes."
     }
   ]
 }

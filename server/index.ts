@@ -14,22 +14,77 @@ import {
   encryptText,
 } from './crypto.ts'
 import { pool, query } from './db.ts'
+import {
+  createPackageItemDownloadLink,
+  getOssObject,
+  getPackageMarketDetail,
+  getPackageMarketExpireMinutes,
+  listPackageMarketCiVersions,
+  listPackageMarketReleaseVersions,
+  listPackageMarketRules,
+  normalizePackageMarketExpireMinutes,
+  putOssObject,
+} from './package-market.ts'
+import {
+  addProjectPackageItems,
+  createProjectPackageEvent,
+  createProjectPackageOperation,
+  deleteProjectPackageEvent,
+  deleteProjectPackageGroup,
+  deleteProjectPackageOperation,
+  ensureProjectPackageEventStatus,
+  ensureProjectPackageEventType,
+  ensureProjectPackageOperationKind,
+  ensureProjectPackageOperationStatus,
+  exportProjectPackageTimeline,
+  getProjectPackageItemObjectKey,
+  getProjectPackageTimeline,
+  updateProjectPackageEvent,
+  updateProjectPackageOperation,
+} from './project-package-timeline.ts'
+import type {
+  ProjectPackageEventStatus,
+  ProjectPackageEventType,
+} from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
+type TodoConfirmationStatus = 'confirmed' | 'rejected'
 type SummaryType = 'weekly' | 'monthly'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
-type NotificationKind = 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow'
-type UserRow = { id: string; email: string; display_name: string }
+type NotificationKind =
+  | 'project_invite'
+  | 'assigned_todo'
+  | 'todo_completed_assignee'
+  | 'package_event_assigned'
+  | 'todo_due_tomorrow'
+  | 'todo_note_mention'
+type PackageMarketChannel = 'release' | 'ci'
+type UserRow = {
+  id: string
+  email: string
+  display_name: string
+  feishu_email?: string | null
+  feishu_receive_id_type?: string | null
+  feishu_user_id?: string | null
+}
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type AiAgentType = 'project-summary' | 'conversation-analysis'
 type IncomingChatMessage = { role?: unknown; content?: unknown }
 type FeishuTenantAccessToken = {
   expireAt: number
   token: string
+}
+type FeishuOAuthState = {
+  exp: number
+  intent: 'bind' | 'signin'
+  inviteToken?: string
+  redirectUri: string
+  returnTo: string
+  userId?: number
 }
 type FeishuMessageItem = {
   body?: { content?: unknown }
@@ -70,6 +125,23 @@ type NotificationStateRow = {
   read_at: Date | null
   dismissed_at: Date | null
 }
+type ProjectModuleRow = {
+  id: string
+  project_id: string
+  name: string
+  created_at: Date
+}
+type TodoNoteRow = {
+  id: string
+  todo_id: string
+  author_user_id: string | null
+  author_email: string | null
+  author_display_name: string | null
+  content: string
+  source_operation_id: string | null
+  created_at: Date
+  updated_at: Date
+}
 
 function decryptTags(tagsEncrypted: string | null, legacyTags: string[] | null) {
   if (!tagsEncrypted) return legacyTags ?? []
@@ -81,6 +153,7 @@ function encryptTags(tags: string[]) {
 }
 
 const app = express()
+app.set('trust proxy', true)
 const port = Number(process.env.PORT ?? 8787)
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
 const clientDistPath = path.resolve(serverDir, '../dist')
@@ -88,6 +161,10 @@ const aiRateWindowMs = Number(process.env.AI_RATE_WINDOW_MS ?? 60_000)
 const aiRateLimit = Number(process.env.AI_RATE_LIMIT ?? 5)
 const aiMaxMessageLength = Number(process.env.AI_MAX_MESSAGE_LENGTH ?? 2_000)
 const aiMaxContextChars = Number(process.env.AI_MAX_CONTEXT_CHARS ?? 12_000)
+const todoImageUploadMaxBytes = Number(process.env.TODO_IMAGE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024)
+const todoImageObjectPrefix = String(process.env.TODO_IMAGE_OBJECT_PREFIX ?? 'todo-images')
+  .trim()
+  .replace(/^\/+|\/+$/g, '') || 'todo-images'
 const aiRequests = new Map<number, number[]>()
 let feishuTenantAccessToken: FeishuTenantAccessToken | null = null
 const feishuUserNameCache = new Map<string, string>()
@@ -144,6 +221,47 @@ const aiAgentPrompts: Record<AiAgentType, string> = {
 
 app.use(cors())
 app.use('/api/integrations/feishu/conversation-analysis', express.text({ type: '*/*' }))
+
+app.post('/api/todo-images', express.raw({
+  limit: todoImageUploadMaxBytes,
+  type: 'image/*',
+}), asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const contentType = normalizeTodoImageContentType(request.headers['content-type'])
+  if (!contentType) {
+    response.status(415).json({ error: 'Only png, jpeg, webp, and gif images are supported' })
+    return
+  }
+  if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+    response.status(400).json({ error: 'Image file is required' })
+    return
+  }
+  const objectKey = createTodoImageObjectKey(userId, contentType)
+  await putOssObject(objectKey, request.body, contentType)
+  response.status(201).json({
+    imageUrl: todoImageUrl(objectKey),
+    objectKey,
+  })
+}))
+
+app.get('/api/todo-images', asyncHandler(async (request, response) => {
+  const objectKey = String(request.query.key ?? '')
+  const signature = String(request.query.sig ?? '')
+  if (!isTodoImageObjectKey(objectKey) || !isValidTodoImageSignature(objectKey, signature)) {
+    response.status(400).json({ error: 'Invalid todo image key' })
+    return
+  }
+  const result = await getOssObject(objectKey)
+  const headers = (result.res?.headers ?? {}) as Record<string, string | string[] | undefined>
+  const contentTypeHeader = headers['content-type']
+  const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader
+  response.setHeader('Cache-Control', 'private, max-age=86400')
+  response.setHeader('Content-Type', normalizeTodoImageContentType(contentType) ?? 'application/octet-stream')
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.send(result.content)
+}))
+
 app.use(express.json())
 
 function formatDateTime(value: Date | string) {
@@ -176,6 +294,100 @@ function formatDate(value: Date | string) {
   return `${pick('year')}-${pick('month')}-${pick('day')}`
 }
 
+function normalizeTodoImageContentType(value: unknown) {
+  const contentType = String(value ?? '').split(';')[0].trim().toLowerCase()
+  if (contentType === 'image/jpeg' || contentType === 'image/jpg') return 'image/jpeg'
+  if (contentType === 'image/png') return 'image/png'
+  if (contentType === 'image/webp') return 'image/webp'
+  if (contentType === 'image/gif') return 'image/gif'
+  return ''
+}
+
+function todoImageExtension(contentType: string) {
+  if (contentType === 'image/jpeg') return 'jpg'
+  if (contentType === 'image/png') return 'png'
+  if (contentType === 'image/webp') return 'webp'
+  if (contentType === 'image/gif') return 'gif'
+  return 'bin'
+}
+
+function createTodoImageObjectKey(userId: number, contentType: string) {
+  return [
+    todoImageObjectPrefix,
+    formatDate(new Date()),
+    `user-${userId}`,
+    `${crypto.randomUUID()}.${todoImageExtension(contentType)}`,
+  ].join('/')
+}
+
+function isTodoImageObjectKey(objectKey: string) {
+  return (
+    objectKey.startsWith(`${todoImageObjectPrefix}/`) &&
+    !objectKey.includes('..') &&
+    objectKey.length <= 512
+  )
+}
+
+function todoImageUrlSecret() {
+  const secret = String(
+    process.env.TODO_IMAGE_URL_SECRET ??
+      process.env.FEISHU_OAUTH_STATE_SECRET ??
+      process.env.APP_ENCRYPTION_KEYS ??
+      '',
+  )
+  if (!secret) {
+    throw new Error('TODO_IMAGE_URL_SECRET or APP_ENCRYPTION_KEYS must be set')
+  }
+  return secret
+}
+
+function todoImageSignature(objectKey: string) {
+  return crypto.createHmac('sha256', todoImageUrlSecret()).update(objectKey).digest('base64url')
+}
+
+function isValidTodoImageSignature(objectKey: string, signature: string) {
+  if (!signature) return false
+  const expected = todoImageSignature(objectKey)
+  const expectedBuffer = Buffer.from(expected)
+  const signatureBuffer = Buffer.from(signature)
+  return expectedBuffer.length === signatureBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, signatureBuffer)
+}
+
+function todoImageUrl(objectKey: string) {
+  return `/api/todo-images?key=${encodeURIComponent(objectKey)}&sig=${encodeURIComponent(todoImageSignature(objectKey))}`
+}
+
+function formatPriorityLabel(priority: Priority) {
+  if (priority === 'high') return '高优先级'
+  if (priority === 'low') return '低优先级'
+  return '中优先级'
+}
+
+function formatPackageEventTypeLabel(type: ProjectPackageEventType) {
+  return type === 'init' ? '初始化安装' : '升级事项'
+}
+
+function formatPackageEventStatusLabel(status: ProjectPackageEventStatus) {
+  if (status === 'delivered') return '已交付'
+  if (status === 'delivering') return '交付中'
+  return '草稿'
+}
+
+function parseTodoCreatedDate(value: unknown) {
+  const rawDate = String(value ?? '').trim()
+  if (!rawDate) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    throw new Error('Created date must use YYYY-MM-DD')
+  }
+
+  const date = new Date(`${rawDate}T00:00:00+08:00`)
+  if (Number.isNaN(date.getTime()) || formatDate(date) !== rawDate) {
+    throw new Error('Created date is invalid')
+  }
+  return date.toISOString()
+}
+
 function formatUpdatedAt(value: Date | string) {
   const timestamp = formatDateTime(value)
   const [date, time] = timestamp.split(' ')
@@ -189,8 +401,8 @@ function addDays(value: Date, days: number) {
   return date
 }
 
-function normalizeEmail(email: unknown) {
-  return String(email ?? '').trim().toLowerCase()
+function normalizeUsername(username: unknown) {
+  return String(username ?? '').trim().toLowerCase()
 }
 
 function sanitizeDisplayName(value: unknown) {
@@ -199,14 +411,17 @@ function sanitizeDisplayName(value: unknown) {
 
 function displayNameFromUser(row?: Pick<UserRow, 'email' | 'display_name'> | null) {
   if (!row) return '未知用户'
-  return row.display_name || row.email.split('@')[0] || row.email
+  return row.display_name || row.email
 }
 
 function serializeUser(row: UserRow) {
+  const feishuOpenId = String(row.feishu_user_id ?? '').trim()
   return {
     id: Number(row.id),
-    email: row.email,
     displayName: row.display_name,
+    feishuEmail: row.feishu_email || (feishuOpenId.includes('@') ? feishuOpenId : ''),
+    feishuLinked: feishuOpenId.startsWith('ou_'),
+    username: row.email,
   }
 }
 
@@ -216,58 +431,6 @@ function serializeAiSettings(row?: AiSettingsRow) {
     hasApiKey: Boolean(row?.api_key),
     model: row?.model ? decryptText(row.model) : '',
   }
-}
-
-function isPrivateIpv4(hostname: string) {
-  const parts = hostname.split('.').map((part) => Number(part))
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return false
-  }
-  const [first, second] = parts
-  return (
-    first === 10 ||
-    first === 127 ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    first === 0
-  )
-}
-
-function isUnsafeAiHostname(hostname: string) {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  return (
-    normalized === 'localhost' ||
-    normalized.endsWith('.localhost') ||
-    normalized.endsWith('.local') ||
-    normalized === 'metadata.google.internal' ||
-    normalized === '169.254.169.254' ||
-    normalized === '::1' ||
-    normalized.startsWith('fe80:') ||
-    normalized.startsWith('fc') ||
-    normalized.startsWith('fd') ||
-    isPrivateIpv4(normalized)
-  )
-}
-
-function normalizeAiBaseUrl(value: string) {
-  const baseUrl = value.trim().replace(/\/+$/, '')
-  let parsed: URL
-  try {
-    parsed = new URL(baseUrl)
-  } catch {
-    return { error: 'AI base URL must be a valid URL' as const }
-  }
-  if (parsed.protocol !== 'https:') {
-    return { error: 'AI base URL must use HTTPS' as const }
-  }
-  if (!parsed.hostname || isUnsafeAiHostname(parsed.hostname)) {
-    return { error: 'AI base URL host is not allowed' as const }
-  }
-  parsed.hash = ''
-  parsed.search = ''
-  return { baseUrl: parsed.toString().replace(/\/+$/, '') }
 }
 
 function getAiEndpoint(baseUrl: string) {
@@ -291,6 +454,12 @@ function stripMarkdownForSummary(value: string) {
     .replace(/\|/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function extractMentionNames(value: string) {
+  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】\[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】\[\]<>《》"'“”])/g))
+    .map((match) => match[1]?.trim() ?? '')
+    .filter(Boolean)
 }
 
 function extractCoreSummaryFromAnalysis(value: string) {
@@ -362,6 +531,107 @@ function ensureFeishuWebhookAuth(request: express.Request, response: express.Res
   return true
 }
 
+function getRequestOrigin(request: express.Request) {
+  const browserOrigin = String(request.headers.origin ?? '').trim()
+  if (/^https?:\/\//.test(browserOrigin)) return browserOrigin
+
+  const referer = String(request.headers.referer ?? '').trim()
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer)
+      if (refererUrl.protocol === 'http:' || refererUrl.protocol === 'https:') {
+        return refererUrl.origin
+      }
+    } catch {
+      // Fall back to proxy headers below.
+    }
+  }
+
+  const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim()
+  const forwardedHost = String(request.headers['x-forwarded-host'] ?? '').split(',')[0]?.trim()
+  const proto = forwardedProto || request.protocol || 'http'
+  const host = forwardedHost || request.get('host') || `127.0.0.1:${port}`
+  return `${proto}://${host}`
+}
+
+function getFeishuOAuthRedirectUri(request: express.Request) {
+  const configured = String(process.env.FEISHU_OAUTH_REDIRECT_URI ?? '').trim()
+  if (configured) return configured
+  return `${getRequestOrigin(request)}/api/auth/feishu/oauth/callback`
+}
+
+function sanitizeReturnTo(value: unknown) {
+  const raw = String(value ?? '').trim()
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/'
+  if (raw.startsWith('/api/auth/feishu/oauth')) return '/'
+  return raw.slice(0, 500)
+}
+
+function getFeishuOAuthStateSecret() {
+  return (
+    process.env.FEISHU_OAUTH_STATE_SECRET ||
+    process.env.FEISHU_APP_SECRET ||
+    process.env.APP_ENCRYPTION_KEYS ||
+    'veges-local-oauth-state'
+  )
+}
+
+function signFeishuOAuthState(payload: FeishuOAuthState) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signature = crypto
+    .createHmac('sha256', getFeishuOAuthStateSecret())
+    .update(encodedPayload)
+    .digest('base64url')
+  return `${encodedPayload}.${signature}`
+}
+
+function verifyFeishuOAuthState(value: unknown): FeishuOAuthState | null {
+  const state = String(value ?? '')
+  const [encodedPayload, signature] = state.split('.')
+  if (!encodedPayload || !signature) return null
+
+  const expectedSignature = crypto
+    .createHmac('sha256', getFeishuOAuthStateSecret())
+    .update(encodedPayload)
+    .digest('base64url')
+  if (!timingSafeTextEqual(signature, expectedSignature)) return null
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as FeishuOAuthState
+    if (!payload.intent || !payload.exp || payload.exp < Date.now()) return null
+    if (payload.intent === 'bind' && !payload.userId) return null
+    return {
+      exp: payload.exp,
+      intent: payload.intent === 'bind' ? 'bind' : 'signin',
+      inviteToken: String(payload.inviteToken ?? '').trim().slice(0, 128) || undefined,
+      redirectUri: String(payload.redirectUri ?? ''),
+      returnTo: sanitizeReturnTo(payload.returnTo),
+      userId: payload.userId ? Number(payload.userId) : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildFeishuOAuthRedirect(returnTo: string, status: 'success' | 'error', message?: string) {
+  const target = new URL(returnTo, 'http://veges.local')
+  target.searchParams.set('feishuBind', status)
+  if (message) target.searchParams.set('feishuBindMessage', message.slice(0, 120))
+  return `${target.pathname}${target.search}${target.hash}`
+}
+
+function buildFeishuOAuthSigninRedirect(
+  returnTo: string,
+  status: 'success' | 'error',
+  options: { message?: string; token?: string } = {},
+) {
+  const target = new URL(returnTo, 'http://veges.local')
+  target.searchParams.set('feishuAuth', status)
+  if (options.token) target.searchParams.set('token', options.token)
+  if (options.message) target.searchParams.set('feishuAuthMessage', options.message.slice(0, 120))
+  return `${target.pathname}${target.search}${target.hash}`
+}
+
 function extractTextFromUnknown(value: unknown): string {
   if (typeof value === 'string') {
     const trimmed = value.trim()
@@ -412,8 +682,8 @@ function extractConversationText(body: Record<string, unknown>) {
 }
 
 function verifyFeishuToken(token: unknown) {
-  const expectedToken = (process.env.FEISHU_VERIFICATION_TOKEN ?? '').trim()
-  return Boolean(expectedToken) && token === expectedToken
+  const expectedToken = process.env.FEISHU_VERIFICATION_TOKEN ?? ''
+  return !expectedToken || token === expectedToken
 }
 
 function normalizeFeishuEventPayload(body: Record<string, unknown>) {
@@ -478,6 +748,196 @@ async function getFeishuTenantAccessToken() {
     expireAt: now + Math.max(60, data.expire ?? 7_000) * 1_000,
   }
   return feishuTenantAccessToken.token
+}
+
+async function resolveFeishuOpenIdByEmail(email: string) {
+  const normalizedEmail = normalizeUsername(email)
+  if (!normalizedEmail) return ''
+
+  const token = await getFeishuTenantAccessToken()
+  const result = await fetch(
+    'https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        emails: [normalizedEmail],
+        include_resigned: false,
+      }),
+    },
+  )
+  const data = await result.json() as {
+    code?: number
+    data?: {
+      user_list?: Array<{
+        email?: string
+        user_id?: string
+      }>
+    }
+    msg?: string
+  }
+
+  if (!result.ok || data.code !== 0) {
+    const message = data.msg ?? result.statusText
+    throw new Error(`飞书邮箱解析失败：${message}`)
+  }
+
+  const matchedUser = data.data?.user_list?.find((user) => (
+    normalizeUsername(user.email) === normalizedEmail && String(user.user_id ?? '').startsWith('ou_')
+  )) ?? data.data?.user_list?.find((user) => String(user.user_id ?? '').startsWith('ou_'))
+  const openId = matchedUser?.user_id?.trim() ?? ''
+  if (!openId) {
+    throw new Error('飞书邮箱解析失败：当前飞书应用没有匹配到这个邮箱对应的用户。')
+  }
+  return openId
+}
+
+async function resolveAndPersistFeishuOpenId(userId: number, email: string) {
+  const openId = await resolveFeishuOpenIdByEmail(email)
+  await query(
+    `
+    update users
+    set feishu_user_id = $1,
+        feishu_receive_id_type = 'open_id'
+    where id = $2
+    `,
+    [openId, userId],
+  )
+  return openId
+}
+
+async function exchangeFeishuOAuthCode(code: string, redirectUri: string) {
+  const appId = process.env.FEISHU_APP_ID ?? ''
+  const appSecret = process.env.FEISHU_APP_SECRET ?? ''
+  if (!appId || !appSecret) {
+    throw new Error('飞书应用凭据未配置。')
+  }
+
+  const result = await fetch('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      client_id: appId,
+      client_secret: appSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }),
+  })
+  const data = await result.json() as {
+    access_token?: string
+    code?: number
+    data?: {
+      access_token?: string
+      token_type?: string
+    }
+    error?: string
+    error_description?: string
+    msg?: string
+  }
+  const accessToken = data.data?.access_token ?? data.access_token ?? ''
+  if (!result.ok || (typeof data.code === 'number' && data.code !== 0) || !accessToken) {
+    throw new Error(data.msg ?? data.error_description ?? data.error ?? result.statusText)
+  }
+  return accessToken
+}
+
+async function fetchFeishuOAuthUserInfo(accessToken: string) {
+  const result = await fetch('https://open.feishu.cn/open-apis/authen/v1/user_info', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+  const data = await result.json() as {
+    code?: number
+    data?: {
+      email?: string
+      name?: string
+      open_id?: string
+      union_id?: string
+    }
+    email?: string
+    msg?: string
+    name?: string
+    open_id?: string
+    union_id?: string
+  }
+  const openId = String(data.data?.open_id ?? data.open_id ?? '').trim()
+  if (!result.ok || data.code !== 0 || !openId.startsWith('ou_')) {
+    throw new Error(data.msg ?? result.statusText)
+  }
+  return {
+    email: normalizeUsername(data.data?.email ?? data.email),
+    name: sanitizeDisplayName(data.data?.name ?? data.name),
+    openId,
+    unionId: String(data.data?.union_id ?? data.union_id ?? '').trim(),
+  }
+}
+
+function getFeishuGeneratedUsername(openId: string) {
+  const suffix = crypto.createHash('sha256').update(openId).digest('hex').slice(0, 12)
+  return `feishu_${suffix}`
+}
+
+async function findOrCreateFeishuOAuthUser(
+  feishuUser: Awaited<ReturnType<typeof fetchFeishuOAuthUserInfo>>,
+  inviteToken?: string,
+) {
+  const byOpenId = await query<UserRow>(
+    `
+    select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    from users
+    where feishu_user_id = $1
+    limit 1
+    `,
+    [feishuUser.openId],
+  )
+  if (byOpenId.rows[0]) {
+    const userId = Number(byOpenId.rows[0].id)
+    await linkPendingMemberships(userId, byOpenId.rows[0].email)
+    await acceptProjectInviteToken(userId, inviteToken)
+    return byOpenId.rows[0]
+  }
+
+  if (feishuUser.email) {
+    const byEmail = await query<UserRow>(
+      `
+      update users
+      set feishu_email = $1,
+          feishu_user_id = $2,
+          feishu_receive_id_type = 'open_id'
+      where email = $1
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      `,
+      [feishuUser.email, feishuUser.openId],
+    )
+    if (byEmail.rows[0]) {
+      const userId = Number(byEmail.rows[0].id)
+      await linkPendingMemberships(userId, byEmail.rows[0].email)
+      await acceptProjectInviteToken(userId, inviteToken)
+      return byEmail.rows[0]
+    }
+  }
+
+  const username = feishuUser.email || getFeishuGeneratedUsername(feishuUser.openId)
+  const displayName = feishuUser.name || feishuUser.email || '飞书用户'
+  const created = await query<UserRow>(
+    `
+    insert into users (email, password_hash, display_name, feishu_email, feishu_user_id, feishu_receive_id_type)
+    values ($1, $2, $3, $4, $5, 'open_id')
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    `,
+    [username, '', displayName, feishuUser.email, feishuUser.openId],
+  )
+  const userId = Number(created.rows[0].id)
+  await linkPendingMemberships(userId, username)
+  await acceptProjectInviteToken(userId, inviteToken)
+  return created.rows[0]
 }
 
 async function fetchFeishuMessageContent(messageId: string) {
@@ -644,11 +1104,300 @@ function buildWorkspaceContext(workspace: Awaited<ReturnType<typeof getWorkspace
   return trimForAi(context, aiMaxContextChars)
 }
 
+async function getOwnerProjectSummarySource(projectId: number, userId: number) {
+  const projectResult = await query<{
+    name: string
+    status: ProjectStatus
+    risks: string | null
+    journal: string | null
+    todo: string | null
+  }>(
+    `
+    select
+      p.name,
+      p.status,
+      (select content from risks where project_id = p.id order by created_at desc limit 1) as risks,
+      (select content from journal_entries where project_id = p.id order by created_at desc limit 1) as journal,
+      (select title from todos where project_id = p.id and done = false and confirmation_status = 'confirmed' order by due_date asc limit 1) as todo
+    from projects p
+    where p.id = $1 and p.user_id = $2
+    `,
+    [projectId, userId],
+  )
+  const project = projectResult.rows[0]
+  if (!project) return null
+  return {
+    latestJournal: project.journal ? decryptText(project.journal) : '',
+    latestRisk: project.risks ? decryptText(project.risks) : '',
+    nextTodo: project.todo ? decryptText(project.todo) : '',
+    projectName: decryptText(project.name),
+    projectStatus: project.status,
+  }
+}
+
+async function getMemberProjectSummarySource(projectId: number, userId: number) {
+  const [projectResult, ownJournalsResult, assignedTodosResult, noteMentionsResult, assignedEventsResult] = await Promise.all([
+    query<{
+      name: string
+      status: ProjectStatus
+    }>(
+      `
+      select p.name, p.status
+      from projects p
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $2
+      where p.id = $1
+        and (p.user_id = $2 or pm.id is not null)
+      limit 1
+      `,
+      [projectId, userId],
+    ),
+    query<{
+      content: string
+      created_at: Date
+    }>(
+      `
+      select content, created_at
+      from journal_entries
+      where project_id = $1
+        and author_user_id = $2
+      order by created_at desc, id desc
+      limit 6
+      `,
+      [projectId, userId],
+    ),
+    query<{
+      title: string
+      due_date: Date
+      priority: Priority
+      done: boolean
+      created_at: Date
+    }>(
+      `
+      select title, due_date, priority, done, created_at
+      from todos
+      where project_id = $1
+        and assignee_user_id = $2
+        and confirmation_status = 'confirmed'
+      order by done asc, due_date asc, created_at desc, id desc
+      limit 8
+      `,
+      [projectId, userId],
+    ),
+    query<{
+      author_display_name: string | null
+      author_email: string | null
+      content: string
+      created_at: Date
+      todo_title: string
+    }>(
+      `
+      select author.display_name as author_display_name,
+             author.email as author_email,
+             n.content,
+             m.created_at,
+             t.title as todo_title
+      from todo_note_mentions m
+      join todo_notes n on n.id = m.todo_note_id
+      join todos t on t.id = n.todo_id
+      join projects p on p.id = t.project_id
+      left join users author on author.id = n.author_user_id
+      where m.mentioned_user_id = $2
+        and p.id = $1
+      order by m.created_at desc, m.id desc
+      limit 8
+      `,
+      [projectId, userId],
+    ),
+    query<{
+      created_at: Date
+      status: ProjectPackageEventStatus
+      title: string
+      type: ProjectPackageEventType
+    }>(
+      `
+      select created_at, status, title, type
+      from project_package_events
+      where project_id = $1
+        and assignee_user_id = $2
+      order by created_at desc, id desc
+      limit 6
+      `,
+      [projectId, userId],
+    ),
+  ])
+
+  const project = projectResult.rows[0]
+  if (!project) return null
+
+  return {
+    assignedPackageEvents: assignedEventsResult.rows.map((event) => ({
+      createdAt: event.created_at,
+      status: event.status,
+      title: decryptText(event.title),
+      type: event.type,
+    })),
+    assignedTodos: assignedTodosResult.rows.map((todo) => ({
+      createdAt: todo.created_at,
+      done: todo.done,
+      dueDate: todo.due_date,
+      priority: todo.priority,
+      title: decryptText(todo.title),
+    })),
+    noteMentions: noteMentionsResult.rows.map((note) => ({
+      authorName: note.author_email
+        ? displayNameFromUser({
+          email: note.author_email,
+          display_name: note.author_display_name ?? '',
+        })
+        : '未知用户',
+      content: decryptText(note.content),
+      createdAt: note.created_at,
+      todoTitle: decryptText(note.todo_title),
+    })),
+    ownJournals: ownJournalsResult.rows.map((entry) => ({
+      content: decryptText(entry.content),
+      createdAt: entry.created_at,
+    })),
+    projectName: decryptText(project.name),
+    projectStatus: project.status,
+  }
+}
+
+function buildOwnerProjectSummaryContent(
+  source: NonNullable<Awaited<ReturnType<typeof getOwnerProjectSummarySource>>>,
+  type: SummaryType,
+) {
+  return {
+    content: [
+      `## 进展\n${source.latestJournal || '本周期暂无新增日记。'}`,
+      '## 关键决策\n第一版继续围绕个人项目上下文整理，不扩展团队协作。',
+      `## 未解决问题\n${source.nextTodo || '暂无明确待办阻塞。'}`,
+      `## 风险\n${source.latestRisk || '当前没有记录中的高风险。'}`,
+      '## 下步建议\n- 优先处理高优先级待办\n- 在明天日记中补充结果',
+      `## 状态变化\n项目当前为「${source.projectStatus}」。`,
+    ].join('\n\n'),
+    period: type === 'weekly' ? '当前周' : '当前月',
+    title: `${formatDate(new Date())} ${type === 'weekly' ? '周总结' : '月总结'}`,
+  }
+}
+
+function buildMemberProjectSummaryContent(
+  source: NonNullable<Awaited<ReturnType<typeof getMemberProjectSummarySource>>>,
+  type: SummaryType,
+) {
+  const ownJournalLines = source.ownJournals.length > 0
+    ? source.ownJournals
+        .map((entry) => `- ${formatDateTime(entry.createdAt)}：${trimForAi(entry.content, 220)}`)
+        .join('\n')
+    : '本周期我还没有在这个项目里新增日记。'
+  const assignedTodoLines = source.assignedTodos.length > 0
+    ? source.assignedTodos
+        .map((todo) => {
+          const state = todo.done ? '已完成' : '待处理'
+          return `- ${state} · ${formatPriorityLabel(todo.priority)} · 截止 ${formatDate(todo.dueDate)}：${trimForAi(todo.title, 160)}`
+        })
+        .join('\n')
+    : '当前没有指派给我的待办。'
+  const noteMentionLines = source.noteMentions.length > 0
+    ? source.noteMentions
+        .map((note) => `- ${note.authorName} 在 ${formatDateTime(note.createdAt)} 提到我（待办：${trimForAi(note.todoTitle, 80)}）：${trimForAi(note.content, 220)}`)
+        .join('\n')
+    : '当前没有在备注中 @ 我的内容。'
+  const assignedEventLines = source.assignedPackageEvents.length > 0
+    ? source.assignedPackageEvents
+        .map((event) => `- ${formatPackageEventTypeLabel(event.type)} · ${formatPackageEventStatusLabel(event.status)} · ${formatDateTime(event.createdAt)}：${trimForAi(event.title, 160)}`)
+        .join('\n')
+    : '当前没有指派给我的安装升级事项。'
+
+  const nextSteps: string[] = []
+  if (source.assignedTodos.some((todo) => !todo.done)) {
+    nextSteps.push('- 优先推进仍未完成的指派待办，并同步最新结果。')
+  }
+  if (source.noteMentions.length > 0) {
+    nextSteps.push('- 先处理最近 @ 我的备注，避免协作反馈滞后。')
+  }
+  if (source.assignedPackageEvents.some((event) => event.status !== 'delivered')) {
+    nextSteps.push('- 跟进我负责的安装升级事项，补齐阻塞说明或完成状态。')
+  }
+  if (nextSteps.length === 0) {
+    nextSteps.push('- 当前没有新的指派或 @ 提醒，可以补一条项目日记记录最近协作进展。')
+  }
+
+  return {
+    content: [
+      `## 我的推进记录\n${ownJournalLines}`,
+      `## 指派给我的待办\n${assignedTodoLines}`,
+      `## 被提及的备注\n${noteMentionLines}`,
+      `## 指派给我的安装升级事项\n${assignedEventLines}`,
+      `## 协作提醒\n${nextSteps.join('\n')}`,
+      `## 当前项目状态\n项目当前为「${source.projectStatus}」，本总结仅归纳与我直接相关的事项。`,
+    ].join('\n\n'),
+    period: type === 'weekly' ? '当前周 · 与我相关' : '当前月 · 与我相关',
+    title: `${formatDate(new Date())} ${type === 'weekly' ? '我的协作周总结' : '我的协作月总结'}`,
+  }
+}
+
+async function buildSelectedProjectAiContext(userId: number, projectId: number) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) return null
+
+  if (access.role === 'owner') {
+    const source = await getOwnerProjectSummarySource(projectId, userId)
+    if (!source) return null
+    return trimForAi([
+      `以下是用户当前选中的项目上下文：${trimForAi(source.projectName, 80)}。`,
+      '用户是该项目的 owner，请围绕这个项目本身生成总结，不要扩展到其他项目。',
+      `项目状态：${source.projectStatus}`,
+      `最新日记：${source.latestJournal ? trimForAi(source.latestJournal, 500) : '无'}`,
+      `当前风险：${source.latestRisk ? trimForAi(source.latestRisk, 240) : '无'}`,
+      `待处理待办：${source.nextTodo ? trimForAi(source.nextTodo, 180) : '无'}`,
+    ].join('\n\n'), aiMaxContextChars)
+  }
+
+  const source = await getMemberProjectSummarySource(projectId, userId)
+  if (!source) return null
+
+  const ownJournalLines = source.ownJournals.length > 0
+    ? source.ownJournals
+        .map((entry) => `- ${formatDateTime(entry.createdAt)}：${trimForAi(entry.content, 280)}`)
+        .join('\n')
+    : '无'
+  const assignedTodoLines = source.assignedTodos.length > 0
+    ? source.assignedTodos
+        .map((todo) => `- ${todo.done ? '已完成' : '待处理'} / ${formatPriorityLabel(todo.priority)} / 截止 ${formatDate(todo.dueDate)}：${trimForAi(todo.title, 180)}`)
+        .join('\n')
+    : '无'
+  const noteMentionLines = source.noteMentions.length > 0
+    ? source.noteMentions
+        .map((note) => `- ${note.authorName} 在 ${formatDateTime(note.createdAt)} 提到我（待办：${trimForAi(note.todoTitle, 80)}）：${trimForAi(note.content, 220)}`)
+        .join('\n')
+    : '无'
+  const assignedEventLines = source.assignedPackageEvents.length > 0
+    ? source.assignedPackageEvents
+        .map((event) => `- ${formatPackageEventTypeLabel(event.type)} / ${formatPackageEventStatusLabel(event.status)} / ${formatDateTime(event.createdAt)}：${trimForAi(event.title, 180)}`)
+        .join('\n')
+    : '无'
+
+  return trimForAi([
+    `以下是用户当前选中的协作项目上下文：${trimForAi(source.projectName, 80)}。`,
+    '用户在这个项目中是 member，不是 owner。你只能总结与用户直接相关的事项，不要扩展到其他成员的工作。',
+    `项目状态：${source.projectStatus}`,
+    `我写的项目日记：\n${ownJournalLines}`,
+    `指派给我的待办：\n${assignedTodoLines}`,
+    `备注中 @ 我的内容：\n${noteMentionLines}`,
+    `指派给我的安装升级事项：\n${assignedEventLines}`,
+  ].join('\n\n'), aiMaxContextChars)
+}
+
 async function createAiAgentResponse(
   userId: number,
   agentType: AiAgentType,
   messages: ChatMessage[],
   timeoutMs = 45_000,
+  projectId?: number | null,
 ) {
   const settingsResult = await query<AiSettingsRow>(
     'select base_url, api_key, model from ai_settings where user_id = $1',
@@ -661,17 +1410,17 @@ async function createAiAgentResponse(
   if (!baseUrl || !apiKey || !model) {
     return { error: 'AI API is not configured', status: 503 as const }
   }
-  const normalizedBaseUrl = normalizeAiBaseUrl(baseUrl)
-  if ('error' in normalizedBaseUrl) {
-    return { error: normalizedBaseUrl.error, status: 400 as const }
-  }
 
-  const workspace = agentType === 'project-summary' ? await getWorkspace(userId) : null
+  const scopedProjectId = Number.isFinite(projectId) ? Number(projectId) : null
+  const projectContext = agentType === 'project-summary' && scopedProjectId
+    ? await buildSelectedProjectAiContext(userId, scopedProjectId)
+    : null
+  const workspace = agentType === 'project-summary' && !projectContext ? await getWorkspace(userId) : null
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(normalizedBaseUrl.baseUrl), {
+    const aiResponse = await fetch(getAiEndpoint(baseUrl), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -685,7 +1434,14 @@ async function createAiAgentResponse(
             role: 'system',
             content: aiAgentPrompts[agentType],
           },
-          ...(workspace
+          ...(projectContext
+            ? [
+                {
+                  role: 'system',
+                  content: projectContext,
+                },
+              ]
+            : workspace
             ? [
                 {
                   role: 'system',
@@ -757,7 +1513,7 @@ async function saveFeishuAnalysisSummary(userId: number, title: string, content:
 async function analyzeAndSaveFeishuConversation(messageId: string, messageType: string, event: ReturnType<typeof normalizeFeishuEventPayload>['event']) {
   const userResult = await query<{ id: string }>(
     'select id from users where email = $1',
-    [normalizeEmail(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'sealospm@163.com')],
+    [normalizeUsername(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'sealospm@163.com')],
   )
   const userId = userResult.rows[0] ? Number(userResult.rows[0].id) : null
   if (!userId) {
@@ -876,7 +1632,15 @@ function ensureJournalVisibility(value: unknown): JournalVisibility {
   return value === 'public' ? 'public' : 'private'
 }
 
-async function linkPendingMemberships(userId: number, email: string) {
+function ensurePackageMarketChannel(value: unknown): PackageMarketChannel {
+  return value === 'ci' ? 'ci' : 'release'
+}
+
+function ensurePackageMarketExpireMinutes(value: unknown) {
+  return normalizePackageMarketExpireMinutes(value)
+}
+
+async function linkPendingMemberships(userId: number, username: string) {
   await query(
     `
     update project_memberships
@@ -886,8 +1650,103 @@ async function linkPendingMemberships(userId: number, email: string) {
       and invited_user_id is null
       and status in ('pending', 'active')
     `,
-    [userId, normalizeEmail(email), blindIndex(email)],
+    [userId, normalizeUsername(username), blindIndex(username)],
   )
+}
+
+function createProjectInviteToken() {
+  return crypto.randomBytes(24).toString('base64url')
+}
+
+async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
+  const token = String(rawToken ?? '').trim()
+  if (!token) return false
+
+  const invite = await query<{
+    project_id: string
+    owner_user_id: string
+  }>(
+    `
+    select l.project_id,
+           p.user_id as owner_user_id
+    from project_invite_links l
+    join projects p on p.id = l.project_id
+    where l.token = $1
+      and l.revoked_at is null
+    limit 1
+    `,
+    [token],
+  )
+  const inviteRow = invite.rows[0]
+  if (!inviteRow) return false
+
+  const projectId = Number(inviteRow.project_id)
+  const ownerUserId = Number(inviteRow.owner_user_id)
+  if (ownerUserId === userId) return true
+
+  const existingAccess = await getProjectAccess(projectId, userId)
+  if (existingAccess) return true
+
+  const user = await query<UserRow>(
+    'select id, email, display_name from users where id = $1',
+    [userId],
+  )
+  const userRow = user.rows[0]
+  if (!userRow) return false
+
+  const username = normalizeUsername(userRow.email)
+  const emailLookup = blindIndex(username)
+  const existingMembership = await query<{ id: string }>(
+    `
+    select id
+    from project_memberships
+    where project_id = $1 and invited_email_lookup = $2
+    limit 1
+    `,
+    [projectId, emailLookup],
+  )
+
+  if (existingMembership.rows[0]) {
+    await query(
+      `
+      update project_memberships
+      set owner_user_id = $1,
+          invited_user_id = $2,
+          invited_email = $3,
+          invited_email_lookup = $4,
+          role = 'member',
+          status = 'active',
+          accepted_at = now(),
+          declined_at = null
+      where id = $5
+      `,
+      [
+        ownerUserId,
+        userId,
+        encryptText(username),
+        emailLookup,
+        Number(existingMembership.rows[0].id),
+      ],
+    )
+  } else {
+    await query(
+      `
+      insert into project_memberships (
+        project_id,
+        owner_user_id,
+        invited_user_id,
+        invited_email,
+        invited_email_lookup,
+        role,
+        status,
+        accepted_at
+      )
+      values ($1, $2, $3, $4, $5, 'member', 'active', now())
+      `,
+      [projectId, ownerUserId, userId, encryptText(username), emailLookup],
+    )
+  }
+  return true
 }
 
 async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
@@ -944,6 +1803,92 @@ async function ensureProjectMemberUserId(
   return result.rows[0] ? assigneeId : null
 }
 
+async function ensureProjectModuleId(
+  moduleId: unknown,
+  projectId: number,
+) {
+  if (moduleId == null || moduleId === '') return null
+  const normalizedModuleId = Number(moduleId)
+  if (!Number.isFinite(normalizedModuleId) || normalizedModuleId <= 0) return null
+  const result = await query<{ id: string }>(
+    `
+    select id
+    from project_modules
+    where id = $1
+      and project_id = $2
+    limit 1
+    `,
+    [normalizedModuleId, projectId],
+  )
+  return result.rows[0] ? normalizedModuleId : null
+}
+
+async function listProjectMentionableUsers(projectId: number) {
+  const result = await query<{
+    user_id: string
+    email: string
+    display_name: string
+  }>(
+    `
+    select p.user_id, owner.email, owner.display_name
+    from projects p
+    join users owner on owner.id = p.user_id
+    where p.id = $1
+    union
+    select pm.invited_user_id as user_id, member.email, member.display_name
+    from project_memberships pm
+    join users member on member.id = pm.invited_user_id
+    where pm.project_id = $1
+      and pm.status = 'active'
+      and pm.invited_user_id is not null
+    `,
+    [projectId],
+  )
+  return result.rows.map((row) => ({
+    id: Number(row.user_id),
+    name: displayNameFromUser({
+      email: row.email,
+      display_name: row.display_name,
+    }),
+  }))
+}
+
+async function syncTodoNoteMentions(params: {
+  content: string
+  noteId: number
+  projectId: number
+}) {
+  const mentionableUsers = await listProjectMentionableUsers(params.projectId)
+  const nameToUserIds = new Map<string, number[]>()
+  for (const user of mentionableUsers) {
+    const key = user.name.trim().toLowerCase()
+    if (!key) continue
+    const current = nameToUserIds.get(key) ?? []
+    current.push(user.id)
+    nameToUserIds.set(key, current)
+  }
+
+  const mentionedUserIds = Array.from(
+    new Set(
+      extractMentionNames(params.content).flatMap(
+        (name) => nameToUserIds.get(name.trim().toLowerCase()) ?? [],
+      ),
+    ),
+  )
+
+  await query('delete from todo_note_mentions where todo_note_id = $1', [params.noteId])
+  for (const mentionedUserId of mentionedUserIds) {
+    await query(
+      `
+      insert into todo_note_mentions (todo_note_id, mentioned_user_id)
+      values ($1, $2)
+      on conflict (todo_note_id, mentioned_user_id) do nothing
+      `,
+      [params.noteId, mentionedUserId],
+    )
+  }
+}
+
 async function getWorkspace(userId: number) {
   const currentUser = await query<UserRow>(
     'select id, email, display_name from users where id = $1',
@@ -952,9 +1897,11 @@ async function getWorkspace(userId: number) {
   const currentUserName = displayNameFromUser(currentUser.rows[0])
   const [
     projectsResult,
+    projectModulesResult,
     journalsResult,
     risksResult,
     todosResult,
+    todoNotesResult,
     draftsResult,
     summariesResult,
     membershipsResult,
@@ -966,12 +1913,15 @@ async function getWorkspace(userId: number) {
       owner_display_name: string
       access_role: ProjectAccessRole
       name: string
+      description_encrypted: string | null
       status: ProjectStatus
-      tags: string[]
-      tags_encrypted: string | null
-      created_at: Date
-      updated_at: Date
-    }>(
+	      tags: string[]
+	      tags_encrypted: string | null
+	      feishu_chat_id: string | null
+	      feishu_chat_enabled: boolean | null
+	      created_at: Date
+	      updated_at: Date
+	    }>(
       `
       select p.id,
              p.user_id as owner_user_id,
@@ -979,19 +1929,43 @@ async function getWorkspace(userId: number) {
              u.display_name as owner_display_name,
              case when p.user_id = $1 then 'owner' else 'member' end as access_role,
              p.name,
+             p.description_encrypted,
              p.status,
-             p.tags,
-             p.tags_encrypted,
-             p.created_at,
-             p.updated_at
-      from projects p
-      join users u on u.id = p.user_id
-      left join project_memberships pm
+	             p.tags,
+	             p.tags_encrypted,
+	             pi.target_id as feishu_chat_id,
+	             pi.enabled as feishu_chat_enabled,
+	             p.created_at,
+	             p.updated_at
+	      from projects p
+	      join users u on u.id = p.user_id
+	      left join project_integrations pi
+	        on pi.project_id = p.id
+	       and pi.provider = 'feishu'
+	       and pi.target_type = 'chat'
+	      left join project_memberships pm
         on pm.project_id = p.id
        and pm.status = 'active'
        and pm.invited_user_id = $1
       where p.user_id = $1 or pm.id is not null
       order by updated_at desc, id desc
+      `,
+      [userId],
+    ),
+    query<ProjectModuleRow>(
+      `
+      select pm.id,
+             pm.project_id,
+             pm.name,
+             pm.created_at
+      from project_modules pm
+      join projects p on p.id = pm.project_id
+      left join project_memberships membership
+        on membership.project_id = p.id
+       and membership.status = 'active'
+       and membership.invited_user_id = $1
+      where p.user_id = $1 or membership.id is not null
+      order by pm.created_at asc, pm.id asc
       `,
       [userId],
     ),
@@ -1031,9 +2005,9 @@ async function getWorkspace(userId: number) {
       `,
       [userId],
     ),
-    query<{ project_id: string; content: string }>(
+    query<{ project_id: string; content: string; journal_entry_id: string | null }>(
       `
-      select r.project_id, r.content
+      select r.project_id, r.content, r.journal_entry_id
       from risks r
       join projects p on p.id = r.project_id
       left join project_memberships pm
@@ -1049,9 +2023,14 @@ async function getWorkspace(userId: number) {
       id: string
       project_id: string
       title: string
+      detail: string
+      created_at: Date
       due_date: Date
       priority: Priority
       done: boolean
+      confirmation_status: TodoConfirmationStatus
+      project_module_id: string | null
+      module_name: string | null
       created_by_user_id: string | null
       assignee_user_id: string | null
       assigned_by_user_id: string | null
@@ -1066,9 +2045,14 @@ async function getWorkspace(userId: number) {
       select t.id,
              t.project_id,
              t.title,
+             t.detail,
+             t.created_at,
              t.due_date,
              t.priority,
              t.done,
+             t.confirmation_status,
+             t.project_module_id,
+             module.name as module_name,
              t.created_by_user_id,
              t.assignee_user_id,
              t.assigned_by_user_id,
@@ -1080,15 +2064,40 @@ async function getWorkspace(userId: number) {
              creator.display_name as creator_display_name
       from todos t
       join projects p on p.id = t.project_id
+      left join project_memberships membership
+        on membership.project_id = p.id
+       and membership.status = 'active'
+       and membership.invited_user_id = $1
+      left join users creator on creator.id = t.created_by_user_id
+      left join users assignee on assignee.id = t.assignee_user_id
+      left join users assigner on assigner.id = t.assigned_by_user_id
+      left join project_modules module on module.id = t.project_module_id
+      where p.user_id = $1 or membership.id is not null
+      order by t.created_at desc, t.id desc
+      `,
+      [userId],
+    ),
+    query<TodoNoteRow>(
+      `
+      select n.id,
+             n.todo_id,
+             n.author_user_id,
+             author.email as author_email,
+             author.display_name as author_display_name,
+             n.content,
+             n.source_operation_id,
+             n.created_at,
+             n.updated_at
+      from todo_notes n
+      join todos t on t.id = n.todo_id
+      join projects p on p.id = t.project_id
       left join project_memberships pm
         on pm.project_id = p.id
        and pm.status = 'active'
        and pm.invited_user_id = $1
-      left join users creator on creator.id = t.created_by_user_id
-      left join users assignee on assignee.id = t.assignee_user_id
-      left join users assigner on assigner.id = t.assigned_by_user_id
+      left join users author on author.id = n.author_user_id
       where p.user_id = $1 or pm.id is not null
-      order by t.done asc, t.due_date asc, t.id desc
+      order by n.created_at asc, n.id asc
       `,
       [userId],
     ),
@@ -1128,6 +2137,29 @@ async function getWorkspace(userId: number) {
     ),
     query<ProjectMembershipRow>(
       `
+      with accessible_projects as (
+        select p.id,
+               p.user_id as owner_user_id,
+               p.user_id = $1 as is_owner
+        from projects p
+        left join project_memberships access_pm
+          on access_pm.project_id = p.id
+         and access_pm.status = 'active'
+         and access_pm.invited_user_id = $1
+        where p.user_id = $1 or access_pm.id is not null
+      ),
+      visible_memberships as (
+        select pm.*
+        from project_memberships pm
+        join accessible_projects ap on ap.id = pm.project_id
+        where ap.is_owner
+           or pm.status = 'active'
+           or pm.invited_user_id = $1
+        union
+        select pm.*
+        from project_memberships pm
+        where pm.invited_user_id = $1
+      )
       select pm.id,
              pm.project_id,
              pm.invited_user_id,
@@ -1137,9 +2169,8 @@ async function getWorkspace(userId: number) {
              pm.created_at,
              u.display_name as member_display_name,
              u.email as member_email
-      from project_memberships pm
+      from visible_memberships pm
       left join users u on u.id = pm.invited_user_id
-      where pm.owner_user_id = $1 or pm.invited_user_id = $1
       order by pm.created_at desc, pm.id desc
       `,
       [userId],
@@ -1177,9 +2208,71 @@ async function getWorkspace(userId: number) {
   }
 
   const risksByProject = new Map<number, string[]>()
+  const riskJournalEntryIdsByProject = new Map<number, number[]>()
   for (const row of risksResult.rows) {
     const projectId = Number(row.project_id)
     risksByProject.set(projectId, [...(risksByProject.get(projectId) ?? []), decryptText(row.content)])
+    if (row.journal_entry_id) {
+      riskJournalEntryIdsByProject.set(projectId, [
+        ...(riskJournalEntryIdsByProject.get(projectId) ?? []),
+        Number(row.journal_entry_id),
+      ])
+    }
+  }
+
+  const modulesByProject = new Map<
+    number,
+    Array<{
+      id: number
+      projectId: number
+      name: string
+      createdAt: string
+    }>
+  >()
+  for (const row of projectModulesResult.rows) {
+    const projectId = Number(row.project_id)
+    const modules = modulesByProject.get(projectId) ?? []
+    modules.push({
+      id: Number(row.id),
+      projectId,
+      name: row.name,
+      createdAt: formatDateTime(row.created_at),
+    })
+    modulesByProject.set(projectId, modules)
+  }
+
+  const todoNotesByTodo = new Map<
+    number,
+    Array<{
+      id: number
+      todoId: number
+      authorUserId?: number
+      authorName: string
+      content: string
+      sourceOperationId?: number
+      createdAt: string
+      updatedAt: string
+    }>
+  >()
+  for (const row of todoNotesResult.rows) {
+    const todoId = Number(row.todo_id)
+    const notes = todoNotesByTodo.get(todoId) ?? []
+    notes.push({
+      id: Number(row.id),
+      todoId,
+      authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
+      authorName: row.author_user_id
+        ? displayNameFromUser({
+          email: row.author_email ?? '',
+          display_name: row.author_display_name ?? '',
+        })
+        : currentUserName,
+      content: decryptText(row.content),
+      sourceOperationId: row.source_operation_id ? Number(row.source_operation_id) : undefined,
+      createdAt: formatDateTime(row.created_at),
+      updatedAt: formatDateTime(row.updated_at),
+    })
+    todoNotesByTodo.set(todoId, notes)
   }
 
   return {
@@ -1187,6 +2280,7 @@ async function getWorkspace(userId: number) {
       id: Number(project.id),
       accessRole: project.access_role,
       name: decryptText(project.name),
+      description: project.description_encrypted ? decryptText(project.description_encrypted) : '',
       ownerName: displayNameFromUser({
         email: project.owner_email,
         display_name: project.owner_display_name,
@@ -1194,14 +2288,19 @@ async function getWorkspace(userId: number) {
       ownerUserId: Number(project.owner_user_id),
       status: project.status,
       createdAt: formatUpdatedAt(project.created_at),
-      updatedAt: formatUpdatedAt(project.updated_at),
-      tags: decryptTags(project.tags_encrypted, project.tags ?? []),
-      journals: journalsByProject.get(Number(project.id)) ?? [],
+	      updatedAt: formatUpdatedAt(project.updated_at),
+	      tags: decryptTags(project.tags_encrypted, project.tags ?? []),
+	      feishuChatEnabled: Boolean(project.feishu_chat_enabled && project.feishu_chat_id),
+	      feishuChatId: project.feishu_chat_id ?? '',
+	      journals: journalsByProject.get(Number(project.id)) ?? [],
       risks: risksByProject.get(Number(project.id)) ?? [],
+      riskJournalEntryIds: riskJournalEntryIdsByProject.get(Number(project.id)) ?? [],
+      modules: modulesByProject.get(Number(project.id)) ?? [],
     })),
     todos: todosResult.rows.map((todo) => ({
       id: Number(todo.id),
       projectId: Number(todo.project_id),
+      createdAt: formatDateTime(todo.created_at),
       createdByUserId: todo.created_by_user_id ? Number(todo.created_by_user_id) : undefined,
       assigneeUserId: todo.assignee_user_id ? Number(todo.assignee_user_id) : undefined,
       assigneeName: todo.assignee_user_id
@@ -1224,14 +2323,19 @@ async function getWorkspace(userId: number) {
         })
         : undefined,
       title: decryptText(todo.title),
+      detail: todo.detail ? decryptText(todo.detail) : '',
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
+      confirmationStatus: todo.confirmation_status,
+      moduleId: todo.project_module_id ? Number(todo.project_module_id) : undefined,
+      moduleName: todo.module_name ?? undefined,
+      notes: todoNotesByTodo.get(Number(todo.id)) ?? [],
     })),
     memberships: membershipsResult.rows.map((membership) => ({
       id: Number(membership.id),
       projectId: Number(membership.project_id),
-      invitedEmail: decryptText(membership.invited_email),
+      invitedUsername: decryptText(membership.invited_email),
       invitedUserId: membership.invited_user_id ? Number(membership.invited_user_id) : undefined,
       role: membership.role,
       status: membership.status,
@@ -1278,20 +2382,20 @@ app.get('/api/health', (_request, response) => {
 })
 
 app.post('/api/auth/register', asyncHandler(async (request, response) => {
-  const email = normalizeEmail(request.body.email)
+  const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
 
-  if (!email || password.length < 6) {
-    response.status(400).json({ error: 'Email and a 6+ character password are required' })
+  if (!username || password.length < 6) {
+    response.status(400).json({ error: 'Username and a 6+ character password are required' })
     return
   }
 
   const existing = await query<{ id: string }>(
     'select id from users where email = $1',
-    [email],
+    [username],
   )
   if (existing.rows.length > 0) {
-    response.status(409).json({ error: 'Email already registered' })
+    response.status(409).json({ error: 'Username already registered' })
     return
   }
 
@@ -1300,12 +2404,13 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
     `
     insert into users (email, password_hash, display_name)
     values ($1, $2, $3)
-    returning id, email, display_name
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
-    [email, passwordHash, email.split('@')[0]],
+    [username, passwordHash, username],
   )
   const userId = Number(user.rows[0].id)
-  await linkPendingMemberships(userId, email)
+  await linkPendingMemberships(userId, username)
+  await acceptProjectInviteToken(userId, request.body.inviteToken)
   const token = await createSession(userId)
   response.status(201).json({
     token,
@@ -1315,21 +2420,22 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
 }))
 
 app.post('/api/auth/login', asyncHandler(async (request, response) => {
-  const email = normalizeEmail(request.body.email)
+  const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
   const user = await query<UserRow & { password_hash: string }>(
-    'select id, email, display_name, password_hash from users where email = $1',
-    [email],
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, password_hash from users where email = $1',
+    [username],
   )
   const row = user.rows[0]
 
-  if (!row || !(await bcrypt.compare(password, row.password_hash))) {
-    response.status(401).json({ error: 'Invalid email or password' })
+  if (!row || !row.password_hash || !(await bcrypt.compare(password, row.password_hash))) {
+    response.status(401).json({ error: 'Invalid username or password' })
     return
   }
 
   const userId = Number(row.id)
   await linkPendingMemberships(userId, row.email)
+  await acceptProjectInviteToken(userId, request.body.inviteToken)
   const token = await createSession(userId)
   response.json({
     token,
@@ -1343,7 +2449,7 @@ app.get('/api/auth/me', asyncHandler(async (request, response) => {
   if (!userId) return
 
   const user = await query<UserRow>(
-    'select id, email, display_name from users where id = $1',
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type from users where id = $1',
     [userId],
   )
   response.json({
@@ -1365,13 +2471,146 @@ app.patch('/api/auth/me', asyncHandler(async (request, response) => {
   const user = await query<UserRow>(
     `
     update users
-    set display_name = $1
+    set display_name = $1,
+        feishu_receive_id_type = case
+          when feishu_user_id like 'ou_%' then 'open_id'
+          else feishu_receive_id_type
+        end
     where id = $2
-    returning id, email, display_name
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
     [displayName, userId],
   )
   response.json({ user: serializeUser(user.rows[0]) })
+}))
+
+app.post('/api/auth/feishu/oauth/url', asyncHandler(async (request, response) => {
+  const userId = await requireUserId(request)
+  const intent: FeishuOAuthState['intent'] = userId ? 'bind' : 'signin'
+
+  const appId = process.env.FEISHU_APP_ID ?? ''
+  const appSecret = process.env.FEISHU_APP_SECRET ?? ''
+  if (!appId || !appSecret) {
+    response.status(503).json({ error: '飞书应用凭据未配置。' })
+    return
+  }
+
+  const redirectUri = getFeishuOAuthRedirectUri(request)
+  const state = signFeishuOAuthState({
+    exp: Date.now() + 10 * 60 * 1_000,
+    intent,
+    inviteToken: String(request.body?.inviteToken ?? '').trim().slice(0, 128) || undefined,
+    redirectUri,
+    returnTo: sanitizeReturnTo(request.body?.returnTo),
+    ...(userId ? { userId } : {}),
+  })
+  const url = new URL('https://open.feishu.cn/open-apis/authen/v1/index')
+  url.searchParams.set('app_id', appId)
+  url.searchParams.set('redirect_uri', redirectUri)
+  url.searchParams.set('state', state)
+  response.json({ url: url.toString() })
+}))
+
+app.get('/api/auth/feishu/oauth/callback', asyncHandler(async (request, response) => {
+  const state = verifyFeishuOAuthState(request.query.state)
+  if (!state) {
+    response.redirect(buildFeishuOAuthSigninRedirect('/', 'error', {
+      message: '飞书授权已失效，请重新操作。',
+    }))
+    return
+  }
+
+  const code = String(request.query.code ?? '').trim()
+  if (!code) {
+    const message = '飞书没有返回授权码。'
+    response.redirect(
+      state.intent === 'bind'
+        ? buildFeishuOAuthRedirect(state.returnTo, 'error', message)
+        : buildFeishuOAuthSigninRedirect(state.returnTo, 'error', { message }),
+    )
+    return
+  }
+
+  try {
+    const accessToken = await exchangeFeishuOAuthCode(code, state.redirectUri)
+    const feishuUser = await fetchFeishuOAuthUserInfo(accessToken)
+    if (state.intent === 'bind') {
+      await query(
+        `
+        update users
+        set feishu_email = $1,
+            feishu_user_id = $2,
+            feishu_receive_id_type = 'open_id'
+        where id = $3
+        `,
+        [feishuUser.email, feishuUser.openId, state.userId],
+      )
+      response.redirect(buildFeishuOAuthRedirect(state.returnTo, 'success'))
+      return
+    }
+
+    const user = await findOrCreateFeishuOAuthUser(feishuUser, state.inviteToken)
+    const token = await createSession(Number(user.id))
+    response.redirect(buildFeishuOAuthSigninRedirect(state.returnTo, 'success', { token }))
+  } catch (error) {
+    const message = error instanceof Error && error.message
+      ? `飞书绑定失败：${error.message}`
+      : '飞书绑定失败，请稍后重试。'
+    response.redirect(
+      state.intent === 'bind'
+        ? buildFeishuOAuthRedirect(state.returnTo, 'error', message)
+        : buildFeishuOAuthSigninRedirect(state.returnTo, 'error', {
+            message: message.replace('飞书绑定失败', '飞书登录失败'),
+          }),
+    )
+  }
+}))
+
+app.delete('/api/auth/feishu/oauth', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const user = await query<UserRow>(
+    `
+    update users
+    set feishu_email = '',
+        feishu_user_id = '',
+        feishu_receive_id_type = 'open_id'
+    where id = $1
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    `,
+    [userId],
+  )
+  response.json({ user: serializeUser(user.rows[0]) })
+}))
+
+app.patch('/api/auth/password', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const currentPassword = String(request.body.currentPassword ?? '')
+  const nextPassword = String(request.body.nextPassword ?? '')
+  if (!currentPassword || nextPassword.length < 6) {
+    response.status(400).json({ error: 'Current password and a 6+ character new password are required' })
+    return
+  }
+
+  const user = await query<{ password_hash: string }>(
+    'select password_hash from users where id = $1',
+    [userId],
+  )
+  const row = user.rows[0]
+  if (!row || !(await bcrypt.compare(currentPassword, row.password_hash))) {
+    response.status(401).json({ error: 'Current password is incorrect' })
+    return
+  }
+
+  const passwordHash = await bcrypt.hash(nextPassword, 12)
+  await query(
+    'update users set password_hash = $1 where id = $2',
+    [passwordHash, userId],
+  )
+  response.json({ ok: true })
 }))
 
 app.get('/api/ai/settings', asyncHandler(async (request, response) => {
@@ -1389,11 +2628,10 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  const baseUrlInput = String(request.body.baseUrl ?? '')
+  const baseUrl = String(request.body.baseUrl ?? '').trim().replace(/\/+$/, '')
   const apiKey = String(request.body.apiKey ?? '').trim()
   const model = String(request.body.model ?? '').trim()
-  const normalizedBaseUrl = normalizeAiBaseUrl(baseUrlInput)
-  if ('error' in normalizedBaseUrl || !model) {
+  if (!baseUrl || !model) {
     response.status(400).json({ error: 'AI base URL and model are required' })
     return
   }
@@ -1419,7 +2657,7 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
           updated_at = now()
     returning base_url, api_key, model
     `,
-    [userId, encryptText(normalizedBaseUrl.baseUrl), encryptText(nextApiKey), encryptText(model)],
+    [userId, encryptText(baseUrl), encryptText(nextApiKey), encryptText(model)],
   )
   response.json({ settings: serializeAiSettings(result.rows[0]) })
 }))
@@ -1449,10 +2687,13 @@ async function getNotifications(userId: number) {
       },
     ]),
   )
-  const stateFor = (kind: NotificationKind, sourceId: string) =>
+  const stateFor = (
+    kind: NotificationKind,
+    sourceId: string,
+  ): { dismissedAt?: string; readAt?: string } =>
     stateMap.get(`${kind}:${sourceId}`) ?? {}
 
-  const [invitesResult, assignedTodosResult, dueTomorrowResult] = await Promise.all([
+  const [invitesResult, assignedPackageEventsResult, assignedTodosResult, dueTomorrowResult, noteMentionsResult] = await Promise.all([
     query<{
       id: string
       project_id: string
@@ -1478,9 +2719,44 @@ async function getNotifications(userId: number) {
       [userId],
     ),
     query<{
+      assigned_at: Date | null
+      assigner_display_name: string | null
+      assigner_email: string | null
       id: string
       project_id: string
       project_name: string
+      status: ProjectPackageEventStatus
+      title: string
+      type: ProjectPackageEventType
+    }>(
+      `
+      select e.id,
+             e.project_id,
+             p.name as project_name,
+             e.title,
+             e.type,
+             e.status,
+             e.assigned_at,
+             assigner.email as assigner_email,
+             assigner.display_name as assigner_display_name
+      from project_package_events e
+      join projects p on p.id = e.project_id
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $1
+      left join users assigner on assigner.id = e.assigned_by_user_id
+      where e.assignee_user_id = $1
+        and (p.user_id = $1 or pm.id is not null)
+      order by e.status asc, e.assigned_at desc nulls last, e.id desc
+      `,
+      [userId],
+    ),
+    query<{
+      id: string
+      project_id: string
+      project_name: string
+      module_name: string | null
       title: string
       due_date: Date
       priority: Priority
@@ -1488,26 +2764,38 @@ async function getNotifications(userId: number) {
       assigned_at: Date | null
       assigner_email: string | null
       assigner_display_name: string | null
+      assignee_email: string | null
+      assignee_feishu_email: string | null
+      assignee_feishu_user_id: string | null
+      assignee_display_name: string | null
     }>(
       `
       select t.id,
              t.project_id,
              p.name as project_name,
+             module.name as module_name,
              t.title,
              t.due_date,
              t.priority,
              t.done,
              t.assigned_at,
              assigner.email as assigner_email,
-             assigner.display_name as assigner_display_name
+             assigner.display_name as assigner_display_name,
+             assignee.email as assignee_email,
+             assignee.feishu_email as assignee_feishu_email,
+             assignee.feishu_user_id as assignee_feishu_user_id,
+             assignee.display_name as assignee_display_name
       from todos t
       join projects p on p.id = t.project_id
       left join project_memberships pm
         on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $1
+      and pm.status = 'active'
+      and pm.invited_user_id = $1
+      left join project_modules module on module.id = t.project_module_id
       left join users assigner on assigner.id = t.assigned_by_user_id
+      left join users assignee on assignee.id = t.assignee_user_id
       where t.assignee_user_id = $1
+        and t.confirmation_status = 'confirmed'
         and (p.user_id = $1 or pm.id is not null)
       order by t.done asc, t.due_date asc, t.id desc
       `,
@@ -1517,6 +2805,7 @@ async function getNotifications(userId: number) {
       id: string
       project_id: string
       project_name: string
+      module_name: string | null
       title: string
       due_date: Date
       priority: Priority
@@ -1526,17 +2815,20 @@ async function getNotifications(userId: number) {
       select t.id,
              t.project_id,
              p.name as project_name,
+             module.name as module_name,
              t.title,
              t.due_date,
              t.priority,
              p.user_id as owner_user_id
       from todos t
       join projects p on p.id = t.project_id
+      left join project_modules module on module.id = t.project_module_id
       left join project_memberships pm
         on pm.project_id = p.id
        and pm.status = 'active'
        and pm.invited_user_id = $1
       where t.done = false
+        and t.confirmation_status = 'confirmed'
         and t.due_date = $2::date
         and (
           t.assignee_user_id = $1
@@ -1546,6 +2838,44 @@ async function getNotifications(userId: number) {
       order by t.due_date asc, t.id desc
       `,
       [userId, tomorrow],
+    ),
+    query<{
+      note_id: string
+      todo_id: string
+      project_id: string
+      project_name: string
+      module_name: string | null
+      title: string
+      due_date: Date
+      priority: Priority
+      author_email: string | null
+      author_display_name: string | null
+      content: string
+      created_at: Date
+    }>(
+      `
+      select n.id as note_id,
+             t.id as todo_id,
+             t.project_id,
+             p.name as project_name,
+             module.name as module_name,
+             t.title,
+             t.due_date,
+             t.priority,
+             author.email as author_email,
+             author.display_name as author_display_name,
+             n.content,
+             m.created_at
+      from todo_note_mentions m
+      join todo_notes n on n.id = m.todo_note_id
+      join todos t on t.id = n.todo_id
+      join projects p on p.id = t.project_id
+      left join project_modules module on module.id = t.project_module_id
+      left join users author on author.id = n.author_user_id
+      where m.mentioned_user_id = $1
+      order by m.created_at desc, m.id desc
+      `,
+      [userId],
     ),
   ])
 
@@ -1559,22 +2889,69 @@ async function getNotifications(userId: number) {
           display_name: todo.assigner_display_name ?? '',
         })
         : undefined,
+      assigneeName: todo.assignee_email
+        ? displayNameFromUser({
+          email: todo.assignee_email,
+          display_name: todo.assignee_display_name ?? '',
+        })
+        : undefined,
+      assigneeFeishuEmail: todo.assignee_feishu_email || (
+        todo.assignee_feishu_user_id?.includes('@') ? todo.assignee_feishu_user_id : undefined
+      ),
       done: todo.done,
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
+      moduleName: todo.module_name ?? undefined,
       priority: todo.priority,
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
       title: decryptText(todo.title),
     })),
+    assignedPackageEvents: assignedPackageEventsResult.rows.map((event) => ({
+      ...stateFor('package_event_assigned', event.id),
+      assignedAt: event.assigned_at ? formatUpdatedAt(event.assigned_at) : undefined,
+      assignedByName: event.assigner_email
+        ? displayNameFromUser({
+          email: event.assigner_email,
+          display_name: event.assigner_display_name ?? '',
+        })
+        : undefined,
+      eventStatus: event.status,
+      eventType: event.type,
+      id: Number(event.id),
+      projectId: Number(event.project_id),
+      projectName: decryptText(event.project_name),
+      title: decryptText(event.title),
+    })),
     dueTomorrowTodos: dueTomorrowResult.rows.map((todo) => ({
       ...stateFor('todo_due_tomorrow', todo.id),
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
+      moduleName: todo.module_name ?? undefined,
       priority: todo.priority,
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
       title: decryptText(todo.title),
+    })),
+    noteMentions: noteMentionsResult.rows.map((note) => ({
+      ...stateFor('todo_note_mention', note.note_id),
+      createdAt: formatDateTime(note.created_at),
+      dueDate: formatDate(note.due_date),
+      id: Number(note.todo_id),
+      noteAuthorName: note.author_email
+        ? displayNameFromUser({
+          email: note.author_email,
+          display_name: note.author_display_name ?? '',
+        })
+        : '未知用户',
+      noteId: Number(note.note_id),
+      notePreview: decryptText(note.content).slice(0, 120),
+      moduleName: note.module_name ?? undefined,
+      priority: note.priority,
+      projectId: Number(note.project_id),
+      projectName: decryptText(note.project_name),
+      title: decryptText(note.title),
+      type: 'note_mention',
     })),
     invites: invitesResult.rows.map((invite) => ({
       ...stateFor('project_invite', invite.id),
@@ -1590,6 +2967,755 @@ async function getNotifications(userId: number) {
   }
 }
 
+type FeishuNotificationCandidate = {
+  body: string
+  dueDate?: string
+  eventStatus?: ProjectPackageEventStatus
+  eventTitle?: string
+  eventType?: ProjectPackageEventType
+  operatorName?: string
+  kind: NotificationKind
+  projectId: number
+  projectName?: string
+  recipientFeishuEmail?: string
+  recipientFeishuOpenId?: string
+  recipientName?: string
+  sourceId: number
+  title: string
+  todoTitle?: string
+  userId: number
+}
+
+type AssignedTodoNotificationRow = {
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assignee_feishu_email: string | null
+  assignee_feishu_user_id: string | null
+  assignee_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
+  due_date: Date
+  done: boolean
+  id: string
+  project_id: string
+  project_name: string
+  title: string
+}
+
+type CompletedTodoAssignerNotificationRow = {
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assigned_by_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
+  due_date: Date
+  id: string
+  project_id: string
+  project_name: string
+  title: string
+}
+
+type AssignedPackageEventNotificationRow = {
+  assignee_display_name: string | null
+  assignee_email: string | null
+  assignee_feishu_email: string | null
+  assignee_feishu_user_id: string | null
+  assignee_user_id: string | null
+  assigner_display_name: string | null
+  assigner_email: string | null
+  id: string
+  project_id: string
+  project_name: string
+  status: ProjectPackageEventStatus
+  title: string
+  type: ProjectPackageEventType
+}
+
+type FeishuDeliveryTarget = {
+  receiveIdType: 'chat_id' | 'open_id'
+  targetId: string
+  targetType: 'chat' | 'user'
+}
+
+function sanitizeFeishuMarkdownText(value: unknown) {
+  return String(value ?? '')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .trim()
+}
+
+function buildFeishuAtText(openId: string | undefined, fallbackName: string | undefined, mention = true) {
+  const normalizedOpenId = String(openId ?? '').trim()
+  if (mention && normalizedOpenId.startsWith('ou_')) {
+    return `<at id=${normalizedOpenId}></at>`
+  }
+  return sanitizeFeishuMarkdownText(fallbackName || '未配置')
+}
+
+function packageEventTypeLabel(type?: ProjectPackageEventType) {
+  return type === 'init' ? '初始化安装' : '升级'
+}
+
+function packageEventStatusLabel(status?: ProjectPackageEventStatus) {
+  if (status === 'delivered') return '已交付'
+  if (status === 'delivering') return '交付中'
+  return '草稿'
+}
+
+function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, target: FeishuDeliveryTarget) {
+  if (candidate.kind === 'assigned_todo') {
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 条待办指派：`,
+        `- 指派给：${candidate.recipientName ?? ''}`,
+        `- 项目名称：${candidate.projectName ?? ''}`,
+        `- 待办事项：${candidate.todoTitle ?? ''}`,
+        `- 截止日期：${candidate.dueDate ?? ''}`,
+      ].join('\n')
+    }
+
+    return [
+      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 条待办指派：`,
+      `- 项目名称：${candidate.projectName ?? ''}`,
+      `- 待办事项：${candidate.todoTitle ?? ''}`,
+      `- 截止日期：${candidate.dueDate ?? ''}`,
+    ].join('\n')
+  }
+
+  if (candidate.kind === 'todo_completed_assignee') {
+    return [
+      `【Veges 通知】${candidate.operatorName || '负责人'} 完成了您指派的 1 条待办：`,
+      `- 项目名称：${candidate.projectName ?? ''}`,
+      `- 待办事项：${candidate.todoTitle ?? ''}`,
+      `- 截止日期：${candidate.dueDate ?? ''}`,
+    ].join('\n')
+  }
+
+  if (candidate.kind === 'package_event_assigned') {
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 个交付事件指派：`,
+        `- 指派给：${candidate.recipientName ?? ''}`,
+        `- 项目名称：${candidate.projectName ?? ''}`,
+        `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
+        `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
+        `- 事件状态：${packageEventStatusLabel(candidate.eventStatus)}`,
+      ].join('\n')
+    }
+
+    return [
+      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 个交付事件指派：`,
+      `- 项目名称：${candidate.projectName ?? ''}`,
+      `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
+      `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
+      `- 事件状态：${packageEventStatusLabel(candidate.eventStatus)}`,
+    ].join('\n')
+  }
+
+  return [
+    `【Veges 通知】${candidate.title}`,
+    candidate.body,
+  ].filter(Boolean).join('\n')
+}
+
+function buildFeishuInteractiveCard(
+  candidate: FeishuNotificationCandidate,
+  target: FeishuDeliveryTarget,
+  options: { mention?: boolean } = {},
+) {
+  if (candidate.kind === 'assigned_todo' && target.targetType === 'chat') {
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 条待办指派：`,
+              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
+              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
+              `- 待办事项：${sanitizeFeishuMarkdownText(candidate.todoTitle)}`,
+              `- 截止日期：${sanitizeFeishuMarkdownText(candidate.dueDate)}`,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: 'Veges 通知',
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  if (candidate.kind === 'package_event_assigned' && target.targetType === 'chat') {
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 个交付事件指派：`,
+              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
+              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
+              `- 交付事件：${sanitizeFeishuMarkdownText(candidate.eventTitle ?? candidate.title)}`,
+              `- 事件类型：${sanitizeFeishuMarkdownText(packageEventTypeLabel(candidate.eventType))}`,
+              `- 事件状态：${sanitizeFeishuMarkdownText(packageEventStatusLabel(candidate.eventStatus))}`,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: 'Veges 通知',
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  return null
+}
+
+async function sendFeishuMessage(params: {
+  content: Record<string, unknown> | string
+  msgType: 'interactive' | 'text'
+  receiveId: string
+  receiveIdType: FeishuDeliveryTarget['receiveIdType']
+}) {
+  const token = await getFeishuTenantAccessToken()
+  const result = await fetch(
+    `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${encodeURIComponent(params.receiveIdType)}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+	      body: JSON.stringify({
+	        receive_id: params.receiveId,
+	        msg_type: params.msgType,
+	        content: typeof params.content === 'string'
+            ? JSON.stringify({ text: params.content })
+            : JSON.stringify(params.content),
+	      }),
+    },
+  )
+  const data = await result.json() as { code?: number; msg?: string }
+  if (!result.ok || data.code !== 0) {
+    throw new Error(`Feishu message send failed: ${data.msg ?? result.statusText}`)
+  }
+}
+
+async function resolveFeishuDeliveryTargets(candidate: FeishuNotificationCandidate): Promise<FeishuDeliveryTarget[]> {
+  const targets: FeishuDeliveryTarget[] = []
+  const userTarget = await query<{
+    feishu_email: string | null
+    feishu_user_id: string | null
+  }>(
+    'select feishu_email, feishu_user_id from users where id = $1',
+    [candidate.userId],
+  )
+  const user = userTarget.rows[0]
+  let feishuOpenId = String(user?.feishu_user_id ?? '').trim()
+  const feishuEmail = normalizeUsername(user?.feishu_email)
+  if (!feishuOpenId.startsWith('ou_') && feishuEmail) {
+    try {
+      feishuOpenId = await resolveAndPersistFeishuOpenId(candidate.userId, feishuEmail)
+    } catch (error) {
+      console.warn('Feishu user id resolution failed', {
+        error: error instanceof Error ? error.message : error,
+        userId: candidate.userId,
+      })
+      feishuOpenId = ''
+    }
+  }
+  if (feishuOpenId.startsWith('ou_')) {
+    candidate.recipientFeishuOpenId = feishuOpenId
+    targets.push({
+      receiveIdType: 'open_id',
+      targetId: feishuOpenId,
+      targetType: 'user',
+    })
+  }
+
+  if (candidate.kind !== 'assigned_todo' && candidate.kind !== 'package_event_assigned') return targets
+
+  const projectTarget = await query<{ target_id: string }>(
+    `
+    select target_id
+    from project_integrations
+    where project_id = $1
+      and provider = 'feishu'
+      and target_type = 'chat'
+      and enabled = true
+      and target_id <> ''
+    `,
+    [candidate.projectId],
+  )
+  const chatId = projectTarget.rows[0]?.target_id
+  if (chatId) {
+    targets.push({
+      receiveIdType: 'chat_id',
+      targetId: chatId,
+      targetType: 'chat',
+    })
+  }
+
+  return targets
+}
+
+async function upsertFeishuDelivery(params: {
+  candidate: FeishuNotificationCandidate
+  target: FeishuDeliveryTarget
+}) {
+  const existing = await query<{
+    attempts: number
+    id: string
+    status: string
+  }>(
+    `
+    select id, status, attempts
+    from notification_deliveries
+    where kind = $1
+      and source_id = $2
+      and channel = 'feishu'
+      and target_type = $3
+      and target_id = $4
+    `,
+    [
+      params.candidate.kind,
+      params.candidate.sourceId,
+      params.target.targetType,
+      params.target.targetId,
+    ],
+  )
+  const current = existing.rows[0]
+  if (current) {
+    if (current.status === 'sent' || current.status === 'skipped' || current.attempts >= 3) {
+      return null
+    }
+    return Number(current.id)
+  }
+
+  const inserted = await query<{ id: string }>(
+    `
+    insert into notification_deliveries (
+      user_id,
+      kind,
+      source_id,
+      channel,
+      target_type,
+      target_id,
+      status
+    )
+    values ($1, $2, $3, 'feishu', $4, $5, 'pending')
+    returning id
+    `,
+    [
+      params.candidate.userId,
+      params.candidate.kind,
+      params.candidate.sourceId,
+      params.target.targetType,
+      params.target.targetId,
+    ],
+  )
+  return Number(inserted.rows[0].id)
+}
+
+async function markFeishuDeliverySkipped(candidate: FeishuNotificationCandidate, reason: string) {
+  await query(
+    `
+    insert into notification_deliveries (
+      user_id,
+      kind,
+      source_id,
+      channel,
+      target_type,
+      target_id,
+      status,
+      last_error,
+      updated_at
+    )
+    values ($1, $2, $3, 'feishu', 'none', 'none', 'skipped', $4, now())
+    on conflict (kind, source_id, channel, target_type, target_id) do nothing
+    `,
+    [candidate.userId, candidate.kind, candidate.sourceId, reason],
+  )
+}
+
+async function deliverFeishuNotification(candidate: FeishuNotificationCandidate) {
+  const targets = await resolveFeishuDeliveryTargets(candidate)
+  if (targets.length === 0) {
+    await markFeishuDeliverySkipped(candidate, 'No Feishu delivery target configured')
+    return { skipped: 1, sent: 0, failed: 0 }
+  }
+
+  const totals = { failed: 0, sent: 0, skipped: 0 }
+  for (const target of targets) {
+    const deliveryId = await upsertFeishuDelivery({ candidate, target })
+    if (!deliveryId) {
+      totals.skipped += 1
+      continue
+    }
+
+    try {
+      const interactiveCard = buildFeishuInteractiveCard(candidate, target)
+      await sendFeishuMessage({
+        content: interactiveCard ?? buildFeishuNotificationText(candidate, target),
+        msgType: interactiveCard ? 'interactive' : 'text',
+        receiveId: target.targetId,
+        receiveIdType: target.receiveIdType,
+      })
+      await query(
+        `
+        update notification_deliveries
+        set status = 'sent',
+            attempts = attempts + 1,
+            last_error = '',
+            delivered_at = now(),
+            updated_at = now()
+        where id = $1
+        `,
+        [deliveryId],
+      )
+      totals.sent += 1
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown Feishu delivery error'
+      const shouldRetryWithoutMention =
+        target.targetType === 'chat' &&
+        (candidate.kind === 'assigned_todo' || candidate.kind === 'package_event_assigned') &&
+        /invalid user resource|at\/person/i.test(errorMessage)
+      if (shouldRetryWithoutMention) {
+        try {
+          const fallbackCard = buildFeishuInteractiveCard(candidate, target, { mention: false })
+          await sendFeishuMessage({
+            content: fallbackCard ?? buildFeishuNotificationText(candidate, target),
+            msgType: fallbackCard ? 'interactive' : 'text',
+            receiveId: target.targetId,
+            receiveIdType: target.receiveIdType,
+          })
+          await query(
+            `
+            update notification_deliveries
+            set status = 'sent',
+                attempts = attempts + 1,
+                last_error = $2,
+                delivered_at = now(),
+                updated_at = now()
+            where id = $1
+            `,
+            [deliveryId, `Mention fallback used: ${errorMessage}`.slice(0, 500)],
+          )
+          totals.sent += 1
+          continue
+        } catch (fallbackError) {
+          await query(
+            `
+            update notification_deliveries
+            set status = 'failed',
+                attempts = attempts + 1,
+                last_error = $2,
+                updated_at = now()
+            where id = $1
+            `,
+            [
+              deliveryId,
+              fallbackError instanceof Error
+                ? fallbackError.message.slice(0, 500)
+                : 'Unknown Feishu delivery fallback error',
+            ],
+          )
+          totals.failed += 1
+          continue
+        }
+      }
+      await query(
+        `
+        update notification_deliveries
+        set status = 'failed',
+            attempts = attempts + 1,
+            last_error = $2,
+            updated_at = now()
+        where id = $1
+        `,
+        [deliveryId, errorMessage.slice(0, 500)],
+      )
+      totals.failed += 1
+    }
+  }
+  return totals
+}
+
+function buildAssignedTodoFeishuCandidate(todo: AssignedTodoNotificationRow): FeishuNotificationCandidate | null {
+  if (todo.done || !todo.assignee_user_id) return null
+  const recipientName = todo.assignee_email
+    ? displayNameFromUser({
+      email: todo.assignee_email,
+      display_name: todo.assignee_display_name ?? '',
+    })
+    : undefined
+  const operatorName = todo.assigner_email
+    ? displayNameFromUser({
+      email: todo.assigner_email,
+      display_name: todo.assigner_display_name ?? '',
+    })
+    : undefined
+  const assigneeFeishuEmail =
+    todo.assignee_feishu_email || (
+      todo.assignee_feishu_user_id?.includes('@') ? todo.assignee_feishu_user_id : undefined
+    )
+  const assigneeFeishuOpenId = todo.assignee_feishu_user_id?.startsWith('ou_')
+    ? todo.assignee_feishu_user_id
+    : undefined
+
+  return {
+    body: `${operatorName ? `${operatorName} 指派：` : ''}${decryptText(todo.project_name)} · ${decryptText(todo.title)} · 截止 ${formatDate(todo.due_date)}`,
+    dueDate: formatDate(todo.due_date),
+    kind: 'assigned_todo',
+    operatorName,
+    projectId: Number(todo.project_id),
+    projectName: decryptText(todo.project_name),
+    recipientFeishuEmail: assigneeFeishuEmail,
+    recipientFeishuOpenId: assigneeFeishuOpenId,
+    recipientName,
+    sourceId: Number(todo.id),
+    title: '新的待办指派',
+    todoTitle: decryptText(todo.title),
+    userId: Number(todo.assignee_user_id),
+  }
+}
+
+async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
+  const result = await query<AssignedTodoNotificationRow>(
+    `
+    select t.id,
+           t.project_id,
+           p.name as project_name,
+           t.title,
+           t.due_date,
+           t.done,
+           t.assignee_user_id,
+           assigner.email as assigner_email,
+           assigner.display_name as assigner_display_name,
+           assignee.email as assignee_email,
+           assignee.feishu_email as assignee_feishu_email,
+           assignee.feishu_user_id as assignee_feishu_user_id,
+           assignee.display_name as assignee_display_name
+    from todos t
+    join projects p on p.id = t.project_id
+    left join users assigner on assigner.id = t.assigned_by_user_id
+    left join users assignee on assignee.id = t.assignee_user_id
+    where t.id = $1
+      and t.assignee_user_id is not null
+    limit 1
+    `,
+    [todoId],
+  )
+  const todo = result.rows[0]
+  return todo ? buildAssignedTodoFeishuCandidate(todo) : null
+}
+
+function buildCompletedTodoAssignerFeishuCandidate(
+  todo: CompletedTodoAssignerNotificationRow,
+): FeishuNotificationCandidate | null {
+  if (!todo.assigned_by_user_id) return null
+  const assigneeName = todo.assignee_email
+    ? displayNameFromUser({
+      email: todo.assignee_email,
+      display_name: todo.assignee_display_name ?? '',
+    })
+    : '负责人'
+  const assignerName = todo.assigner_email
+    ? displayNameFromUser({
+      email: todo.assigner_email,
+      display_name: todo.assigner_display_name ?? '',
+    })
+    : undefined
+  const projectName = decryptText(todo.project_name)
+  const todoTitle = decryptText(todo.title)
+
+  return {
+    body: `${assigneeName} 完成了您指派的待办：${projectName} · ${todoTitle}`,
+    dueDate: formatDate(todo.due_date),
+    kind: 'todo_completed_assignee',
+    operatorName: assigneeName,
+    projectId: Number(todo.project_id),
+    projectName,
+    recipientName: assignerName,
+    sourceId: Number(todo.id),
+    title: '指派待办已完成',
+    todoTitle,
+    userId: Number(todo.assigned_by_user_id),
+  }
+}
+
+async function buildCompletedTodoAssignerFeishuCandidateByTodoId(todoId: number) {
+  const result = await query<CompletedTodoAssignerNotificationRow>(
+    `
+    select t.id,
+           t.project_id,
+           p.name as project_name,
+           t.title,
+           t.due_date,
+           t.assigned_by_user_id,
+           assignee.email as assignee_email,
+           assignee.display_name as assignee_display_name,
+           assigner.email as assigner_email,
+           assigner.display_name as assigner_display_name
+    from todos t
+    join projects p on p.id = t.project_id
+    left join users assignee on assignee.id = t.assignee_user_id
+    left join users assigner on assigner.id = t.assigned_by_user_id
+    where t.id = $1
+      and t.done = true
+      and t.assigned_by_user_id is not null
+    limit 1
+    `,
+    [todoId],
+  )
+  const todo = result.rows[0]
+  return todo ? buildCompletedTodoAssignerFeishuCandidate(todo) : null
+}
+
+async function deliverLatestAssignedTodoNotification(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildAssignedTodoFeishuCandidateByTodoId(todoId)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+async function deliverCompletedTodoAssignerNotification(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildCompletedTodoAssignerFeishuCandidateByTodoId(todoId)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+function enqueueLatestAssignedTodoDelivery(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverLatestAssignedTodoNotification(todoId).catch((error) => {
+      console.error('Feishu assigned todo delivery failed', error)
+    })
+  }, 0)
+}
+
+function enqueueCompletedTodoAssignerDelivery(todoId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverCompletedTodoAssignerNotification(todoId).catch((error) => {
+      console.error('Feishu completed todo assigner delivery failed', error)
+    })
+  }, 0)
+}
+
+function buildAssignedPackageEventFeishuCandidate(
+  event: AssignedPackageEventNotificationRow,
+): FeishuNotificationCandidate | null {
+  if (!event.assignee_user_id) return null
+  const recipientName = event.assignee_email
+    ? displayNameFromUser({
+      email: event.assignee_email,
+      display_name: event.assignee_display_name ?? '',
+    })
+    : undefined
+  const operatorName = event.assigner_email
+    ? displayNameFromUser({
+      email: event.assigner_email,
+      display_name: event.assigner_display_name ?? '',
+    })
+    : undefined
+  const assigneeFeishuEmail =
+    event.assignee_feishu_email || (
+      event.assignee_feishu_user_id?.includes('@') ? event.assignee_feishu_user_id : undefined
+    )
+  const assigneeFeishuOpenId = event.assignee_feishu_user_id?.startsWith('ou_')
+    ? event.assignee_feishu_user_id
+    : undefined
+  const eventTitle = decryptText(event.title)
+  const projectName = decryptText(event.project_name)
+
+  return {
+    body: `${operatorName ? `${operatorName} 指派：` : ''}${projectName} · ${eventTitle}`,
+    eventStatus: event.status,
+    eventTitle,
+    eventType: event.type,
+    kind: 'package_event_assigned',
+    operatorName,
+    projectId: Number(event.project_id),
+    projectName,
+    recipientFeishuEmail: assigneeFeishuEmail,
+    recipientFeishuOpenId: assigneeFeishuOpenId,
+    recipientName,
+    sourceId: Number(event.id),
+    title: '新的交付事件指派',
+    userId: Number(event.assignee_user_id),
+  }
+}
+
+async function buildAssignedPackageEventFeishuCandidateByEventId(eventId: number) {
+  const result = await query<AssignedPackageEventNotificationRow>(
+    `
+    select e.id,
+           e.project_id,
+           p.name as project_name,
+           e.title,
+           e.type,
+           e.status,
+           e.assignee_user_id,
+           assigner.email as assigner_email,
+           assigner.display_name as assigner_display_name,
+           assignee.email as assignee_email,
+           assignee.feishu_email as assignee_feishu_email,
+           assignee.feishu_user_id as assignee_feishu_user_id,
+           assignee.display_name as assignee_display_name
+    from project_package_events e
+    join projects p on p.id = e.project_id
+    left join users assigner on assigner.id = e.assigned_by_user_id
+    left join users assignee on assignee.id = e.assignee_user_id
+    where e.id = $1
+      and e.assignee_user_id is not null
+    limit 1
+    `,
+    [eventId],
+  )
+  const event = result.rows[0]
+  return event ? buildAssignedPackageEventFeishuCandidate(event) : null
+}
+
+async function deliverLatestAssignedPackageEventNotification(eventId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildAssignedPackageEventFeishuCandidateByEventId(eventId)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+function enqueueLatestAssignedPackageEventDelivery(eventId: number) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverLatestAssignedPackageEventNotification(eventId).catch((error) => {
+      console.error('Feishu assigned package event delivery failed', error)
+    })
+  }, 0)
+}
+
 app.get('/api/notifications', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -1600,7 +3726,13 @@ app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const kind = String(request.params.kind) as NotificationKind
-  if (!['project_invite', 'assigned_todo', 'todo_due_tomorrow'].includes(kind)) {
+  if (![
+    'project_invite',
+    'assigned_todo',
+    'package_event_assigned',
+    'todo_due_tomorrow',
+    'todo_note_mention',
+  ].includes(kind)) {
     response.status(400).json({ error: 'Unsupported notification kind' })
     return
   }
@@ -1691,6 +3823,19 @@ app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, 
   })
 }))
 
+app.post('/api/project-invite-links/:token/accept', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+
+  const accepted = await acceptProjectInviteToken(userId, request.params.token)
+  if (!accepted) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+
+  response.json({ workspace: await getWorkspace(userId) })
+}))
+
 app.post('/api/projects', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -1741,6 +3886,11 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
     values.push(encryptText(request.body.name.trim()))
     updates.push(`name = $${values.length}`)
   }
+  if (typeof request.body.description === 'string') {
+    const description = request.body.description.trim()
+    values.push(description ? encryptText(description) : null)
+    updates.push(`description_encrypted = $${values.length}`)
+  }
   if (request.body.status) {
     values.push(ensureStatus(request.body.status))
     updates.push(`status = $${values.length}`)
@@ -1767,6 +3917,36 @@ app.patch('/api/projects/:projectId', asyncHandler(async (request, response) => 
   )
   response.json(await getWorkspace(userId))
 }))
+
+app.patch('/api/projects/:projectId/feishu', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can update Feishu integration' })
+    return
+  }
+
+  const chatId = String(request.body.feishuChatId ?? '').trim()
+  const enabled = Boolean(request.body.feishuChatEnabled) && Boolean(chatId)
+	  await query(
+	    `
+	    insert into project_integrations (project_id, provider, target_type, target_id, enabled)
+    values ($1, 'feishu', 'chat', $2, $3)
+    on conflict (project_id, provider, target_type) do update
+      set target_id = excluded.target_id,
+          enabled = excluded.enabled,
+          updated_at = now()
+	    `,
+	    [projectId, chatId, enabled],
+	  )
+		  response.json(await getWorkspace(userId))
+		}))
 
 app.delete('/api/projects/:projectId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
@@ -1802,12 +3982,25 @@ app.post('/api/projects/:projectId/journals', asyncHandler(async (request, respo
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  let createdAt: string | null = null
+  if ('createdAt' in request.body) {
+    try {
+      createdAt = parseTodoCreatedDate(request.body.createdAt)
+    } catch {
+      response.status(400).json({ error: 'Journal date must be a valid YYYY-MM-DD date' })
+      return
+    }
+    if (!createdAt || formatDate(createdAt) >= formatDate(new Date())) {
+      response.status(400).json({ error: 'Journal date must be before today' })
+      return
+    }
+  }
   await query(
     `
-    insert into journal_entries (project_id, content, author_user_id, visibility)
-    values ($1, $2, $3, 'private')
+    insert into journal_entries (project_id, content, author_user_id, visibility, created_at)
+    values ($1, $2, $3, 'private', coalesce($4::timestamptz, now()))
     `,
-    [projectId, encryptText(content), userId],
+    [projectId, encryptText(content), userId, createdAt],
   )
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.status(201).json(await getWorkspace(userId))
@@ -1942,17 +4135,27 @@ app.post('/api/projects/:projectId/risks', asyncHandler(async (request, response
     return
   }
 
-  const existingRisks = await query<{ content: string }>(
-    'select content from risks where project_id = $1',
+  const existingRisks = await query<{ id: string; content: string; journal_entry_id: string | null }>(
+    'select id, content, journal_entry_id from risks where project_id = $1',
     [projectId],
   )
-  if (!existingRisks.rows.some((risk) => decryptText(risk.content) === content)) {
+  const matchingRisk = existingRisks.rows.find((risk) => decryptText(risk.content) === content)
+  const journalEntryId = request.body.journalEntryId ? Number(request.body.journalEntryId) : null
+  if (!matchingRisk) {
     await query(
       `
       insert into risks (project_id, content, journal_entry_id)
       values ($1, $2, $3)
       `,
-      [projectId, encryptText(content), request.body.journalEntryId ? Number(request.body.journalEntryId) : null],
+      [projectId, encryptText(content), journalEntryId],
+    )
+  } else if (
+    journalEntryId &&
+    (!matchingRisk.journal_entry_id || Number(matchingRisk.journal_entry_id) !== journalEntryId)
+  ) {
+    await query(
+      'update risks set journal_entry_id = $1 where id = $2',
+      [journalEntryId, Number(matchingRisk.id)],
     )
   }
   await query('update projects set updated_at = now() where id = $1', [projectId])
@@ -1972,14 +4175,14 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
     response.status(403).json({ error: 'Only the project owner can invite members' })
     return
   }
-  const email = normalizeEmail(request.body.email)
-  if (!email) {
-    response.status(400).json({ error: 'Invite email is required' })
+  const username = normalizeUsername(request.body.username ?? request.body.email)
+  if (!username) {
+    response.status(400).json({ error: 'Invite username is required' })
     return
   }
   const invitedUser = await query<{ id: string }>(
     'select id from users where email = $1',
-    [email],
+    [username],
   )
   const invitedUserId = invitedUser.rows[0] ? Number(invitedUser.rows[0].id) : null
   if (invitedUserId === userId) {
@@ -1987,7 +4190,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
     return
   }
 
-  const emailLookup = blindIndex(email)
+  const emailLookup = blindIndex(username)
   const existingMembership = await query<{ id: string }>(
     `
     select id
@@ -2009,7 +4212,7 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
           declined_at = null
       where id = $4
       `,
-      [invitedUserId, encryptText(email), emailLookup, Number(existingMembership.rows[0].id)],
+      [invitedUserId, encryptText(username), emailLookup, Number(existingMembership.rows[0].id)],
     )
   } else {
     await query(
@@ -2026,10 +4229,70 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
       )
       values ($1, $2, $3, $4, $5, 'member', 'pending', null)
       `,
-      [projectId, userId, invitedUserId, encryptText(email), emailLookup],
+      [projectId, userId, invitedUserId, encryptText(username), emailLookup],
     )
   }
   response.status(201).json(await getWorkspace(userId))
+}))
+
+app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can create invite links' })
+    return
+  }
+
+  const existingInviteLink = await query<{ token: string }>(
+    `
+    select token
+    from project_invite_links
+    where project_id = $1
+      and revoked_at is null
+    limit 1
+    `,
+    [projectId],
+  )
+  if (existingInviteLink.rows[0]) {
+    response.json({ token: existingInviteLink.rows[0].token })
+    return
+  }
+
+  const inviteLink = await query<{ token: string }>(
+    `
+    insert into project_invite_links (project_id, owner_user_id, token)
+    values ($1, $2, $3)
+    on conflict do nothing
+    returning token
+    `,
+    [projectId, userId, createProjectInviteToken()],
+  )
+  if (inviteLink.rows[0]) {
+    response.status(201).json({ token: inviteLink.rows[0].token })
+    return
+  }
+
+  const concurrentInviteLink = await query<{ token: string }>(
+    `
+    select token
+    from project_invite_links
+    where project_id = $1
+      and revoked_at is null
+    limit 1
+    `,
+    [projectId],
+  )
+  if (!concurrentInviteLink.rows[0]) {
+    response.status(409).json({ error: 'Invite link creation conflict, please retry' })
+    return
+  }
+  response.json({ token: concurrentInviteLink.rows[0].token })
 }))
 
 app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(async (request, response) => {
@@ -2055,7 +4318,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
   response.json(await getWorkspace(userId))
 }))
 
-app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, response) => {
+app.post('/api/projects/:projectId/modules', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
@@ -2065,30 +4328,116 @@ app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, respon
     return
   }
   if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can resolve risks' })
+    response.status(403).json({ error: 'Only the project owner can manage modules' })
     return
   }
+  const name = String(request.body.name ?? '').trim().slice(0, 40)
+  if (!name) {
+    response.status(400).json({ error: 'Module name is required' })
+    return
+  }
+  await query(
+    `
+    insert into project_modules (project_id, name)
+    values ($1, $2)
+    on conflict (project_id, name) do nothing
+    `,
+    [projectId, name],
+  )
+  response.status(201).json(await getWorkspace(userId))
+}))
+
+app.delete('/api/projects/:projectId/modules/:moduleId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const moduleId = Number(request.params.moduleId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can manage modules' })
+    return
+  }
+  await query(
+    `
+    delete from project_modules
+    where id = $1
+      and project_id = $2
+    `,
+    [moduleId, projectId],
+  )
+  response.json(await getWorkspace(userId))
+}))
+
+app.delete('/api/projects/:projectId/risks', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const requestedJournalEntryId = Number(request.body.journalEntryId)
+  const journalEntryId =
+    Number.isFinite(requestedJournalEntryId) && requestedJournalEntryId > 0
+      ? requestedJournalEntryId
+      : null
   const content = String(request.body.content ?? '').trim()
 
-  if (!content) {
+  if (!journalEntryId && !content) {
     response.status(400).json({ error: 'Risk content is required' })
     return
   }
 
-  const existingRisks = await query<{ id: string; content: string }>(
-    `
-    select id, content
-    from risks
-    where project_id = $1
-      and project_id in (select id from projects where user_id = $2)
-    `,
-    [projectId, userId],
-  )
-  const matchingRiskIds = existingRisks.rows
-    .filter((risk) => decryptText(risk.content) === content)
-    .map((risk) => Number(risk.id))
-  if (matchingRiskIds.length > 0) {
-    await query('delete from risks where id = any($1::bigint[])', [matchingRiskIds])
+  if (journalEntryId) {
+    const journal = await query<{ id: string }>(
+      `
+      select id
+      from journal_entries
+      where id = $1
+        and project_id = $2
+        and (author_user_id = $3 or ($4 = 'owner' and author_user_id is null))
+      `,
+      [journalEntryId, projectId, userId, access.role],
+    )
+    if (!journal.rows[0]) {
+      response.status(404).json({ error: 'Journal entry not found' })
+      return
+    }
+
+    await query(
+      `
+      delete from risks
+      where project_id = $1
+        and journal_entry_id = $2
+      `,
+      [projectId, journalEntryId],
+    )
+  } else {
+    if (access.role !== 'owner') {
+      response.status(403).json({ error: 'Only the project owner can resolve risks' })
+      return
+    }
+
+    const existingRisks = await query<{ id: string; content: string }>(
+      `
+      select id, content
+      from risks
+      where project_id = $1
+        and project_id in (select id from projects where user_id = $2)
+      `,
+      [projectId, userId],
+    )
+    const matchingRiskIds = existingRisks.rows
+      .filter((risk) => decryptText(risk.content) === content)
+      .map((risk) => Number(risk.id))
+    if (matchingRiskIds.length > 0) {
+      await query('delete from risks where id = any($1::bigint[])', [matchingRiskIds])
+    }
   }
   await query('update projects set updated_at = now() where id = $1', [projectId])
   response.json(await getWorkspace(userId))
@@ -2098,6 +4447,11 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const title = String(request.body.title ?? '').trim()
+  const detail = typeof request.body.detail === 'string'
+    ? request.body.detail.trim()
+      ? request.body.detail
+      : ''
+    : ''
   if (!title) {
     response.status(400).json({ error: 'Todo title is required' })
     return
@@ -2113,46 +4467,68 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     projectId,
     access.ownerUserId,
   )
-  await query(
+  const moduleId = await ensureProjectModuleId(request.body.moduleId, projectId)
+  let createdAt: string | null = null
+  try {
+    createdAt = parseTodoCreatedDate(request.body.createdAt)
+  } catch {
+    response.status(400).json({ error: 'Created date must be a valid YYYY-MM-DD date' })
+    return
+  }
+  const createdTodo = await query<{ id: string }>(
     `
     insert into todos (
       project_id,
       title,
+      detail,
       due_date,
       priority,
+      created_at,
+      project_module_id,
       created_by_user_id,
       assignee_user_id,
       assigned_by_user_id,
       assigned_at
     )
-    values ($1, $2, $3, $4, $5, $6, case when $6::bigint is null then null else $5::bigint end, case when $6::bigint is null then null else now() end)
+    values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, $8, $9, case when $9::bigint is null then null else $8::bigint end, case when $9::bigint is null then null else now() end)
+    returning id
     `,
     [
       projectId,
       encryptText(title),
+      detail ? encryptText(detail) : '',
       request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
       ensurePriority(request.body.priority),
+      createdAt,
+      moduleId,
       userId,
       assigneeUserId,
     ],
   )
+  if (createdTodo.rows[0] && assigneeUserId) {
+    enqueueLatestAssignedTodoDelivery(Number(createdTodo.rows[0].id))
+  }
   response.status(201).json(await getWorkspace(userId))
 }))
 
 app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const todoId = Number(request.params.todoId)
   const existingTodo = await query<{
     assignee_user_id: string | null
+    assigned_by_user_id: string | null
     created_by_user_id: string | null
+    done: boolean
+    confirmation_status: TodoConfirmationStatus
     project_id: string
   }>(
     `
-    select project_id, created_by_user_id, assignee_user_id
+    select project_id, created_by_user_id, assignee_user_id, assigned_by_user_id, done, confirmation_status
     from todos
     where id = $1
     `,
-    [Number(request.params.todoId)],
+    [todoId],
   )
   if (existingTodo.rows.length === 0) {
     response.status(404).json({ error: 'Todo not found' })
@@ -2170,53 +4546,183 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const assigneeUserId = existingTodo.rows[0].assignee_user_id
     ? Number(existingTodo.rows[0].assignee_user_id)
     : null
+  const assignedByUserId = existingTodo.rows[0].assigned_by_user_id
+    ? Number(existingTodo.rows[0].assigned_by_user_id)
+    : null
   const canManageTodo = access.role === 'owner' || createdByUserId === userId
-  const canCompleteAssignedTodo =
-    assigneeUserId === userId &&
+  const canActOnTodo = access.role === 'owner' || assigneeUserId === userId
+  const requestedConfirmationStatus = request.body.confirmationStatus
+  const isConfirmationStatusUpdate = 'confirmationStatus' in request.body
+  const requestedRejectionReason =
+    typeof request.body.rejectionReason === 'string'
+      ? request.body.rejectionReason.trim()
+      : ''
+  if (
+    isConfirmationStatusUpdate &&
+    requestedConfirmationStatus !== 'confirmed' &&
+    requestedConfirmationStatus !== 'rejected'
+  ) {
+    response.status(400).json({ error: 'Invalid todo confirmation status' })
+    return
+  }
+  if ('rejectionReason' in request.body && requestedConfirmationStatus !== 'rejected') {
+    response.status(400).json({ error: 'Rejection reason can only be set when rejecting a todo' })
+    return
+  }
+  if (requestedConfirmationStatus === 'rejected' && !requestedRejectionReason) {
+    response.status(400).json({ error: 'Rejection reason is required' })
+    return
+  }
+  const canRespondToAssignment =
+    canActOnTodo &&
+    isConfirmationStatusUpdate &&
+    Object.keys(request.body).every((key) => key === 'confirmationStatus' || key === 'rejectionReason')
+  const isCompletionUpdate = 'done' in request.body
+  const canUpdateTodoCompletion =
+    canActOnTodo &&
     typeof request.body.done === 'boolean' &&
     Object.keys(request.body).every((key) => key === 'done')
-  if (!canManageTodo && !canCompleteAssignedTodo) {
+  if (isConfirmationStatusUpdate && !canRespondToAssignment) {
+    response.status(403).json({ error: 'Only the project owner or assignee can respond to this todo assignment' })
+    return
+  }
+  if (isCompletionUpdate && !canUpdateTodoCompletion) {
+    response.status(403).json({ error: 'Only the project owner or assignee can update todo completion' })
+    return
+  }
+  if (!canManageTodo && !canUpdateTodoCompletion && !canRespondToAssignment) {
     response.status(403).json({ error: 'Only the owner or creator can update this todo' })
+    return
+  }
+  if (request.body.done === true && existingTodo.rows[0].confirmation_status === 'rejected') {
+    response.status(409).json({ error: 'A rejected todo cannot be completed' })
     return
   }
   const nextAssigneeUserId =
     'assigneeUserId' in request.body
       ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
       : undefined
-  await query(
-    `
-    update todos
-    set done = coalesce($1, done),
-        title = coalesce($2, title),
-        due_date = coalesce($3, due_date),
-        priority = coalesce($4, priority),
-        assignee_user_id = case when $5::boolean then $6 else assignee_user_id end,
-        assigned_by_user_id = case
-          when $5::boolean and $6::bigint is not null then $7
-          when $5::boolean then null
-          else assigned_by_user_id
-        end,
-        assigned_at = case
-          when $5::boolean and $6::bigint is not null then now()
-          when $5::boolean then null
-          else assigned_at
-        end,
-        updated_at = now()
-    where id = $8
-      and project_id = $9
-    `,
-    [
-      typeof request.body.done === 'boolean' ? request.body.done : null,
-      canManageTodo && typeof request.body.title === 'string' ? encryptText(request.body.title.trim()) : null,
-      canManageTodo && request.body.dueDate ? String(request.body.dueDate) : null,
-      canManageTodo && request.body.priority ? ensurePriority(request.body.priority) : null,
-      canManageTodo && 'assigneeUserId' in request.body,
-      nextAssigneeUserId,
-      userId,
-      Number(request.params.todoId),
+  const nextModuleId =
+    canManageTodo && 'moduleId' in request.body
+      ? await ensureProjectModuleId(request.body.moduleId, projectId)
+      : undefined
+  const nextTitle =
+    canManageTodo && typeof request.body.title === 'string'
+      ? request.body.title.trim()
+      : null
+  if (canManageTodo && typeof request.body.title === 'string' && !nextTitle) {
+    response.status(400).json({ error: 'Todo title is required' })
+    return
+  }
+  let nextCreatedAt: string | null = null
+  if (canManageTodo && 'createdAt' in request.body) {
+    try {
+      nextCreatedAt = parseTodoCreatedDate(request.body.createdAt)
+    } catch {
+      response.status(400).json({ error: 'Created date must be a valid YYYY-MM-DD date' })
+      return
+    }
+  }
+  const nextDetail =
+    canManageTodo && typeof request.body.detail === 'string'
+      ? request.body.detail.trim()
+        ? request.body.detail
+        : ''
+      : null
+  const client = await pool.connect()
+  let rejectionNoteId: number | null = null
+  try {
+    await client.query('begin')
+    await client.query(
+      `
+      update todos
+      set done = case when $7::text = 'rejected' then false else coalesce($1, done) end,
+          title = coalesce($2, title),
+          detail = case when $3::boolean then $4 else detail end,
+          due_date = coalesce($5, due_date),
+          priority = coalesce($6, priority),
+          confirmation_status = case
+            when $8::boolean then 'confirmed'
+            else coalesce($7, confirmation_status)
+          end,
+          assignee_user_id = case when $8::boolean then $9 else assignee_user_id end,
+          assigned_by_user_id = case
+            when $8::boolean and $9::bigint is not null then $10
+            when $8::boolean then null
+            else assigned_by_user_id
+          end,
+          assigned_at = case
+            when $8::boolean and $9::bigint is not null then now()
+            when $8::boolean then null
+            else assigned_at
+          end,
+          project_module_id = case when $11::boolean then $12 else project_module_id end,
+          created_at = case when $13::boolean then $14::timestamptz else created_at end,
+          updated_at = now()
+      where id = $15
+        and project_id = $16
+      `,
+      [
+        typeof request.body.done === 'boolean' ? request.body.done : null,
+        nextTitle ? encryptText(nextTitle) : null,
+        canManageTodo && typeof request.body.detail === 'string',
+        nextDetail ? encryptText(nextDetail) : '',
+        canManageTodo && request.body.dueDate ? String(request.body.dueDate) : null,
+        canManageTodo && request.body.priority ? ensurePriority(request.body.priority) : null,
+        canRespondToAssignment ? requestedConfirmationStatus : null,
+        canManageTodo && 'assigneeUserId' in request.body,
+        nextAssigneeUserId,
+        userId,
+        canManageTodo && 'moduleId' in request.body,
+        nextModuleId,
+        canManageTodo && 'createdAt' in request.body,
+        nextCreatedAt,
+        todoId,
+        projectId,
+      ],
+    )
+    if (requestedConfirmationStatus === 'rejected') {
+      const noteResult = await client.query<{ id: string }>(
+        `
+        insert into todo_notes (todo_id, author_user_id, content)
+        values ($1, $2, $3)
+        returning id
+        `,
+        [todoId, userId, encryptText(requestedRejectionReason)],
+      )
+      rejectionNoteId = noteResult.rows[0] ? Number(noteResult.rows[0].id) : null
+    }
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+  if (rejectionNoteId != null) {
+    await syncTodoNoteMentions({
+      content: requestedRejectionReason,
+      noteId: rejectionNoteId,
       projectId,
-    ],
-  )
+    })
+  }
+  if (
+    canManageTodo &&
+    'assigneeUserId' in request.body &&
+    nextAssigneeUserId &&
+    nextAssigneeUserId !== assigneeUserId
+  ) {
+    enqueueLatestAssignedTodoDelivery(todoId)
+  }
+  if (
+    assigneeUserId === userId &&
+    assignedByUserId &&
+    assignedByUserId !== userId &&
+    existingTodo.rows[0].done === false &&
+    request.body.done === true
+  ) {
+    enqueueCompletedTodoAssignerDelivery(todoId)
+  }
   response.json(await getWorkspace(userId))
 }))
 
@@ -2250,6 +4756,475 @@ app.delete('/api/todos/:todoId', asyncHandler(async (request, response) => {
     [Number(request.params.todoId)],
   )
   response.json(await getWorkspace(userId))
+}))
+
+app.post('/api/todos/:todoId/notes', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  const content = typeof request.body.content === 'string' ? request.body.content.trim() : ''
+  if (!content) {
+    response.status(400).json({ error: 'Note content is required' })
+    return
+  }
+  const existingTodo = await query<{ project_id: string }>(
+    'select project_id from todos where id = $1',
+    [todoId],
+  )
+  if (existingTodo.rows.length === 0) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const projectId = Number(existingTodo.rows[0].project_id)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  const noteResult = await query<{ id: string }>(
+    `
+    insert into todo_notes (todo_id, author_user_id, content)
+    values ($1, $2, $3)
+    returning id
+    `,
+    [todoId, userId, encryptText(content)],
+  )
+  if (noteResult.rows[0]) {
+    await syncTodoNoteMentions({
+      content,
+      noteId: Number(noteResult.rows[0].id),
+      projectId,
+    })
+  }
+  response.status(201).json(await getWorkspace(userId))
+}))
+
+app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  const noteId = Number(request.params.noteId)
+  const content = typeof request.body.content === 'string' ? request.body.content.trim() : ''
+  if (!content) {
+    response.status(400).json({ error: 'Note content is required' })
+    return
+  }
+  const noteResult = await query<{
+    author_user_id: string | null
+    project_id: string
+  }>(
+    `
+    select n.author_user_id, t.project_id
+    from todo_notes n
+    join todos t on t.id = n.todo_id
+    where n.id = $1
+      and n.todo_id = $2
+    `,
+    [noteId, todoId],
+  )
+  if (noteResult.rows.length === 0) {
+    response.status(404).json({ error: 'Todo note not found' })
+    return
+  }
+  const projectId = Number(noteResult.rows[0].project_id)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Todo note not found' })
+    return
+  }
+  const authorUserId = noteResult.rows[0].author_user_id ? Number(noteResult.rows[0].author_user_id) : null
+  if (access.role !== 'owner' && authorUserId !== userId) {
+    response.status(403).json({ error: 'Only the note author or owner can update this note' })
+    return
+  }
+  await query(
+    `
+    update todo_notes
+    set content = $1,
+        updated_at = now()
+    where id = $2
+      and todo_id = $3
+    `,
+    [encryptText(content), noteId, todoId],
+  )
+  await syncTodoNoteMentions({
+    content,
+    noteId,
+    projectId,
+  })
+  await query(
+    `
+    update project_package_operation_todos
+    set note = $1
+    where todo_id = $2
+      and project_package_operation_id = (
+        select source_operation_id
+        from todo_notes
+        where id = $3
+          and todo_id = $2
+          and source_operation_id is not null
+      )
+    `,
+    [content, todoId, noteId],
+  )
+  response.json(await getWorkspace(userId))
+}))
+
+app.get('/api/package-market/rules', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  void userId
+  response.json({
+    expireMinutes: getPackageMarketExpireMinutes(),
+    rules: await listPackageMarketRules(),
+  })
+}))
+
+app.get('/api/package-market/packages/base', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  response.json(await getPackageMarketDetail({
+    packageId,
+    deployType: String(request.query.deployType ?? ''),
+    arch: String(request.query.arch ?? 'amd64'),
+    channel: ensurePackageMarketChannel(request.query.channel),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+    releaseVersion: String(request.query.releaseVersion ?? request.query.version ?? ''),
+  }))
+}))
+
+app.get('/api/package-market/packages/base/release-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  response.json({
+    versions: await listPackageMarketReleaseVersions({
+      packageId,
+      deployType: String(request.query.deployType ?? ''),
+      arch: String(request.query.arch ?? 'amd64'),
+    }),
+  })
+}))
+
+app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json(await getPackageMarketDetail({
+    packageId: String(request.params.packageId),
+    deployType: String(request.query.deployType ?? ''),
+    arch: String(request.query.arch ?? 'amd64'),
+    channel: ensurePackageMarketChannel(request.query.channel),
+    ciVersion: String(request.query.ciVersion ?? ''),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+    releaseVersion: String(request.query.releaseVersion ?? ''),
+  }))
+}))
+
+app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json({
+    versions: await listPackageMarketCiVersions({
+      packageId: String(request.params.packageId),
+      arch: String(request.query.arch ?? 'amd64'),
+    }),
+  })
+}))
+
+app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  response.json({
+    versions: await listPackageMarketReleaseVersions({
+      packageId: String(request.params.packageId),
+      arch: String(request.query.arch ?? 'amd64'),
+      deployType: String(request.query.deployType ?? ''),
+    }),
+  })
+}))
+
+app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const assigneeUserId = await ensureProjectMemberUserId(
+    request.body.assigneeUserId,
+    projectId,
+    access.ownerUserId,
+  )
+  if (!assigneeUserId) {
+    response.status(400).json({ error: 'Package event assignee must be a project member' })
+    return
+  }
+  const eventId = await createProjectPackageEvent({
+    projectId,
+    assigneeUserId,
+    assignedByUserId: userId,
+    createdByUserId: userId,
+    deliveryDate: String(request.body.deliveryDate ?? ''),
+    title: String(request.body.title ?? ''),
+    type: ensureProjectPackageEventType(request.body.type),
+  })
+  enqueueLatestAssignedPackageEventDelivery(eventId)
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const previousAssignee = await query<{ assignee_user_id: string | null }>(
+    `
+    select assignee_user_id
+    from project_package_events
+    where id = $1 and project_id = $2
+    `,
+    [Number(request.params.eventId), projectId],
+  )
+  const previousAssigneeUserId = previousAssignee.rows[0]?.assignee_user_id
+    ? Number(previousAssignee.rows[0].assignee_user_id)
+    : null
+  let nextAssigneeUserId: number | null | undefined
+  if ('assigneeUserId' in request.body) {
+    nextAssigneeUserId = await ensureProjectMemberUserId(
+      request.body.assigneeUserId,
+      projectId,
+      access.ownerUserId,
+    )
+    if (!nextAssigneeUserId) {
+      response.status(400).json({ error: 'Package event assignee must be a project member' })
+      return
+    }
+  }
+  await updateProjectPackageEvent({
+    projectId,
+    eventId: Number(request.params.eventId),
+    ...('assigneeUserId' in request.body
+      ? {
+          assigneeUserId: nextAssigneeUserId,
+          assignedByUserId: userId,
+        }
+      : {}),
+    deliveryDate: 'deliveryDate' in request.body ? String(request.body.deliveryDate ?? '') : undefined,
+    status: 'status' in request.body ? ensureProjectPackageEventStatus(request.body.status) : undefined,
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    type: 'type' in request.body ? ensureProjectPackageEventType(request.body.type) : undefined,
+  })
+  if (nextAssigneeUserId && nextAssigneeUserId !== previousAssigneeUserId) {
+    await query(
+      `
+      delete from notification_deliveries
+      where kind = 'package_event_assigned'
+        and source_id = $1
+        and channel = 'feishu'
+      `,
+      [Number(request.params.eventId)],
+    )
+    enqueueLatestAssignedPackageEventDelivery(Number(request.params.eventId))
+  }
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageEvent({
+    projectId,
+    eventId: Number(request.params.eventId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const items = Array.isArray(request.body.items)
+    ? request.body.items
+        .map((item: Record<string, unknown>) => ({
+          sourcePackageId: String(item?.sourcePackageId ?? ''),
+          sourcePackageName: String(item?.sourcePackageName ?? ''),
+          packageName: String(item?.packageName ?? ''),
+          channel: String(item?.channel ?? ''),
+          channelLabel: String(item?.channelLabel ?? ''),
+          arch: String(item?.arch ?? ''),
+          version: String(item?.version ?? ''),
+          objectKey: String(item?.objectKey ?? ''),
+          objectLastModified: item?.objectLastModified ? String(item.objectLastModified) : undefined,
+          sizeBytes: typeof item?.sizeBytes === 'number' ? item.sizeBytes : undefined,
+        }))
+        .filter((item: { objectKey: string; packageName: string }) => item.packageName && item.objectKey)
+    : []
+  await addProjectPackageItems({
+    projectId,
+    eventId: Number(request.params.eventId),
+    createdByUserId: userId,
+    items,
+  })
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/package-groups/:groupId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageGroup({
+    projectId,
+    groupId: Number(request.params.groupId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/operations', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await createProjectPackageOperation({
+    projectId,
+    createdByUserId: userId,
+    eventId: Number(request.body.eventId),
+    groupId: request.body.groupId ? Number(request.body.groupId) : null,
+    kind: ensureProjectPackageOperationKind(request.body.kind),
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
+    content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
+    completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    status: 'status' in request.body ? ensureProjectPackageOperationStatus(request.body.status) : undefined,
+    relatedTodoIds:
+      'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
+        ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
+        : undefined,
+    relatedTodoNotes:
+      'relatedTodoNotes' in request.body && request.body.relatedTodoNotes && typeof request.body.relatedTodoNotes === 'object'
+        ? request.body.relatedTodoNotes
+        : undefined,
+  })
+  response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.patch('/api/projects/:projectId/package-timeline/operations/:operationId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await updateProjectPackageOperation({
+    projectId,
+    updatedByUserId: userId,
+    operationId: Number(request.params.operationId),
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    label: 'label' in request.body ? String(request.body.label ?? '') : undefined,
+    content: 'content' in request.body ? String(request.body.content ?? '') : undefined,
+    completed: 'completed' in request.body ? Boolean(request.body.completed) : undefined,
+    status: 'status' in request.body ? ensureProjectPackageOperationStatus(request.body.status) : undefined,
+    relatedTodoIds:
+      'relatedTodoIds' in request.body && Array.isArray(request.body.relatedTodoIds)
+        ? request.body.relatedTodoIds.map((item: unknown) => Number(item))
+        : undefined,
+    relatedTodoNotes:
+      'relatedTodoNotes' in request.body && request.body.relatedTodoNotes && typeof request.body.relatedTodoNotes === 'object'
+        ? request.body.relatedTodoNotes
+        : undefined,
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/operations/:operationId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  await deleteProjectPackageOperation({
+    projectId,
+    operationId: Number(request.params.operationId),
+  })
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.get('/api/projects/:projectId/package-timeline/export', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.json(await exportProjectPackageTimeline(projectId))
+}))
+
+app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const objectKey = await getProjectPackageItemObjectKey({
+    projectId,
+    itemId: Number(request.params.itemId),
+  })
+  if (!objectKey) {
+    response.status(404).json({ error: 'Package item not found' })
+    return
+  }
+  response.json(createPackageItemDownloadLink(
+    objectKey,
+    ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+  ))
 }))
 
 app.post('/api/drafts', asyncHandler(async (request, response) => {
@@ -2307,7 +5282,7 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
 
   const userResult = await query<{ id: string }>(
     'select id from users where email = $1',
-    [normalizeEmail(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'felix@vege.local')],
+    [normalizeUsername(process.env.FEISHU_WEBHOOK_USER_EMAIL ?? 'felix@vege.local')],
   )
   const userId = userResult.rows[0] ? Number(userResult.rows[0].id) : null
   if (!userId) {
@@ -2360,18 +5335,27 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
   })
 }))
 
+app.post('/api/integrations/feishu/deliver-notifications', asyncHandler(async (request, response) => {
+  if (!ensureFeishuWebhookAuth(request, response)) return
+  response.json({
+    disabled: true,
+    message: 'Feishu notifications are delivered only for newly assigned todos.',
+  })
+}))
+
 app.post('/api/integrations/feishu/events', asyncHandler(async (request, response) => {
   const body = request.body && typeof request.body === 'object'
     ? request.body as Record<string, unknown>
     : {}
   const payload = normalizeFeishuEventPayload(body)
+  if (payload.challenge) {
+    response.json({ challenge: payload.challenge })
+    return
+  }
+
   const eventToken = payload.header?.token ?? payload.token
   if (!verifyFeishuToken(eventToken)) {
     response.status(401).json({ error: 'Invalid Feishu verification token' })
-    return
-  }
-  if (payload.challenge) {
-    response.json({ challenge: payload.challenge })
     return
   }
 
@@ -2418,7 +5402,9 @@ app.post('/api/ai/chat', asyncHandler(async (request, response) => {
 
 		  const agentType: AiAgentType =
 		    request.body.agentType === 'conversation-analysis' ? 'conversation-analysis' : 'project-summary'
-  const result = await createAiAgentResponse(userId, agentType, messages)
+  const requestedProjectId = Number(request.body.projectId)
+  const projectId = Number.isFinite(requestedProjectId) ? requestedProjectId : null
+  const result = await createAiAgentResponse(userId, agentType, messages, 45_000, projectId)
   if ('error' in result) {
     response.status(result.status).json({ error: result.error })
     return
@@ -2441,27 +5427,8 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
   if (!userId) return
   const projectId = Number(request.body.projectId)
   const type = ensureSummaryType(request.body.type)
-  const projectResult = await query<{
-    name: string
-    status: ProjectStatus
-    risks: string | null
-    journal: string | null
-    todo: string | null
-  }>(
-    `
-    select
-      p.name,
-      p.status,
-      (select content from risks where project_id = p.id order by created_at desc limit 1) as risks,
-      (select content from journal_entries where project_id = p.id order by created_at desc limit 1) as journal,
-      (select title from todos where project_id = p.id and done = false order by due_date asc limit 1) as todo
-    from projects p
-    where p.id = $1 and p.user_id = $2
-    `,
-    [projectId, userId],
-  )
-  const project = projectResult.rows[0]
-  if (!project) {
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
@@ -2491,14 +5458,20 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
     return
   }
 
-  const content = [
-    `## 进展\n${project.journal ? decryptText(project.journal) : '本周期暂无新增日记。'}`,
-    '## 关键决策\n第一版继续围绕个人项目上下文整理，不扩展团队协作。',
-    `## 未解决问题\n${project.todo ? decryptText(project.todo) : '暂无明确待办阻塞。'}`,
-    `## 风险\n${project.risks ? decryptText(project.risks) : '当前没有记录中的高风险。'}`,
-    '## 下步建议\n- 优先处理高优先级待办\n- 在明天日记中补充结果',
-    `## 状态变化\n项目当前为「${project.status}」。`,
-  ].join('\n\n')
+  const generatedSummary = access.role === 'owner'
+    ? await (async () => {
+        const source = await getOwnerProjectSummarySource(projectId, userId)
+        return source ? buildOwnerProjectSummaryContent(source, type) : null
+      })()
+    : await (async () => {
+        const source = await getMemberProjectSummarySource(projectId, userId)
+        return source ? buildMemberProjectSummaryContent(source, type) : null
+      })()
+  if (!generatedSummary) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const { content, period, title } = generatedSummary
 
   await query(
     `
@@ -2509,8 +5482,8 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
       userId,
       projectId,
       type,
-      encryptText(`${formatDate(new Date())} ${type === 'weekly' ? '周总结' : '月总结'}`),
-      encryptText(type === 'weekly' ? '当前周' : '当前月'),
+      encryptText(title),
+      encryptText(period),
       encryptText(content),
     ],
   )
@@ -2526,7 +5499,14 @@ app.get(/^(?!\/api).*/, (_request, response) => {
 app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
   void next
   console.error(error)
-  response.status(500).json({ error: 'Internal server error' })
+  const status = error && typeof error === 'object' && 'status' in error
+    ? Number((error as { status?: unknown }).status)
+    : 500
+  if (status === 413) {
+    response.status(413).json({ error: '上传内容过大，请压缩图片后重试。' })
+    return
+  }
+  response.status(status >= 400 && status < 600 ? status : 500).json({ error: 'Internal server error' })
 })
 
 assertEncryptionConfigured()

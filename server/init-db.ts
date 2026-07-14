@@ -81,7 +81,7 @@ async function main() {
     on conflict (email) do update set email = excluded.email
     returning id
     `,
-    ['felix@example.com', 'project-baskets'],
+    ['felix', 'project-baskets'],
   )
   const userId = Number(userResult.rows[0].id)
 

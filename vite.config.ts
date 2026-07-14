@@ -7,8 +7,9 @@ import path from 'node:path'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    allowedHosts: ['.sealosgzg.site'],
     proxy: {
-      '/api': `http://127.0.0.1:${process.env.VITE_API_PORT ?? '8788'}`,
+      '/api': 'http://127.0.0.1:8787',
     },
   },
   resolve: {

@@ -1,13 +1,23 @@
 import type {
   InboxItem,
   JournalVisibility,
+  PackageMarketChannel,
+  PackageMarketDetail,
+  PackageMarketRule,
+  PackageMarketVersion,
   NotificationCenterData,
   Priority,
   Project,
+  ProjectPackageEventStatus,
+  ProjectPackageOperationKind,
+  ProjectPackageOperationStatus,
+  ProjectPackageTimeline,
+  ProjectPackageEventType,
   ProjectMembership,
   ProjectStatus,
   Summary,
   Todo,
+  TodoNote,
 } from './types'
 
 export type WorkspaceData = {
@@ -22,16 +32,27 @@ export type NotificationResponse = {
   notifications: NotificationCenterData
 }
 
+export type PackageMarketRulesResponse = {
+  expireMinutes: number
+  rules: PackageMarketRule[]
+}
+
 export type AuthUser = {
   displayName: string
+  feishuEmail: string
+  feishuLinked: boolean
   id: number
-  email: string
+  username: string
 }
 
 export type AuthResponse = {
   token: string
   user: AuthUser
   workspace: WorkspaceData
+}
+
+export type ProjectInviteLinkResponse = {
+  token: string
 }
 
 export type AiChatMessage = {
@@ -45,6 +66,11 @@ export type AiSettings = {
   baseUrl: string
   hasApiKey: boolean
   model: string
+}
+
+export type TodoImageUploadResponse = {
+  imageUrl: string
+  objectKey: string
 }
 
 const tokenStorageKey = 'veges.authToken'
@@ -76,7 +102,14 @@ async function request<T>(path: string, options: RequestInit = {}) {
   })
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`)
+    const fallbackMessage = `Request failed: ${response.status}`
+    let data: { error?: string }
+    try {
+      data = await response.json() as { error?: string }
+    } catch (error) {
+      throw new Error(fallbackMessage, { cause: error })
+    }
+    throw new Error(data.error || fallbackMessage)
   }
 
   return response.json() as Promise<T>
@@ -94,22 +127,47 @@ export function fetchCurrentUser() {
   return request<{ user: AuthUser; workspace: WorkspaceData }>('/api/auth/me')
 }
 
-export function registerAccount(payload: { email: string; password: string }) {
+export function registerAccount(payload: { inviteToken?: string; password: string; username: string }) {
   return request<AuthResponse>('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function loginAccount(payload: { email: string; password: string }) {
+export function loginAccount(payload: { inviteToken?: string; password: string; username: string }) {
   return request<AuthResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateCurrentUser(payload: { displayName: string }) {
+export function updateCurrentUser(payload: {
+  displayName: string
+}) {
   return request<{ user: AuthUser }>('/api/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createFeishuOAuthUrl(payload: { inviteToken?: string; returnTo: string }) {
+  return request<{ url: string }>('/api/auth/feishu/oauth/url', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function disconnectFeishuAccount() {
+  return request<{ user: AuthUser }>('/api/auth/feishu/oauth', {
+    method: 'DELETE',
+  })
+}
+
+export function updateCurrentPassword(payload: {
+  currentPassword: string
+  nextPassword: string
+}) {
+  return request<{ ok: true }>('/api/auth/password', {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -137,11 +195,34 @@ export function createProject(payload: { name: string; tags: string[] }) {
   })
 }
 
+export function createProjectModule(projectId: number, payload: { name: string }) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/modules`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeProjectModule(projectId: number, moduleId: number) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/modules/${moduleId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function updateProject(
   projectId: number,
-  payload: Partial<{ name: string; status: ProjectStatus; tags: string[] }>,
+  payload: Partial<{ name: string; description: string; status: ProjectStatus; tags: string[] }>,
 ) {
   return request<WorkspaceData>(`/api/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateProjectFeishuSettings(
+  projectId: number,
+  payload: { feishuChatEnabled: boolean; feishuChatId: string },
+) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/feishu`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -153,10 +234,10 @@ export function removeProject(projectId: number) {
   })
 }
 
-export function createJournalEntry(projectId: number, content: string) {
+export function createJournalEntry(projectId: number, content: string, createdAt?: string) {
   return request<WorkspaceData>(`/api/projects/${projectId}/journals`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, createdAt }),
   })
 }
 
@@ -191,6 +272,13 @@ export function resolveRisk(projectId: number, content: string) {
   })
 }
 
+export function resolveRiskFromJournal(projectId: number, journalEntryId: number) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/risks`, {
+    method: 'DELETE',
+    body: JSON.stringify({ journalEntryId }),
+  })
+}
+
 export function createDraft(payload: {
   content: string
   suggestedProjectId?: number
@@ -214,9 +302,36 @@ export function removeDraft(draftId: number) {
   })
 }
 
+export async function uploadTodoImage(file: File) {
+  const response = await fetch('/api/todo-images', {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: file,
+  })
+
+  if (!response.ok) {
+    const fallbackMessage = `Request failed: ${response.status}`
+    let data: { error?: string }
+    try {
+      data = await response.json() as { error?: string }
+    } catch (error) {
+      throw new Error(fallbackMessage, { cause: error })
+    }
+    throw new Error(data.error || fallbackMessage)
+  }
+
+  return response.json() as Promise<TodoImageUploadResponse>
+}
+
 export function createTodo(payload: {
   assigneeUserId?: number
+  createdAt?: string
+  detail?: string
   dueDate: string
+  moduleId?: number | null
   priority: Priority
   projectId: number
   title: string
@@ -227,11 +342,26 @@ export function createTodo(payload: {
   })
 }
 
-export function inviteProjectMember(projectId: number, payload: { email: string }) {
+export function inviteProjectMember(projectId: number, payload: { username: string }) {
   return request<WorkspaceData>(`/api/projects/${projectId}/invitations`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function getProjectInviteLink(projectId: number) {
+  return request<ProjectInviteLinkResponse>(`/api/projects/${projectId}/invite-link`, {
+    method: 'POST',
+  })
+}
+
+export function acceptProjectInviteLink(token: string) {
+  return request<{ workspace: WorkspaceData }>(
+    `/api/project-invite-links/${encodeURIComponent(token)}/accept`,
+    {
+      method: 'POST',
+    },
+  )
 }
 
 export function removeProjectMember(projectId: number, membershipId: number) {
@@ -259,7 +389,7 @@ export function declineProjectInvitation(membershipId: number) {
 }
 
 export function markNotificationRead(
-  kind: 'project_invite' | 'assigned_todo' | 'todo_due_tomorrow',
+  kind: 'project_invite' | 'assigned_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
   sourceId: number,
   dismiss = false,
 ) {
@@ -271,11 +401,28 @@ export function markNotificationRead(
 
 export function updateTodo(
   todoId: number,
-  payload: Omit<Partial<Todo>, 'assigneeUserId'> & {
+  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
     assigneeUserId?: number | null
+    createdAt?: string
+    moduleId?: number | null
+    rejectionReason?: string
   },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createTodoNote(todoId: number, payload: { content: string }) {
+  return request<WorkspaceData>(`/api/todos/${todoId}/notes`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTodoNote(todoId: number, noteId: number, payload: Pick<TodoNote, 'content'>) {
+  return request<WorkspaceData>(`/api/todos/${todoId}/notes/${noteId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -306,9 +453,238 @@ export function createSummaryFromContent(payload: {
   })
 }
 
-export function sendAiChat(messages: AiChatMessage[], agentType: AiAgentType) {
+export function sendAiChat(
+  messages: AiChatMessage[],
+  agentType: AiAgentType,
+  projectId?: number,
+) {
   return request<{ message: string }>('/api/ai/chat', {
     method: 'POST',
-    body: JSON.stringify({ agentType, messages }),
+    body: JSON.stringify({ agentType, messages, projectId }),
   })
+}
+
+export function fetchProjectPackageTimeline(projectId: number) {
+  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline`)
+}
+
+export function createProjectPackageEvent(
+  projectId: number,
+  payload: { assigneeUserId: number; deliveryDate: string; title: string; type: ProjectPackageEventType },
+) {
+  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateProjectPackageEvent(
+  projectId: number,
+  eventId: number,
+  payload: Partial<{
+    assigneeUserId: number
+    deliveryDate: string
+    status: ProjectPackageEventStatus
+    title: string
+    type: ProjectPackageEventType
+  }>,
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function removeProjectPackageEvent(projectId: number, eventId: number) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function addProjectPackageItems(
+  projectId: number,
+  eventId: number,
+  payload: {
+    items: Array<{
+      sourcePackageId: string
+      sourcePackageName: string
+      packageName: string
+      channel: string
+      channelLabel: string
+      arch: string
+      version: string
+      objectKey: string
+      objectLastModified?: string
+      sizeBytes?: number
+    }>
+  },
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/packages`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function removeProjectPackageGroup(projectId: number, groupId: number) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/package-groups/${groupId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function createProjectPackageOperation(
+  projectId: number,
+  payload: {
+    eventId: number
+    groupId?: number | null
+    kind: ProjectPackageOperationKind
+    status?: ProjectPackageOperationStatus
+    title?: string
+    label?: string
+    content?: string
+    completed?: boolean
+    relatedTodoIds?: number[]
+    relatedTodoNotes?: Record<number, string>
+  },
+) {
+  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/operations`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateProjectPackageOperation(
+  projectId: number,
+  operationId: number,
+  payload: Partial<{
+    title: string
+    label: string
+    content: string
+    completed: boolean
+    status: ProjectPackageOperationStatus
+    relatedTodoIds: number[]
+    relatedTodoNotes: Record<number, string>
+  }>,
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function removeProjectPackageOperation(projectId: number, operationId: number) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function exportProjectPackageTimeline(projectId: number) {
+  return request<{ fileName: string; markdown: string }>(
+    `/api/projects/${projectId}/package-timeline/export`,
+  )
+}
+
+export function fetchProjectPackageItemDownloadUrl(
+  projectId: number,
+  itemId: number,
+  expireMinutes?: number,
+) {
+  const params = new URLSearchParams()
+  if (expireMinutes) params.set('expireMinutes', String(expireMinutes))
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return request<{ downloadUrl: string; expiresAt: string; expiresInSeconds: number }>(
+    `/api/projects/${projectId}/package-items/${itemId}/download-url${suffix}`,
+  )
+}
+
+export function fetchPackageMarketRules() {
+  return request<PackageMarketRulesResponse>('/api/package-market/rules')
+}
+
+export function fetchPackageMarketBaseDetail(payload: {
+  arch: string
+  channel: PackageMarketChannel
+  deployType: 'pro' | 'oss'
+  expireMinutes?: number
+  releaseVersion?: string
+}) {
+  const params = new URLSearchParams({
+    arch: payload.arch,
+    channel: payload.channel,
+    deployType: payload.deployType,
+  })
+  if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
+  if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
+  return request<PackageMarketDetail>(`/api/package-market/packages/base?${params.toString()}`)
+}
+
+export function fetchPackageMarketBaseReleaseVersions(payload: {
+  arch: string
+  deployType: 'pro' | 'oss'
+}) {
+  const params = new URLSearchParams({
+    arch: payload.arch,
+    deployType: payload.deployType,
+  })
+  return request<{ versions: PackageMarketVersion[] }>(
+    `/api/package-market/packages/base/release-versions?${params.toString()}`,
+  )
+}
+
+export function fetchPackageMarketDetail(payload: {
+  arch: string
+  channel: PackageMarketChannel
+  ciVersion?: string
+  deployType?: string
+  expireMinutes?: number
+  packageId: string
+  releaseVersion?: string
+}) {
+  const params = new URLSearchParams({
+    arch: payload.arch,
+    channel: payload.channel,
+  })
+  if (payload.ciVersion) params.set('ciVersion', payload.ciVersion)
+  if (payload.deployType) params.set('deployType', payload.deployType)
+  if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
+  if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
+  return request<PackageMarketDetail>(
+    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}?${params.toString()}`,
+  )
+}
+
+export function fetchPackageMarketReleaseVersions(payload: {
+  arch: string
+  deployType?: string
+  packageId: string
+}) {
+  const params = new URLSearchParams({ arch: payload.arch })
+  if (payload.deployType) params.set('deployType', payload.deployType)
+  return request<{ versions: PackageMarketVersion[] }>(
+    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/release-versions?${params.toString()}`,
+  )
+}
+
+export function fetchPackageMarketCiVersions(payload: { arch: string; packageId: string }) {
+  const params = new URLSearchParams({ arch: payload.arch })
+  return request<{ versions: PackageMarketVersion[] }>(
+    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-versions?${params.toString()}`,
+  )
 }
