@@ -99,7 +99,7 @@ type PackageWorkbenchProps = {
     status?: ProjectPackageOperationStatus
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
-  }) => Promise<void>
+  }) => Promise<boolean>
   onDeleteEvent: (eventId: number) => Promise<void>
   onDeleteGroup: (groupId: number) => Promise<void>
   onDeleteOperation: (operationId: number) => Promise<void>
@@ -144,11 +144,11 @@ type PackageWorkbenchProps = {
       relatedTodoIds: number[]
       relatedTodoNotes: Record<number, string>
     }>,
-  ) => Promise<void>
+  ) => Promise<boolean>
   onUpdateTodo: (
     todoId: number,
     payload: Partial<Pick<Todo, 'done'>>,
-  ) => void | Promise<void>
+  ) => Promise<boolean>
   currentUserId?: number
   memberships: ProjectMembership[]
   project: Project
@@ -169,6 +169,14 @@ type PendingOperationTarget =
       operation?: ProjectPackageOperation | null
     }
   | null
+
+type PackageMarketDetailContext = {
+  arch: 'amd64' | 'arm64'
+  channel: PackageMarketChannel
+  ciVersion: string
+  packageId: string
+  releaseVersion: string
+}
 
 function eventTypeLabel(type: ProjectPackageEventType) {
   return type === 'init' ? '初始化安装' : '升级'
@@ -801,6 +809,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [marketReleaseVersions, setMarketReleaseVersions] = useState<PackageMarketVersion[]>([])
   const [marketCiVersions, setMarketCiVersions] = useState<PackageMarketVersion[]>([])
   const [marketDetail, setMarketDetail] = useState<PackageMarketDetail | null>(null)
+  const [marketDetailContext, setMarketDetailContext] = useState<PackageMarketDetailContext | null>(null)
   const [marketLoading, setMarketLoading] = useState(false)
   const [marketError, setMarketError] = useState('')
   const [marketExpandedGroups, setMarketExpandedGroups] = useState<Record<'base' | 'apps' | 'middleware', boolean>>({
@@ -826,6 +835,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [copiedValue, setCopiedValue] = useState('')
   const operationTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const exportTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const marketDetailRequestIdRef = useRef(0)
   const todoPickerSearchRef = useRef<HTMLInputElement | null>(null)
   const todoPickerOptionsRef = useRef<HTMLDivElement | null>(null)
   const [todoPickerOptionsOverflowing, setTodoPickerOptionsOverflowing] = useState(false)
@@ -1034,21 +1044,23 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }
   }, [filteredTodoDialogTodos.length, todoPickerOpen])
 
-  async function loadMarketContext() {
-    setMarketLoading(true)
+  async function loadMarketContext(requestId: number) {
     setMarketError('')
     try {
       const rulesPayload = await onLoadPackageMarketRules()
+      if (requestId !== marketDetailRequestIdRef.current) return null
       setMarketRules(rulesPayload.rules)
-      setMarketExpireMinutes(
-        packageMarketExpireOptions.some((option) => option.value === rulesPayload.expireMinutes)
-          ? rulesPayload.expireMinutes
-          : packageMarketExpireOptions[0].value,
+      const expireMinutes = packageMarketExpireOptions.some(
+        (option) => option.value === rulesPayload.expireMinutes,
       )
+        ? rulesPayload.expireMinutes
+        : packageMarketExpireOptions[0].value
+      setMarketExpireMinutes(expireMinutes)
+      return expireMinutes
     } catch (error) {
+      if (requestId !== marketDetailRequestIdRef.current) return null
       setMarketError(error instanceof Error ? error.message : '包市场读取失败')
-    } finally {
-      setMarketLoading(false)
+      return null
     }
   }
 
@@ -1066,8 +1078,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     const releaseVersion = nextOverrides?.releaseVersion ?? marketReleaseVersion
     const ciVersion = nextOverrides?.ciVersion ?? marketCiVersion
     const expireMinutes = nextOverrides?.expireMinutes ?? marketExpireMinutes
+    const requestId = ++marketDetailRequestIdRef.current
+    const context: PackageMarketDetailContext = {
+      arch,
+      channel,
+      ciVersion,
+      packageId,
+      releaseVersion,
+    }
     setMarketLoading(true)
     setMarketError('')
+    setMarketDetail(null)
+    setMarketDetailContext(null)
     try {
       const [versions, detail] = await Promise.all([
         channel === 'ci'
@@ -1093,16 +1115,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           ciVersion,
         }),
       ])
+      if (requestId !== marketDetailRequestIdRef.current) return
       if (channel === 'ci') {
         setMarketCiVersions(versions)
       } else {
         setMarketReleaseVersions(versions)
       }
       setMarketDetail(detail)
+      setMarketDetailContext(context)
     } catch (error) {
+      if (requestId !== marketDetailRequestIdRef.current) return
       setMarketError(error instanceof Error ? error.message : '包详情加载失败')
     } finally {
-      setMarketLoading(false)
+      if (requestId === marketDetailRequestIdRef.current) {
+        setMarketLoading(false)
+      }
     }
   }
 
@@ -1122,9 +1149,20 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }
 
   function openPackageMarket() {
-    void loadMarketContext()
-    void refreshMarketDetail()
+    const openRequestId = ++marketDetailRequestIdRef.current
+    setMarketDetail(null)
+    setMarketDetailContext(null)
+    setMarketLoading(true)
+    setMarketError('')
     setMarketOpen(true)
+    void loadMarketContext(openRequestId).then((expireMinutes) => {
+      if (openRequestId !== marketDetailRequestIdRef.current) return
+      if (expireMinutes == null) {
+        setMarketLoading(false)
+        return
+      }
+      void refreshMarketDetail({ expireMinutes })
+    })
   }
 
   function openEditEventDialog(event: ProjectPackageEvent) {
@@ -1212,15 +1250,19 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           return note && note.trim() ? [[todoId, note] as const] : []
         }),
       )
-      await onUpdateOperation(todoDialogOperation.id, {
+      const operationUpdated = await onUpdateOperation(todoDialogOperation.id, {
         relatedTodoIds: todoDialogRelatedTodoIds,
         relatedTodoNotes,
       })
+      if (!operationUpdated) return
       const changedTodos = todos.filter(
-        (todo) => todo.done !== Boolean(todoDialogTodoDoneMap[todo.id]),
+        (todo) => todo.done !== todoDialogTodoDoneMap[todo.id],
       )
       for (const todo of changedTodos) {
-        await Promise.resolve(onUpdateTodo(todo.id, { done: Boolean(todoDialogTodoDoneMap[todo.id]) }))
+        const todoUpdated = await onUpdateTodo(todo.id, {
+          done: todoDialogTodoDoneMap[todo.id],
+        })
+        if (!todoUpdated) return
       }
       setOperationTodoDialogOpen(false)
       clearOperationTodoDialogState()
@@ -1232,7 +1274,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   function toggleTodoDialogDone(todoId: number) {
     setTodoDialogTodoDoneMap((current) => ({
       ...current,
-      [todoId]: !Boolean(current[todoId]),
+      [todoId]: !current[todoId],
     }))
   }
 
@@ -1460,8 +1502,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     try {
       const trimmedTitle = operationTitle.trim()
       const trimmedContent = operationContent.trim()
-      if (pendingOperationTarget.operation) {
-        await onUpdateOperation(
+      const saved = pendingOperationTarget.operation
+        ? await onUpdateOperation(
           pendingOperationTarget.operation.id,
           operationKind === 'document'
             ? {
@@ -1473,8 +1515,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 ...(trimmedContent ? { content: trimmedContent } : {}),
               },
         )
-      } else {
-        await onCreateOperation({
+        : await onCreateOperation({
           eventId: pendingOperationTarget.eventId,
           groupId: pendingOperationTarget.groupId ?? null,
           kind: operationKind,
@@ -1488,7 +1529,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 ...(trimmedContent ? { content: trimmedContent } : {}),
               }),
         })
-      }
+      if (!saved) return
       setOperationDialogOpen(false)
       setPendingOperationTarget(null)
     } finally {
@@ -2485,10 +2526,20 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                               type="button"
                               className={rule.id === marketSelectedPackage ? 'package-market-rule active' : 'package-market-rule'}
                               onClick={() => {
+                                const nextChannel =
+                                  rule.id === 'base-pro' || rule.id === 'base-oss'
+                                    ? 'release'
+                                    : marketChannel
                                 setMarketSelectedPackage(rule.id)
+                                setMarketChannel(nextChannel)
                                 setMarketReleaseVersion('')
                                 setMarketCiVersion('')
-                                void refreshMarketDetail({ packageId: rule.id, releaseVersion: '', ciVersion: '' })
+                                void refreshMarketDetail({
+                                  packageId: rule.id,
+                                  channel: nextChannel,
+                                  releaseVersion: '',
+                                  ciVersion: '',
+                                })
                               }}
                             >
                               <strong>{rule.name}</strong>
@@ -2629,16 +2680,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                 className="ghost-button"
                                 variant="outline"
                                 type="button"
+                                disabled={!marketDetailContext}
                                 onClick={() => {
+                                  if (!marketDetailContext) return
                                   setCartItems((current) => [
                                     ...current,
                                     {
-                                      sourcePackageId: marketSelectedPackage,
+                                      sourcePackageId: marketDetailContext.packageId,
                                       sourcePackageName: marketDetail.title,
                                       packageName: link.name,
-                                      channel: marketChannel,
-                                      channelLabel: channelLabel(marketChannel),
-                                      arch: marketArch,
+                                      channel: marketDetailContext.channel,
+                                      channelLabel: channelLabel(marketDetailContext.channel),
+                                      arch: marketDetailContext.arch,
                                       version: link.version,
                                       objectKey: link.objectKey,
                                       objectLastModified: link.lastModified,

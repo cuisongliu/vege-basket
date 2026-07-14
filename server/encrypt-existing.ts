@@ -20,6 +20,35 @@ async function encryptColumn(table: string, column: string) {
   }
 }
 
+async function encryptProjectPackageOperationTodoNotes() {
+  const result = await query<{
+    note: string
+    project_package_operation_id: string
+    todo_id: string
+  }>(
+    `
+    select project_package_operation_id, todo_id, note
+    from project_package_operation_todos
+    `,
+  )
+  for (const row of result.rows) {
+    if (!row.note || isEncryptedText(row.note)) continue
+    await query(
+      `
+      update project_package_operation_todos
+      set note = $1
+      where project_package_operation_id = $2
+        and todo_id = $3
+      `,
+      [
+        encryptText(row.note),
+        Number(row.project_package_operation_id),
+        Number(row.todo_id),
+      ],
+    )
+  }
+}
+
 async function main() {
   await query(schemaSql)
 
@@ -53,6 +82,10 @@ async function main() {
   await encryptColumn('summaries', 'title')
   await encryptColumn('summaries', 'period')
   await encryptColumn('summaries', 'content')
+  await encryptColumn('project_package_events', 'title')
+  await encryptColumn('project_package_operations', 'title')
+  await encryptColumn('project_package_operations', 'content')
+  await encryptProjectPackageOperationTodoNotes()
 
   const collaborators = await query<{ id: string; name: string; role: string }>(
     'select id, name, role from collaborators',

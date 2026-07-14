@@ -1,6 +1,6 @@
-import type { QueryResultRow } from 'pg'
+import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
-import { query } from './db.ts'
+import { pool, query } from './db.ts'
 import { createPackageItemDownloadUrl } from './package-market.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
@@ -163,6 +163,34 @@ type OperationRelatedTodoExportDetail = {
   todoId: number
 }
 
+type NormalizedProjectPackageItem = {
+  arch: string
+  channel: string
+  channelLabel: string
+  objectKey: string
+  objectLastModified: Date | null
+  packageName: string
+  sizeBytes: number | null
+  sourcePackageId: string
+  sourcePackageName: string
+  version: string
+}
+
+async function withTransaction<T>(operation: (client: PoolClient) => Promise<T>) {
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const result = await operation(client)
+    await client.query('commit')
+    return result
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 function formatDateTime(value: Date | string) {
   const date = value instanceof Date ? value : new Date(value)
   const parts = new Intl.DateTimeFormat('zh-CN', {
@@ -280,6 +308,49 @@ function normalizeText(value: unknown, max = 200) {
   return String(value ?? '').trim().slice(0, max)
 }
 
+function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
+  if (items.length === 0) {
+    throw new Error('At least one package item is required')
+  }
+
+  return items.map((item, index): NormalizedProjectPackageItem => {
+    const packageName = normalizeText(item.packageName, 160)
+    const objectKey = normalizeText(item.objectKey, 400)
+    if (!packageName || !objectKey) {
+      throw new Error(`Package item ${index + 1} requires packageName and objectKey`)
+    }
+
+    let objectLastModified: Date | null = null
+    if (item.objectLastModified) {
+      objectLastModified = new Date(item.objectLastModified)
+      if (Number.isNaN(objectLastModified.getTime())) {
+        throw new Error(`Package item ${index + 1} has an invalid objectLastModified`)
+      }
+    }
+
+    let sizeBytes: number | null = null
+    if (item.sizeBytes != null) {
+      sizeBytes = Math.round(item.sizeBytes)
+      if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
+        throw new Error(`Package item ${index + 1} has an invalid sizeBytes`)
+      }
+    }
+
+    return {
+      arch: normalizeText(item.arch, 32) || 'amd64',
+      channel: normalizeText(item.channel, 32) || 'release',
+      channelLabel: normalizeText(item.channelLabel, 40),
+      objectKey,
+      objectLastModified,
+      packageName,
+      sizeBytes,
+      sourcePackageId: normalizeText(item.sourcePackageId, 120),
+      sourcePackageName: normalizeText(item.sourcePackageName || packageName, 160),
+      version: normalizeText(item.version, 80),
+    }
+  })
+}
+
 function normalizePositiveIds(value: unknown) {
   if (!Array.isArray(value)) return []
   return Array.from(
@@ -304,52 +375,48 @@ function normalizeTodoNotes(value: unknown) {
   ) as Record<number, string>
 }
 
-async function touchEvent(eventId: number) {
-  await query(
-    `
+async function touchEvent(eventId: number, client?: PoolClient) {
+  const sql = `
     update project_package_events
     set updated_at = now()
     where id = $1
-    `,
-    [eventId],
-  )
+  `
+  if (client) {
+    await client.query(sql, [eventId])
+    return
+  }
+  await query(sql, [eventId])
 }
 
-async function findEventMeta(eventId: number, projectId: number) {
-  const result = await query<{ id: string; type: ProjectPackageEventType }>(
-    `
+async function findEventMeta(eventId: number, projectId: number, client?: PoolClient) {
+  const sql = `
     select id, type
     from project_package_events
     where id = $1 and project_id = $2
-    `,
-    [eventId, projectId],
-  )
+  `
+  const result = client
+    ? await client.query<{ id: string; type: ProjectPackageEventType }>(sql, [eventId, projectId])
+    : await query<{ id: string; type: ProjectPackageEventType }>(sql, [eventId, projectId])
   return result.rows[0] ?? null
 }
 
-async function findGroupMeta(groupId: number, projectId: number) {
-  const result = await query<{ event_id: string; group_id: string; package_name: string }>(
-    `
+async function findGroupMeta(groupId: number, projectId: number, client?: PoolClient) {
+  const sql = `
     select e.id as event_id,
            g.id as group_id,
            g.package_name
     from project_package_groups g
     join project_package_events e on e.id = g.project_package_event_id
     where g.id = $1 and e.project_id = $2
-    `,
-    [groupId, projectId],
-  )
+  `
+  const result = client
+    ? await client.query<{ event_id: string; group_id: string; package_name: string }>(sql, [groupId, projectId])
+    : await query<{ event_id: string; group_id: string; package_name: string }>(sql, [groupId, projectId])
   return result.rows[0] ?? null
 }
 
-async function findOperationMeta(operationId: number, projectId: number) {
-  const result = await query<{
-    completed: boolean
-    event_id: string
-    group_id: string | null
-    id: string
-  }>(
-    `
+async function findOperationMeta(operationId: number, projectId: number, client?: PoolClient) {
+  const sql = `
     select o.id,
            o.project_package_event_id as event_id,
            o.project_package_group_id as group_id,
@@ -357,25 +424,36 @@ async function findOperationMeta(operationId: number, projectId: number) {
     from project_package_operations o
     join project_package_events e on e.id = o.project_package_event_id
     where o.id = $1 and e.project_id = $2
-    `,
-    [operationId, projectId],
-  )
+  `
+  const result = client
+    ? await client.query<{
+        completed: boolean
+        event_id: string
+        group_id: string | null
+        id: string
+      }>(sql, [operationId, projectId])
+    : await query<{
+        completed: boolean
+        event_id: string
+        group_id: string | null
+        id: string
+      }>(sql, [operationId, projectId])
   return result.rows[0] ?? null
 }
 
-async function ensureProjectTodoIds(projectId: number, todoIds: number[]) {
+async function ensureProjectTodoIds(projectId: number, todoIds: number[], client?: PoolClient) {
   const normalizedTodoIds = normalizeTodoIds(todoIds)
   if (normalizedTodoIds.length === 0) return []
 
-  const result = await query<{ id: string }>(
-    `
+  const sql = `
     select id
     from todos
     where project_id = $1
       and id = any($2::bigint[])
-    `,
-    [projectId, normalizedTodoIds],
-  )
+  `
+  const result = client
+    ? await client.query<{ id: string }>(sql, [projectId, normalizedTodoIds])
+    : await query<{ id: string }>(sql, [projectId, normalizedTodoIds])
   const foundTodoIds = new Set(result.rows.map((row) => Number(row.id)))
   if (foundTodoIds.size !== normalizedTodoIds.length) {
     throw new Error('Some todos were not found in this project')
@@ -384,12 +462,13 @@ async function ensureProjectTodoIds(projectId: number, todoIds: number[]) {
 }
 
 async function replaceOperationTodoLinks(
+  client: PoolClient,
   operationId: number,
   authorUserId: number,
   todoIds: number[],
   todoNotes: Record<number, string> = {},
 ) {
-  await query(
+  await client.query(
     `
     delete from project_package_operation_todos
     where project_package_operation_id = $1
@@ -399,7 +478,8 @@ async function replaceOperationTodoLinks(
 
   for (const todoId of todoIds) {
     const note = String(todoNotes[todoId] ?? '').trim()
-    await query(
+    const encryptedNote = note ? encryptText(note) : ''
+    await client.query(
       `
       insert into project_package_operation_todos (
         project_package_operation_id,
@@ -415,12 +495,13 @@ async function replaceOperationTodoLinks(
               else project_package_operation_todos.note_author_user_id
             end
       `,
-      [operationId, todoId, note, note ? authorUserId : null],
+      [operationId, todoId, encryptedNote, note ? authorUserId : null],
     )
   }
 }
 
 async function syncOperationTodoNotes(
+  client: PoolClient,
   operationId: number,
   authorUserId: number,
   todoIds: number[],
@@ -428,7 +509,7 @@ async function syncOperationTodoNotes(
 ) {
   const normalizedTodoIds = normalizeTodoIds(todoIds)
 
-  await query(
+  await client.query(
     `
     delete from todo_notes
     where source_operation_id = $1
@@ -440,7 +521,7 @@ async function syncOperationTodoNotes(
   for (const todoId of normalizedTodoIds) {
     const note = String(todoNotes[todoId] ?? '').trim()
     if (!note) {
-      await query(
+      await client.query(
         `
         delete from todo_notes
         where todo_id = $1
@@ -451,7 +532,7 @@ async function syncOperationTodoNotes(
       continue
     }
 
-    await query(
+    await client.query(
       `
       insert into todo_notes (todo_id, author_user_id, content, source_operation_id)
       values ($1, $2, $3, $4)
@@ -630,12 +711,12 @@ export async function syncProjectPackageCompletionState(params: {
   return connectedIds
 }
 
-async function findOrCreateGroup(eventId: number, packageName: string) {
-  const normalizedPackageName = normalizeText(packageName, 160)
-  if (!normalizedPackageName) {
-    throw new Error('Package name is required')
-  }
-  const result = await query<{ id: string }>(
+async function findOrCreateGroup(
+  client: PoolClient,
+  eventId: number,
+  packageName: string,
+) {
+  const result = await client.query<{ id: string }>(
     `
     insert into project_package_groups (project_package_event_id, package_name)
     values ($1, $2)
@@ -643,29 +724,19 @@ async function findOrCreateGroup(eventId: number, packageName: string) {
       set package_name = excluded.package_name
     returning id
     `,
-    [eventId, normalizedPackageName],
+    [eventId, packageName],
   )
   return Number(result.rows[0].id)
 }
 
 async function maybeSeedGroupOperation(
+  client: PoolClient,
   eventId: number,
   groupId: number,
   eventType: ProjectPackageEventType,
   createdByUserId: number,
 ) {
-  const existing = await query<{ id: string }>(
-    `
-    select id
-    from project_package_operations
-    where project_package_group_id = $1
-    limit 1
-    `,
-    [groupId],
-  )
-  if (existing.rows[0]) return
-
-  await query(
+  await client.query(
     `
     insert into project_package_operations (
       project_package_event_id,
@@ -677,7 +748,13 @@ async function maybeSeedGroupOperation(
       auto_generated,
       created_by_user_id
     )
-    values ($1, $2, 'event', '', $3, '', true, $4)
+    select $1, $2, 'event', '', $3, '', true, $4
+    where not exists (
+      select 1
+      from project_package_operations
+      where project_package_group_id = $2
+    )
+    on conflict (project_package_group_id) where auto_generated do nothing
     `,
     [eventId, groupId, eventTypeLabel(eventType), createdByUserId],
   )
@@ -1054,7 +1131,7 @@ export async function getProjectPackageTimeline(projectId: number) {
     todoIds.push(Number(row.todo_id))
     relatedTodoIdsByOperation.set(operationId, todoIds)
     const todoNotes = relatedTodoNotesByOperation.get(operationId) ?? {}
-    todoNotes[Number(row.todo_id)] = row.note ?? ''
+    todoNotes[Number(row.todo_id)] = row.note ? decryptText(row.note) : ''
     relatedTodoNotesByOperation.set(operationId, todoNotes)
   }
 
@@ -1063,9 +1140,9 @@ export async function getProjectPackageTimeline(projectId: number) {
     const operation: ProjectPackageOperation = {
       id: Number(row.id),
       kind: row.kind,
-      title: row.title,
+      title: decryptText(row.title),
       label: row.label,
-      content: row.content,
+      content: row.content ? decryptText(row.content) : '',
       status: ensureProjectPackageOperationStatus(row.status),
       relatedTodoIds: relatedTodoIdsByOperation.get(Number(row.id)) ?? [],
       relatedTodoNotes: relatedTodoNotesByOperation.get(Number(row.id)) ?? {},
@@ -1106,7 +1183,7 @@ export async function getProjectPackageTimeline(projectId: number) {
       id: Number(row.id),
       type: row.type,
       status: ensureProjectPackageEventStatus(row.status),
-      title: row.title,
+      title: decryptText(row.title),
       createdAt: formatDateTime(row.created_at),
       deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
       updatedAt: formatDateTime(row.updated_at),
@@ -1147,7 +1224,7 @@ export async function createProjectPackageEvent(params: {
     [
       params.projectId,
       params.type,
-      title,
+      encryptText(title),
       params.createdByUserId,
       params.assigneeUserId ?? null,
       params.assigneeUserId ? (params.assignedByUserId ?? params.createdByUserId) : null,
@@ -1172,7 +1249,7 @@ export async function updateProjectPackageEvent(params: {
   if (params.title != null) {
     const title = normalizeText(params.title, 120)
     if (!title) throw new Error('Event title is required')
-    values.push(title)
+    values.push(encryptText(title))
     updates.push(`title = $${values.length}`)
   }
   if (params.type != null) {
@@ -1228,52 +1305,56 @@ export async function addProjectPackageItems(params: {
   items: ProjectPackageItemInput[]
   projectId: number
 }) {
-  const event = await findEventMeta(params.eventId, params.projectId)
-  if (!event) throw new Error('Event not found')
-  if (params.items.length === 0) throw new Error('At least one package item is required')
+  const items = normalizeProjectPackageItems(params.items)
 
-  for (const item of params.items) {
-    const groupId = await findOrCreateGroup(params.eventId, item.packageName)
-    await query(
-      `
-      insert into project_package_items (
-        project_package_group_id,
-        source_package_id,
-        source_package_name,
-        channel,
-        channel_label,
-        arch,
-        version,
-        object_key,
-        object_last_modified,
-        size_bytes,
-        created_by_user_id
+  await withTransaction(async (client) => {
+    const event = await findEventMeta(params.eventId, params.projectId, client)
+    if (!event) throw new Error('Event not found')
+
+    for (const item of items) {
+      const groupId = await findOrCreateGroup(client, params.eventId, item.packageName)
+      await client.query(
+        `
+        insert into project_package_items (
+          project_package_group_id,
+          source_package_id,
+          source_package_name,
+          channel,
+          channel_label,
+          arch,
+          version,
+          object_key,
+          object_last_modified,
+          size_bytes,
+          created_by_user_id
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `,
+        [
+          groupId,
+          item.sourcePackageId,
+          item.sourcePackageName,
+          item.channel,
+          item.channelLabel,
+          item.arch,
+          item.version,
+          item.objectKey,
+          item.objectLastModified,
+          item.sizeBytes,
+          params.createdByUserId,
+        ],
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      `,
-      [
+      await maybeSeedGroupOperation(
+        client,
+        params.eventId,
         groupId,
-        normalizeText(item.sourcePackageId, 120),
-        normalizeText(item.sourcePackageName || item.packageName, 160),
-        normalizeText(item.channel, 32) || 'release',
-        normalizeText(item.channelLabel, 40),
-        normalizeText(item.arch, 32) || 'amd64',
-        normalizeText(item.version, 80),
-        normalizeText(item.objectKey, 400),
-        item.objectLastModified ? new Date(item.objectLastModified) : null,
-        item.sizeBytes ? Math.max(0, Math.round(item.sizeBytes)) : null,
+        event.type,
         params.createdByUserId,
-      ],
-    )
-    await maybeSeedGroupOperation(
-      params.eventId,
-      groupId,
-      event.type,
-      params.createdByUserId,
-    )
-  }
+      )
+    }
 
-  await touchEvent(params.eventId)
+    await touchEvent(params.eventId, client)
+  })
 }
 
 export async function deleteProjectPackageGroup(params: {
@@ -1300,77 +1381,84 @@ export async function createProjectPackageOperation(params: {
   status?: ProjectPackageOperationStatus
   title?: string
 }) {
-  const event = await findEventMeta(params.eventId, params.projectId)
-  if (!event) throw new Error('Event not found')
-  if (params.groupId) {
-    const group = await findGroupMeta(params.groupId, params.projectId)
-    if (!group || Number(group.event_id) !== params.eventId) {
-      throw new Error('Package group not found')
-    }
-  }
-
   const kind = ensureProjectPackageOperationKind(params.kind)
   const title = normalizeText(params.title, 120)
-  const label = normalizeText(
-    params.label ?? (kind === 'event' ? eventTypeLabel(event.type) : ''),
-    120,
-  )
   const content = String(params.content ?? '').trim()
-  const relatedTodoIds = await ensureProjectTodoIds(
-    params.projectId,
-    params.relatedTodoIds ?? [],
-  )
   const relatedTodoNotes = normalizeTodoNotes(params.relatedTodoNotes)
   const completed = Boolean(params.completed)
   const status = ensureProjectPackageOperationStatus(params.status)
 
   if (kind === 'document' && !title) throw new Error('Operation title is required')
   if (kind === 'document' && !content) throw new Error('Operation content is required')
-  if (kind === 'event' && !label) throw new Error('Operation label is required')
 
-  const result = await query<{ id: string }>(
-    `
-    insert into project_package_operations (
-      project_package_event_id,
-      project_package_group_id,
-      kind,
-      status,
-      title,
-      label,
-      content,
-      completed,
-      auto_generated,
-      created_by_user_id
+  await withTransaction(async (client) => {
+    const event = await findEventMeta(params.eventId, params.projectId, client)
+    if (!event) throw new Error('Event not found')
+    if (params.groupId) {
+      const group = await findGroupMeta(params.groupId, params.projectId, client)
+      if (!group || Number(group.event_id) !== params.eventId) {
+        throw new Error('Package group not found')
+      }
+    }
+
+    const label = normalizeText(
+      params.label ?? (kind === 'event' ? eventTypeLabel(event.type) : ''),
+      120,
     )
-    values ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)
-    returning id
-    `,
-    [
-      params.eventId,
-      params.groupId ?? null,
-      kind,
-      status,
-      title,
-      label,
-      content,
-      completed,
-      params.createdByUserId,
-    ],
-  )
-  await replaceOperationTodoLinks(
-    Number(result.rows[0].id),
-    params.createdByUserId,
-    relatedTodoIds,
-    relatedTodoNotes,
-  )
-  await syncOperationTodoNotes(
-    Number(result.rows[0].id),
-    params.createdByUserId,
-    relatedTodoIds,
-    relatedTodoNotes,
-  )
+    if (kind === 'event' && !label) throw new Error('Operation label is required')
 
-  await touchEvent(params.eventId)
+    const relatedTodoIds = await ensureProjectTodoIds(
+      params.projectId,
+      params.relatedTodoIds ?? [],
+      client,
+    )
+    const result = await client.query<{ id: string }>(
+      `
+      insert into project_package_operations (
+        project_package_event_id,
+        project_package_group_id,
+        kind,
+        status,
+        title,
+        label,
+        content,
+        completed,
+        auto_generated,
+        created_by_user_id
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)
+      returning id
+      `,
+      [
+        params.eventId,
+        params.groupId ?? null,
+        kind,
+        status,
+        title ? encryptText(title) : '',
+        label,
+        content ? encryptText(content) : '',
+        completed,
+        params.createdByUserId,
+      ],
+    )
+    const operationId = Number(result.rows[0].id)
+    await replaceOperationTodoLinks(
+      client,
+      operationId,
+      params.createdByUserId,
+      relatedTodoIds,
+      relatedTodoNotes,
+    )
+    await syncOperationTodoNotes(
+      client,
+      operationId,
+      params.createdByUserId,
+      relatedTodoIds,
+      relatedTodoNotes,
+    )
+
+    await touchEvent(params.eventId, client)
+  })
 }
 
 export async function updateProjectPackageOperation(params: {
@@ -1385,15 +1473,12 @@ export async function updateProjectPackageOperation(params: {
   status?: ProjectPackageOperationStatus
   title?: string
 }) {
-  const operation = await findOperationMeta(params.operationId, params.projectId)
-  if (!operation) throw new Error('Operation not found')
-
   const updates: string[] = []
   const values: unknown[] = []
   if (params.title != null) {
     const title = normalizeText(params.title, 120)
     if (!title) throw new Error('Operation title is required')
-    values.push(title)
+    values.push(encryptText(title))
     updates.push(`title = $${values.length}`)
   }
   if (params.label != null) {
@@ -1405,7 +1490,7 @@ export async function updateProjectPackageOperation(params: {
   if (params.content != null) {
     const content = String(params.content).trim()
     if (!content) throw new Error('Operation content is required')
-    values.push(content)
+    values.push(encryptText(content))
     updates.push(`content = $${values.length}`)
   }
   if (params.completed != null) {
@@ -1417,9 +1502,6 @@ export async function updateProjectPackageOperation(params: {
     updates.push(`status = $${values.length}`)
   }
   const shouldUpdateRelatedTodos = params.relatedTodoIds != null
-  const relatedTodoIds = shouldUpdateRelatedTodos
-    ? await ensureProjectTodoIds(params.projectId, params.relatedTodoIds ?? [])
-    : []
   const relatedTodoNotes = shouldUpdateRelatedTodos
     ? normalizeTodoNotes(params.relatedTodoNotes)
     : {}
@@ -1428,42 +1510,52 @@ export async function updateProjectPackageOperation(params: {
     throw new Error('No supported fields to update')
   }
 
-  if (updates.length > 0) {
-    values.push(params.operationId)
-    await query(
-      `
-      update project_package_operations
-      set ${updates.join(', ')}, updated_at = now()
-      where id = $${values.length}
-      `,
-      values,
-    )
-  } else {
-    await query(
-      `
-      update project_package_operations
-      set updated_at = now()
-      where id = $1
-      `,
-      [params.operationId],
-    )
-  }
+  await withTransaction(async (client) => {
+    const operation = await findOperationMeta(params.operationId, params.projectId, client)
+    if (!operation) throw new Error('Operation not found')
+    const relatedTodoIds = shouldUpdateRelatedTodos
+      ? await ensureProjectTodoIds(params.projectId, params.relatedTodoIds ?? [], client)
+      : []
 
-  if (shouldUpdateRelatedTodos) {
-    await replaceOperationTodoLinks(
-      params.operationId,
-      params.updatedByUserId,
-      relatedTodoIds,
-      relatedTodoNotes,
-    )
-    await syncOperationTodoNotes(
-      params.operationId,
-      params.updatedByUserId,
-      relatedTodoIds,
-      relatedTodoNotes,
-    )
-  }
-  await touchEvent(Number(operation.event_id))
+    if (updates.length > 0) {
+      values.push(params.operationId)
+      await client.query(
+        `
+        update project_package_operations
+        set ${updates.join(', ')}, updated_at = now()
+        where id = $${values.length}
+        `,
+        values,
+      )
+    } else {
+      await client.query(
+        `
+        update project_package_operations
+        set updated_at = now()
+        where id = $1
+        `,
+        [params.operationId],
+      )
+    }
+
+    if (shouldUpdateRelatedTodos) {
+      await replaceOperationTodoLinks(
+        client,
+        params.operationId,
+        params.updatedByUserId,
+        relatedTodoIds,
+        relatedTodoNotes,
+      )
+      await syncOperationTodoNotes(
+        client,
+        params.operationId,
+        params.updatedByUserId,
+        relatedTodoIds,
+        relatedTodoNotes,
+      )
+    }
+    await touchEvent(Number(operation.event_id), client)
+  })
 }
 
 export async function deleteProjectPackageOperation(params: {
@@ -1543,7 +1635,7 @@ export async function exportProjectPackageTimeline(projectId: number) {
     details.push({
       todoId: Number(row.todo_id),
       title: decryptText(row.todo_title),
-      note: String(row.note ?? ''),
+      note: row.note ? decryptText(row.note) : '',
       noteAuthorName:
         row.operation_note_author_display_name ??
         row.operation_note_author_email ??

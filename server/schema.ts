@@ -423,6 +423,9 @@ create index if not exists idx_project_package_operations_event_id
   on project_package_operations(project_package_event_id, created_at asc);
 create index if not exists idx_project_package_operations_group_id
   on project_package_operations(project_package_group_id, created_at asc);
+create unique index if not exists idx_project_package_operations_auto_group_unique
+  on project_package_operations(project_package_group_id)
+  where auto_generated;
 create index if not exists idx_project_package_operation_todos_operation_id
   on project_package_operation_todos(project_package_operation_id);
 create index if not exists idx_project_package_operation_todos_todo_id

@@ -1,5 +1,7 @@
 import 'dotenv/config'
 import crypto from 'node:crypto'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
@@ -19,6 +21,7 @@ import {
   getOssObject,
   getPackageMarketDetail,
   getPackageMarketExpireMinutes,
+  isAllowedPackageMarketObjectKey,
   listPackageMarketCiVersions,
   listPackageMarketReleaseVersions,
   listPackageMarketRules,
@@ -433,6 +436,85 @@ function serializeAiSettings(row?: AiSettingsRow) {
   }
 }
 
+function isPrivateIpv4Address(address: string) {
+  const parts = address.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true
+  }
+  const [first, second] = parts
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  )
+}
+
+function isPrivateIpv6Address(address: string) {
+  const normalized = address.toLowerCase().split('%')[0]
+  if (normalized === '::' || normalized === '::1') return true
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+  if (/^fe[89ab]/.test(normalized) || normalized.startsWith('ff')) return true
+  if (normalized.startsWith('::ffff:')) {
+    const mappedIpv4 = normalized.slice('::ffff:'.length)
+    return isPrivateIpv4Address(mappedIpv4)
+  }
+  return false
+}
+
+function isDisallowedNetworkAddress(address: string) {
+  const normalized = address.replace(/^\[|\]$/g, '')
+  const family = isIP(normalized)
+  if (family === 4) return isPrivateIpv4Address(normalized)
+  if (family === 6) return isPrivateIpv6Address(normalized)
+  return true
+}
+
+async function normalizeAiBaseUrl(value: string) {
+  const baseUrl = value.trim().replace(/\/+$/, '')
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    return { error: 'AI base URL must be a valid HTTPS URL' as const }
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+    return { error: 'AI base URL must use HTTPS and must not contain credentials' as const }
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (
+    !hostname ||
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname === 'metadata.google.internal'
+  ) {
+    return { error: 'AI base URL host is not allowed' as const }
+  }
+
+  try {
+    const addresses = isIP(hostname)
+      ? [{ address: hostname }]
+      : await lookup(hostname, { all: true, verbatim: true })
+    if (addresses.length === 0 || addresses.some(({ address }) => isDisallowedNetworkAddress(address))) {
+      return { error: 'AI base URL must resolve only to public network addresses' as const }
+    }
+  } catch {
+    return { error: 'AI base URL host could not be resolved' as const }
+  }
+
+  parsed.hash = ''
+  parsed.search = ''
+  return { baseUrl: parsed.toString().replace(/\/+$/, '') }
+}
+
 function getAiEndpoint(baseUrl: string) {
   const base = baseUrl.trim()
   return `${base.replace(/\/$/, '')}/v1/chat/completions`
@@ -457,7 +539,7 @@ function stripMarkdownForSummary(value: string) {
 }
 
 function extractMentionNames(value: string) {
-  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】\[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】\[\]<>《》"'“”])/g))
+  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】[\]<>《》"'“”])/g))
     .map((match) => match[1]?.trim() ?? '')
     .filter(Boolean)
 }
@@ -626,9 +708,11 @@ function buildFeishuOAuthSigninRedirect(
   options: { message?: string; token?: string } = {},
 ) {
   const target = new URL(returnTo, 'http://veges.local')
-  target.searchParams.set('feishuAuth', status)
-  if (options.token) target.searchParams.set('token', options.token)
-  if (options.message) target.searchParams.set('feishuAuthMessage', options.message.slice(0, 120))
+  const fragment = new URLSearchParams()
+  fragment.set('feishuAuth', status)
+  if (options.token) fragment.set('token', options.token)
+  if (options.message) fragment.set('feishuAuthMessage', options.message.slice(0, 120))
+  target.hash = fragment.toString()
   return `${target.pathname}${target.search}${target.hash}`
 }
 
@@ -682,8 +766,9 @@ function extractConversationText(body: Record<string, unknown>) {
 }
 
 function verifyFeishuToken(token: unknown) {
-  const expectedToken = process.env.FEISHU_VERIFICATION_TOKEN ?? ''
-  return !expectedToken || token === expectedToken
+  const expectedToken = String(process.env.FEISHU_VERIFICATION_TOKEN ?? '').trim()
+  const receivedToken = String(token ?? '').trim()
+  return Boolean(expectedToken && receivedToken) && timingSafeTextEqual(receivedToken, expectedToken)
 }
 
 function normalizeFeishuEventPayload(body: Record<string, unknown>) {
@@ -1410,6 +1495,10 @@ async function createAiAgentResponse(
   if (!baseUrl || !apiKey || !model) {
     return { error: 'AI API is not configured', status: 503 as const }
   }
+  const normalizedBaseUrl = await normalizeAiBaseUrl(baseUrl)
+  if ('error' in normalizedBaseUrl) {
+    return { error: normalizedBaseUrl.error, status: 400 as const }
+  }
 
   const scopedProjectId = Number.isFinite(projectId) ? Number(projectId) : null
   const projectContext = agentType === 'project-summary' && scopedProjectId
@@ -1420,8 +1509,9 @@ async function createAiAgentResponse(
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(baseUrl), {
+    const aiResponse = await fetch(getAiEndpoint(normalizedBaseUrl.baseUrl), {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -1662,91 +1752,127 @@ async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
   const token = String(rawToken ?? '').trim()
   if (!token) return false
 
-  const invite = await query<{
-    project_id: string
-    owner_user_id: string
-  }>(
-    `
-    select l.project_id,
-           p.user_id as owner_user_id
-    from project_invite_links l
-    join projects p on p.id = l.project_id
-    where l.token = $1
-      and l.revoked_at is null
-    limit 1
-    `,
-    [token],
-  )
-  const inviteRow = invite.rows[0]
-  if (!inviteRow) return false
-
-  const projectId = Number(inviteRow.project_id)
-  const ownerUserId = Number(inviteRow.owner_user_id)
-  if (ownerUserId === userId) return true
-
-  const existingAccess = await getProjectAccess(projectId, userId)
-  if (existingAccess) return true
-
-  const user = await query<UserRow>(
-    'select id, email, display_name from users where id = $1',
-    [userId],
-  )
-  const userRow = user.rows[0]
-  if (!userRow) return false
-
-  const username = normalizeUsername(userRow.email)
-  const emailLookup = blindIndex(username)
-  const existingMembership = await query<{ id: string }>(
-    `
-    select id
-    from project_memberships
-    where project_id = $1 and invited_email_lookup = $2
-    limit 1
-    `,
-    [projectId, emailLookup],
-  )
-
-  if (existingMembership.rows[0]) {
-    await query(
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const invite = await client.query<{
+      project_id: string
+      owner_user_id: string
+    }>(
       `
-      update project_memberships
-      set owner_user_id = $1,
-          invited_user_id = $2,
-          invited_email = $3,
-          invited_email_lookup = $4,
-          role = 'member',
-          status = 'active',
-          accepted_at = now(),
-          declined_at = null
-      where id = $5
+      select l.project_id,
+             p.user_id as owner_user_id
+      from project_invite_links l
+      join projects p on p.id = l.project_id
+      where l.token = $1
+        and l.revoked_at is null
+      limit 1
+      for update of l
       `,
-      [
-        ownerUserId,
-        userId,
-        encryptText(username),
-        emailLookup,
-        Number(existingMembership.rows[0].id),
-      ],
+      [token],
     )
-  } else {
-    await query(
+    const inviteRow = invite.rows[0]
+    if (!inviteRow) {
+      await client.query('commit')
+      return false
+    }
+
+    const projectId = Number(inviteRow.project_id)
+    const ownerUserId = Number(inviteRow.owner_user_id)
+    if (ownerUserId === userId) {
+      await client.query('commit')
+      return true
+    }
+
+    const existingAccess = await client.query<{ id: string }>(
       `
-      insert into project_memberships (
-        project_id,
-        owner_user_id,
-        invited_user_id,
-        invited_email,
-        invited_email_lookup,
-        role,
-        status,
-        accepted_at
+      select p.id
+      from projects p
+      left join project_memberships pm
+        on pm.project_id = p.id
+       and pm.status = 'active'
+       and pm.invited_user_id = $2
+      where p.id = $1
+        and (p.user_id = $2 or pm.id is not null)
+      limit 1
+      `,
+      [projectId, userId],
+    )
+    if (existingAccess.rows[0]) {
+      await client.query('commit')
+      return true
+    }
+
+    const user = await client.query<UserRow>(
+      'select id, email, display_name from users where id = $1',
+      [userId],
+    )
+    const userRow = user.rows[0]
+    if (!userRow) {
+      await client.query('commit')
+      return false
+    }
+
+    const username = normalizeUsername(userRow.email)
+    const emailLookup = blindIndex(username)
+    const existingMembership = await client.query<{ id: string }>(
+      `
+      select id
+      from project_memberships
+      where project_id = $1 and invited_email_lookup = $2
+      limit 1
+      `,
+      [projectId, emailLookup],
+    )
+
+    if (existingMembership.rows[0]) {
+      await client.query(
+        `
+        update project_memberships
+        set owner_user_id = $1,
+            invited_user_id = $2,
+            invited_email = $3,
+            invited_email_lookup = $4,
+            role = 'member',
+            status = 'active',
+            accepted_at = now(),
+            declined_at = null
+        where id = $5
+        `,
+        [
+          ownerUserId,
+          userId,
+          encryptText(username),
+          emailLookup,
+          Number(existingMembership.rows[0].id),
+        ],
       )
-      values ($1, $2, $3, $4, $5, 'member', 'active', now())
-      `,
-      [projectId, ownerUserId, userId, encryptText(username), emailLookup],
-    )
+    } else {
+      await client.query(
+        `
+        insert into project_memberships (
+          project_id,
+          owner_user_id,
+          invited_user_id,
+          invited_email,
+          invited_email_lookup,
+          role,
+          status,
+          accepted_at
+        )
+        values ($1, $2, $3, $4, $5, 'member', 'active', now())
+        `,
+        [projectId, ownerUserId, userId, encryptText(username), emailLookup],
+      )
+    }
+    await client.query('commit')
+    return true
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
   }
-  return true
 }
 
 async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
@@ -2628,11 +2754,16 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  const baseUrl = String(request.body.baseUrl ?? '').trim().replace(/\/+$/, '')
+  const baseUrlInput = String(request.body.baseUrl ?? '')
   const apiKey = String(request.body.apiKey ?? '').trim()
   const model = String(request.body.model ?? '').trim()
-  if (!baseUrl || !model) {
-    response.status(400).json({ error: 'AI base URL and model are required' })
+  const normalizedBaseUrl = await normalizeAiBaseUrl(baseUrlInput)
+  if ('error' in normalizedBaseUrl || !model) {
+    response.status(400).json({
+      error: 'error' in normalizedBaseUrl
+        ? normalizedBaseUrl.error
+        : 'AI base URL and model are required',
+    })
     return
   }
 
@@ -2657,7 +2788,7 @@ app.put('/api/ai/settings', asyncHandler(async (request, response) => {
           updated_at = now()
     returning base_url, api_key, model
     `,
-    [userId, encryptText(baseUrl), encryptText(nextApiKey), encryptText(model)],
+    [userId, encryptText(normalizedBaseUrl.baseUrl), encryptText(nextApiKey), encryptText(model)],
   )
   response.json({ settings: serializeAiSettings(result.rows[0]) })
 }))
@@ -4249,50 +4380,92 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
     return
   }
 
-  const existingInviteLink = await query<{ token: string }>(
+  const rotate = request.body?.rotate === true
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    if (rotate) {
+      await client.query(
+        `
+        update project_invite_links
+        set revoked_at = now()
+        where project_id = $1 and revoked_at is null
+        `,
+        [projectId],
+      )
+    } else {
+      const existingInviteLink = await client.query<{ token: string }>(
+        `
+        select token
+        from project_invite_links
+        where project_id = $1
+          and revoked_at is null
+        limit 1
+        for update
+        `,
+        [projectId],
+      )
+      if (existingInviteLink.rows[0]) {
+        await client.query('commit')
+        response.json({ token: existingInviteLink.rows[0].token })
+        return
+      }
+    }
+
+    const inviteLink = await client.query<{ token: string }>(
+      `
+      insert into project_invite_links (project_id, owner_user_id, token)
+      values ($1, $2, $3)
+      on conflict do nothing
+      returning token
+      `,
+      [projectId, userId, createProjectInviteToken()],
+    )
+    const concurrentInviteLink = inviteLink.rows[0] ?? (await client.query<{ token: string }>(
+      `
+      select token
+      from project_invite_links
+      where project_id = $1
+        and revoked_at is null
+      limit 1
+      `,
+      [projectId],
+    )).rows[0]
+    if (!concurrentInviteLink) {
+      throw new Error('Invite link creation conflict, please retry')
+    }
+    await client.query('commit')
+    response.status(201).json({ token: concurrentInviteLink.token })
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+}))
+
+app.delete('/api/projects/:projectId/invite-link', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  if (access.role !== 'owner') {
+    response.status(403).json({ error: 'Only the project owner can revoke invite links' })
+    return
+  }
+  await query(
     `
-    select token
-    from project_invite_links
-    where project_id = $1
-      and revoked_at is null
-    limit 1
+    update project_invite_links
+    set revoked_at = now()
+    where project_id = $1 and revoked_at is null
     `,
     [projectId],
   )
-  if (existingInviteLink.rows[0]) {
-    response.json({ token: existingInviteLink.rows[0].token })
-    return
-  }
-
-  const inviteLink = await query<{ token: string }>(
-    `
-    insert into project_invite_links (project_id, owner_user_id, token)
-    values ($1, $2, $3)
-    on conflict do nothing
-    returning token
-    `,
-    [projectId, userId, createProjectInviteToken()],
-  )
-  if (inviteLink.rows[0]) {
-    response.status(201).json({ token: inviteLink.rows[0].token })
-    return
-  }
-
-  const concurrentInviteLink = await query<{ token: string }>(
-    `
-    select token
-    from project_invite_links
-    where project_id = $1
-      and revoked_at is null
-    limit 1
-    `,
-    [projectId],
-  )
-  if (!concurrentInviteLink.rows[0]) {
-    response.status(409).json({ error: 'Invite link creation conflict, please retry' })
-    return
-  }
-  response.json({ token: concurrentInviteLink.rows[0].token })
+  response.json({ ok: true })
 }))
 
 app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(async (request, response) => {
@@ -4308,13 +4481,31 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
     response.status(403).json({ error: 'Only the project owner can remove members' })
     return
   }
-  await query(
-    `
-    delete from project_memberships
-    where id = $1 and project_id = $2 and owner_user_id = $3
-    `,
-    [Number(request.params.membershipId), projectId, userId],
-  )
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await client.query(
+      `
+      update project_invite_links
+      set revoked_at = now()
+      where project_id = $1 and revoked_at is null
+      `,
+      [projectId],
+    )
+    await client.query(
+      `
+      delete from project_memberships
+      where id = $1 and project_id = $2 and owner_user_id = $3
+      `,
+      [Number(request.params.membershipId), projectId, userId],
+    )
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
   response.json(await getWorkspace(userId))
 }))
 
@@ -4468,7 +4659,7 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     access.ownerUserId,
   )
   const moduleId = await ensureProjectModuleId(request.body.moduleId, projectId)
-  let createdAt: string | null = null
+  let createdAt: string | null
   try {
     createdAt = parseTodoCreatedDate(request.body.createdAt)
   } catch {
@@ -4865,7 +5056,7 @@ app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, respo
           and source_operation_id is not null
       )
     `,
-    [content, todoId, noteId],
+    [encryptText(content), todoId, noteId],
   )
   response.json(await getWorkspace(userId))
 }))
@@ -5089,6 +5280,10 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', a
         }))
         .filter((item: { objectKey: string; packageName: string }) => item.packageName && item.objectKey)
     : []
+  if (items.some((item: { objectKey: string }) => !isAllowedPackageMarketObjectKey(item.objectKey))) {
+    response.status(400).json({ error: 'Package object key is not allowed' })
+    return
+  }
   await addProjectPackageItems({
     projectId,
     eventId: Number(request.params.eventId),
@@ -5221,6 +5416,10 @@ app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHand
     response.status(404).json({ error: 'Package item not found' })
     return
   }
+  if (!isAllowedPackageMarketObjectKey(objectKey)) {
+    response.status(404).json({ error: 'Package item not found' })
+    return
+  }
   response.json(createPackageItemDownloadLink(
     objectKey,
     ensurePackageMarketExpireMinutes(request.query.expireMinutes),
@@ -5348,14 +5547,13 @@ app.post('/api/integrations/feishu/events', asyncHandler(async (request, respons
     ? request.body as Record<string, unknown>
     : {}
   const payload = normalizeFeishuEventPayload(body)
-  if (payload.challenge) {
-    response.json({ challenge: payload.challenge })
-    return
-  }
-
   const eventToken = payload.header?.token ?? payload.token
   if (!verifyFeishuToken(eventToken)) {
     response.status(401).json({ error: 'Invalid Feishu verification token' })
+    return
+  }
+  if (payload.challenge) {
+    response.json({ challenge: payload.challenge })
     return
   }
 
