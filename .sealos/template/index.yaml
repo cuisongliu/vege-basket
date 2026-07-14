@@ -76,10 +76,10 @@ spec:
       default: ''
       required: false
     FEISHU_VERIFICATION_TOKEN:
-      description: Optional Feishu webhook verification token.
+      description: Required Feishu webhook verification token used before accepting challenge or event payloads.
       type: string
       default: ''
-      required: false
+      required: true
     FEISHU_ENCRYPT_KEY:
       description: Optional Feishu webhook encrypt key.
       type: string

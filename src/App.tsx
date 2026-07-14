@@ -7,9 +7,11 @@ import {
   type ClipboardEvent,
   type CSSProperties,
   type ComponentProps,
+  type Dispatch,
   type FormEvent,
   type ReactNode,
   type RefObject,
+  type SetStateAction,
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -1125,13 +1127,24 @@ function App() {
 
   useEffect(() => {
     const url = new URL(window.location.href)
-    const feishuAuthStatus = url.searchParams.get('feishuAuth')
+    const fragmentParams = new URLSearchParams(url.hash.startsWith('#') ? url.hash.slice(1) : '')
+    const hasFeishuAuthFragment =
+      fragmentParams.has('feishuAuth') ||
+      fragmentParams.has('token') ||
+      fragmentParams.has('feishuAuthMessage')
+    const feishuAuthStatus = fragmentParams.get('feishuAuth') ?? url.searchParams.get('feishuAuth')
     if (feishuAuthStatus) {
-      const token = url.searchParams.get('token') ?? ''
-      const message = url.searchParams.get('feishuAuthMessage')
+      const token = fragmentParams.get('token') ?? url.searchParams.get('token') ?? ''
+      const message = fragmentParams.get('feishuAuthMessage') ?? url.searchParams.get('feishuAuthMessage')
       url.searchParams.delete('feishuAuth')
       url.searchParams.delete('token')
       url.searchParams.delete('feishuAuthMessage')
+      if (hasFeishuAuthFragment) {
+        fragmentParams.delete('feishuAuth')
+        fragmentParams.delete('token')
+        fragmentParams.delete('feishuAuthMessage')
+        url.hash = fragmentParams.toString()
+      }
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
 
       if (feishuAuthStatus === 'success' && token) {
@@ -1148,20 +1161,28 @@ function App() {
       return
     }
 
-    const feishuBindStatus = url.searchParams.get('feishuBind')
+    const hasFeishuBindFragment =
+      fragmentParams.has('feishuBind') || fragmentParams.has('feishuBindMessage')
+    const feishuBindStatus = fragmentParams.get('feishuBind') ?? url.searchParams.get('feishuBind')
     if (!feishuBindStatus) return
 
-    const message = url.searchParams.get('feishuBindMessage')
+    const message = fragmentParams.get('feishuBindMessage') ?? url.searchParams.get('feishuBindMessage')
     if (feishuBindStatus !== 'success') {
       setWorkspaceError(message || '飞书账号绑定失败，请稍后重试。')
     }
     url.searchParams.delete('feishuBind')
     url.searchParams.delete('feishuBindMessage')
+    if (hasFeishuBindFragment) {
+      fragmentParams.delete('feishuBind')
+      fragmentParams.delete('feishuBindMessage')
+      url.hash = fragmentParams.toString()
+    }
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
   }, [inviteToken])
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0]
+  const selectedProjectDraftId = selectedProject?.id
 
   useEffect(() => {
     if (view !== 'project' || requestedTodoDetailId == null) return
@@ -1191,9 +1212,9 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!selectedProject) return
+    if (!selectedProjectDraftId) return
     isLoadingTodoCreateDraftRef.current = true
-    const draft = loadTodoCreateDraft(selectedProject.id, authUser?.id)
+    const draft = loadTodoCreateDraft(selectedProjectDraftId, authUser?.id)
     setTodoDraft(draft.draft)
     setTodoDetailDraft(draft.detail)
     setTodoDueDate(draft.dueDate)
@@ -1201,15 +1222,15 @@ function App() {
     setTodoPriority(draft.priority)
     setTodoAssigneeUserId(draft.assigneeUserId)
     setTodoModuleId(draft.moduleId)
-  }, [authUser?.id, selectedProject?.id])
+  }, [authUser?.id, selectedProjectDraftId])
 
   useEffect(() => {
-    if (!selectedProject) return
+    if (!selectedProjectDraftId) return
     if (isLoadingTodoCreateDraftRef.current) {
       isLoadingTodoCreateDraftRef.current = false
       return
     }
-    saveTodoCreateDraft(selectedProject.id, authUser?.id, {
+    saveTodoCreateDraft(selectedProjectDraftId, authUser?.id, {
       assigneeUserId: todoAssigneeUserId,
       createdAt: todoCreatedAt,
       detail: todoDetailDraft,
@@ -1220,7 +1241,7 @@ function App() {
     })
   }, [
     authUser?.id,
-    selectedProject?.id,
+    selectedProjectDraftId,
     todoAssigneeUserId,
     todoCreatedAt,
     todoDetailDraft,
@@ -1314,7 +1335,8 @@ function App() {
       notifications.invites.filter((item) => !item.dismissedAt).length +
       notifications.assignedPackageEvents.filter((item) => !item.dismissedAt).length +
       notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.done).length +
-      notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt).length,
+      notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt).length +
+      notifications.noteMentions.filter((item) => !item.dismissedAt).length,
     [notifications],
   )
 
@@ -1641,7 +1663,7 @@ function App() {
   }
 
   async function updateTodoDetails(todoId: number, payload: TodoUpdatePayload) {
-    await runMutation(() => updateTodo(todoId, payload))
+    return Boolean(await runMutation(() => updateTodo(todoId, payload)))
   }
 
   async function addTodoNote(todoId: number, content: string) {
@@ -1806,7 +1828,7 @@ function App() {
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
   }) {
-    if (!selectedProject) return
+    if (!selectedProject) return false
     try {
       const timeline = await createProjectPackageOperation(selectedProject.id, payload)
       setProjectPackageTimelines((current) => ({
@@ -1821,8 +1843,10 @@ function App() {
         // The install record has already been persisted, so a follow-up
         // workspace refresh failure should not surface as a save failure.
       }
+      return true
     } catch {
       setWorkspaceError('安装记录保存失败，请稍后再试。')
+      return false
     }
   }
 
@@ -1838,7 +1862,7 @@ function App() {
       relatedTodoNotes: Record<number, string>
     }>,
   ) {
-    if (!selectedProject) return
+    if (!selectedProject) return false
     try {
       const timeline = await updateProjectPackageOperation(selectedProject.id, operationId, payload)
       setProjectPackageTimelines((current) => ({
@@ -1853,8 +1877,10 @@ function App() {
         // Keep the successful mutation result on screen even if the
         // background workspace sync temporarily fails.
       }
+      return true
     } catch {
       setWorkspaceError('安装记录更新失败，请稍后再试。')
+      return false
     }
   }
 
@@ -3305,7 +3331,7 @@ function ProjectDetail({
     status?: ProjectPackageOperationStatus
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
-  }) => Promise<void>
+  }) => Promise<boolean>
   onDeleteInstallEvent: (eventId: number) => Promise<void>
   onDeleteInstallGroup: (groupId: number) => Promise<void>
   onDeleteInstallOperation: (operationId: number) => Promise<void>
@@ -3365,7 +3391,7 @@ function ProjectDetail({
       relatedTodoIds: number[]
       relatedTodoNotes: Record<number, string>
     }>,
-  ) => Promise<void>
+  ) => Promise<boolean>
   onSaveJournal: (createdAt?: string) => void
   onDeleteJournalEntry: (projectId: number, entryId: number) => void
   onEditJournalEntry: (
@@ -3385,7 +3411,7 @@ function ProjectDetail({
   ) => void
   onCreateTodoNote: (todoId: number, content: string) => void
   onDeleteTodo: (todoId: number) => void
-  onUpdateTodo: (id: number, payload: TodoUpdatePayload) => void
+  onUpdateTodo: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
   onUpdateTodoNote: (todoId: number, noteId: number, content: string) => void
   onTodoCreateDraftClear: (projectId?: number) => void
   onTodoAssigneeChange: (id: number | null) => void
@@ -5266,10 +5292,9 @@ function getTodoContentIndicators(todo: Todo) {
 
 async function pasteImagesIntoTodoDetail(
   event: ClipboardEvent<HTMLTextAreaElement>,
-  text: string,
-  images: TodoDetailImageAttachment[],
+  getCurrentValue: () => string,
   onChange: (value: string) => void,
-  onUploadingImagesChange?: (srcs: string[]) => void,
+  setUploadingImageSrcs?: Dispatch<SetStateAction<string[]>>,
 ) {
   const imageFiles = Array.from(event.clipboardData.items)
     .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
@@ -5280,43 +5305,56 @@ async function pasteImagesIntoTodoDetail(
   event.preventDefault()
   const textarea = event.currentTarget
   const selectionStart = textarea.selectionStart ?? textarea.value.length
+  const currentContent = parseTodoDetailContent(getCurrentValue())
   const pendingImages = imageFiles.map((file, index) => ({
-    alt: file.name || `粘贴图片 ${images.length + index + 1}`,
+    alt: file.name || `粘贴图片 ${currentContent.images.length + index + 1}`,
     src: URL.createObjectURL(file),
     uploading: true,
   }))
-  onUploadingImagesChange?.(pendingImages.map((image) => image.src))
-  const optimisticImages = [...images, ...pendingImages]
-  onChange(serializeTodoDetailContent(text, optimisticImages))
+  const pendingImageSrcs = pendingImages.map((image) => image.src)
+  const pendingImageSrcSet = new Set(pendingImageSrcs)
+  setUploadingImageSrcs?.((current) => [...new Set([...current, ...pendingImageSrcs])])
+  onChange(serializeTodoDetailContent(
+    currentContent.text,
+    [...currentContent.images, ...pendingImages],
+  ))
   window.requestAnimationFrame(() => {
     textarea.focus()
     textarea.setSelectionRange(selectionStart, selectionStart)
   })
 
   try {
-    const nextImages = [
-      ...images,
-      ...((await Promise.all(imageFiles.map(uploadTodoImage))).map((upload, index) => ({
-        alt: imageFiles[index]?.name ?? '',
-        src: upload.imageUrl,
-      }))),
-    ]
-    const nextValue = serializeTodoDetailContent(text, nextImages)
-    onChange(nextValue)
-    onUploadingImagesChange?.([])
-    pendingImages.forEach((image) => URL.revokeObjectURL(image.src))
-    window.requestAnimationFrame(() => {
-      textarea.focus()
-      textarea.setSelectionRange(selectionStart, selectionStart)
+    const uploads = await Promise.all(imageFiles.map(uploadTodoImage))
+    const uploadedImagesByPendingSrc = new Map(
+      pendingImages.map((pendingImage, index) => [
+        pendingImage.src,
+        {
+          alt: imageFiles[index]?.name ?? '',
+          src: uploads[index]?.imageUrl ?? '',
+        },
+      ]),
+    )
+    const latestContent = parseTodoDetailContent(getCurrentValue())
+    const nextImages = latestContent.images.flatMap((image) => {
+      const uploadedImage = uploadedImagesByPendingSrc.get(image.src)
+      return uploadedImage?.src ? [uploadedImage] : [image]
     })
+    onChange(serializeTodoDetailContent(latestContent.text, nextImages))
   } catch (error) {
-    pendingImages.forEach((image) => URL.revokeObjectURL(image.src))
-    onUploadingImagesChange?.([])
-    onChange(serializeTodoDetailContent(text, images))
+    const latestContent = parseTodoDetailContent(getCurrentValue())
+    onChange(serializeTodoDetailContent(
+      latestContent.text,
+      latestContent.images.filter((image) => !pendingImageSrcSet.has(image.src)),
+    ))
     console.error('Todo detail image paste failed', error)
     window.alert(error instanceof Error && error.message
       ? `图片上传失败：${error.message}`
       : '图片上传失败，请稍后重试。')
+  } finally {
+    setUploadingImageSrcs?.((current) =>
+      current.filter((src) => !pendingImageSrcSet.has(src)),
+    )
+    pendingImages.forEach((image) => URL.revokeObjectURL(image.src))
   }
 }
 
@@ -5332,9 +5370,14 @@ function TodoDetailEditor({
   const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
   const [uploadingImageSrcs, setUploadingImageSrcs] = useState<string[]>([])
   const lastSerializedValueRef = useRef<string | null>(null)
+  const latestValueRef = useRef(value)
   const previewImage = previewImageIndex == null ? null : images[previewImageIndex] ?? null
   const uploadingImageSrcSet = useMemo(() => new Set(uploadingImageSrcs), [uploadingImageSrcs])
   const editorClassName = images.length > 0 ? 'todo-detail-editor has-images' : 'todo-detail-editor'
+
+  useEffect(() => {
+    latestValueRef.current = value
+  }, [value])
 
   useEffect(() => {
     if (lastSerializedValueRef.current === value) return
@@ -5347,17 +5390,23 @@ function TodoDetailEditor({
     }
   }, [images, previewImageIndex])
 
-  function updateTodoDetail(nextText: string, nextImages: TodoDetailImageAttachment[]) {
-    const nextValue = serializeTodoDetailContent(nextText, nextImages)
+  function commitValue(nextValue: string) {
+    latestValueRef.current = nextValue
     lastSerializedValueRef.current = nextValue
     onChange(nextValue)
   }
 
+  function updateTodoDetail(nextText: string, nextImages: TodoDetailImageAttachment[]) {
+    commitValue(serializeTodoDetailContent(nextText, nextImages))
+  }
+
   async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    await pasteImagesIntoTodoDetail(event, textDraft, images, (nextValue) => {
-      lastSerializedValueRef.current = nextValue
-      onChange(nextValue)
-    }, setUploadingImageSrcs)
+    await pasteImagesIntoTodoDetail(
+      event,
+      () => latestValueRef.current,
+      commitValue,
+      setUploadingImageSrcs,
+    )
   }
 
   return (
@@ -5517,8 +5566,13 @@ function TodoNoteComposer({
   const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
   const [uploadingImageSrcs, setUploadingImageSrcs] = useState<string[]>([])
   const lastSerializedValueRef = useRef<string | null>(null)
+  const latestValueRef = useRef(value)
   const previewImage = previewImageIndex == null ? null : images[previewImageIndex] ?? null
   const uploadingImageSrcSet = useMemo(() => new Set(uploadingImageSrcs), [uploadingImageSrcs])
+
+  useEffect(() => {
+    latestValueRef.current = value
+  }, [value])
 
   useEffect(() => {
     if (lastSerializedValueRef.current === value) return
@@ -5531,17 +5585,23 @@ function TodoNoteComposer({
     }
   }, [images, previewImageIndex])
 
-  function updateNoteContent(nextText: string, nextImages: TodoDetailImageAttachment[]) {
-    const nextValue = serializeTodoDetailContent(nextText, nextImages)
+  function commitValue(nextValue: string) {
+    latestValueRef.current = nextValue
     lastSerializedValueRef.current = nextValue
     onChange(nextValue)
   }
 
+  function updateNoteContent(nextText: string, nextImages: TodoDetailImageAttachment[]) {
+    commitValue(serializeTodoDetailContent(nextText, nextImages))
+  }
+
   async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    await pasteImagesIntoTodoDetail(event, textDraft, images, (nextValue) => {
-      lastSerializedValueRef.current = nextValue
-      onChange(nextValue)
-    }, setUploadingImageSrcs)
+    await pasteImagesIntoTodoDetail(
+      event,
+      () => latestValueRef.current,
+      commitValue,
+      setUploadingImageSrcs,
+    )
   }
 
   return (

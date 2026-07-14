@@ -1,5 +1,8 @@
 # PRD: Personal Project Dashboard
 
+> [!NOTE]
+> 本文是项目早期的产品与设计历史记录，不再代表当前实现边界。当前事实请以 [README](../README.md)、[ROADMAP](../ROADMAP.md) 和仓库代码为准。
+
 ## Problem Statement
 
 As a product manager managing multiple concurrent projects, I need a personal system that helps me keep up with each project's evolving context. Existing project management tools are usually designed around team collaboration, tasks, sprint workflows, issue tracking, or delivery process control. They are too heavy for the personal problem I am trying to solve.

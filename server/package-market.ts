@@ -76,7 +76,6 @@ const rulesFile = normalizeString(
 
 let cachedRules: PackageMarketRule[] | null = null
 let cachedRulesMtimeMs = -1
-let lastClientConfig: { bucket: string; endpoint: string } | null = null
 
 function normalizeString(value: unknown) {
   return String(value ?? '').trim()
@@ -85,6 +84,32 @@ function normalizeString(value: unknown) {
 function normalizePrefix(value: unknown) {
   const normalized = normalizeString(value)
   return normalized && !normalized.endsWith('/') ? `${normalized}/` : normalized
+}
+
+function normalizeOssEndpoint(value: unknown) {
+  const rawEndpoint = normalizeString(value)
+  if (!rawEndpoint) return ''
+  const endpointWithProtocol = /^https?:\/\//i.test(rawEndpoint)
+    ? rawEndpoint
+    : `https://${rawEndpoint}`
+
+  let endpoint: URL
+  try {
+    endpoint = new URL(endpointWithProtocol)
+  } catch {
+    throw new Error('OSS_ENDPOINT must be a valid HTTPS endpoint')
+  }
+  if (
+    endpoint.protocol !== 'https:' ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.search ||
+    endpoint.hash ||
+    (endpoint.pathname && endpoint.pathname !== '/')
+  ) {
+    throw new Error('OSS_ENDPOINT must be an HTTPS origin without credentials, path, query, or fragment')
+  }
+  return endpoint.origin
 }
 
 function normalizeVersion(value: unknown) {
@@ -107,6 +132,29 @@ function normalizeList(values: unknown[]) {
 
 function renderTemplate(template: string, values: Record<string, string>) {
   return normalizeString(template).replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? '')
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function templateMatcher(
+  template: string,
+  prefixOnly = false,
+  fixedValues: Record<string, string> = {},
+) {
+  const normalized = normalizeString(template)
+  if (!normalized) return null
+  let pattern = ''
+  let cursor = 0
+  for (const match of normalized.matchAll(/\{(\w+)\}/g)) {
+    const offset = match.index ?? 0
+    pattern += escapeRegExp(normalized.slice(cursor, offset))
+    pattern += match[1] in fixedValues ? escapeRegExp(fixedValues[match[1]]) : '[^/]+'
+    cursor = offset + match[0].length
+  }
+  pattern += escapeRegExp(normalized.slice(cursor))
+  return new RegExp(`^${pattern}${prefixOnly ? '' : '$'}`)
 }
 
 function splitVersionPart(part: string) {
@@ -198,21 +246,120 @@ function isArchiveObjectKey(key: string) {
   return /\.tar(\.gz)?$/.test(key) && !key.endsWith('.md5')
 }
 
+function fileNameMatchesFormats(fileName: string, formats: string[], expectedFirstValue?: string) {
+  return formats.some((format) => {
+    const candidates = format.endsWith('.tar') ? [format, `${format}.gz`] : [format]
+    return candidates.some((candidate) => {
+      let pattern = ''
+      let cursor = 0
+      let placeholderCount = 0
+      for (const match of candidate.matchAll(/%s/g)) {
+        const offset = match.index ?? 0
+        pattern += escapeRegExp(candidate.slice(cursor, offset))
+        pattern += '([^/]+)'
+        cursor = offset + match[0].length
+        placeholderCount += 1
+      }
+      pattern += escapeRegExp(candidate.slice(cursor))
+      const matched = fileName.match(new RegExp(`^${pattern}$`))
+      if (!matched || placeholderCount === 0) return false
+      return expectedFirstValue == null || matched[1] === expectedFirstValue
+    })
+  })
+}
+
+function ruleAllowsObjectKey(rule: PackageMarketRule, objectKey: string) {
+  for (const root of rule.releaseRoots) {
+    if (!objectKey.startsWith(root)) continue
+    const [version, fileName, ...extra] = objectKey.slice(root.length).split('/')
+    if (!version || !fileName || extra.length > 0) continue
+    if (fileNameMatchesFormats(fileName, rule.fileNameFormats, normalizeVersion(version))) return true
+  }
+
+  for (const root of rule.flatFileRoots) {
+    if (!objectKey.startsWith(root)) continue
+    const fileName = objectKey.slice(root.length)
+    if (fileName && !fileName.includes('/') && fileNameMatchesFormats(fileName, rule.fileNameFormats)) {
+      return true
+    }
+  }
+
+  for (const root of ciRootsForRule(rule)) {
+    if (!objectKey.startsWith(root)) continue
+    const [hash, fileName, ...extra] = objectKey.slice(root.length).split('/')
+    const formats = rule.ciFileNameFormats.length > 0 ? rule.ciFileNameFormats : rule.fileNameFormats
+    if (hash && fileName && extra.length === 0 && fileNameMatchesFormats(fileName, formats, hash)) {
+      return true
+    }
+  }
+  return false
+}
+
+function middlewareRootAllowsObjectKey(objectKey: string) {
+  if (!middlewareRoot || !objectKey.startsWith(middlewareRoot)) return false
+  const parts = objectKey.slice(middlewareRoot.length).split('/')
+  if (parts.length !== 2 && parts.length !== 3) return false
+  const fileName = parts.at(-1) ?? ''
+  return Boolean(
+    parts.every(Boolean) &&
+    isArchiveObjectKey(fileName) &&
+    /-[a-zA-Z0-9._-]+\.tar(?:\.gz)?$/.test(fileName),
+  )
+}
+
+export function isAllowedPackageMarketObjectKey(value: unknown) {
+  const objectKey = normalizeString(value)
+  if (
+    !objectKey ||
+    objectKey.length > 400 ||
+    objectKey.startsWith('/') ||
+    objectKey.includes('\\') ||
+    Array.from(objectKey).some((char) => {
+      const code = char.charCodeAt(0)
+      return code <= 31 || code === 127
+    }) ||
+    objectKey.split('/').some((segment) => segment === '.' || segment === '..') ||
+    !isArchiveObjectKey(objectKey)
+  ) {
+    return false
+  }
+
+  if (parseRulesFile().some((rule) => ruleAllowsObjectKey(rule, objectKey))) {
+    return true
+  }
+  if (middlewareRootAllowsObjectKey(objectKey)) return true
+
+  for (const deployType of ['pro', 'oss']) {
+    if (templateMatcher(baseObjectTemplate, false, { deployType })?.test(objectKey)) return true
+    const prefixMatch = templateMatcher(baseListPrefixTemplate, true, { deployType })?.exec(objectKey)
+    if (!prefixMatch) continue
+    const [version, fileName, ...extra] = objectKey.slice(prefixMatch[0].length).split('/')
+    if (
+      version &&
+      fileName &&
+      extra.length === 0 &&
+      /^sealos-(?:pro|commercial|oss)-[^/]+-[^/]+\.tar(?:\.gz)?$/.test(fileName)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 function ossClient() {
-  const endpoint = normalizeString(process.env.OSS_ENDPOINT)
+  const endpoint = normalizeOssEndpoint(process.env.OSS_ENDPOINT)
   const accessKeyId = normalizeString(process.env.OSS_ACCESS_KEY_ID)
   const accessKeySecret = normalizeString(process.env.OSS_ACCESS_KEY_SECRET)
   const bucket = normalizeString(process.env.OSS_BUCKET)
   if (!endpoint || !accessKeyId || !accessKeySecret || !bucket) {
     throw new Error('OSS_ENDPOINT, OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET, OSS_BUCKET must be set')
   }
-  lastClientConfig = { endpoint, bucket }
   return new OSS({
     endpoint,
     accessKeyId,
     accessKeySecret,
     bucket,
-    secure: endpoint.startsWith('https://'),
+    secure: true,
   })
 }
 
@@ -267,20 +414,7 @@ function normalizeDownloadExpireSeconds(expireMinutes?: number) {
 }
 
 function signedDownloadUrl(client: OSS, objectKey: string, expireSeconds = downloadExpireSeconds) {
-  try {
-    return client.signatureUrl(objectKey, { expires: expireSeconds, method: 'GET' })
-  } catch (error) {
-    if (!String((error as Error).message ?? error).includes('endpoint is IP')) {
-      throw error
-    }
-    if (!lastClientConfig) {
-      throw error
-    }
-    const expires = Math.floor(Date.now() / 1000) + expireSeconds
-    const endpoint = String(lastClientConfig.endpoint).replace(/\/+$/, '')
-    const bucket = String(lastClientConfig.bucket)
-    return `${endpoint}/${bucket}/${objectKey.split('/').map(encodeURIComponent).join('/')}?Expires=${expires}`
-  }
+  return client.signatureUrl(objectKey, { expires: expireSeconds, method: 'GET' })
 }
 
 function objectToLink(
@@ -902,9 +1036,10 @@ export async function getPackageMarketDetail(params: {
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
   const expireSeconds = normalizeDownloadExpireSeconds(params.expireMinutes)
   if (params.packageId === 'base-pro' || params.packageId === 'base-oss') {
+    const deployType = params.packageId === 'base-oss' ? 'oss' : 'pro'
     return buildBasePackage(
       client,
-      params.deployType || (params.packageId === 'base-oss' ? 'oss' : 'pro'),
+      deployType,
       params.releaseVersion || '',
       arch,
       expireSeconds,
@@ -942,9 +1077,10 @@ export async function listPackageMarketReleaseVersions(params: {
   const client = ossClient()
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
   if (params.packageId === 'base-pro' || params.packageId === 'base-oss') {
+    const deployType = params.packageId === 'base-oss' ? 'oss' : 'pro'
     return listBaseVersions(
       client,
-      params.deployType || (params.packageId === 'base-oss' ? 'oss' : 'pro'),
+      deployType,
       arch,
     )
   }
@@ -980,10 +1116,16 @@ export async function listPackageMarketCiVersions(params: {
 }
 
 export function createPackageItemDownloadUrl(objectKey: string, expireMinutes?: number) {
+  if (!isAllowedPackageMarketObjectKey(objectKey)) {
+    throw new Error('Package object key is not allowed')
+  }
   return signedDownloadUrl(ossClient(), objectKey, normalizeDownloadExpireSeconds(expireMinutes))
 }
 
 export function createPackageItemDownloadLink(objectKey: string, expireMinutes?: number) {
+  if (!isAllowedPackageMarketObjectKey(objectKey)) {
+    throw new Error('Package object key is not allowed')
+  }
   const expiresInSeconds = normalizeDownloadExpireSeconds(expireMinutes)
   return {
     downloadUrl: signedDownloadUrl(ossClient(), objectKey, expiresInSeconds),
