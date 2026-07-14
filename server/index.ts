@@ -58,7 +58,8 @@ type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
 type NotificationKind =
   | 'project_invite'
   | 'assigned_todo'
-  | 'todo_completed_assignee'
+  | 'todo_rejected_creator'
+  | 'todo_completed_creator'
   | 'package_event_assigned'
   | 'todo_due_tomorrow'
   | 'todo_note_mention'
@@ -2823,17 +2824,12 @@ async function getNotifications(userId: number) {
       from todos t
       join projects p on p.id = t.project_id
       left join project_modules module on module.id = t.project_module_id
-      left join project_memberships pm
-        on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $1
       where t.done = false
         and t.confirmation_status = 'confirmed'
         and t.due_date = $2::date
         and (
           t.assignee_user_id = $1
-          or p.user_id = $1
-          or pm.id is not null
+          or coalesce(t.created_by_user_id, p.user_id) = $1
         )
       order by t.due_date asc, t.id desc
       `,
@@ -2974,6 +2970,7 @@ type FeishuNotificationCandidate = {
   eventTitle?: string
   eventType?: ProjectPackageEventType
   operatorName?: string
+  rejectionReason?: string
   kind: NotificationKind
   projectId: number
   projectName?: string
@@ -2982,6 +2979,8 @@ type FeishuNotificationCandidate = {
   recipientName?: string
   sourceId: number
   title: string
+  todoDetail?: string
+  todoPriority?: Priority
   todoTitle?: string
   userId: number
 }
@@ -2995,21 +2994,42 @@ type AssignedTodoNotificationRow = {
   assigner_display_name: string | null
   assigner_email: string | null
   due_date: Date
+  detail: string
   done: boolean
   id: string
+  project_id: string
+  project_name: string
+  priority: Priority
+  title: string
+}
+
+type CompletedTodoCreatorNotificationRow = {
+  creator_display_name: string | null
+  creator_email: string | null
+  creator_feishu_email: string | null
+  creator_feishu_user_id: string | null
+  creator_user_id: string | null
+  detail: string
+  due_date: Date
+  id: string
+  operator_display_name: string | null
+  operator_email: string | null
+  priority: Priority
   project_id: string
   project_name: string
   title: string
 }
 
-type CompletedTodoAssignerNotificationRow = {
-  assignee_display_name: string | null
-  assignee_email: string | null
-  assigned_by_user_id: string | null
-  assigner_display_name: string | null
-  assigner_email: string | null
+type RejectedTodoCreatorNotificationRow = {
+  creator_display_name: string | null
+  creator_email: string | null
+  creator_feishu_email: string | null
+  creator_feishu_user_id: string | null
+  creator_user_id: string | null
   due_date: Date
   id: string
+  operator_display_name: string | null
+  operator_email: string | null
   project_id: string
   project_name: string
   title: string
@@ -3044,6 +3064,15 @@ function sanitizeFeishuMarkdownText(value: unknown) {
     .trim()
 }
 
+function formatFeishuTodoDetailText(value: unknown, fallback = '') {
+  const detail = sanitizeFeishuMarkdownText(value)
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!detail) return fallback
+  return detail.length > 360 ? `${detail.slice(0, 360)}…` : detail
+}
+
 function buildFeishuAtText(openId: string | undefined, fallbackName: string | undefined, mention = true) {
   const normalizedOpenId = String(openId ?? '').trim()
   if (mention && normalizedOpenId.startsWith('ou_')) {
@@ -3062,32 +3091,109 @@ function packageEventStatusLabel(status?: ProjectPackageEventStatus) {
   return '草稿'
 }
 
+function priorityLabel(priority?: Priority) {
+  if (priority === 'high') return '高'
+  if (priority === 'low') return '低'
+  return '中'
+}
+
 function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, target: FeishuDeliveryTarget) {
   if (candidate.kind === 'assigned_todo') {
+    const todoDetail = formatFeishuTodoDetailText(candidate.todoDetail, '暂无详情')
+    const todoPriority = priorityLabel(candidate.todoPriority)
+    const operatorName = candidate.operatorName || '有人'
     if (target.targetType === 'chat') {
       return [
-        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 条待办指派：`,
-        `- 指派给：${candidate.recipientName ?? ''}`,
-        `- 项目名称：${candidate.projectName ?? ''}`,
-        `- 待办事项：${candidate.todoTitle ?? ''}`,
-        `- 截止日期：${candidate.dueDate ?? ''}`,
+        `【Veges 通知】${operatorName} 发起了新的待办，请及时处理`,
+        '',
+        '标题',
+        candidate.todoTitle ?? '',
+        '待办详情',
+        todoDetail,
+        '',
+        `项目：${candidate.projectName ?? ''}`,
+        `截止日期：${candidate.dueDate ?? ''}`,
+        `优先级：${todoPriority}`,
+        `指派给：${candidate.recipientName ?? ''}`,
       ].join('\n')
     }
 
     return [
-      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 条待办指派：`,
-      `- 项目名称：${candidate.projectName ?? ''}`,
-      `- 待办事项：${candidate.todoTitle ?? ''}`,
-      `- 截止日期：${candidate.dueDate ?? ''}`,
+      `【Veges 通知】${operatorName} 发起了新的待办，请及时处理`,
+      '',
+      '标题',
+      candidate.todoTitle ?? '',
+      '待办详情',
+      todoDetail,
+      '',
+      `项目：${candidate.projectName ?? ''}`,
+      `截止日期：${candidate.dueDate ?? ''}`,
+      `优先级：${todoPriority}`,
     ].join('\n')
   }
 
-  if (candidate.kind === 'todo_completed_assignee') {
+  if (candidate.kind === 'todo_completed_creator') {
+    const todoDetail = formatFeishuTodoDetailText(candidate.todoDetail, '暂无详情')
+    const todoPriority = priorityLabel(candidate.todoPriority)
+    const operatorName = candidate.operatorName || '有人'
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${operatorName} 完成了待办，请前往验收`,
+        '',
+        '标题',
+        candidate.todoTitle ?? '',
+        '待办详情',
+        todoDetail,
+        '',
+        `项目：${candidate.projectName ?? ''}`,
+        `截止日期：${candidate.dueDate ?? ''}`,
+        `优先级：${todoPriority}`,
+        `验收人：${candidate.recipientName ?? ''}`,
+      ].join('\n')
+    }
+
     return [
-      `【Veges 通知】${candidate.operatorName || '负责人'} 完成了您指派的 1 条待办：`,
-      `- 项目名称：${candidate.projectName ?? ''}`,
-      `- 待办事项：${candidate.todoTitle ?? ''}`,
-      `- 截止日期：${candidate.dueDate ?? ''}`,
+      `【Veges 通知】${operatorName} 完成了待办，请前往验收`,
+      '',
+      '标题',
+      candidate.todoTitle ?? '',
+      '待办详情',
+      todoDetail,
+      '',
+      `项目：${candidate.projectName ?? ''}`,
+      `截止日期：${candidate.dueDate ?? ''}`,
+      `优先级：${todoPriority}`,
+    ].join('\n')
+  }
+
+  if (candidate.kind === 'todo_rejected_creator') {
+    const rejectionReason = formatFeishuTodoDetailText(candidate.rejectionReason, '未填写')
+    const operatorName = candidate.operatorName || '有人'
+    if (target.targetType === 'chat') {
+      return [
+        `【Veges 通知】${operatorName} 驳回了待办，请查看原因`,
+        '',
+        '待办标题',
+        candidate.todoTitle ?? '',
+        '驳回理由',
+        rejectionReason,
+        '',
+        `项目：${candidate.projectName ?? ''}`,
+        `截止日期：${candidate.dueDate ?? ''}`,
+        `创建人：${candidate.recipientName ?? ''}`,
+      ].join('\n')
+    }
+
+    return [
+      `【Veges 通知】${operatorName} 驳回了您创建的待办，请查看原因`,
+      '',
+      '待办标题',
+      candidate.todoTitle ?? '',
+      '驳回理由',
+      rejectionReason,
+      '',
+      `项目：${candidate.projectName ?? ''}`,
+      `截止日期：${candidate.dueDate ?? ''}`,
     ].join('\n')
   }
 
@@ -3123,7 +3229,21 @@ function buildFeishuInteractiveCard(
   target: FeishuDeliveryTarget,
   options: { mention?: boolean } = {},
 ) {
-  if (candidate.kind === 'assigned_todo' && target.targetType === 'chat') {
+  if (candidate.kind === 'assigned_todo') {
+    const todoTitle = sanitizeFeishuMarkdownText(candidate.todoTitle || '未命名待办')
+    const todoDetail = formatFeishuTodoDetailText(candidate.todoDetail, '暂无详情')
+    const projectName = sanitizeFeishuMarkdownText(candidate.projectName || '未命名项目')
+    const dueDate = sanitizeFeishuMarkdownText(candidate.dueDate || '未设置')
+    const todoPriority = sanitizeFeishuMarkdownText(priorityLabel(candidate.todoPriority))
+    const assigneeText = target.targetType === 'chat'
+      ? buildFeishuAtText(
+        candidate.recipientFeishuOpenId,
+        candidate.recipientName,
+        options.mention !== false,
+      )
+      : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
+    const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
+    const headerTitle = `${operatorName} 发起了新的待办，请及时处理`
     return {
       config: {
         wide_screen_mode: true,
@@ -3133,20 +3253,256 @@ function buildFeishuInteractiveCard(
           tag: 'div',
           text: {
             content: [
-              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 条待办指派：`,
-              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
-              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
-              `- 待办事项：${sanitizeFeishuMarkdownText(candidate.todoTitle)}`,
-              `- 截止日期：${sanitizeFeishuMarkdownText(candidate.dueDate)}`,
+              '**标题**',
+              todoTitle,
+              '',
+              '**待办详情**',
+              todoDetail,
             ].join('\n'),
             tag: 'lark_md',
           },
+        },
+        {
+          tag: 'hr',
+        },
+        {
+          tag: 'column_set',
+          flex_mode: 'none',
+          background_style: 'default',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**项目**',
+                      projectName,
+                      '',
+                      '**截止日期**',
+                      dueDate,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**优先级**',
+                      todoPriority,
+                      '',
+                      '**指派给**',
+                      assigneeText,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+          ],
         },
       ],
       header: {
         template: 'green',
         title: {
-          content: 'Veges 通知',
+          content: `📝 ${headerTitle}`,
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  if (candidate.kind === 'todo_rejected_creator') {
+    const todoTitle = sanitizeFeishuMarkdownText(candidate.todoTitle || '未命名待办')
+    const rejectionReason = formatFeishuTodoDetailText(candidate.rejectionReason, '未填写')
+    const projectName = sanitizeFeishuMarkdownText(candidate.projectName || '未命名项目')
+    const dueDate = sanitizeFeishuMarkdownText(candidate.dueDate || '未设置')
+    const creatorText = target.targetType === 'chat'
+      ? buildFeishuAtText(
+        candidate.recipientFeishuOpenId,
+        candidate.recipientName,
+        options.mention !== false,
+      )
+      : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
+    const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
+    const headerTitle = target.targetType === 'chat'
+      ? `${operatorName} 驳回了待办，请查看原因`
+      : `${operatorName} 驳回了您创建的待办，请查看原因`
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              '**待办标题**',
+              todoTitle,
+              '',
+              '**驳回理由**',
+              rejectionReason,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+        {
+          tag: 'hr',
+        },
+        {
+          tag: 'column_set',
+          flex_mode: 'none',
+          background_style: 'default',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**项目**',
+                      projectName,
+                      '',
+                      '**截止日期**',
+                      dueDate,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**创建人**',
+                      creatorText,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      header: {
+        template: 'red',
+        title: {
+          content: `⚠️ ${headerTitle}`,
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
+  if (candidate.kind === 'todo_completed_creator') {
+    const todoTitle = sanitizeFeishuMarkdownText(candidate.todoTitle || '未命名待办')
+    const todoDetail = formatFeishuTodoDetailText(candidate.todoDetail, '暂无详情')
+    const projectName = sanitizeFeishuMarkdownText(candidate.projectName || '未命名项目')
+    const dueDate = sanitizeFeishuMarkdownText(candidate.dueDate || '未设置')
+    const todoPriority = sanitizeFeishuMarkdownText(priorityLabel(candidate.todoPriority))
+    const reviewerText = target.targetType === 'chat'
+      ? buildFeishuAtText(
+        candidate.recipientFeishuOpenId,
+        candidate.recipientName,
+        options.mention !== false,
+      )
+      : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
+    const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
+    const headerTitle = `${operatorName} 完成了待办，请前往验收`
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: [
+              '**标题**',
+              todoTitle,
+              '',
+              '**待办详情**',
+              todoDetail,
+            ].join('\n'),
+            tag: 'lark_md',
+          },
+        },
+        {
+          tag: 'hr',
+        },
+        {
+          tag: 'column_set',
+          flex_mode: 'none',
+          background_style: 'default',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**项目**',
+                      projectName,
+                      '',
+                      '**截止日期**',
+                      dueDate,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**优先级**',
+                      todoPriority,
+                      '',
+                      '**验收人**',
+                      reviewerText,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: `✅ ${headerTitle}`,
           tag: 'plain_text',
         },
       },
@@ -3249,7 +3605,12 @@ async function resolveFeishuDeliveryTargets(candidate: FeishuNotificationCandida
     })
   }
 
-  if (candidate.kind !== 'assigned_todo' && candidate.kind !== 'package_event_assigned') return targets
+  if (
+    candidate.kind !== 'assigned_todo' &&
+    candidate.kind !== 'todo_completed_creator' &&
+    candidate.kind !== 'todo_rejected_creator' &&
+    candidate.kind !== 'package_event_assigned'
+  ) return targets
 
   const projectTarget = await query<{ target_id: string }>(
     `
@@ -3394,7 +3755,12 @@ async function deliverFeishuNotification(candidate: FeishuNotificationCandidate)
       const errorMessage = error instanceof Error ? error.message : 'Unknown Feishu delivery error'
       const shouldRetryWithoutMention =
         target.targetType === 'chat' &&
-        (candidate.kind === 'assigned_todo' || candidate.kind === 'package_event_assigned') &&
+        (
+          candidate.kind === 'assigned_todo' ||
+          candidate.kind === 'todo_completed_creator' ||
+          candidate.kind === 'todo_rejected_creator' ||
+          candidate.kind === 'package_event_assigned'
+        ) &&
         /invalid user resource|at\/person/i.test(errorMessage)
       if (shouldRetryWithoutMention) {
         try {
@@ -3491,6 +3857,8 @@ function buildAssignedTodoFeishuCandidate(todo: AssignedTodoNotificationRow): Fe
     recipientName,
     sourceId: Number(todo.id),
     title: '新的待办指派',
+    todoDetail: todo.detail ? decryptText(todo.detail) : '',
+    todoPriority: todo.priority,
     todoTitle: decryptText(todo.title),
     userId: Number(todo.assignee_user_id),
   }
@@ -3503,7 +3871,9 @@ async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
            t.project_id,
            p.name as project_name,
            t.title,
+           t.detail,
            t.due_date,
+           t.priority,
            t.done,
            t.assignee_user_id,
            assigner.email as assigner_email,
@@ -3526,66 +3896,169 @@ async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
   return todo ? buildAssignedTodoFeishuCandidate(todo) : null
 }
 
-function buildCompletedTodoAssignerFeishuCandidate(
-  todo: CompletedTodoAssignerNotificationRow,
+function buildCompletedTodoCreatorFeishuCandidate(
+  todo: CompletedTodoCreatorNotificationRow,
 ): FeishuNotificationCandidate | null {
-  if (!todo.assigned_by_user_id) return null
-  const assigneeName = todo.assignee_email
+  if (!todo.creator_user_id) return null
+  const operatorName = todo.operator_email
     ? displayNameFromUser({
-      email: todo.assignee_email,
-      display_name: todo.assignee_display_name ?? '',
+      email: todo.operator_email,
+      display_name: todo.operator_display_name ?? '',
     })
-    : '负责人'
-  const assignerName = todo.assigner_email
+    : undefined
+  const reviewerName = todo.creator_email
     ? displayNameFromUser({
-      email: todo.assigner_email,
-      display_name: todo.assigner_display_name ?? '',
+      email: todo.creator_email,
+      display_name: todo.creator_display_name ?? '',
     })
+    : undefined
+  const reviewerFeishuEmail =
+    todo.creator_feishu_email || (
+      todo.creator_feishu_user_id?.includes('@') ? todo.creator_feishu_user_id : undefined
+    )
+  const reviewerFeishuOpenId = todo.creator_feishu_user_id?.startsWith('ou_')
+    ? todo.creator_feishu_user_id
     : undefined
   const projectName = decryptText(todo.project_name)
   const todoTitle = decryptText(todo.title)
 
   return {
-    body: `${assigneeName} 完成了您指派的待办：${projectName} · ${todoTitle}`,
+    body: `${operatorName ? `${operatorName} 完成：` : ''}${projectName} · ${todoTitle}`,
     dueDate: formatDate(todo.due_date),
-    kind: 'todo_completed_assignee',
-    operatorName: assigneeName,
+    kind: 'todo_completed_creator',
+    operatorName,
     projectId: Number(todo.project_id),
     projectName,
-    recipientName: assignerName,
+    recipientFeishuEmail: reviewerFeishuEmail,
+    recipientFeishuOpenId: reviewerFeishuOpenId,
+    recipientName: reviewerName,
     sourceId: Number(todo.id),
-    title: '指派待办已完成',
+    title: '待办已完成',
+    todoDetail: todo.detail ? decryptText(todo.detail) : '',
+    todoPriority: todo.priority,
     todoTitle,
-    userId: Number(todo.assigned_by_user_id),
+    userId: Number(todo.creator_user_id),
   }
 }
 
-async function buildCompletedTodoAssignerFeishuCandidateByTodoId(todoId: number) {
-  const result = await query<CompletedTodoAssignerNotificationRow>(
+async function buildCompletedTodoCreatorFeishuCandidateByTodoId(params: {
+  operatorUserId: number
+  todoId: number
+}) {
+  const result = await query<CompletedTodoCreatorNotificationRow>(
+    `
+    select t.id,
+           t.project_id,
+           p.name as project_name,
+           t.title,
+           t.detail,
+           t.due_date,
+           t.priority,
+           coalesce(t.created_by_user_id, p.user_id) as creator_user_id,
+           creator.email as creator_email,
+           creator.feishu_email as creator_feishu_email,
+           creator.feishu_user_id as creator_feishu_user_id,
+           creator.display_name as creator_display_name,
+           operator_user.email as operator_email,
+           operator_user.display_name as operator_display_name
+    from todos t
+    join projects p on p.id = t.project_id
+    left join users creator on creator.id = coalesce(t.created_by_user_id, p.user_id)
+    left join users operator_user on operator_user.id = $2
+    where t.id = $1
+      and t.done = true
+    limit 1
+    `,
+    [params.todoId, params.operatorUserId],
+  )
+  const todo = result.rows[0]
+  return todo ? buildCompletedTodoCreatorFeishuCandidate(todo) : null
+}
+
+function buildRejectedTodoCreatorFeishuCandidate(params: {
+  rejectionReason: string
+  sourceId: number
+  todo: RejectedTodoCreatorNotificationRow
+}): FeishuNotificationCandidate | null {
+  const { rejectionReason, sourceId, todo } = params
+  if (!todo.creator_user_id) return null
+  const recipientName = todo.creator_email
+    ? displayNameFromUser({
+      email: todo.creator_email,
+      display_name: todo.creator_display_name ?? '',
+    })
+    : undefined
+  const operatorName = todo.operator_email
+    ? displayNameFromUser({
+      email: todo.operator_email,
+      display_name: todo.operator_display_name ?? '',
+    })
+    : undefined
+  const creatorFeishuEmail =
+    todo.creator_feishu_email || (
+      todo.creator_feishu_user_id?.includes('@') ? todo.creator_feishu_user_id : undefined
+    )
+  const creatorFeishuOpenId = todo.creator_feishu_user_id?.startsWith('ou_')
+    ? todo.creator_feishu_user_id
+    : undefined
+  const projectName = decryptText(todo.project_name)
+  const todoTitle = decryptText(todo.title)
+
+  return {
+    body: `${operatorName ? `${operatorName} 驳回：` : ''}${projectName} · ${todoTitle} · ${rejectionReason}`,
+    dueDate: formatDate(todo.due_date),
+    kind: 'todo_rejected_creator',
+    operatorName,
+    projectId: Number(todo.project_id),
+    projectName,
+    recipientFeishuEmail: creatorFeishuEmail,
+    recipientFeishuOpenId: creatorFeishuOpenId,
+    recipientName,
+    rejectionReason,
+    sourceId,
+    title: '待办已驳回',
+    todoTitle,
+    userId: Number(todo.creator_user_id),
+  }
+}
+
+async function buildRejectedTodoCreatorFeishuCandidateByTodoId(params: {
+  operatorUserId: number
+  rejectionReason: string
+  sourceId: number
+  todoId: number
+}) {
+  const result = await query<RejectedTodoCreatorNotificationRow>(
     `
     select t.id,
            t.project_id,
            p.name as project_name,
            t.title,
            t.due_date,
-           t.assigned_by_user_id,
-           assignee.email as assignee_email,
-           assignee.display_name as assignee_display_name,
-           assigner.email as assigner_email,
-           assigner.display_name as assigner_display_name
+           coalesce(t.created_by_user_id, p.user_id) as creator_user_id,
+           creator.email as creator_email,
+           creator.feishu_email as creator_feishu_email,
+           creator.feishu_user_id as creator_feishu_user_id,
+           creator.display_name as creator_display_name,
+           operator_user.email as operator_email,
+           operator_user.display_name as operator_display_name
     from todos t
     join projects p on p.id = t.project_id
-    left join users assignee on assignee.id = t.assignee_user_id
-    left join users assigner on assigner.id = t.assigned_by_user_id
+    left join users creator on creator.id = coalesce(t.created_by_user_id, p.user_id)
+    left join users operator_user on operator_user.id = $2
     where t.id = $1
-      and t.done = true
-      and t.assigned_by_user_id is not null
     limit 1
     `,
-    [todoId],
+    [params.todoId, params.operatorUserId],
   )
   const todo = result.rows[0]
-  return todo ? buildCompletedTodoAssignerFeishuCandidate(todo) : null
+  return todo
+    ? buildRejectedTodoCreatorFeishuCandidate({
+      rejectionReason: params.rejectionReason,
+      sourceId: params.sourceId,
+      todo,
+    })
+    : null
 }
 
 async function deliverLatestAssignedTodoNotification(todoId: number) {
@@ -3596,10 +4069,26 @@ async function deliverLatestAssignedTodoNotification(todoId: number) {
   return deliverFeishuNotification(candidate)
 }
 
-async function deliverCompletedTodoAssignerNotification(todoId: number) {
+async function deliverCompletedTodoCreatorNotification(params: {
+  operatorUserId: number
+  todoId: number
+}) {
   if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
   if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
-  const candidate = await buildCompletedTodoAssignerFeishuCandidateByTodoId(todoId)
+  const candidate = await buildCompletedTodoCreatorFeishuCandidateByTodoId(params)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+async function deliverRejectedTodoCreatorNotification(params: {
+  operatorUserId: number
+  rejectionReason: string
+  sourceId: number
+  todoId: number
+}) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidate = await buildRejectedTodoCreatorFeishuCandidateByTodoId(params)
   if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
   return deliverFeishuNotification(candidate)
 }
@@ -3614,12 +4103,30 @@ function enqueueLatestAssignedTodoDelivery(todoId: number) {
   }, 0)
 }
 
-function enqueueCompletedTodoAssignerDelivery(todoId: number) {
+function enqueueCompletedTodoCreatorDelivery(params: {
+  operatorUserId: number
+  todoId: number
+}) {
   if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
   if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
   setTimeout(() => {
-    void deliverCompletedTodoAssignerNotification(todoId).catch((error) => {
-      console.error('Feishu completed todo assigner delivery failed', error)
+    void deliverCompletedTodoCreatorNotification(params).catch((error) => {
+      console.error('Feishu completed todo creator delivery failed', error)
+    })
+  }, 0)
+}
+
+function enqueueRejectedTodoCreatorDelivery(params: {
+  operatorUserId: number
+  rejectionReason: string
+  sourceId: number
+  todoId: number
+}) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverRejectedTodoCreatorNotification(params).catch((error) => {
+      console.error('Feishu rejected todo creator delivery failed', error)
     })
   }, 0)
 }
@@ -4546,9 +5053,6 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const assigneeUserId = existingTodo.rows[0].assignee_user_id
     ? Number(existingTodo.rows[0].assignee_user_id)
     : null
-  const assignedByUserId = existingTodo.rows[0].assigned_by_user_id
-    ? Number(existingTodo.rows[0].assigned_by_user_id)
-    : null
   const canManageTodo = access.role === 'owner' || createdByUserId === userId
   const canActOnTodo = access.role === 'owner' || assigneeUserId === userId
   const requestedConfirmationStatus = request.body.confirmationStatus
@@ -4705,6 +5209,12 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
       noteId: rejectionNoteId,
       projectId,
     })
+    enqueueRejectedTodoCreatorDelivery({
+      operatorUserId: userId,
+      rejectionReason: requestedRejectionReason,
+      sourceId: rejectionNoteId,
+      todoId,
+    })
   }
   if (
     canManageTodo &&
@@ -4714,14 +5224,11 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   ) {
     enqueueLatestAssignedTodoDelivery(todoId)
   }
-  if (
-    assigneeUserId === userId &&
-    assignedByUserId &&
-    assignedByUserId !== userId &&
-    existingTodo.rows[0].done === false &&
-    request.body.done === true
-  ) {
-    enqueueCompletedTodoAssignerDelivery(todoId)
+  if (existingTodo.rows[0].done === false && request.body.done === true) {
+    enqueueCompletedTodoCreatorDelivery({
+      operatorUserId: userId,
+      todoId,
+    })
   }
   response.json(await getWorkspace(userId))
 }))

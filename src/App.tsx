@@ -11,6 +11,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Archive,
   AddressBook,
@@ -21,6 +22,7 @@ import {
   CornersOut,
   DotsThree,
   CaretDown,
+  ImageSquare,
   PencilSimple,
   DownloadSimple,
   FileText,
@@ -1029,6 +1031,7 @@ function App() {
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
   const [selectedProjectId, setSelectedProjectId] = useState(1)
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
+  const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [isProjectTodoDetailActive, setIsProjectTodoDetailActive] = useState(false)
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
@@ -1165,6 +1168,27 @@ function App() {
     const frame = window.requestAnimationFrame(() => setRequestedTodoDetailId(null))
     return () => window.cancelAnimationFrame(frame)
   }, [requestedTodoDetailId, view])
+
+  useEffect(() => {
+    if (
+      view !== 'project' ||
+      projectDetailTab !== 'packages' ||
+      requestedPackageEventId == null ||
+      !selectedProject ||
+      !projectPackageTimelines[selectedProject.id]
+    ) return
+    const frame = window.requestAnimationFrame(() => {
+      packageWorkbenchRef.current?.selectEvent(requestedPackageEventId)
+      setRequestedPackageEventId(null)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [
+    projectDetailTab,
+    projectPackageTimelines,
+    requestedPackageEventId,
+    selectedProject,
+    view,
+  ])
 
   useEffect(() => {
     if (!selectedProject) return
@@ -1385,6 +1409,7 @@ function App() {
 
   function selectProject(projectId: number) {
     setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
     setSelectedProjectId(projectId)
     setJournalDraft('')
     setProjectDetailTab('journal')
@@ -1393,9 +1418,19 @@ function App() {
 
   function selectTodo(projectId: number, todoId: number) {
     setRequestedTodoDetailId(todoId)
+    setRequestedPackageEventId(null)
     setSelectedProjectId(projectId)
     setJournalDraft('')
     setProjectDetailTab('journal')
+    setView('project')
+  }
+
+  function selectPackageEvent(projectId: number, eventId: number) {
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(eventId)
+    setSelectedProjectId(projectId)
+    setJournalDraft('')
+    setProjectDetailTab('packages')
     setView('project')
   }
 
@@ -2361,7 +2396,7 @@ ${packageTimelineText}`
             onAcceptInvitation={acceptInvitation}
             onDeclineInvitation={declineInvitation}
             onDismissNotification={dismissNotification}
-            onProjectClick={selectProject}
+            onPackageEventClick={selectPackageEvent}
             onTodoClick={(projectId, todoId) => {
               void selectNotificationTodo(projectId, todoId)
             }}
@@ -4771,7 +4806,7 @@ function NotificationCenterView({
   onAcceptInvitation,
   onDeclineInvitation,
   onDismissNotification,
-  onProjectClick,
+  onPackageEventClick,
   onTodoClick,
   onToggleTodo,
 }: {
@@ -4783,7 +4818,7 @@ function NotificationCenterView({
     kind: 'project_invite' | 'assigned_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
     sourceId: number,
   ) => void
-  onProjectClick: (id: number) => void
+  onPackageEventClick: (projectId: number, eventId: number) => void
   onTodoClick: (projectId: number, todoId: number) => void
   onToggleTodo: (todoId: number) => void
 }) {
@@ -5012,9 +5047,9 @@ function NotificationCenterView({
                         className="ghost-button"
                         type="button"
                         variant="outline"
-                        onClick={() => onProjectClick(event.projectId)}
+                        onClick={() => onPackageEventClick(event.projectId, event.id)}
                       >
-                        查看项目
+                        查看交付事件
                       </Button>
                       <Button
                         className="solid-button"
@@ -5215,6 +5250,18 @@ function serializeTodoDetailContent(text: string, images: TodoDetailImageAttachm
 
   if (hasText && imageMarkdown) return `${text}\n\n${imageMarkdown}`
   return hasText ? text : imageMarkdown
+}
+
+function getTodoContentIndicators(todo: Todo) {
+  const detailContent = parseTodoDetailContent(todo.detail)
+  const hasDetail = todo.detail.trim().length > 0
+  const infoCount = (hasDetail ? 1 : 0) + todo.notes.length
+  const imageCount = todo.notes.reduce(
+    (total, note) => total + parseTodoDetailContent(note.content).images.length,
+    detailContent.images.length,
+  )
+
+  return { imageCount, infoCount }
 }
 
 async function pasteImagesIntoTodoDetail(
@@ -5647,7 +5694,7 @@ function MentionInputShell({
 }) {
   const [open, setOpen] = useState(false)
   const [mentionRange, setMentionRange] = useState<{ caret: number; index: number } | null>(null)
-  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0, width: 260 })
   const shellRef = useRef<HTMLSpanElement | null>(null)
   const mentionMembers = useMemo(() => {
     const seen = new Set<string>()
@@ -5677,7 +5724,10 @@ function MentionInputShell({
     setOpen(active)
     setMentionRange(active ? { caret, index: mentionIndex } : null)
     if (active) {
-      setMenuPosition(getCaretMenuPosition(element, shellRef.current, caret, nextValue))
+      const relativePosition = getCaretMenuPosition(element, shellRef.current, caret, nextValue)
+      setMenuPosition(
+        getFloatingMentionMenuPosition(element, shellRef.current, relativePosition, mentionMembers.length),
+      )
     }
   }
 
@@ -5699,6 +5749,32 @@ function MentionInputShell({
     setMentionRange(null)
   }
 
+  const mentionMenu = shouldShow ? (
+    <span
+      className="mention-menu mention-menu-floating"
+      style={{
+        left: menuPosition.left,
+        top: menuPosition.top,
+        width: menuPosition.width,
+      } satisfies CSSProperties}
+    >
+      {mentionMembers.map((member) => (
+        <button
+          className="mention-option"
+          key={member.id}
+          type="button"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            chooseMember(member)
+          }}
+        >
+          <strong>@{member.name}</strong>
+          <small>{member.role}</small>
+        </button>
+      ))}
+    </span>
+  ) : null
+
   return (
     <span className="mention-input-shell" ref={shellRef}>
       {multiline ? (
@@ -5718,30 +5794,9 @@ function MentionInputShell({
           onFocus={(event) => updateMentionMenu(event.currentTarget, value)}
         />
       )}
-      {shouldShow && (
-        <span
-          className="mention-menu"
-          style={{
-            left: menuPosition.left,
-            top: menuPosition.top,
-          } satisfies CSSProperties}
-        >
-          {mentionMembers.map((member) => (
-            <button
-              className="mention-option"
-              key={member.id}
-              type="button"
-              onMouseDown={(event) => {
-                event.preventDefault()
-                chooseMember(member)
-              }}
-            >
-              <strong>@{member.name}</strong>
-              <small>{member.role}</small>
-            </button>
-          ))}
-        </span>
-      )}
+      {mentionMenu && typeof document !== 'undefined'
+        ? createPortal(mentionMenu, document.body)
+        : mentionMenu}
     </span>
   )
 }
@@ -5792,6 +5847,39 @@ function getCaretMenuPosition(
   return {
     left: Math.max(0, left),
     top: Math.max(0, top),
+  }
+}
+
+function getFloatingMentionMenuPosition(
+  element: HTMLInputElement | HTMLTextAreaElement,
+  shell: HTMLSpanElement | null,
+  relativePosition: { left: number; top: number },
+  optionCount: number,
+) {
+  if (!shell || typeof window === 'undefined') {
+    return { left: relativePosition.left, top: relativePosition.top, width: 260 }
+  }
+
+  const viewportMargin = 8
+  const shellRect = shell.getBoundingClientRect()
+  const style = window.getComputedStyle(element)
+  const lineHeight =
+    Number.parseFloat(style.lineHeight) ||
+    Number.parseFloat(style.fontSize) * 1.3 ||
+    18
+  const menuWidth = Math.min(260, Math.max(120, shellRect.width || 260))
+  const estimatedMenuHeight = Math.min(220, Math.max(46, optionCount * 46 + 12))
+  const preferredLeft = shellRect.left + relativePosition.left
+  const preferredTop = shellRect.top + relativePosition.top
+  const maxLeft = Math.max(viewportMargin, window.innerWidth - menuWidth - viewportMargin)
+  const shouldFlipUp = preferredTop + estimatedMenuHeight > window.innerHeight - viewportMargin
+  const flippedTop = preferredTop - estimatedMenuHeight - lineHeight - 8
+  const maxTop = Math.max(viewportMargin, window.innerHeight - estimatedMenuHeight - viewportMargin)
+
+  return {
+    left: Math.min(Math.max(viewportMargin, preferredLeft), maxLeft),
+    top: Math.min(Math.max(viewportMargin, shouldFlipUp ? flippedTop : preferredTop), maxTop),
+    width: menuWidth,
   }
 }
 
@@ -7993,6 +8081,7 @@ function TodoList({
             const rowCanRespondToTodo = canRespondToTodo(todo)
             const isCheckboxDisabled = !canToggleTodoDone(todo)
             const checkboxLabel = todo.done ? '标记为未完成' : '标记为已完成'
+            const indicators = getTodoContentIndicators(todo)
             return (
               <article
                 className={[
@@ -8039,6 +8128,36 @@ function TodoList({
                   </small>
                 </button>
                 <span className="todo-actions" onClick={(event) => event.stopPropagation()}>
+                  {indicators.infoCount > 0 || indicators.imageCount > 0 ? (
+                    <button
+                      className="todo-content-indicators"
+                      type="button"
+                      aria-label="查看待办详情、备注和图片"
+                      title="查看待办详情"
+                      onClick={() => openTodoEditDialog(todo)}
+                    >
+                      {indicators.infoCount > 0 ? (
+                        <span
+                          className="todo-content-indicator"
+                          aria-label={`包含 ${indicators.infoCount} 条详情或备注`}
+                          title={`详情/备注 ${indicators.infoCount}`}
+                        >
+                          <FileText size={15} />
+                          <span>{indicators.infoCount}</span>
+                        </span>
+                      ) : null}
+                      {indicators.imageCount > 0 ? (
+                        <span
+                          className="todo-content-indicator"
+                          aria-label={`包含 ${indicators.imageCount} 张图片`}
+                          title={`图片 ${indicators.imageCount}`}
+                        >
+                          <ImageSquare size={15} />
+                          <span>{indicators.imageCount}</span>
+                        </span>
+                      ) : null}
+                    </button>
+                  ) : null}
                   <Badge className={`priority ${todo.priority}`}>
                     {priorityCopy[todo.priority]}
                   </Badge>

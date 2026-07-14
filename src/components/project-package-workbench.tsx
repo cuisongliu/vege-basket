@@ -159,6 +159,7 @@ type PackageWorkbenchProps = {
 export type ProjectPackageWorkbenchHandle = {
   exportTimeline: () => void
   openPackageMarket: () => void
+  selectEvent: (eventId: number) => void
 }
 
 type PendingOperationTarget =
@@ -1541,6 +1542,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       void handleExport()
     },
     openPackageMarket,
+    selectEvent: (eventId: number) => {
+      const targetEvent = events.find((event) => event.id === eventId)
+      setAssignedOnly(false)
+      setSelectedEventId(eventId)
+      setSelectedGroupId(targetEvent?.groups[0]?.id ?? null)
+    },
   }))
 
   function confirmExport() {
