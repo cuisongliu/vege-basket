@@ -10,6 +10,7 @@ import type {
   Project,
   ProjectPackageEventStatus,
   ProjectPackageOperationKind,
+  ProjectPackageOperationStatus,
   ProjectPackageTimeline,
   ProjectPackageEventType,
   ProjectMembership,
@@ -67,6 +68,11 @@ export type AiSettings = {
   model: string
 }
 
+export type TodoImageUploadResponse = {
+  imageUrl: string
+  objectKey: string
+}
+
 const tokenStorageKey = 'veges.authToken'
 let authToken =
   typeof window === 'undefined' ? '' : localStorage.getItem(tokenStorageKey) ?? ''
@@ -97,13 +103,13 @@ async function request<T>(path: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const fallbackMessage = `Request failed: ${response.status}`
+    let data: { error?: string }
     try {
-      const data = await response.json() as { error?: string }
-      throw new Error(data.error || fallbackMessage)
+      data = await response.json() as { error?: string }
     } catch (error) {
-      if (error instanceof Error && error.message !== fallbackMessage) throw error
-      throw new Error(fallbackMessage)
+      throw new Error(fallbackMessage, { cause: error })
     }
+    throw new Error(data.error || fallbackMessage)
   }
 
   return response.json() as Promise<T>
@@ -204,7 +210,7 @@ export function removeProjectModule(projectId: number, moduleId: number) {
 
 export function updateProject(
   projectId: number,
-  payload: Partial<{ name: string; status: ProjectStatus; tags: string[] }>,
+  payload: Partial<{ name: string; description: string; status: ProjectStatus; tags: string[] }>,
 ) {
   return request<WorkspaceData>(`/api/projects/${projectId}`, {
     method: 'PATCH',
@@ -228,10 +234,10 @@ export function removeProject(projectId: number) {
   })
 }
 
-export function createJournalEntry(projectId: number, content: string) {
+export function createJournalEntry(projectId: number, content: string, createdAt?: string) {
   return request<WorkspaceData>(`/api/projects/${projectId}/journals`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, createdAt }),
   })
 }
 
@@ -296,9 +302,34 @@ export function removeDraft(draftId: number) {
   })
 }
 
+export async function uploadTodoImage(file: File) {
+  const response = await fetch('/api/todo-images', {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: file,
+  })
+
+  if (!response.ok) {
+    const fallbackMessage = `Request failed: ${response.status}`
+    let data: { error?: string }
+    try {
+      data = await response.json() as { error?: string }
+    } catch (error) {
+      throw new Error(fallbackMessage, { cause: error })
+    }
+    throw new Error(data.error || fallbackMessage)
+  }
+
+  return response.json() as Promise<TodoImageUploadResponse>
+}
+
 export function createTodo(payload: {
   assigneeUserId?: number
   createdAt?: string
+  detail?: string
   dueDate: string
   moduleId?: number | null
   priority: Priority
@@ -374,6 +405,7 @@ export function updateTodo(
     assigneeUserId?: number | null
     createdAt?: string
     moduleId?: number | null
+    rejectionReason?: string
   },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {
@@ -421,10 +453,14 @@ export function createSummaryFromContent(payload: {
   })
 }
 
-export function sendAiChat(messages: AiChatMessage[], agentType: AiAgentType) {
+export function sendAiChat(
+  messages: AiChatMessage[],
+  agentType: AiAgentType,
+  projectId?: number,
+) {
   return request<{ message: string }>('/api/ai/chat', {
     method: 'POST',
-    body: JSON.stringify({ agentType, messages }),
+    body: JSON.stringify({ agentType, messages, projectId }),
   })
 }
 
@@ -434,7 +470,7 @@ export function fetchProjectPackageTimeline(projectId: number) {
 
 export function createProjectPackageEvent(
   projectId: number,
-  payload: { assigneeUserId: number; title: string; type: ProjectPackageEventType },
+  payload: { assigneeUserId: number; deliveryDate: string; title: string; type: ProjectPackageEventType },
 ) {
   return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
     method: 'POST',
@@ -447,6 +483,7 @@ export function updateProjectPackageEvent(
   eventId: number,
   payload: Partial<{
     assigneeUserId: number
+    deliveryDate: string
     status: ProjectPackageEventStatus
     title: string
     type: ProjectPackageEventType
@@ -512,7 +549,7 @@ export function createProjectPackageOperation(
     eventId: number
     groupId?: number | null
     kind: ProjectPackageOperationKind
-    status?: ProjectPackageEventStatus
+    status?: ProjectPackageOperationStatus
     title?: string
     label?: string
     content?: string
@@ -535,7 +572,7 @@ export function updateProjectPackageOperation(
     label: string
     content: string
     completed: boolean
-    status: ProjectPackageEventStatus
+    status: ProjectPackageOperationStatus
     relatedTodoIds: number[]
     relatedTodoNotes: Record<number, string>
   }>,

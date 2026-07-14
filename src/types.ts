@@ -1,5 +1,6 @@
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
+export type TodoConfirmationStatus = 'confirmed' | 'rejected'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 
@@ -23,10 +24,11 @@ export type Todo = {
   assignedByUserId?: number
   assignedByName?: string
   title: string
+  detail: string
   dueDate: string
   priority: Priority
   done: boolean
-  confirmed: boolean
+  confirmationStatus: TodoConfirmationStatus
   moduleId?: number
   moduleName?: string
   notes: TodoNote[]
@@ -78,6 +80,7 @@ export type TodoNotification = NotificationState & {
   id: number
   projectId: number
   projectName: string
+  moduleName?: string
   title: string
   dueDate: string
   priority: Priority
@@ -130,7 +133,8 @@ export type Summary = {
 }
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
-export type ProjectPackageEventStatus = 'failed' | 'pending' | 'success'
+export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 export type PackageMarketChannel = 'release' | 'ci'
 
@@ -152,7 +156,7 @@ export type ProjectPackageItem = {
 export type ProjectPackageOperation = {
   id: number
   kind: ProjectPackageOperationKind
-  status: ProjectPackageEventStatus
+  status: ProjectPackageOperationStatus
   title: string
   label: string
   content: string
@@ -182,6 +186,7 @@ export type ProjectPackageEvent = {
   status: ProjectPackageEventStatus
   title: string
   createdAt: string
+  deliveryDate: string
   updatedAt: string
   operations: ProjectPackageOperation[]
   groups: ProjectPackageGroup[]
@@ -234,6 +239,7 @@ export type Project = {
   id: number
   accessRole: ProjectAccessRole
   name: string
+  description: string
   ownerName: string
   ownerUserId: number
   status: ProjectStatus

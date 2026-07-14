@@ -45,6 +45,9 @@ create table if not exists projects (
 alter table projects
   add column if not exists tags_encrypted text;
 
+alter table projects
+  add column if not exists description_encrypted text;
+
 update projects
 set tags_encrypted = array_to_json(tags)::text
 where tags_encrypted is null;
@@ -100,10 +103,12 @@ create table if not exists todos (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
   title text not null,
+  detail text not null default '',
   due_date date not null,
   priority text not null default 'medium',
   done boolean not null default false,
-  confirmed boolean not null default false,
+  confirmation_status text not null default 'confirmed'
+    check (confirmation_status in ('confirmed', 'rejected')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -137,6 +142,9 @@ alter table todos
   add column if not exists created_by_user_id bigint references users(id) on delete set null;
 
 alter table todos
+  add column if not exists detail text not null default '';
+
+alter table todos
   add column if not exists assignee_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_at timestamptz;
@@ -145,7 +153,17 @@ alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
 
 alter table todos
-  add column if not exists confirmed boolean not null default false;
+  add column if not exists confirmation_status text not null default 'confirmed';
+
+alter table todos
+  drop constraint if exists todos_confirmation_status_check;
+
+alter table todos
+  add constraint todos_confirmation_status_check
+  check (confirmation_status in ('confirmed', 'rejected'));
+
+alter table todos
+  drop column if exists confirmed;
 
 update todos
 set created_by_user_id = projects.user_id
@@ -240,23 +258,30 @@ create table if not exists project_package_events (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
   type text not null default 'upgrade',
-  status text not null default 'pending',
+  status text not null default 'draft',
   title text not null,
   created_by_user_id bigint references users(id) on delete set null,
   assignee_user_id bigint references users(id) on delete set null,
   assigned_by_user_id bigint references users(id) on delete set null,
   assigned_at timestamptz,
+  delivery_date date not null default current_date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table project_package_events
-  add column if not exists status text not null default 'pending';
+  add column if not exists status text not null default 'draft';
+
+alter table project_package_events
+  alter column status set default 'draft';
 
 alter table project_package_events
   add column if not exists assignee_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_at timestamptz;
+
+alter table project_package_events
+  add column if not exists delivery_date date not null default current_date;
 
 create index if not exists idx_project_package_events_assignee
   on project_package_events (assignee_user_id, created_at desc);

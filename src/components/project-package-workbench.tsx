@@ -6,6 +6,7 @@ import {
   CodeBlock,
   Copy,
   DotsThree,
+  FunnelSimple,
   Highlighter,
   Package,
   Plus,
@@ -14,6 +15,7 @@ import {
 } from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { JournalDatePicker } from '@/components/journal-date-picker'
 import {
   Dialog,
   DialogContent,
@@ -39,6 +41,12 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  TodoFilterBuilderDialog,
+  matchesTodoFilterConditions,
+  type TodoFilterCondition,
+  type TodoFilterJoin,
+} from '@/components/todo-filter-builder-dialog'
 import type {
   PackageMarketChannel,
   PackageMarketDetail,
@@ -53,6 +61,7 @@ import type {
   ProjectPackageEventType,
   ProjectPackageOperation,
   ProjectPackageOperationKind,
+  ProjectPackageOperationStatus,
   ProjectPackageTimeline,
   Todo,
 } from '@/types'
@@ -75,6 +84,7 @@ type PackageWorkbenchProps = {
   ) => Promise<void>
   onCreateEvent: (payload: {
     assigneeUserId: number
+    deliveryDate: string
     title: string
     type: ProjectPackageEventType
   }) => Promise<void>
@@ -86,7 +96,7 @@ type PackageWorkbenchProps = {
     label?: string
     content?: string
     completed?: boolean
-    status?: ProjectPackageEventStatus
+    status?: ProjectPackageOperationStatus
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
   }) => Promise<void>
@@ -117,6 +127,7 @@ type PackageWorkbenchProps = {
     eventId: number,
     payload: Partial<{
       assigneeUserId: number
+      deliveryDate: string
       status: ProjectPackageEventStatus
       title: string
       type: ProjectPackageEventType
@@ -129,7 +140,7 @@ type PackageWorkbenchProps = {
       label: string
       content: string
       completed: boolean
-      status: ProjectPackageEventStatus
+      status: ProjectPackageOperationStatus
       relatedTodoIds: number[]
       relatedTodoNotes: Record<number, string>
     }>,
@@ -164,9 +175,25 @@ function eventTypeLabel(type: ProjectPackageEventType) {
 }
 
 function eventStatusLabel(status: ProjectPackageEventStatus) {
-  if (status === 'success') return '已成功完成'
-  if (status === 'failed') return '失败'
-  return '未完成'
+  if (status === 'delivered') return '已交付'
+  if (status === 'delivering') return '交付中'
+  return '草稿'
+}
+
+function getTodayDateStamp() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).formatToParts(new Date())
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function getEventDeliveryDate(event: ProjectPackageEvent) {
+  return event.deliveryDate || event.createdAt.slice(0, 10)
 }
 
 function channelLabel(channel: PackageMarketChannel) {
@@ -182,13 +209,28 @@ const packageMarketExpireOptions = [
   { label: '10 小时', value: 600 },
 ]
 
-function getEventCompletionProgress(event: ProjectPackageEvent) {
+function isOperationEffectivelyCompleted(
+  operation: ProjectPackageOperation,
+  todosById: Map<number, Todo>,
+) {
+  if (operation.completed) return true
+  if (operation.relatedTodoIds.length === 0) return false
+
+  const relatedTodos = operation.relatedTodoIds
+    .map((todoId) => todosById.get(todoId))
+
+  return relatedTodos.every((todo) => Boolean(todo?.done))
+}
+
+function getEventCompletionProgress(event: ProjectPackageEvent, todosById: Map<number, Todo>) {
   const childOperations = [
     ...event.operations,
     ...event.groups.flatMap((group) => group.operations),
   ]
   const total = childOperations.length
-  const completed = childOperations.filter((operation) => operation.status === 'success').length
+  const completed = childOperations.filter((operation) =>
+    isOperationEffectivelyCompleted(operation, todosById)
+  ).length
   return {
     completed,
     percent: total > 0 ? Math.round((completed / total) * 100) : 0,
@@ -231,14 +273,32 @@ function summarizeTodoNote(note?: string, limit = 42) {
   return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized
 }
 
+function todoCreatedDateLabel(todo: Todo) {
+  return todo.createdAt.slice(0, 10)
+}
+
+function todoDialogMeta(todo: Todo, done: boolean) {
+  return [
+    done ? '已完成' : '未完成',
+    `创建日期 ${todoCreatedDateLabel(todo)}`,
+    `截止 ${todo.dueDate}`,
+    priorityLabel(todo.priority),
+    todo.assigneeName ? `@${todo.assigneeName}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 function todoSearchMeta(todo: Todo) {
   return [
     todo.title,
+    todo.moduleName ?? '',
     todo.assigneeName ?? '',
     todo.creatorName ?? '',
     todo.priority,
-    todo.dueDate,
     todo.createdAt,
+    todoCreatedDateLabel(todo),
+    `创建日期 ${todoCreatedDateLabel(todo)}`,
     todo.done ? '已完成 完成 done' : '未完成 未做 open pending',
   ]
     .join(' ')
@@ -271,11 +331,7 @@ function getOperationCardClassName(
   operation: ProjectPackageOperation,
   todosById: Map<number, Todo>,
 ) {
-  const relatedTodos = operation.relatedTodoIds
-    .map((todoId) => todosById.get(todoId))
-    .filter((todo): todo is Todo => Boolean(todo))
-  const isCompleted = relatedTodos.length > 0 && relatedTodos.every((todo) => todo.done)
-  return isCompleted
+  return isOperationEffectivelyCompleted(operation, todosById)
     ? 'operation-entry completed'
     : 'operation-entry'
 }
@@ -528,7 +584,7 @@ function renderMarkdownPreview(markdown: string) {
       const headingText = heading[2].trim()
       let headingClass = ''
       if (level === 2) headingClass = 'markdown-section-break'
-      if (level === 4 && !/^\d+\./.test(headingText) && headingText !== '事件文档') {
+      if (level === 4 && !/^\d+\./.test(headingText) && headingText !== '操作文档') {
         headingClass = 'markdown-package-break'
       }
       blocks.push(`<h${level}${headingClass ? ` class="${headingClass}"` : ''}>${escapeMarkdownInline(headingText)}</h${level}>`)
@@ -712,6 +768,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventDialogOpen, setEventDialogOpen] = useState(false)
   const [eventDialogMode, setEventDialogMode] = useState<'create' | 'edit'>('create')
   const [eventAssigneeUserId, setEventAssigneeUserId] = useState('')
+  const [eventDeliveryDate, setEventDeliveryDate] = useState(getTodayDateStamp)
   const [eventTitle, setEventTitle] = useState('')
   const [eventType, setEventType] = useState<ProjectPackageEventType>('upgrade')
   const [operationDialogOpen, setOperationDialogOpen] = useState(false)
@@ -725,6 +782,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [todoDialogRelatedTodoNotes, setTodoDialogRelatedTodoNotes] = useState<Record<number, string>>({})
   const [todoDialogTodoDoneMap, setTodoDialogTodoDoneMap] = useState<Record<number, boolean>>({})
   const [todoDialogSearch, setTodoDialogSearch] = useState('')
+  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
+  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>('and')
+  const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>([])
   const [todoPickerOpen, setTodoPickerOpen] = useState(false)
   const [exportPreviewOpen, setExportPreviewOpen] = useState(false)
   const [exportFileName, setExportFileName] = useState('')
@@ -767,6 +827,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const operationTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const exportTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const todoPickerSearchRef = useRef<HTMLInputElement | null>(null)
+  const todoPickerOptionsRef = useRef<HTMLDivElement | null>(null)
+  const [todoPickerOptionsOverflowing, setTodoPickerOptionsOverflowing] = useState(false)
 
   const events = useMemo(() => timeline?.events ?? [], [timeline])
   const memberOptions = useMemo(() => {
@@ -797,7 +859,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectableTodos = useMemo(
     () =>
       [...todos]
-        .filter((todo) => todo.confirmed)
+        .filter((todo) => todo.confirmationStatus === 'confirmed')
         .sort((left, right) => {
         if (left.done !== right.done) return Number(left.done) - Number(right.done)
         if (left.dueDate !== right.dueDate) return left.dueDate.localeCompare(right.dueDate)
@@ -826,11 +888,50 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     () => new Set(todoDialogRelatedTodoIds),
     [todoDialogRelatedTodoIds],
   )
+  const todoDialogModuleOptions = useMemo(() => {
+    const modules = new Map<number, string>()
+    for (const todo of selectableTodos) {
+      if (todo.moduleId && todo.moduleName) {
+        modules.set(todo.moduleId, todo.moduleName)
+      }
+    }
+    return Array.from(modules, ([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [selectableTodos])
+  const todoDialogAssigneeOptions = useMemo(() => {
+    const assignees = new Map<number, string>()
+    for (const todo of selectableTodos) {
+      if (todo.assigneeUserId && todo.assigneeName) {
+        assignees.set(todo.assigneeUserId, todo.assigneeName)
+      }
+    }
+    return Array.from(assignees, ([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [selectableTodos])
+  const todoDialogCreatorOptions = useMemo(() => {
+    const creators = new Map<number, string>()
+    for (const todo of selectableTodos) {
+      if (todo.createdByUserId && todo.creatorName) {
+        creators.set(todo.createdByUserId, todo.creatorName)
+      }
+    }
+    return Array.from(creators, ([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [selectableTodos])
+  const activeTodoFilterCount = todoFilterConditions.length
+  const todoFilterSummary = activeTodoFilterCount > 0
+    ? `已筛选 ${activeTodoFilterCount} 条件`
+    : '筛选'
   const filteredTodoDialogTodos = useMemo(() => {
     const query = todoDialogSearch.trim().toLowerCase()
-    if (!query) return selectableTodos
-    return selectableTodos.filter((todo) => todoSearchMeta(todo).includes(query))
-  }, [selectableTodos, todoDialogSearch])
+    return selectableTodos.filter((todo) => {
+      const matchesSearch = !query || todoSearchMeta(todo).includes(query)
+      return (
+        matchesSearch &&
+        matchesTodoFilterConditions(todo, todoFilterConditions, todoFilterJoin)
+      )
+    })
+  }, [selectableTodos, todoDialogSearch, todoFilterConditions, todoFilterJoin])
   const todoDialogSelectedTodos = useMemo(
     () =>
       todoDialogRelatedTodoIds
@@ -847,7 +948,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     selectedEvent?.groups[0] ??
     null
   const selectedEventProgress = selectedEvent
-    ? getEventCompletionProgress(selectedEvent)
+    ? getEventCompletionProgress(selectedEvent, todosById)
     : { completed: 0, percent: 0, total: 0 }
 
   const filteredRules = useMemo(() => {
@@ -910,6 +1011,28 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     })
     return () => window.cancelAnimationFrame(frameId)
   }, [todoPickerOpen])
+
+  useEffect(() => {
+    if (!todoPickerOpen) {
+      setTodoPickerOptionsOverflowing(false)
+      return
+    }
+    const optionsElement = todoPickerOptionsRef.current
+    if (!optionsElement) return
+
+    const updateOverflowState = () => {
+      setTodoPickerOptionsOverflowing(optionsElement.scrollHeight > optionsElement.clientHeight + 1)
+    }
+
+    const frameId = window.requestAnimationFrame(updateOverflowState)
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateOverflowState)
+    resizeObserver?.observe(optionsElement)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      resizeObserver?.disconnect()
+    }
+  }, [filteredTodoDialogTodos.length, todoPickerOpen])
 
   async function loadMarketContext() {
     setMarketLoading(true)
@@ -987,6 +1110,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setEventDialogMode('create')
     setEventTitle('')
     setEventType(events.length === 0 ? 'init' : 'upgrade')
+    setEventDeliveryDate(getTodayDateStamp())
     setEventAssigneeUserId(
       String(
         memberOptions.find((member) => member.id === currentUserId)?.id ??
@@ -1008,6 +1132,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setSelectedEventId(event.id)
     setEventTitle(event.title)
     setEventType(event.type)
+    setEventDeliveryDate(getEventDeliveryDate(event))
     setEventAssigneeUserId(String(event.assigneeUserId ?? memberOptions[0]?.id ?? ''))
     setEventDialogOpen(true)
   }
@@ -1019,7 +1144,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       target?.operation?.title ??
         target?.operation?.label ??
         target?.defaultTitle ??
-        (kind === 'document' ? '事件文档' : '操作事件'),
+        (kind === 'document' ? '操作文档' : '操作事件'),
     )
     setOperationContent(target?.operation?.content ?? '')
     setOperationDialogOpen(true)
@@ -1033,6 +1158,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       Object.fromEntries(todos.map((todo) => [todo.id, todo.done] as const)),
     )
     setTodoDialogSearch('')
+    setTodoFilterConditions([])
+    setTodoFilterJoin('and')
+    setTodoFilterDialogOpen(false)
     setTodoPickerOpen(false)
     setOperationTodoDialogOpen(true)
   }
@@ -1043,6 +1171,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setTodoDialogRelatedTodoNotes({})
     setTodoDialogTodoDoneMap({})
     setTodoDialogSearch('')
+    setTodoFilterConditions([])
+    setTodoFilterJoin('and')
+    setTodoFilterDialogOpen(false)
     setTodoPickerOpen(false)
   }
 
@@ -1303,9 +1434,19 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setBusyAction('event')
     try {
       if (eventDialogMode === 'create') {
-        await onCreateEvent({ assigneeUserId, title: eventTitle.trim(), type: eventType })
+        await onCreateEvent({
+          assigneeUserId,
+          deliveryDate: eventDeliveryDate,
+          title: eventTitle.trim(),
+          type: eventType,
+        })
       } else if (selectedEvent) {
-        await onUpdateEvent(selectedEvent.id, { assigneeUserId, title: eventTitle.trim(), type: eventType })
+        await onUpdateEvent(selectedEvent.id, {
+          assigneeUserId,
+          deliveryDate: eventDeliveryDate,
+          title: eventTitle.trim(),
+          type: eventType,
+        })
       }
       setEventDialogOpen(false)
     } finally {
@@ -1468,9 +1609,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     }}
                   >
                     <strong>{event.title}</strong>
-                    <span>{eventTypeLabel(event.type)} · {event.createdAt}</span>
-                    <span className="project-event-assignee">
-                      交付人：{event.assigneeName || '未指派'}
+                    <span>{eventTypeLabel(event.type)} · {getEventDeliveryDate(event)}</span>
+                    <span className="project-event-badges">
+                      <span className="project-event-assignee">
+                        交付人：{event.assigneeName || '未指派'}
+                      </span>
+                      <span className={`project-event-status-badge ${event.status}`}>
+                        {eventStatusLabel(event.status)}
+                      </span>
                     </span>
                   </button>
                   {canManageTimeline ? (
@@ -1478,14 +1624,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
-                            className="icon-button project-event-menu-button"
+                            className="icon-button project-menu-trigger project-event-menu-button"
                             type="button"
                             aria-label={`更多事件操作 ${event.title}`}
                           >
                             <DotsThree size={18} weight="bold" />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" sideOffset={8}>
+                        <DropdownMenuContent align="end" className="project-actions-menu-content" sideOffset={8}>
                           <DropdownMenuItem onSelect={() => openEditEventDialog(event)}>
                             编辑事件
                           </DropdownMenuItem>
@@ -1498,6 +1644,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                               <DropdownMenuItem
                                 className="project-event-danger-menu-item"
                                 onSelect={(selectEvent) => selectEvent.preventDefault()}
+                                variant="destructive"
                               >
                                 删除事件
                               </DropdownMenuItem>
@@ -1519,9 +1666,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <section className="operation-area">
                   <div className="operation-area-head">
                     <div>
-                      <h4>事件文档</h4>
+                      <h4>操作文档</h4>
                       <p className="operation-area-meta">
-                        {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · {selectedEvent.createdAt}
+                        {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · {getEventDeliveryDate(selectedEvent)}
                         <span className="event-progress-pill">
                           已完成 {selectedEventProgress.completed}/{selectedEventProgress.total} 个子事件 - 完成进度：{selectedEventProgress.percent}%
                         </span>
@@ -1534,6 +1681,26 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     </div>
                     {canManageTimeline ? (
                       <div className="operation-actions">
+                        <Select
+                          value={selectedEvent.status}
+                          onValueChange={(value) =>
+                            void onUpdateEvent(selectedEvent.id, {
+                              status: value as ProjectPackageEventStatus,
+                            })
+                          }
+                        >
+                          <SelectTrigger
+                            className="package-event-status-select"
+                            aria-label={`选择事件状态 ${selectedEvent.title}`}
+                          >
+                            <SelectValue placeholder="事件状态" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="draft">{eventStatusLabel('draft')}</SelectItem>
+                            <SelectItem value="delivering">{eventStatusLabel('delivering')}</SelectItem>
+                            <SelectItem value="delivered">{eventStatusLabel('delivered')}</SelectItem>
+                          </SelectContent>
+                        </Select>
                         <Button
                           className="solid-button"
                           type="button"
@@ -1559,7 +1726,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           openOperationDialog({ eventId: selectedEvent.id, operation: null }, 'document')
                         }
                       >
-                        <strong>点击开始编辑事件文档</strong>
+                        <strong>点击开始编辑操作文档</strong>
                         <span>点击这里，直接开始编辑这个事件的文档内容。</span>
                       </button>
                     ) : (
@@ -1590,37 +1757,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                               <small>{operation.createdAt}</small>
                             </div>
                           </button>
-                          <Select
-                            value={operation.status}
-                            onValueChange={(value) =>
-                              void onUpdateOperation(operation.id, {
-                                status: value as ProjectPackageEventStatus,
-                              })
-                            }
-                            disabled={!canManageTimeline}
-                          >
-                            <SelectTrigger
-                              className="operation-document-status-select"
-                              aria-label={`选择文档状态 ${operationHeading(operation)}`}
-                            >
-                              <SelectValue placeholder="文档状态" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="pending">{eventStatusLabel('pending')}</SelectItem>
-                              <SelectItem value="success">{eventStatusLabel('success')}</SelectItem>
-                              <SelectItem value="failed">{eventStatusLabel('failed')}</SelectItem>
-                            </SelectContent>
-                          </Select>
                           {renderOperationTodoChips(operation, todosById)}
                           {canManageTimeline ? (
                             <div className="operation-entry-actions">
                               <button
                                 className="icon-button operation-action-button"
                                 type="button"
-                                aria-label="操作待办关联"
+                                aria-label="关联待办"
                                 onClick={() => openOperationTodoDialog(operation)}
                               >
-                                操作
+                                关联待办
                               </button>
                               <DeleteConfirmDialog
                                 confirmLabel="删除记录"
@@ -1704,7 +1850,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button className="solid-button" type="button">
-                                添加事件文档 <CaretDown size={14} weight="bold" />
+                                添加操作文档 <CaretDown size={14} weight="bold" />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" sideOffset={8}>
@@ -1768,37 +1914,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                     <small>{operation.createdAt}</small>
                                   </div>
                                 </button>
-                                <Select
-                                  value={operation.status}
-                                  onValueChange={(value) =>
-                                    void onUpdateOperation(operation.id, {
-                                      status: value as ProjectPackageEventStatus,
-                                    })
-                                  }
-                                  disabled={!canManageTimeline}
-                                >
-                                  <SelectTrigger
-                                    className="operation-document-status-select"
-                                    aria-label={`选择文档状态 ${operationHeading(operation)}`}
-                                  >
-                                    <SelectValue placeholder="文档状态" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="pending">{eventStatusLabel('pending')}</SelectItem>
-                                    <SelectItem value="success">{eventStatusLabel('success')}</SelectItem>
-                                    <SelectItem value="failed">{eventStatusLabel('failed')}</SelectItem>
-                                  </SelectContent>
-                                </Select>
                                 {renderOperationTodoChips(operation, todosById)}
                                 {canManageTimeline ? (
                                   <div className="operation-entry-actions">
                                     <button
                                       className="icon-button operation-action-button"
                                       type="button"
-                                      aria-label="操作待办关联"
+                                      aria-label="关联待办"
                                       onClick={() => openOperationTodoDialog(operation)}
                                     >
-                                      操作
+                                      关联待办
                                     </button>
                                     <DeleteConfirmDialog
                                       confirmLabel="删除记录"
@@ -1867,6 +1992,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               />
             </Label>
             <Label>
+              交付时间
+              <JournalDatePicker
+                ariaLabel="选择交付时间"
+                className="package-event-date-trigger"
+                datesWithEntries={[]}
+                value={eventDeliveryDate}
+                onChange={setEventDeliveryDate}
+              />
+            </Label>
+            <Label>
               交付人
               <Select value={eventAssigneeUserId} onValueChange={setEventAssigneeUserId}>
                 <SelectTrigger>
@@ -1889,7 +2024,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             <Button
               type="button"
               onClick={() => void submitEvent()}
-              disabled={!eventTitle.trim() || !eventAssigneeUserId || busyAction === 'event'}
+              disabled={!eventTitle.trim() || !eventDeliveryDate || !eventAssigneeUserId || busyAction === 'event'}
             >
               保存
             </Button>
@@ -1904,7 +2039,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               {pendingOperationTarget?.operation
                 ? operationKind === 'document'
                   ? '编辑操作文档'
-                  : '编辑事件文档'
+                  : '编辑操作文档'
                 : '添加操作文档'}
             </DialogTitle>
             <DialogDescription>
@@ -2090,7 +2225,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       >
         <DialogContent className="package-operation-dialog">
           <DialogHeader>
-            <DialogTitle>操作待办</DialogTitle>
+            <DialogTitle>关联待办</DialogTitle>
             <DialogDescription>
               在这里统一管理待办关联、完成状态和备注说明；复选框会与外部待办列表的勾选状态保持同步。
             </DialogDescription>
@@ -2098,7 +2233,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           {selectableTodos.length > 0 ? (
             <div className="operation-todo-picker">
               <span className="operation-todo-picker-label">选择待办</span>
-              <DropdownMenu open={todoPickerOpen} onOpenChange={setTodoPickerOpen}>
+              <DropdownMenu
+                open={todoPickerOpen}
+                onOpenChange={(open) => {
+                  setTodoPickerOpen(open)
+                }}
+              >
                 <DropdownMenuTrigger asChild>
                   <Button className="operation-todo-picker-trigger" variant="outline" type="button">
                     <span className="operation-todo-picker-trigger-content">
@@ -2128,35 +2268,61 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
                   align="start"
-                  className="operation-todo-picker-content"
+                  className={
+                    todoPickerOptionsOverflowing
+                      ? 'operation-todo-picker-content has-options-scrollbar'
+                      : 'operation-todo-picker-content'
+                  }
                   collisionPadding={20}
                   onCloseAutoFocus={(event) => event.preventDefault()}
                   sideOffset={8}
                 >
-                  <div className="operation-todo-picker-search">
+                  <div className="operation-todo-picker-search-row">
                     <Input
                       ref={todoPickerSearchRef}
                       value={todoDialogSearch}
                       onChange={(event) => setTodoDialogSearch(event.target.value)}
                       onKeyDown={(event) => event.stopPropagation()}
-                      placeholder="搜索标题、负责人、提交人、截止日期"
+                      placeholder="搜索标题、负责人、提交人、创建日期"
                     />
+                    <Button
+                      className={
+                        activeTodoFilterCount > 0
+                          ? 'todo-filter-open-button operation-todo-filter-open-button active'
+                          : 'todo-filter-open-button operation-todo-filter-open-button'
+                      }
+                      variant="outline"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setTodoFilterDialogOpen(true)
+                      }}
+                    >
+                      <FunnelSimple size={14} />
+                      <span>{todoFilterSummary}</span>
+                    </Button>
                   </div>
-                  <div className="operation-todo-picker-options">
+                  <TodoFilterBuilderDialog
+                    assigneeOptions={todoDialogAssigneeOptions}
+                    conditions={todoFilterConditions}
+                    creatorOptions={todoDialogCreatorOptions}
+                    join={todoFilterJoin}
+                    moduleOptions={todoDialogModuleOptions}
+                    open={todoFilterDialogOpen}
+                    onOpenChange={setTodoFilterDialogOpen}
+                    onApply={({ conditions: nextConditions, join: nextJoin }) => {
+                      setTodoFilterConditions(nextConditions)
+                      setTodoFilterJoin(nextJoin)
+                    }}
+                  />
+                  <div className="operation-todo-picker-options" ref={todoPickerOptionsRef}>
                     {filteredTodoDialogTodos.length === 0 ? (
                       <p className="operation-empty">没有搜索到匹配的待办。</p>
                     ) : (
                       filteredTodoDialogTodos.map((todo) => {
                         const selected = todoDialogSelectedIds.has(todo.id)
                         const done = Boolean(todoDialogTodoDoneMap[todo.id])
-                        const meta = [
-                          done ? '已完成' : '未完成',
-                          `截止 ${todo.dueDate}`,
-                          priorityLabel(todo.priority),
-                          todo.assigneeName ? `@${todo.assigneeName}` : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')
+                        const meta = todoDialogMeta(todo, done)
                         return (
                           <button
                             className={selected ? 'operation-todo-picker-option selected' : 'operation-todo-picker-option'}
@@ -2197,14 +2363,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             ) : (
               todoDialogSelectedTodos.map((todo) => {
                 const done = Boolean(todoDialogTodoDoneMap[todo.id])
-                const meta = [
-                  done ? '已完成' : '未完成',
-                  `截止 ${todo.dueDate}`,
-                  priorityLabel(todo.priority),
-                  todo.assigneeName ? `@${todo.assigneeName}` : '',
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
+                const meta = todoDialogMeta(todo, done)
                 return (
                   <article
                     className={done ? 'operation-todo-dialog-item selected done' : 'operation-todo-dialog-item selected'}

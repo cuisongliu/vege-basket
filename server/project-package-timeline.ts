@@ -4,7 +4,8 @@ import { query } from './db.ts'
 import { createPackageItemDownloadUrl } from './package-market.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
-export type ProjectPackageEventStatus = 'failed' | 'pending' | 'success'
+export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 
 export type ProjectPackageItemInput = {
@@ -45,7 +46,7 @@ export type ProjectPackageOperation = {
   label: string
   relatedTodoIds: number[]
   relatedTodoNotes: Record<number, string>
-  status: ProjectPackageEventStatus
+  status: ProjectPackageOperationStatus
   title: string
   updatedAt: string
 }
@@ -64,6 +65,7 @@ export type ProjectPackageEvent = {
   assigneeName?: string
   assigneeUserId?: number
   createdAt: string
+  deliveryDate: string
   groups: ProjectPackageGroup[]
   id: number
   operations: ProjectPackageOperation[]
@@ -87,6 +89,7 @@ type EventRow = {
   assigner_display_name: string | null
   assigner_email: string | null
   created_at: Date
+  delivery_date: Date | string | null
   id: string
   status: ProjectPackageEventStatus
   title: string
@@ -126,7 +129,7 @@ type OperationRow = {
   label: string
   project_package_event_id: string
   project_package_group_id: string | null
-  status: ProjectPackageEventStatus
+  status: ProjectPackageOperationStatus
   title: string
   updated_at: Date
 }
@@ -175,6 +178,31 @@ function formatDateTime(value: Date | string) {
   const pick = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`
+}
+
+function formatDate(value: Date | string) {
+  const date = value instanceof Date ? value : new Date(value)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).formatToParts(date)
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function normalizeDeliveryDate(value: unknown) {
+  const rawDate = String(value ?? '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    throw new Error('Delivery date must use YYYY-MM-DD')
+  }
+  const date = new Date(`${rawDate}T00:00:00+08:00`)
+  if (Number.isNaN(date.getTime()) || formatDate(date) !== rawDate) {
+    throw new Error('Delivery date is invalid')
+  }
+  return rawDate
 }
 
 function displayUserName(row?: { display_name?: string | null; email?: string | null } | null) {
@@ -234,6 +262,12 @@ export function ensureProjectPackageEventType(value: unknown): ProjectPackageEve
 }
 
 export function ensureProjectPackageEventStatus(value: unknown): ProjectPackageEventStatus {
+  if (value === 'delivered' || value === 'success') return 'delivered'
+  if (value === 'delivering' || value === 'failed') return 'delivering'
+  return 'draft'
+}
+
+export function ensureProjectPackageOperationStatus(value: unknown): ProjectPackageOperationStatus {
   if (value === 'success' || value === 'failed') return value
   return 'pending'
 }
@@ -327,67 +361,6 @@ async function findOperationMeta(operationId: number, projectId: number) {
     [operationId, projectId],
   )
   return result.rows[0] ?? null
-}
-
-async function getEventOperationStatuses(eventId: number, projectId: number) {
-  const result = await query<{ status: ProjectPackageEventStatus }>(
-    `
-    select o.status
-    from project_package_operations o
-    join project_package_events e on e.id = o.project_package_event_id
-    where e.id = $1 and e.project_id = $2
-    `,
-    [eventId, projectId],
-  )
-  return result.rows.map((row) => ensureProjectPackageEventStatus(row.status))
-}
-
-function assertEventStatusAllowed(
-  nextStatus: ProjectPackageEventStatus,
-  operationStatuses: ProjectPackageEventStatus[],
-) {
-  if (operationStatuses.some((status) => status === 'pending') && nextStatus !== 'pending') {
-    throw new Error('Event status must stay pending while any document is pending')
-  }
-  if (operationStatuses.some((status) => status === 'failed') && nextStatus === 'success') {
-    throw new Error('Event status cannot be success while any document failed')
-  }
-  if (
-    nextStatus === 'success' &&
-    operationStatuses.length > 0 &&
-    operationStatuses.some((status) => status !== 'success')
-  ) {
-    throw new Error('All documents must be successful before marking event successful')
-  }
-}
-
-async function normalizeEventStatusAfterOperationChange(eventId: number, projectId: number) {
-  const event = await query<{ status: ProjectPackageEventStatus }>(
-    `
-    select status
-    from project_package_events
-    where id = $1 and project_id = $2
-    `,
-    [eventId, projectId],
-  )
-  const currentStatus = ensureProjectPackageEventStatus(event.rows[0]?.status)
-  const operationStatuses = await getEventOperationStatuses(eventId, projectId)
-  const nextStatus =
-    operationStatuses.some((status) => status === 'pending')
-      ? 'pending'
-      : currentStatus === 'success' && operationStatuses.some((status) => status === 'failed')
-        ? 'failed'
-        : currentStatus
-  if (nextStatus === currentStatus) return
-  await query(
-    `
-    update project_package_events
-    set status = $1,
-        updated_at = now()
-    where id = $2 and project_id = $3
-    `,
-    [nextStatus, eventId, projectId],
-  )
 }
 
 async function ensureProjectTodoIds(projectId: number, todoIds: number[]) {
@@ -905,11 +878,11 @@ function buildProjectPackageTimelineMarkdown(
       '',
       `- 交付人：${textValue(event.assigneeName, '未指派')}`,
       '',
-      '### 事件文档',
+      '### 操作文档',
       '',
     )
     if (event.operations.length === 0) {
-      lines.push('暂无事件文档。', '')
+      lines.push('暂无操作文档。', '')
     } else {
       event.operations.forEach((operation, index) => {
         lines.push(
@@ -953,6 +926,7 @@ export async function getProjectPackageTimeline(projectId: number) {
              e.assignee_user_id,
              e.assigned_by_user_id,
              e.assigned_at,
+             e.delivery_date,
              e.created_at,
              e.updated_at,
              assignee.email as assignee_email,
@@ -1092,7 +1066,7 @@ export async function getProjectPackageTimeline(projectId: number) {
       title: row.title,
       label: row.label,
       content: row.content,
-      status: ensureProjectPackageEventStatus(row.status),
+      status: ensureProjectPackageOperationStatus(row.status),
       relatedTodoIds: relatedTodoIdsByOperation.get(Number(row.id)) ?? [],
       relatedTodoNotes: relatedTodoNotesByOperation.get(Number(row.id)) ?? {},
       completed: row.completed,
@@ -1134,6 +1108,7 @@ export async function getProjectPackageTimeline(projectId: number) {
       status: ensureProjectPackageEventStatus(row.status),
       title: row.title,
       createdAt: formatDateTime(row.created_at),
+      deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
@@ -1145,12 +1120,14 @@ export async function createProjectPackageEvent(params: {
   assignedByUserId?: number | null
   assigneeUserId?: number | null
   createdByUserId: number
+  deliveryDate: string
   projectId: number
   title: string
   type: ProjectPackageEventType
 }) {
   const title = normalizeText(params.title, 120)
   if (!title) throw new Error('Event title is required')
+  const deliveryDate = normalizeDeliveryDate(params.deliveryDate)
 
   const result = await query<{ id: string }>(
     `
@@ -1161,9 +1138,10 @@ export async function createProjectPackageEvent(params: {
       created_by_user_id,
       assignee_user_id,
       assigned_by_user_id,
-      assigned_at
+      assigned_at,
+      delivery_date
     )
-    values ($1, $2, $3, $4, $5, $6, case when $5::bigint is null then null else now() end)
+    values ($1, $2, $3, $4, $5, $6, case when $5::bigint is null then null else now() end, $7::date)
     returning id
     `,
     [
@@ -1173,6 +1151,7 @@ export async function createProjectPackageEvent(params: {
       params.createdByUserId,
       params.assigneeUserId ?? null,
       params.assigneeUserId ? (params.assignedByUserId ?? params.createdByUserId) : null,
+      deliveryDate,
     ],
   )
   return Number(result.rows[0].id)
@@ -1182,6 +1161,7 @@ export async function updateProjectPackageEvent(params: {
   assignedByUserId?: number
   assigneeUserId?: number | null
   eventId: number
+  deliveryDate?: string
   projectId: number
   status?: ProjectPackageEventStatus
   title?: string
@@ -1199,13 +1179,12 @@ export async function updateProjectPackageEvent(params: {
     values.push(params.type)
     updates.push(`type = $${values.length}`)
   }
+  if (params.deliveryDate != null) {
+    values.push(normalizeDeliveryDate(params.deliveryDate))
+    updates.push(`delivery_date = $${values.length}::date`)
+  }
   if (params.status != null) {
-    const operationStatuses = await getEventOperationStatuses(params.eventId, params.projectId)
-    if (params.status === 'success' && operationStatuses.length === 0) {
-      throw new Error('At least one document is required before marking event successful')
-    }
-    assertEventStatusAllowed(params.status, operationStatuses)
-    values.push(params.status)
+    values.push(ensureProjectPackageEventStatus(params.status))
     updates.push(`status = $${values.length}`)
   }
   if (Object.prototype.hasOwnProperty.call(params, 'assigneeUserId')) {
@@ -1294,7 +1273,6 @@ export async function addProjectPackageItems(params: {
     )
   }
 
-  await normalizeEventStatusAfterOperationChange(params.eventId, params.projectId)
   await touchEvent(params.eventId)
 }
 
@@ -1319,7 +1297,7 @@ export async function createProjectPackageOperation(params: {
   projectId: number
   relatedTodoIds?: number[]
   relatedTodoNotes?: Record<number, string>
-  status?: ProjectPackageEventStatus
+  status?: ProjectPackageOperationStatus
   title?: string
 }) {
   const event = await findEventMeta(params.eventId, params.projectId)
@@ -1344,7 +1322,7 @@ export async function createProjectPackageOperation(params: {
   )
   const relatedTodoNotes = normalizeTodoNotes(params.relatedTodoNotes)
   const completed = Boolean(params.completed)
-  const status = ensureProjectPackageEventStatus(params.status)
+  const status = ensureProjectPackageOperationStatus(params.status)
 
   if (kind === 'document' && !title) throw new Error('Operation title is required')
   if (kind === 'document' && !content) throw new Error('Operation content is required')
@@ -1404,7 +1382,7 @@ export async function updateProjectPackageOperation(params: {
   projectId: number
   relatedTodoIds?: number[]
   relatedTodoNotes?: Record<number, string>
-  status?: ProjectPackageEventStatus
+  status?: ProjectPackageOperationStatus
   title?: string
 }) {
   const operation = await findOperationMeta(params.operationId, params.projectId)
@@ -1435,7 +1413,7 @@ export async function updateProjectPackageOperation(params: {
     updates.push(`completed = $${values.length}`)
   }
   if (params.status != null) {
-    values.push(params.status)
+    values.push(ensureProjectPackageOperationStatus(params.status))
     updates.push(`status = $${values.length}`)
   }
   const shouldUpdateRelatedTodos = params.relatedTodoIds != null
@@ -1485,7 +1463,6 @@ export async function updateProjectPackageOperation(params: {
       relatedTodoNotes,
     )
   }
-  await normalizeEventStatusAfterOperationChange(Number(operation.event_id), params.projectId)
   await touchEvent(Number(operation.event_id))
 }
 

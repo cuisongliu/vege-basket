@@ -216,6 +216,23 @@ function ossClient() {
   })
 }
 
+export async function putOssObject(
+  objectKey: string,
+  content: Buffer,
+  contentType: string,
+) {
+  return ossClient().put(objectKey, content, {
+    headers: {
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      'Content-Type': contentType,
+    },
+  })
+}
+
+export async function getOssObject(objectKey: string) {
+  return ossClient().get(objectKey)
+}
+
 async function listAllObjects(client: OSS, prefix: string) {
   const objects: OssObject[] = []
   let marker: string | undefined

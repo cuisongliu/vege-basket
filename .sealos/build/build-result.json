@@ -3,11 +3,11 @@
   "registry": "ghcr",
   "build": {
     "image_name": "vege-basket",
-    "started_at": "2026-07-03T16:12:00.000Z"
+    "started_at": "2026-07-14T02:15:00.428Z"
   },
   "push": {
-    "remote_image": "ghcr.io/felixqiu014-wq/vege-basket:20260704-001200",
-    "pushed_at": "2026-07-03T16:12:20.000Z"
+    "remote_image": "ghcr.io/felixqiu014-wq/vege-basket:20260714-101500",
+    "pushed_at": "2026-07-14T02:15:23.393Z"
   },
-  "finished_at": "2026-07-03T16:12:20.000Z"
+  "finished_at": "2026-07-14T02:15:23.393Z"
 }
