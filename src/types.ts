@@ -200,10 +200,13 @@ export type ProjectPackageTimeline = {
 export type PackageMarketRule = {
   id: string
   name: string
-  category: 'apps' | 'middleware'
+  category: 'apps' | 'middleware' | 'dependency'
   mode: 'release' | 'flat' | 'mixed' | 'pro-middleware'
   releaseRoots: string[]
   flatFileRoots: string[]
+  dependencyRoots?: string[]
+  dependencyFilePatterns?: string[]
+  parent?: string
   fileNameFormats: string[]
   ciFileNameFormats: string[]
 }
@@ -233,6 +236,7 @@ export type PackageMarketDetail = {
   links: PackageMarketLink[]
   releaseVersions?: PackageMarketVersion[]
   ciVersions?: PackageMarketVersion[]
+  selectedHash?: string
 }
 
 export type Project = {

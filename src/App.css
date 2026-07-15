@@ -6606,6 +6606,43 @@ textarea:focus {
   text-decoration: underline;
 }
 
+.package-market-dependency {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.package-market-dependency-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.package-market-dependency-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.package-market-dependency-head strong {
+  color: var(--strong);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.package-market-dependency-head small {
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.package-market-dependency-version {
+  width: min(320px, 52%);
+}
+
 .package-market-link-actions,
 .package-market-link-footer {
   display: flex;
