@@ -96,7 +96,7 @@ function normalizePrefix(value: unknown) {
   return normalized && !normalized.endsWith('/') ? `${normalized}/` : normalized
 }
 
-function normalizeOssEndpoint(value: unknown) {
+export function normalizeOssEndpoint(value: unknown) {
   const rawEndpoint = normalizeString(value)
   if (!rawEndpoint) return ''
   const endpointWithProtocol = /^https?:\/\//i.test(rawEndpoint)
@@ -118,6 +118,15 @@ function normalizeOssEndpoint(value: unknown) {
     (endpoint.pathname && endpoint.pathname !== '/')
   ) {
     throw new Error('OSS_ENDPOINT must be an HTTP or HTTPS origin without credentials, path, query, or fragment')
+  }
+  if (
+    endpoint.protocol === 'http:' &&
+    endpoint.hostname.toLowerCase().endsWith('.aliyuncs.com')
+  ) {
+    endpoint.protocol = 'https:'
+  }
+  if (endpoint.protocol !== 'https:') {
+    throw new Error('OSS_ENDPOINT must be an HTTPS origin without credentials, path, query, or fragment')
   }
   return endpoint.origin
 }

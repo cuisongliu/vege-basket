@@ -29,6 +29,7 @@ export type Todo = {
   priority: Priority
   done: boolean
   confirmationStatus: TodoConfirmationStatus
+  linkedToDeliveryEvent: boolean
   moduleId?: number
   moduleName?: string
   notes: TodoNote[]
