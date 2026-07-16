@@ -17,13 +17,7 @@ set feishu_email = feishu_user_id
 where feishu_email = ''
   and feishu_user_id like '%@%';
 
-create table if not exists ai_settings (
-  user_id bigint primary key references users(id) on delete cascade,
-  base_url text not null default '',
-  api_key text not null default '',
-  model text not null default '',
-  updated_at timestamptz not null default now()
-);
+drop table if exists ai_settings;
 
 create table if not exists sessions (
   token text primary key,
@@ -147,7 +141,9 @@ alter table todos
 alter table todos
   add column if not exists assignee_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
-  add column if not exists assigned_at timestamptz;
+  add column if not exists assigned_at timestamptz,
+  add column if not exists completed_at timestamptz,
+  add column if not exists completed_by_user_id bigint references users(id) on delete set null;
 
 alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
@@ -171,6 +167,20 @@ from projects
 where todos.project_id = projects.id
   and todos.created_by_user_id is null;
 
+create table if not exists todo_activity_events (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  todo_id bigint references todos(id) on delete set null,
+  actor_user_id bigint references users(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  event_type text not null
+    check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected')),
+  title text not null,
+  due_date date not null,
+  priority text not null default 'medium',
+  occurred_at timestamptz not null default now()
+);
+
 create table if not exists risks (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
@@ -188,6 +198,37 @@ create table if not exists draft_items (
   suggested_project_id bigint references projects(id) on delete set null,
   processed boolean not null default false,
   created_at timestamptz not null default now()
+);
+
+create table if not exists ai_todo_proposal_batches (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  source_filename text not null,
+  source_content text not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'confirmed', 'discarded')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists ai_todo_proposals (
+  id bigserial primary key,
+  batch_id bigint not null references ai_todo_proposal_batches(id) on delete cascade,
+  proposal_key text not null,
+  project_id bigint references projects(id) on delete set null,
+  project_module_id bigint references project_modules(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  title text not null,
+  detail text not null default '',
+  due_date date,
+  priority text not null default 'medium',
+  confidence double precision not null default 0,
+  source_excerpt text not null default '',
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'rejected')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (batch_id, proposal_key)
 );
 
 create table if not exists summaries (
@@ -252,6 +293,40 @@ create table if not exists notification_deliveries (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (kind, source_id, channel, target_type, target_id)
+);
+
+create table if not exists notification_subscriptions (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null default 'daily_todo_digest',
+  channel text not null default 'feishu',
+  enabled boolean not null default false,
+  timezone text not null default 'Asia/Shanghai',
+  local_send_time time not null default '10:00',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, kind, channel)
+);
+
+create table if not exists notification_digest_runs (
+  id bigserial primary key,
+  subscription_id bigint not null references notification_subscriptions(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null default 'daily_todo_digest',
+  local_date date not null,
+  period_start timestamptz not null,
+  period_end timestamptz not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'processing', 'retry', 'sent', 'failed', 'skipped')),
+  attempts integer not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  lease_until timestamptz,
+  content text not null default '',
+  last_error text not null default '',
+  delivered_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (subscription_id, local_date)
 );
 
 create table if not exists project_package_events (
@@ -394,6 +469,13 @@ create index if not exists idx_todos_created_by_user_id on todos(created_by_user
 create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
 create index if not exists idx_todos_due_date on todos(due_date);
 create index if not exists idx_todos_project_module_id on todos(project_module_id);
+create index if not exists idx_todos_completed_at on todos(completed_at);
+create index if not exists idx_todo_activity_events_project_time
+  on todo_activity_events(project_id, occurred_at desc, id desc);
+create index if not exists idx_todo_activity_events_todo_time
+  on todo_activity_events(todo_id, occurred_at desc, id desc);
+create index if not exists idx_todo_activity_events_assignee_time
+  on todo_activity_events(assignee_user_id, occurred_at desc, id desc);
 create index if not exists idx_project_modules_project_id on project_modules(project_id);
 create index if not exists idx_todo_notes_todo_id on todo_notes(todo_id);
 create index if not exists idx_todo_notes_author_user_id on todo_notes(author_user_id);
@@ -403,6 +485,10 @@ create index if not exists idx_collaborators_project_id on collaborators(project
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
+create index if not exists idx_ai_todo_proposal_batches_user_status
+  on ai_todo_proposal_batches(user_id, status, created_at desc);
+create index if not exists idx_ai_todo_proposals_batch_status
+  on ai_todo_proposals(batch_id, status, id);
 create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
 create index if not exists idx_notification_states_user_kind
@@ -413,6 +499,10 @@ create index if not exists idx_notification_deliveries_status
   on notification_deliveries(channel, status, updated_at);
 create index if not exists idx_notification_deliveries_user_kind
   on notification_deliveries(user_id, kind);
+create index if not exists idx_notification_subscriptions_due
+  on notification_subscriptions(enabled, timezone, local_send_time);
+create index if not exists idx_notification_digest_runs_claim
+  on notification_digest_runs(status, next_attempt_at, lease_until);
 create index if not exists idx_project_package_events_project_id
   on project_package_events(project_id, created_at);
 create index if not exists idx_project_package_groups_event_id

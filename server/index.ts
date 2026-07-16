@@ -1,12 +1,11 @@
 import 'dotenv/config'
 import crypto from 'node:crypto'
-import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
 import cors from 'cors'
 import express from 'express'
+import type { PoolClient } from 'pg'
 import {
   assertEncryptionConfigured,
   blindIndex,
@@ -16,6 +15,24 @@ import {
   encryptText,
 } from './crypto.ts'
 import { pool, query } from './db.ts'
+import {
+  AiProviderError,
+  isAiProviderConfigured,
+  readAiProviderConfig,
+  requestAiChatCompletion,
+} from './ai-provider.ts'
+import { createAiRateLimiter, readAiRateLimitConfig } from './ai-rate-limit.ts'
+import {
+  buildAiPeriodSummaryRequest,
+  getAiSummaryPeriod,
+} from './ai-period-summary.ts'
+import type { AiTodoActivityFact } from './ai-period-summary.ts'
+import {
+  AiTodoProposalValidationError,
+  buildAiTodoProposalRequest,
+  parseAiTodoProposalResponse,
+} from './ai-todo-proposals.ts'
+import type { AiTodoProposal, AiTodoProposalCatalog } from './ai-todo-proposals.ts'
 import { shouldRetirePackageEventNotification } from './notification-policy.ts'
 import { createPackageItemFailureDiagnostic } from './package-item-diagnostics.ts'
 import {
@@ -57,7 +74,7 @@ import { schemaSql } from './schema.ts'
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
 type TodoConfirmationStatus = 'confirmed' | 'rejected'
-type SummaryType = 'weekly' | 'monthly'
+type SummaryType = 'daily' | 'weekly' | 'monthly'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
@@ -105,11 +122,6 @@ type FeishuMessageItem = {
     tenant_key?: unknown
   }
 }
-type AiSettingsRow = {
-  base_url: string
-  api_key: string
-  model: string
-}
 type ProjectAccess = {
   id: number
   ownerUserId: number
@@ -138,6 +150,7 @@ type ProjectModuleRow = {
   name: string
   created_at: Date
 }
+type TodoActivityEventType = 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected'
 type TodoNoteRow = {
   id: string
   todo_id: string
@@ -164,15 +177,13 @@ app.set('trust proxy', true)
 const port = Number(process.env.PORT ?? 8787)
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
 const clientDistPath = path.resolve(serverDir, '../dist')
-const aiRateWindowMs = Number(process.env.AI_RATE_WINDOW_MS ?? 60_000)
-const aiRateLimit = Number(process.env.AI_RATE_LIMIT ?? 5)
 const aiMaxMessageLength = Number(process.env.AI_MAX_MESSAGE_LENGTH ?? 2_000)
 const aiMaxContextChars = Number(process.env.AI_MAX_CONTEXT_CHARS ?? 12_000)
 const todoImageUploadMaxBytes = Number(process.env.TODO_IMAGE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024)
 const todoImageObjectPrefix = String(process.env.TODO_IMAGE_OBJECT_PREFIX ?? 'todo-images')
   .trim()
   .replace(/^\/+|\/+$/g, '') || 'todo-images'
-const aiRequests = new Map<number, number[]>()
+const aiRateLimiter = createAiRateLimiter(readAiRateLimitConfig())
 let feishuTenantAccessToken: FeishuTenantAccessToken | null = null
 const feishuUserNameCache = new Map<string, string>()
 const feishuUserLookupWarnings = new Set<string>()
@@ -432,98 +443,6 @@ function serializeUser(row: UserRow) {
   }
 }
 
-function serializeAiSettings(row?: AiSettingsRow) {
-  return {
-    baseUrl: row?.base_url ? decryptText(row.base_url) : '',
-    hasApiKey: Boolean(row?.api_key),
-    model: row?.model ? decryptText(row.model) : '',
-  }
-}
-
-function isPrivateIpv4Address(address: string) {
-  const parts = address.split('.').map(Number)
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true
-  }
-  const [first, second] = parts
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 198 && (second === 18 || second === 19)) ||
-    first >= 224
-  )
-}
-
-function isPrivateIpv6Address(address: string) {
-  const normalized = address.toLowerCase().split('%')[0]
-  if (normalized === '::' || normalized === '::1') return true
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
-  if (/^fe[89ab]/.test(normalized) || normalized.startsWith('ff')) return true
-  if (normalized.startsWith('::ffff:')) {
-    const mappedIpv4 = normalized.slice('::ffff:'.length)
-    return isPrivateIpv4Address(mappedIpv4)
-  }
-  return false
-}
-
-function isDisallowedNetworkAddress(address: string) {
-  const normalized = address.replace(/^\[|\]$/g, '')
-  const family = isIP(normalized)
-  if (family === 4) return isPrivateIpv4Address(normalized)
-  if (family === 6) return isPrivateIpv6Address(normalized)
-  return true
-}
-
-async function normalizeAiBaseUrl(value: string) {
-  const baseUrl = value.trim().replace(/\/+$/, '')
-  let parsed: URL
-  try {
-    parsed = new URL(baseUrl)
-  } catch {
-    return { error: 'AI base URL must be a valid HTTPS URL' as const }
-  }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
-    return { error: 'AI base URL must use HTTPS and must not contain credentials' as const }
-  }
-
-  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (
-    !hostname ||
-    hostname === 'localhost' ||
-    hostname.endsWith('.localhost') ||
-    hostname.endsWith('.local') ||
-    hostname.endsWith('.internal') ||
-    hostname === 'metadata.google.internal'
-  ) {
-    return { error: 'AI base URL host is not allowed' as const }
-  }
-
-  try {
-    const addresses = isIP(hostname)
-      ? [{ address: hostname }]
-      : await lookup(hostname, { all: true, verbatim: true })
-    if (addresses.length === 0 || addresses.some(({ address }) => isDisallowedNetworkAddress(address))) {
-      return { error: 'AI base URL must resolve only to public network addresses' as const }
-    }
-  } catch {
-    return { error: 'AI base URL host could not be resolved' as const }
-  }
-
-  parsed.hash = ''
-  parsed.search = ''
-  return { baseUrl: parsed.toString().replace(/\/+$/, '') }
-}
-
-function getAiEndpoint(baseUrl: string) {
-  const base = baseUrl.trim()
-  return `${base.replace(/\/$/, '')}/v1/chat/completions`
-}
-
 function trimForAi(value: string, maxLength = aiMaxMessageLength) {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }
@@ -566,15 +485,7 @@ function buildFeishuInformationSummary(analysis: string) {
 }
 
 function checkAiRateLimit(userId: number) {
-  const now = Date.now()
-  const recent = (aiRequests.get(userId) ?? []).filter((time) => now - time < aiRateWindowMs)
-  if (recent.length >= aiRateLimit) {
-    aiRequests.set(userId, recent)
-    return false
-  }
-  recent.push(now)
-  aiRequests.set(userId, recent)
-  return true
+  return aiRateLimiter.allow(userId)
 }
 
 function parseBasicAuth(request: express.Request) {
@@ -1481,6 +1392,114 @@ async function buildSelectedProjectAiContext(userId: number, projectId: number) 
   ].join('\n\n'), aiMaxContextChars)
 }
 
+async function createAndSaveAiPeriodSummary(params: {
+  projectId: number
+  type: 'daily' | 'weekly'
+  userId: number
+}) {
+  const access = await getProjectAccess(params.projectId, params.userId)
+  if (!access) return { error: 'Project not found', status: 404 as const }
+  if (!checkAiRateLimit(params.userId)) {
+    return { error: 'AI rate limit exceeded', status: 429 as const }
+  }
+
+  const period = getAiSummaryPeriod(params.type)
+  const result = await query<{
+    actor_display_name: string | null
+    actor_email: string | null
+    actor_user_id: string | null
+    assignee_display_name: string | null
+    assignee_email: string | null
+    assignee_user_id: string | null
+    due_date: Date
+    event_type: TodoActivityEventType
+    occurred_at: Date
+    priority: Priority
+    project_name: string
+    title: string
+    todo_id: string | null
+  }>(
+    `
+    select event.todo_id,
+           event.actor_user_id,
+           event.assignee_user_id,
+           event.event_type,
+           event.title,
+           event.due_date,
+           event.priority,
+           event.occurred_at,
+           project.name as project_name,
+           actor.email as actor_email,
+           actor.display_name as actor_display_name,
+           assignee.email as assignee_email,
+           assignee.display_name as assignee_display_name
+    from todo_activity_events event
+    join projects project on project.id = event.project_id
+    left join users actor on actor.id = event.actor_user_id
+    left join users assignee on assignee.id = event.assignee_user_id
+    where event.project_id = $1
+      and event.occurred_at >= $2
+      and event.occurred_at < $3
+      and (
+        $4::text = 'owner'
+        or event.actor_user_id = $5
+        or event.assignee_user_id = $5
+      )
+    order by event.occurred_at asc, event.id asc
+    `,
+    [params.projectId, period.start, period.endExclusive, access.role, params.userId],
+  )
+  const facts: AiTodoActivityFact[] = result.rows
+    .filter((event) => event.todo_id)
+    .map((event) => ({
+      actorName: event.actor_user_id
+        ? displayNameFromUser({
+          email: event.actor_email ?? '',
+          display_name: event.actor_display_name ?? '',
+        })
+        : undefined,
+      assigneeName: event.assignee_user_id
+        ? displayNameFromUser({
+          email: event.assignee_email ?? '',
+          display_name: event.assignee_display_name ?? '',
+        })
+        : undefined,
+      dueDate: formatDate(event.due_date),
+      kind: event.event_type,
+      occurredAt: event.occurred_at,
+      priority: event.priority,
+      projectName: decryptText(event.project_name),
+      title: decryptText(event.title),
+      todoId: Number(event.todo_id),
+    }))
+
+  try {
+    const request = buildAiPeriodSummaryRequest(period, facts)
+    const content = await requestAiChatCompletion(readAiProviderConfig(), request)
+    const title = `${formatDate(new Date())} ${params.type === 'daily' ? '日总结' : '周总结'}`
+    await query(
+      `
+      insert into summaries (user_id, project_id, type, title, period, content)
+      values ($1, $2, $3, $4, $5, $6)
+      `,
+      [
+        params.userId,
+        params.projectId,
+        params.type,
+        encryptText(title),
+        encryptText(period.label),
+        encryptText(content),
+      ],
+    )
+    return { status: 201 as const }
+  } catch (error) {
+    if (error instanceof AiProviderError) {
+      return { error: error.message, status: error.status }
+    }
+    throw error
+  }
+}
+
 async function createAiAgentResponse(
   userId: number,
   agentType: AiAgentType,
@@ -1488,84 +1507,69 @@ async function createAiAgentResponse(
   timeoutMs = 45_000,
   projectId?: number | null,
 ) {
-  const settingsResult = await query<AiSettingsRow>(
-    'select base_url, api_key, model from ai_settings where user_id = $1',
-    [userId],
-  )
-  const aiSettings = settingsResult.rows[0]
-  const baseUrl = aiSettings?.base_url ? decryptText(aiSettings.base_url) : ''
-  const apiKey = aiSettings?.api_key ? decryptText(aiSettings.api_key) : ''
-  const model = aiSettings?.model ? decryptText(aiSettings.model) : ''
-  if (!baseUrl || !apiKey || !model) {
-    return { error: 'AI API is not configured', status: 503 as const }
-  }
-  const normalizedBaseUrl = await normalizeAiBaseUrl(baseUrl)
-  if ('error' in normalizedBaseUrl) {
-    return { error: normalizedBaseUrl.error, status: 400 as const }
-  }
-
   const scopedProjectId = Number.isFinite(projectId) ? Number(projectId) : null
   const projectContext = agentType === 'project-summary' && scopedProjectId
     ? await buildSelectedProjectAiContext(userId, scopedProjectId)
     : null
+  if (agentType === 'project-summary' && scopedProjectId && !projectContext) {
+    return { error: 'Project not found', status: 404 as const }
+  }
   const workspace = agentType === 'project-summary' && !projectContext ? await getWorkspace(userId) : null
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const aiResponse = await fetch(getAiEndpoint(normalizedBaseUrl.baseUrl), {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.3,
-        messages: [
-          {
-            role: 'system',
-            content: aiAgentPrompts[agentType],
-          },
-          ...(projectContext
-            ? [
-                {
-                  role: 'system',
-                  content: projectContext,
-                },
-              ]
-            : workspace
-            ? [
-                {
-                  role: 'system',
-                  content: buildWorkspaceContext(workspace),
-                },
-              ]
-            : []),
-          ...messages,
-        ],
-      }),
-      signal: controller.signal,
+    const message = await requestAiChatCompletion(readAiProviderConfig(), {
+      messages,
+      systemPrompt: aiAgentPrompts[agentType],
+      timeoutMs,
+      untrustedContext: projectContext ?? (workspace ? buildWorkspaceContext(workspace) : undefined),
     })
+    return { message, status: 200 as const }
+  } catch (error) {
+    if (error instanceof AiProviderError) {
+      return { error: error.message, status: error.status }
+    }
+    throw error
+  }
+}
 
-    if (!aiResponse.ok) {
-      console.error('AI request failed', {
-        status: aiResponse.status,
-        statusText: aiResponse.statusText,
-      })
-      return { error: 'AI request failed', status: 502 as const }
-    }
+async function buildAiTodoProposalCatalog(userId: number): Promise<AiTodoProposalCatalog> {
+  const workspace = await getWorkspace(userId)
+  return {
+    projects: workspace.projects.map((project) => {
+      const assignees = new Map<number, string>([[project.ownerUserId, project.ownerName]])
+      for (const membership of workspace.memberships) {
+        if (
+          membership.projectId === project.id &&
+          membership.status === 'active' &&
+          membership.invitedUserId
+        ) {
+          assignees.set(membership.invitedUserId, membership.memberName)
+        }
+      }
+      return {
+        assignees: Array.from(assignees, ([id, name]) => ({ id, name })),
+        id: project.id,
+        modules: project.modules.map((module) => ({
+          id: Number(module.id),
+          name: module.name,
+        })),
+        name: project.name,
+      }
+    }),
+  }
+}
 
-    const data = await aiResponse.json() as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-    return {
-      message: data.choices?.[0]?.message?.content?.trim() || 'AI 没有返回有效内容，请稍后重试。',
-      status: 200 as const,
-    }
-  } finally {
-    clearTimeout(timeout)
+function serializeAiTodoProposal(proposal: AiTodoProposal) {
+  return {
+    assigneeUserId: proposal.assigneeUserId,
+    confidence: proposal.confidence,
+    detail: proposal.detail,
+    dueDate: proposal.dueDate,
+    moduleId: proposal.moduleId,
+    priority: proposal.priority,
+    projectId: proposal.projectId,
+    sourceExcerpt: proposal.sourceExcerpt,
+    title: proposal.title,
   }
 }
 
@@ -1719,7 +1723,45 @@ function ensurePriority(value: unknown): Priority {
 }
 
 function ensureSummaryType(value: unknown): SummaryType {
-  return value === 'monthly' ? 'monthly' : 'weekly'
+  if (value === 'daily' || value === 'monthly') return value
+  return 'weekly'
+}
+
+async function insertTodoActivityEvent(client: PoolClient, payload: {
+  actorUserId: number
+  assigneeUserId?: number | null
+  dueDate: Date | string
+  eventType: TodoActivityEventType
+  priority: Priority
+  projectId: number
+  title: string
+  todoId: number
+}) {
+  await client.query(
+    `
+    insert into todo_activity_events (
+      project_id,
+      todo_id,
+      actor_user_id,
+      assignee_user_id,
+      event_type,
+      title,
+      due_date,
+      priority
+    )
+    values ($1, $2, $3, $4, $5, $6, $7, $8)
+    `,
+    [
+      payload.projectId,
+      payload.todoId,
+      payload.actorUserId,
+      payload.assigneeUserId ?? null,
+      payload.eventType,
+      encryptText(payload.title),
+      formatDate(payload.dueDate),
+      payload.priority,
+    ],
+  )
 }
 
 function ensureJournalVisibility(value: unknown): JournalVisibility {
@@ -1877,6 +1919,22 @@ async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
   } finally {
     client.release()
   }
+}
+
+async function isActiveProjectInviteToken(rawToken: unknown) {
+  const token = String(rawToken ?? '').trim()
+  if (!token) return false
+  const result = await query<{ id: string }>(
+    `
+    select id
+    from project_invite_links
+    where token = $1
+      and revoked_at is null
+    limit 1
+    `,
+    [token],
+  )
+  return Boolean(result.rows[0])
 }
 
 async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
@@ -2158,6 +2216,10 @@ async function getWorkspace(userId: number) {
       due_date: Date
       priority: Priority
       done: boolean
+      completed_at: Date | null
+      completed_by_user_id: string | null
+      completed_by_email: string | null
+      completed_by_display_name: string | null
       confirmation_status: TodoConfirmationStatus
       linked_to_delivery_event: boolean
       project_module_id: string | null
@@ -2181,6 +2243,8 @@ async function getWorkspace(userId: number) {
              t.due_date,
              t.priority,
              t.done,
+             t.completed_at,
+             t.completed_by_user_id,
              t.confirmation_status,
              exists (
                select 1
@@ -2202,7 +2266,9 @@ async function getWorkspace(userId: number) {
              assigner.email as assigner_email,
              assigner.display_name as assigner_display_name,
              creator.email as creator_email,
-             creator.display_name as creator_display_name
+             creator.display_name as creator_display_name,
+             completed_by.email as completed_by_email,
+             completed_by.display_name as completed_by_display_name
       from todos t
       join projects p on p.id = t.project_id
       left join project_memberships membership
@@ -2210,6 +2276,7 @@ async function getWorkspace(userId: number) {
        and membership.status = 'active'
        and membership.invited_user_id = $1
       left join users creator on creator.id = t.created_by_user_id
+      left join users completed_by on completed_by.id = t.completed_by_user_id
       left join users assignee on assignee.id = t.assignee_user_id
       left join users assigner on assigner.id = t.assigned_by_user_id
       left join project_modules module on module.id = t.project_module_id
@@ -2468,6 +2535,14 @@ async function getWorkspace(userId: number) {
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
+      completedAt: todo.completed_at ? formatDateTime(todo.completed_at) : undefined,
+      completedByUserId: todo.completed_by_user_id ? Number(todo.completed_by_user_id) : undefined,
+      completedByName: todo.completed_by_user_id
+        ? displayNameFromUser({
+          email: todo.completed_by_email ?? '',
+          display_name: todo.completed_by_display_name ?? '',
+        })
+        : undefined,
       confirmationStatus: todo.confirmation_status,
       linkedToDeliveryEvent: todo.linked_to_delivery_event,
       moduleId: todo.project_module_id ? Number(todo.project_module_id) : undefined,
@@ -2529,6 +2604,13 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
 
   if (!username || password.length < 6) {
     response.status(400).json({ error: 'Username and a 6+ character password are required' })
+    return
+  }
+
+  if (isAiProviderConfigured() && !await isActiveProjectInviteToken(request.body.inviteToken)) {
+    response.status(403).json({
+      error: 'Password registration requires an active project invite while shared AI is enabled',
+    })
     return
   }
 
@@ -2712,18 +2794,39 @@ app.delete('/api/auth/feishu/oauth', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  const user = await query<UserRow>(
-    `
-    update users
-    set feishu_email = '',
-        feishu_user_id = '',
-        feishu_receive_id_type = 'open_id'
-    where id = $1
-    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
-    `,
-    [userId],
-  )
-  response.json({ user: serializeUser(user.rows[0]) })
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const user = await client.query<UserRow>(
+      `
+      update users
+      set feishu_email = '',
+          feishu_user_id = '',
+          feishu_receive_id_type = 'open_id'
+      where id = $1
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      `,
+      [userId],
+    )
+    await client.query(
+      `
+      update notification_subscriptions
+      set enabled = false,
+          updated_at = now()
+      where user_id = $1
+        and kind = 'daily_todo_digest'
+        and channel = 'feishu'
+      `,
+      [userId],
+    )
+    await client.query('commit')
+    response.json({ user: serializeUser(user.rows[0]) })
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
 }))
 
 app.patch('/api/auth/password', asyncHandler(async (request, response) => {
@@ -2755,64 +2858,191 @@ app.patch('/api/auth/password', asyncHandler(async (request, response) => {
   response.json({ ok: true })
 }))
 
-app.get('/api/ai/settings', asyncHandler(async (request, response) => {
+app.get('/api/ai/status', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-
-  const result = await query<AiSettingsRow>(
-    'select base_url, api_key, model from ai_settings where user_id = $1',
-    [userId],
-  )
-  response.json({ settings: serializeAiSettings(result.rows[0]) })
-}))
-
-app.put('/api/ai/settings', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-
-  const baseUrlInput = String(request.body.baseUrl ?? '')
-  const apiKey = String(request.body.apiKey ?? '').trim()
-  const model = String(request.body.model ?? '').trim()
-  const normalizedBaseUrl = await normalizeAiBaseUrl(baseUrlInput)
-  if ('error' in normalizedBaseUrl || !model) {
-    response.status(400).json({
-      error: 'error' in normalizedBaseUrl
-        ? normalizedBaseUrl.error
-        : 'AI base URL and model are required',
-    })
-    return
-  }
-
-  const current = await query<AiSettingsRow>(
-    'select base_url, api_key, model from ai_settings where user_id = $1',
-    [userId],
-  )
-  const nextApiKey = apiKey || (current.rows[0]?.api_key ? decryptText(current.rows[0].api_key) : '')
-  if (!nextApiKey) {
-    response.status(400).json({ error: 'AI API key is required' })
-    return
-  }
-
-  const result = await query<AiSettingsRow>(
-    `
-    insert into ai_settings (user_id, base_url, api_key, model)
-    values ($1, $2, $3, $4)
-    on conflict (user_id) do update
-      set base_url = excluded.base_url,
-          api_key = excluded.api_key,
-          model = excluded.model,
-          updated_at = now()
-    returning base_url, api_key, model
-    `,
-    [userId, encryptText(normalizedBaseUrl.baseUrl), encryptText(nextApiKey), encryptText(model)],
-  )
-  response.json({ settings: serializeAiSettings(result.rows[0]) })
+  const model = String(process.env.AI_MODEL ?? '').trim()
+  response.json({
+    configured: isAiProviderConfigured(),
+    model,
+  })
 }))
 
 app.get('/api/workspace', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   response.json(await getWorkspace(userId))
+}))
+
+app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+
+  const result = await query<{
+    actor_display_name: string | null
+    actor_email: string | null
+    actor_user_id: string | null
+    assignee_display_name: string | null
+    assignee_email: string | null
+    assignee_user_id: string | null
+    due_date: Date
+    event_type: TodoActivityEventType
+    id: string
+    occurred_at: Date
+    priority: Priority
+    title: string
+    todo_id: string | null
+  }>(
+    `
+    select event.id,
+           event.todo_id,
+           event.actor_user_id,
+           event.assignee_user_id,
+           event.event_type,
+           event.title,
+           event.due_date,
+           event.priority,
+           event.occurred_at,
+           actor.email as actor_email,
+           actor.display_name as actor_display_name,
+           assignee.email as assignee_email,
+           assignee.display_name as assignee_display_name
+    from todo_activity_events event
+    left join users actor on actor.id = event.actor_user_id
+    left join users assignee on assignee.id = event.assignee_user_id
+    where event.project_id = $1
+    order by event.occurred_at desc, event.id desc
+    limit 200
+    `,
+    [projectId],
+  )
+
+  response.json({
+    events: result.rows.map((event) => ({
+      id: Number(event.id),
+      projectId,
+      todoId: event.todo_id ? Number(event.todo_id) : undefined,
+      actorUserId: event.actor_user_id ? Number(event.actor_user_id) : undefined,
+      actorName: event.actor_user_id
+        ? displayNameFromUser({
+          email: event.actor_email ?? '',
+          display_name: event.actor_display_name ?? '',
+        })
+        : '系统',
+      assigneeUserId: event.assignee_user_id ? Number(event.assignee_user_id) : undefined,
+      assigneeName: event.assignee_user_id
+        ? displayNameFromUser({
+          email: event.assignee_email ?? '',
+          display_name: event.assignee_display_name ?? '',
+        })
+        : undefined,
+      eventType: event.event_type,
+      title: decryptText(event.title),
+      todoTitle: decryptText(event.title),
+      dueDate: formatDate(event.due_date),
+      priority: event.priority,
+      occurredAt: formatDateTime(event.occurred_at),
+    })),
+  })
+}))
+
+function parseLocalSendTime(value: unknown) {
+  const normalized = String(value ?? '').trim()
+  const match = /^(\d{2}):(\d{2})$/.exec(normalized)
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (hour > 23 || minute > 59) return null
+  return `${match[1]}:${match[2]}`
+}
+
+function serializeNotificationSubscription(row?: {
+  enabled: boolean
+  local_send_time: string
+  timezone: string
+}) {
+  return {
+    channel: 'feishu' as const,
+    enabled: row?.enabled ?? false,
+    localSendTime: String(row?.local_send_time ?? '10:00').slice(0, 5),
+    timezone: row?.timezone ?? 'Asia/Shanghai',
+  }
+}
+
+app.get('/api/notification-subscription', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const result = await query<{
+    enabled: boolean
+    local_send_time: string
+    timezone: string
+  }>(
+    `
+    select enabled, local_send_time::text, timezone
+    from notification_subscriptions
+    where user_id = $1
+      and kind = 'daily_todo_digest'
+      and channel = 'feishu'
+    `,
+    [userId],
+  )
+  response.json({ subscription: serializeNotificationSubscription(result.rows[0]) })
+}))
+
+app.put('/api/notification-subscription', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  if (typeof request.body.enabled !== 'boolean') {
+    response.status(400).json({ error: 'Subscription enabled must be a boolean' })
+    return
+  }
+  const enabled = request.body.enabled
+  const localSendTime = parseLocalSendTime(request.body.localSendTime)
+  if (!localSendTime) {
+    response.status(400).json({ error: 'Send time must use HH:mm' })
+    return
+  }
+  if (enabled) {
+    const userResult = await query<{ feishu_user_id: string | null }>(
+      'select feishu_user_id from users where id = $1',
+      [userId],
+    )
+    if (!userResult.rows[0]?.feishu_user_id?.startsWith('ou_')) {
+      response.status(409).json({ error: 'Bind a Feishu account before enabling the daily digest' })
+      return
+    }
+  }
+  const result = await query<{
+    enabled: boolean
+    local_send_time: string
+    timezone: string
+  }>(
+    `
+    insert into notification_subscriptions (
+      user_id,
+      kind,
+      channel,
+      enabled,
+      timezone,
+      local_send_time,
+      updated_at
+    )
+    values ($1, 'daily_todo_digest', 'feishu', $2, 'Asia/Shanghai', $3::time, now())
+    on conflict (user_id, kind, channel) do update
+      set enabled = excluded.enabled,
+          local_send_time = excluded.local_send_time,
+          updated_at = now()
+    returning enabled, local_send_time::text, timezone
+    `,
+    [userId, enabled, localSendTime],
+  )
+  response.json({ subscription: serializeNotificationSubscription(result.rows[0]) })
 }))
 
 async function getNotifications(userId: number) {
@@ -5284,38 +5514,74 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     response.status(400).json({ error: 'Created date must be a valid YYYY-MM-DD date' })
     return
   }
-  const createdTodo = await query<{ id: string }>(
-    `
-    insert into todos (
-      project_id,
-      title,
-      detail,
-      due_date,
-      priority,
-      created_at,
-      project_module_id,
-      created_by_user_id,
-      assignee_user_id,
-      assigned_by_user_id,
-      assigned_at
+  const dueDate = request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date())
+  const priority = ensurePriority(request.body.priority)
+  const client = await pool.connect()
+  let createdTodoId: number
+  try {
+    await client.query('begin')
+    const createdTodo = await client.query<{ id: string }>(
+      `
+      insert into todos (
+        project_id,
+        title,
+        detail,
+        due_date,
+        priority,
+        created_at,
+        project_module_id,
+        created_by_user_id,
+        assignee_user_id,
+        assigned_by_user_id,
+        assigned_at
+      )
+      values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, $8, $9, case when $9::bigint is null then null else $8::bigint end, case when $9::bigint is null then null else now() end)
+      returning id
+      `,
+      [
+        projectId,
+        encryptText(title),
+        detail ? encryptText(detail) : '',
+        dueDate,
+        priority,
+        createdAt,
+        moduleId,
+        userId,
+        assigneeUserId,
+      ],
     )
-    values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, $8, $9, case when $9::bigint is null then null else $8::bigint end, case when $9::bigint is null then null else now() end)
-    returning id
-    `,
-    [
-      projectId,
-      encryptText(title),
-      detail ? encryptText(detail) : '',
-      request.body.dueDate ? String(request.body.dueDate) : formatDate(new Date()),
-      ensurePriority(request.body.priority),
-      createdAt,
-      moduleId,
-      userId,
+    createdTodoId = Number(createdTodo.rows[0].id)
+    await insertTodoActivityEvent(client, {
+      actorUserId: userId,
       assigneeUserId,
-    ],
-  )
-  if (createdTodo.rows[0] && assigneeUserId) {
-    enqueueLatestAssignedTodoDelivery(Number(createdTodo.rows[0].id))
+      dueDate,
+      eventType: 'created',
+      priority,
+      projectId,
+      title,
+      todoId: createdTodoId,
+    })
+    if (assigneeUserId) {
+      await insertTodoActivityEvent(client, {
+        actorUserId: userId,
+        assigneeUserId,
+        dueDate,
+        eventType: 'assigned',
+        priority,
+        projectId,
+        title,
+        todoId: createdTodoId,
+      })
+    }
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+  if (assigneeUserId) {
+    enqueueLatestAssignedTodoDelivery(createdTodoId)
   }
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -5331,9 +5597,13 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     done: boolean
     confirmation_status: TodoConfirmationStatus
     project_id: string
+    title: string
+    due_date: Date
+    priority: Priority
   }>(
     `
-    select project_id, created_by_user_id, assignee_user_id, assigned_by_user_id, done, confirmation_status
+    select project_id, created_by_user_id, assignee_user_id, assigned_by_user_id,
+           done, confirmation_status, title, due_date, priority
     from todos
     where id = $1
     `,
@@ -5439,7 +5709,52 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   let rejectionNoteId: number | null = null
   try {
     await client.query('begin')
-    await client.query(
+    const lockedTodoResult = await client.query<{
+      assignee_user_id: string | null
+      confirmation_status: TodoConfirmationStatus
+      done: boolean
+    }>(
+      `
+      select assignee_user_id, confirmation_status, done
+      from todos
+      where id = $1
+        and project_id = $2
+      for update
+      `,
+      [todoId, projectId],
+    )
+    const lockedTodo = lockedTodoResult.rows[0]
+    if (!lockedTodo) {
+      await client.query('rollback')
+      response.status(404).json({ error: 'Todo not found' })
+      return
+    }
+    const lockedAssigneeUserId = lockedTodo.assignee_user_id
+      ? Number(lockedTodo.assignee_user_id)
+      : null
+    const canActOnLockedTodo = access.role === 'owner' || lockedAssigneeUserId === userId
+    if ((isCompletionUpdate || isConfirmationStatusUpdate) && !canActOnLockedTodo) {
+      await client.query('rollback')
+      response.status(403).json({
+        error: isCompletionUpdate
+          ? 'Only the project owner or assignee can update todo completion'
+          : 'Only the project owner or assignee can respond to this todo assignment',
+      })
+      return
+    }
+    if (request.body.done === true && lockedTodo.confirmation_status === 'rejected') {
+      await client.query('rollback')
+      response.status(409).json({ error: 'A rejected todo cannot be completed' })
+      return
+    }
+    const updatedTodoResult = await client.query<{
+      assignee_user_id: string | null
+      confirmation_status: TodoConfirmationStatus
+      done: boolean
+      due_date: Date
+      priority: Priority
+      title: string
+    }>(
       `
       update todos
       set done = case when $7::text = 'rejected' then false else coalesce($1, done) end,
@@ -5464,9 +5779,22 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
           end,
           project_module_id = case when $11::boolean then $12 else project_module_id end,
           created_at = case when $13::boolean then $14::timestamptz else created_at end,
+          completed_at = case
+            when $7::text = 'rejected' then null
+            when $17::boolean and $1::boolean and not $19::boolean then now()
+            when $17::boolean and not $1::boolean and $19::boolean then null
+            else completed_at
+          end,
+          completed_by_user_id = case
+            when $7::text = 'rejected' then null
+            when $17::boolean and $1::boolean and not $19::boolean then $18
+            when $17::boolean and not $1::boolean and $19::boolean then null
+            else completed_by_user_id
+          end,
           updated_at = now()
       where id = $15
         and project_id = $16
+      returning title, due_date, priority, assignee_user_id, done, confirmation_status
       `,
       [
         typeof request.body.done === 'boolean' ? request.body.done : null,
@@ -5485,8 +5813,43 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
         nextCreatedAt,
         todoId,
         projectId,
+        isCompletionUpdate,
+        userId,
+        lockedTodo.done,
       ],
     )
+    const updatedTodo = updatedTodoResult.rows[0]
+    if (!updatedTodo) throw new Error('Todo update failed')
+    const activitySnapshot = {
+      actorUserId: userId,
+      assigneeUserId: updatedTodo.assignee_user_id ? Number(updatedTodo.assignee_user_id) : null,
+      dueDate: updatedTodo.due_date,
+      priority: updatedTodo.priority,
+      projectId,
+      title: decryptText(updatedTodo.title),
+      todoId,
+    }
+    if (!lockedTodo.done && updatedTodo.done) {
+      await insertTodoActivityEvent(client, { ...activitySnapshot, eventType: 'completed' })
+    } else if (lockedTodo.done && !updatedTodo.done) {
+      await insertTodoActivityEvent(client, { ...activitySnapshot, eventType: 'reopened' })
+    }
+    if (
+      canManageTodo &&
+      'assigneeUserId' in request.body &&
+      (updatedTodo.assignee_user_id ? Number(updatedTodo.assignee_user_id) : null) !== lockedAssigneeUserId
+    ) {
+      await insertTodoActivityEvent(client, { ...activitySnapshot, eventType: 'assigned' })
+    }
+    if (
+      canRespondToAssignment &&
+      updatedTodo.confirmation_status !== lockedTodo.confirmation_status
+    ) {
+      await insertTodoActivityEvent(client, {
+        ...activitySnapshot,
+        eventType: updatedTodo.confirmation_status === 'rejected' ? 'rejected' : 'confirmed',
+      })
+    }
     if (requestedConfirmationStatus === 'rejected') {
       const noteResult = await client.query<{ id: string }>(
         `
@@ -6338,6 +6701,303 @@ app.post('/api/ai/chat', asyncHandler(async (request, response) => {
   response.json({ message: result.message })
 }))
 
+app.post('/api/ai/todo-proposals', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const fileName = path.basename(String(request.body.fileName ?? '').trim())
+  const content = String(request.body.content ?? '')
+  if (!fileName || !fileName.toLowerCase().endsWith('.md')) {
+    response.status(415).json({ error: 'Only Markdown (.md) files are supported' })
+    return
+  }
+  if (!content.trim()) {
+    response.status(400).json({ error: 'Markdown file is empty' })
+    return
+  }
+  if (content.length > 20_000) {
+    response.status(413).json({ error: 'Markdown content must not exceed 20,000 characters' })
+    return
+  }
+  if (!checkAiRateLimit(userId)) {
+    response.status(429).json({ error: 'AI rate limit exceeded' })
+    return
+  }
+
+  try {
+    const catalog = await buildAiTodoProposalCatalog(userId)
+    if (catalog.projects.length === 0) {
+      response.status(409).json({ error: 'Create or join a project before importing todos' })
+      return
+    }
+    const aiRequest = buildAiTodoProposalRequest(content, catalog, formatDate(new Date()))
+    const aiConfig = readAiProviderConfig()
+    if (aiRequest.untrustedContext.length > aiConfig.maxContextChars) {
+      response.status(413).json({
+        error: `Markdown and project context must not exceed ${aiConfig.maxContextChars} characters`,
+      })
+      return
+    }
+    const aiContent = await requestAiChatCompletion(aiConfig, aiRequest)
+    const proposals = parseAiTodoProposalResponse(aiContent, {
+      catalog,
+      maxProposals: 20,
+      sourceMarkdown: content,
+    })
+    if (proposals.length === 0) {
+      response.status(422).json({ error: 'No actionable todos were found in the Markdown file' })
+      return
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const batchResult = await client.query<{ id: string }>(
+        `
+        insert into ai_todo_proposal_batches (user_id, source_filename, source_content)
+        values ($1, $2, $3)
+        returning id
+        `,
+        [userId, encryptText(fileName), encryptText(content)],
+      )
+      const batchId = Number(batchResult.rows[0].id)
+      for (const [index, proposal] of proposals.entries()) {
+        await client.query(
+          `
+          insert into ai_todo_proposals (
+            batch_id,
+            proposal_key,
+            project_id,
+            project_module_id,
+            assignee_user_id,
+            title,
+            detail,
+            due_date,
+            priority,
+            confidence,
+            source_excerpt
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `,
+          [
+            batchId,
+            `proposal-${index + 1}`,
+            proposal.projectId,
+            proposal.moduleId,
+            proposal.assigneeUserId,
+            encryptText(proposal.title),
+            proposal.detail ? encryptText(proposal.detail) : '',
+            proposal.dueDate,
+            proposal.priority,
+            proposal.confidence,
+            encryptText(proposal.sourceExcerpt),
+          ],
+        )
+      }
+      await client.query('commit')
+      response.status(201).json({
+        batchId,
+        proposals: proposals.map(serializeAiTodoProposal),
+      })
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  } catch (error) {
+    if (error instanceof AiProviderError) {
+      response.status(error.status).json({ error: error.message })
+      return
+    }
+    if (error instanceof AiTodoProposalValidationError) {
+      response.status(502).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+}))
+
+app.post('/api/ai/todo-proposals/:batchId/confirm', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const batchId = Number(request.params.batchId)
+  const batchResult = await query<{
+    source_content: string
+    status: string
+  }>(
+    `
+    select source_content, status
+    from ai_todo_proposal_batches
+    where id = $1 and user_id = $2
+    `,
+    [batchId, userId],
+  )
+  const batch = batchResult.rows[0]
+  if (!batch) {
+    response.status(404).json({ error: 'Todo proposal batch not found' })
+    return
+  }
+  if (batch.status !== 'pending') {
+    response.status(409).json({ error: 'Todo proposal batch has already been processed' })
+    return
+  }
+  const incomingProposals = Array.isArray(request.body.proposals) ? request.body.proposals : []
+  if (incomingProposals.length === 0 || incomingProposals.length > 20) {
+    response.status(400).json({ error: 'Select between 1 and 20 todo proposals' })
+    return
+  }
+
+  const sourceMarkdown = decryptText(batch.source_content)
+  let proposals: AiTodoProposal[]
+  try {
+    const catalog = await buildAiTodoProposalCatalog(userId)
+    proposals = parseAiTodoProposalResponse(JSON.stringify({ proposals: incomingProposals }), {
+      catalog,
+      maxProposals: 20,
+      sourceMarkdown,
+    })
+  } catch (error) {
+    if (error instanceof AiTodoProposalValidationError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+  if (proposals.some((proposal) => !proposal.projectId || !proposal.dueDate)) {
+    response.status(400).json({ error: 'Every confirmed todo must have a project and due date' })
+    return
+  }
+
+  const client = await pool.connect()
+  const assignedTodoIds: number[] = []
+  try {
+    await client.query('begin')
+    const lockedBatch = await client.query<{ status: string }>(
+      `
+      select status
+      from ai_todo_proposal_batches
+      where id = $1 and user_id = $2
+      for update
+      `,
+      [batchId, userId],
+    )
+    if (lockedBatch.rows[0]?.status !== 'pending') {
+      await client.query('rollback')
+      response.status(409).json({ error: 'Todo proposal batch has already been processed' })
+      return
+    }
+    await client.query(
+      `update ai_todo_proposals set status = 'rejected', updated_at = now() where batch_id = $1`,
+      [batchId],
+    )
+    for (const [index, proposal] of proposals.entries()) {
+      const projectId = proposal.projectId
+      const dueDate = proposal.dueDate
+      if (!projectId || !dueDate) throw new Error('Confirmed todo proposal is incomplete')
+      const createdTodo = await client.query<{ id: string }>(
+        `
+        insert into todos (
+          project_id,
+          title,
+          detail,
+          due_date,
+          priority,
+          project_module_id,
+          created_by_user_id,
+          assignee_user_id,
+          assigned_by_user_id,
+          assigned_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, case when $8::bigint is null then null else $7 end, case when $8::bigint is null then null else now() end)
+        returning id
+        `,
+        [
+          projectId,
+          encryptText(proposal.title),
+          proposal.detail ? encryptText(proposal.detail) : '',
+          dueDate,
+          proposal.priority,
+          proposal.moduleId,
+          userId,
+          proposal.assigneeUserId,
+        ],
+      )
+      const todoId = Number(createdTodo.rows[0].id)
+      await insertTodoActivityEvent(client, {
+        actorUserId: userId,
+        assigneeUserId: proposal.assigneeUserId,
+        dueDate,
+        eventType: 'created',
+        priority: proposal.priority,
+        projectId,
+        title: proposal.title,
+        todoId,
+      })
+      if (proposal.assigneeUserId) {
+        assignedTodoIds.push(todoId)
+        await insertTodoActivityEvent(client, {
+          actorUserId: userId,
+          assigneeUserId: proposal.assigneeUserId,
+          dueDate,
+          eventType: 'assigned',
+          priority: proposal.priority,
+          projectId,
+          title: proposal.title,
+          todoId,
+        })
+      }
+      await client.query(
+        `
+        insert into ai_todo_proposals (
+          batch_id,
+          proposal_key,
+          project_id,
+          project_module_id,
+          assignee_user_id,
+          title,
+          detail,
+          due_date,
+          priority,
+          confidence,
+          source_excerpt,
+          status
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'accepted')
+        `,
+        [
+          batchId,
+          `accepted-${index + 1}`,
+          projectId,
+          proposal.moduleId,
+          proposal.assigneeUserId,
+          encryptText(proposal.title),
+          proposal.detail ? encryptText(proposal.detail) : '',
+          dueDate,
+          proposal.priority,
+          proposal.confidence,
+          encryptText(proposal.sourceExcerpt),
+        ],
+      )
+    }
+    await client.query(
+      `
+      update ai_todo_proposal_batches
+      set status = 'confirmed', updated_at = now()
+      where id = $1 and user_id = $2 and status = 'pending'
+      `,
+      [batchId, userId],
+    )
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+  for (const todoId of assignedTodoIds) enqueueLatestAssignedTodoDelivery(todoId)
+  response.status(201).json(await getWorkspace(userId))
+}))
+
 app.delete('/api/drafts/:draftId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -6346,6 +7006,26 @@ app.delete('/api/drafts/:draftId', asyncHandler(async (request, response) => {
     userId,
   ])
   response.json(await getWorkspace(userId))
+}))
+
+app.post('/api/projects/:projectId/summaries', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const type = request.body.type === 'daily' ? 'daily' : request.body.type === 'weekly' ? 'weekly' : null
+  if (!type) {
+    response.status(400).json({ error: 'Summary type must be daily or weekly' })
+    return
+  }
+  const result = await createAndSaveAiPeriodSummary({
+    projectId: Number(request.params.projectId),
+    type,
+    userId,
+  })
+  if ('error' in result) {
+    response.status(result.status).json({ error: result.error })
+    return
+  }
+  response.status(201).json(await getWorkspace(userId))
 }))
 
 app.post('/api/summaries', asyncHandler(async (request, response) => {
@@ -6380,6 +7060,16 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
         encryptText(providedContent),
       ],
     )
+    response.status(201).json(await getWorkspace(userId))
+    return
+  }
+
+  if (type === 'daily' || type === 'weekly') {
+    const result = await createAndSaveAiPeriodSummary({ projectId, type, userId })
+    if ('error' in result) {
+      response.status(result.status).json({ error: result.error })
+      return
+    }
     response.status(201).json(await getWorkspace(userId))
     return
   }

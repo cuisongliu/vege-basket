@@ -10,6 +10,9 @@
 | HTTP routes and authorization | `server/index.ts` |
 | Database schema | `server/schema.ts` |
 | Encryption format | `server/crypto.ts` |
+| Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
+| AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
+| Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
 | Container runtime | `Dockerfile` |
@@ -30,14 +33,20 @@ Core and AI controls:
 | Variable | Default / behavior |
 | --- | --- |
 | `PORT` | `8787`. |
-| `AI_RATE_LIMIT` | `5` requests per in-memory window. |
+| `AI_API_BASE` | Shared OpenAI-compatible HTTPS base URL; required to enable AI. |
+| `AI_API_KEY` | Shared provider key; required to enable AI and never returned to the browser. |
+| `AI_MODEL` | Shared provider model name; required to enable AI. |
+| `AI_RATE_LIMIT` | `5` requests per user per in-memory window. |
+| `AI_GLOBAL_RATE_LIMIT` | `30` total requests per application replica per window. |
 | `AI_RATE_WINDOW_MS` | `60000`. |
 | `AI_MAX_MESSAGE_LENGTH` | `2000` characters. |
 | `AI_MAX_CONTEXT_CHARS` | `12000` characters. |
 
-AI provider URL, key, and model are stored per user in encrypted `ai_settings` through
-`/api/ai/settings`. `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` appear in deployment
-metadata but are not consumed by the current server.
+AI provider URL, key, and model are deployment-level environment variables shared by all
+authenticated users. There is no user-level AI settings table or API. With all three
+provider variables configured, password registration requires an active project invite;
+Feishu OAuth remains the internal identity path. The rate limiter is replica-local, so a
+future multi-replica deployment needs a shared quota or upstream budget policy.
 
 Feishu integration:
 
@@ -53,6 +62,10 @@ Feishu integration:
 
 `FEISHU_ENCRYPT_KEY` is declared in deployment metadata but is not consumed by the
 current server.
+
+Successful Feishu OAuth is treated as internal identity and may create a user without a
+project invite. The Feishu custom application's availability scope must therefore be
+restricted to the intended company users; Veges has no separate tenant/domain allowlist.
 
 OSS and package market:
 
@@ -83,13 +96,13 @@ families are:
 | --- | --- |
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
-| Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes |
-| Projects | `/api/projects`, journals, risks, modules, invitations, invite links, Feishu project settings |
+| Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Projects | `/api/projects`, journals, risks, modules, invitations, invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
-| AI | `/api/ai/settings`, `/api/ai/chat` |
+| AI | `GET /api/ai/status`, `POST /api/ai/chat`, `POST /api/projects/:projectId/summaries`, `POST /api/ai/todo-proposals`, `POST /api/ai/todo-proposals/:batchId/confirm` |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
@@ -101,6 +114,9 @@ must remain bound to the authorized project ID.
 - Project status: `active`, `paused`, `completed`, `archived`.
 - Todo priority: `high`, `medium`, `low`.
 - Todo confirmation: `confirmed`, `rejected`.
+- Todo activity event: `created`, `assigned`, `confirmed`, `rejected`, `completed`, `reopened`.
+- Todo proposal batch: `pending`, `confirmed`, `discarded`; proposal item: `pending`, `accepted`, `rejected`.
+- Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
 - Package event type: `init`, `upgrade`.
 - Package event status: `draft`, `delivering`, `delivered`.
 - Package operation kind: `document`, `event`.
@@ -109,10 +125,21 @@ must remain bound to the authorized project ID.
 - Supported todo images: PNG, JPEG, WebP, GIF.
 - Package download expiry choices: 30, 60, 90, 120, 300, or 600 minutes.
 
+Daily and weekly AI summaries are generated from authorized period facts and saved
+immediately as summary documents. Markdown ingestion accepts `.md` content only; AI may
+infer project, module, assignee, due date, priority, title, and detail, but project and due
+date must be resolved before selected proposals can be confirmed in one transaction.
+
+The daily digest subscription is Feishu-only, defaults to disabled at `10:00`
+`Asia/Shanghai`, and sends previous-day completion/reopen activity plus the current
+outstanding backlog at delivery time. Users may change the send time. Disconnecting
+Feishu disables the subscription.
+
 Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid input,
 401 for missing or invalid authentication, 403 for insufficient role, 404 for absent or
-inaccessible resources, 409 for state conflicts, 415 for unsupported image media, 429
-for AI throttling, and 503 for an unconfigured dependency.
+inaccessible resources, 409 for state conflicts, 413 for an oversized Markdown/AI
+context, 415 for unsupported image media, 429 for AI throttling, and 503 for an
+unconfigured dependency.
 
 Package-item batch failures additionally return `code`, `requestId`, and `details`.
 `details.phase` is one of `validate_object_keys`, `persist_package_items`, or

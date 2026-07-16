@@ -18,12 +18,15 @@ import {
   Archive,
   AddressBook,
   Bell,
+  CalendarBlank,
+  CalendarCheck,
   Check,
   CopySimple,
   CornersIn,
   CornersOut,
   DotsThree,
   CaretDown,
+  ClockCounterClockwise,
   ImageSquare,
   PencilSimple,
   DownloadSimple,
@@ -103,8 +106,9 @@ import {
   fetchPackageMarketRules,
   fetchProjectPackageTimeline,
   fetchWorkspace,
-  fetchAiSettings,
+  fetchAiStatus,
   fetchCurrentUser,
+  fetchNotificationSubscription,
   fetchNotifications,
   formatApiErrorDiagnostic,
   getAuthToken,
@@ -135,14 +139,14 @@ import {
   updateTodo,
   updateTodoNote,
   uploadTodoImage,
-  updateAiSettings,
+  updateNotificationSubscription,
   updateCurrentPassword,
   setAuthToken,
   sendAiChat,
   updateCurrentUser,
   type AiAgentType,
   type AiChatMessage,
-  type AiSettings,
+  type AiStatus,
   type AuthUser,
   type WorkspaceData,
 } from './api'
@@ -166,10 +170,13 @@ import type {
   ProjectMembership,
   ProjectStatus,
   Summary,
+  SummaryPeriodType,
   Todo,
   TodoNotification,
   TodoNote,
 } from './types'
+import { TodoActivityPanel } from './components/todo-activity-panel'
+import { TodoProposalWorkflow } from './components/todo-proposal-workflow'
 import {
   ProjectPackageWorkbench,
   type ProjectPackageWorkbenchHandle,
@@ -205,7 +212,7 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'journal' | 'packages'
+type ProjectDetailTab = 'journal' | 'activity' | 'packages'
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -237,15 +244,17 @@ type TodoFilterCondition = {
 const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
   'project-summary': {
     avatar: 'V',
-    subtitle: 'Veges AI Agent',
+    subtitle: '项目、待办与风险',
     title: '项目总结助理',
   },
   'conversation-analysis': {
     avatar: '析',
-    subtitle: '群聊对话分析 Agent',
+    subtitle: '群聊对话分析',
     title: '对话分析助理',
   },
 }
+
+const initialAiMessages: DisplayAiChatMessage[] = []
 
 const themeStorageKey = 'veges.theme'
 const todoCreateDraftStoragePrefix = 'veges.todoCreateDraft.v1'
@@ -1070,7 +1079,6 @@ function App() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
-  const initialAiMessages: DisplayAiChatMessage[] = []
   const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
   const [aiDraft, setAiDraft] = useState('')
   const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
@@ -1395,8 +1403,17 @@ function App() {
         clearInviteTokenFromUrl()
       }
       void refreshNotifications()
-    } catch {
-      setAuthError(mode === 'register' ? '注册失败，请确认用户名未被使用且密码不少于 6 位。' : '登录失败，请检查用户名和密码。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      if (mode === 'register' && message.includes('active project invite')) {
+        setAuthError('系统已启用共享 AI，请通过有效项目邀请或飞书登录创建账号。')
+      } else {
+        setAuthError(
+          mode === 'register'
+            ? '注册失败，请确认用户名未被使用且密码不少于 6 位。'
+            : '登录失败，请检查用户名和密码。',
+        )
+      }
     }
   }
 
@@ -1777,9 +1794,10 @@ function App() {
     await runMutation(() => removeTodo(todoId))
   }
 
-  async function generateSummary(projectId: number, type: Summary['type']) {
-    await runMutation(() => createSummary(projectId, type))
-    setView('summaries')
+  async function generateSummary(projectId: number, type: SummaryPeriodType) {
+    const data = await runMutation(() => createSummary(projectId, type))
+    if (data) setView('summaries')
+    return Boolean(data)
   }
 
   async function createInstallEvent(payload: {
@@ -2090,20 +2108,17 @@ function App() {
     setAiDraft('')
     setAiBusy(true)
     setAiError('')
-
-	    try {
-	      const scopedProjectId =
-	        activeAiAgent === 'project-summary' && selectedProject?.accessRole === 'member'
-	          ? selectedProject.id
-	          : undefined
-	      const result = await sendAiChat(
-	        nextMessages.map(({ role, content: messageContent }) => ({
-	          role,
-	          content: messageContent,
-	        })),
-	        activeAiAgent,
-	        scopedProjectId,
-	      )
+    try {
+      const scopedProjectId =
+        activeAiAgent === 'project-summary' ? selectedProject?.id : undefined
+      const result = await sendAiChat(
+        nextMessages.map(({ role, content: messageContent }) => ({
+          role,
+          content: messageContent,
+        })),
+        activeAiAgent,
+        scopedProjectId,
+      )
       setAiMessages([
         ...nextMessages,
         {
@@ -2112,19 +2127,23 @@ function App() {
           createdAt: getCurrentDateTimeStamp(),
         },
       ])
-    } catch {
-      setAiError('AI Agent 暂时没有响应，请先在左下角账号菜单的「AI 配置」里填写 Base URL、API Key 和模型。')
+    } catch (error) {
+      setAiError(
+        error instanceof Error && error.message
+          ? error.message
+          : 'AI 暂时没有响应，请稍后重试。',
+      )
     } finally {
-	    setAiBusy(false)
-	  }
-	}
+      setAiBusy(false)
+    }
+  }
 
-	function changeActiveAiAgent(agentType: AiAgentType) {
-	  setActiveAiAgent(agentType)
-	  setAiMessages([])
-	  setAiDraft('')
-	  setAiError('')
-	}
+  function changeActiveAiAgent(agentType: AiAgentType) {
+    setActiveAiAgent(agentType)
+    setAiMessages([])
+    setAiDraft('')
+    setAiError('')
+  }
 
   async function exportMarkdown(projectId?: number) {
     const targets = projectId
@@ -2234,8 +2253,6 @@ ${packageTimelineText}`
           <AccountMenu
             user={authUser}
             themeMode={themeMode}
-            onSaveAiSettings={updateAiSettings}
-            onLoadAiSettings={fetchAiSettings}
             onDisconnectFeishu={disconnectFeishuBinding}
             onSaveAccountSettings={updateAccountSettings}
             onSignOut={signOut}
@@ -2259,16 +2276,16 @@ ${packageTimelineText}`
                     size={detailEntrySource === 'notifications' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
                       ? '返回通知中心'
-                      : projectDetailTab === 'packages' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回通知中心'
-                      : projectDetailTab === 'packages' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
                         returnToNotifications()
                         return
                       }
-                      if (projectDetailTab === 'packages') {
+                      if (projectDetailTab !== 'journal') {
                         setProjectDetailTab('journal')
                         return
                       }
@@ -2313,8 +2330,22 @@ ${packageTimelineText}`
                 <>
                   {view === 'project' && selectedProject && (
                     <Button
-                      className="solid-button"
+                      className={projectDetailTab === 'activity' ? 'solid-button' : 'ghost-button'}
                       type="button"
+                      variant={projectDetailTab === 'activity' ? 'default' : 'outline'}
+                      onClick={() => setProjectDetailTab(
+                        projectDetailTab === 'activity' ? 'journal' : 'activity',
+                      )}
+                    >
+                      <ClockCounterClockwise size={17} />
+                      {projectDetailTab === 'activity' ? '返回项目日记' : '待办动态'}
+                    </Button>
+                  )}
+                  {view === 'project' && selectedProject && (
+                    <Button
+                      className="ghost-button"
+                      type="button"
+                      variant="outline"
                       onClick={() => setProjectDetailTab('packages')}
                     >
                       交付工作台
@@ -2559,22 +2590,27 @@ ${packageTimelineText}`
 
 	        {view === 'summaries' && (
 	          <SummaryView
-	            activeAiAgent={activeAiAgent}
-	            aiBusy={aiBusy}
-	            aiDraft={aiDraft}
-	            aiError={aiError}
-	            aiMessages={aiMessages}
-	            onAiDraftChange={setAiDraft}
-	            onAgentChange={changeActiveAiAgent}
-	            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
-            onResetAiChat={() => {
-              setAiMessages(initialAiMessages)
-              setAiDraft('')
-              setAiError('')
-            }}
-            onSendAgentMessage={sendAgentMessage}
-            projects={projects}
-            summaries={summaries}
+            activeAiAgent={activeAiAgent}
+            aiBusy={aiBusy}
+            aiDraft={aiDraft}
+            aiError={aiError}
+            aiMessages={aiMessages}
+            memberships={memberships}
+            onAiDraftChange={setAiDraft}
+            onAgentChange={changeActiveAiAgent}
+            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
+            onGenerateSummary={generateSummary}
+	            onResetAiChat={() => {
+	              setAiMessages(initialAiMessages)
+	              setAiDraft('')
+	              setAiError('')
+	            }}
+	            onSendAgentMessage={sendAgentMessage}
+	            onSelectedProjectIdChange={setSelectedProjectId}
+	            onWorkspace={applyWorkspace}
+	            projects={projects}
+	            selectedProjectId={selectedProject?.id ?? null}
+	            summaries={summaries}
           />
         )}
       </section>
@@ -2754,7 +2790,9 @@ function LoginScreen({
           </Button>
           <p className="form-note">
             {mode === 'register'
-              ? '注册后会创建你的个人工作区，密码会加密保存。'
+              ? hasProjectInvite
+                ? '注册后会创建个人工作区并加入受邀项目，密码会加密保存。'
+                : '共享 AI 环境下，密码注册需要项目邀请；也可以使用公司飞书账号继续。'
               : '使用你注册时设置的用户名和密码登录；也可以直接使用飞书账号登录或注册。'}
           </p>
         </form>
@@ -2809,32 +2847,23 @@ function getUserDisplayName(user: AuthUser | null) {
 }
 
 function AccountMenu({
-  onLoadAiSettings,
   onDisconnectFeishu,
   user,
   themeMode,
   onSaveAccountSettings,
-  onSaveAiSettings,
   onSignOut,
   onToggleTheme,
 }: {
-  onLoadAiSettings: () => Promise<{ settings: AiSettings }>
   onDisconnectFeishu: () => Promise<AuthUser>
   user: AuthUser | null
   themeMode: ThemeMode
   onSaveAccountSettings: (payload: {
     displayName: string
   }) => Promise<void>
-  onSaveAiSettings: (payload: {
-    apiKey?: string
-    baseUrl: string
-    model: string
-  }) => Promise<{ settings: AiSettings }>
   onSignOut: () => void
   onToggleTheme: () => void
 }) {
   const [accountDialogOpen, setAccountDialogOpen] = useState(false)
-  const [aiDialogOpen, setAiDialogOpen] = useState(false)
   const [displayNameDraft, setDisplayNameDraft] = useState(getUserDisplayName(user))
   const [currentPasswordDraft, setCurrentPasswordDraft] = useState('')
   const [nextPasswordDraft, setNextPasswordDraft] = useState('')
@@ -2843,12 +2872,15 @@ function AccountMenu({
   const [accountError, setAccountError] = useState('')
   const [feishuBindingBusy, setFeishuBindingBusy] = useState(false)
   const [passwordBusy, setPasswordBusy] = useState(false)
-  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
-  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
-  const [aiModelDraft, setAiModelDraft] = useState('')
-  const [aiHasApiKey, setAiHasApiKey] = useState(false)
-  const [aiSettingsBusy, setAiSettingsBusy] = useState(false)
-  const [aiSettingsError, setAiSettingsError] = useState('')
+  const [subscription, setSubscription] = useState({
+    enabled: false,
+    localSendTime: '10:00',
+    timezone: 'Asia/Shanghai',
+  })
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+  const [subscriptionSaving, setSubscriptionSaving] = useState(false)
+  const [subscriptionError, setSubscriptionError] = useState('')
+  const [subscriptionSaved, setSubscriptionSaved] = useState(false)
   const displayName = getUserDisplayName(user)
   const accountMeta = user?.username ?? '尚未登录'
 
@@ -2868,10 +2900,29 @@ function AccountMenu({
     setAccountDialogOpen(open)
     if (open) {
       syncAccountDrafts()
+      void loadSubscription()
       return
     }
     resetPasswordForm()
     setAccountError('')
+  }
+
+  async function loadSubscription() {
+    setSubscriptionLoading(true)
+    setSubscriptionError('')
+    setSubscriptionSaved(false)
+    try {
+      const result = await fetchNotificationSubscription()
+      setSubscription(result.subscription)
+    } catch (error) {
+      setSubscriptionError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取每日推送设置，请稍后重试。',
+      )
+    } finally {
+      setSubscriptionLoading(false)
+    }
   }
 
   async function saveAccountSettings() {
@@ -2942,6 +2993,7 @@ function AccountMenu({
     try {
       const result = await onDisconnectFeishu()
       setDisplayNameDraft(result.displayName || result.username)
+      setSubscription((current) => ({ ...current, enabled: false }))
     } catch (error) {
       setAccountError(
         error instanceof Error && error.message
@@ -2953,49 +3005,33 @@ function AccountMenu({
     }
   }
 
-  async function openAiSettingsDialog() {
-    setAiSettingsError('')
-    setAiDialogOpen(true)
-    setAiSettingsBusy(true)
-    try {
-      const result = await onLoadAiSettings()
-      setAiBaseUrlDraft(result.settings.baseUrl)
-      setAiApiKeyDraft('')
-      setAiModelDraft(result.settings.model)
-      setAiHasApiKey(result.settings.hasApiKey)
-    } catch {
-      setAiSettingsError('AI 配置读取失败，请稍后重试。')
-    } finally {
-      setAiSettingsBusy(false)
-    }
-  }
-
-  async function saveAiSettings() {
-    const baseUrl = aiBaseUrlDraft.trim()
-    const apiKey = aiApiKeyDraft.trim()
-    const model = aiModelDraft.trim()
-    if (!baseUrl || !model || (!apiKey && !aiHasApiKey)) {
-      setAiSettingsError('请填写 Base URL、API Key 和模型。')
+  async function saveSubscription() {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(subscription.localSendTime)) {
+      setSubscriptionError('请输入有效的 24 小时时间。')
       return
     }
-
-    setAiSettingsBusy(true)
-    setAiSettingsError('')
+    if (subscription.enabled && !user?.feishuLinked) {
+      setSubscriptionError('请先绑定飞书账号，再开启每日推送。')
+      return
+    }
+    setSubscriptionSaving(true)
+    setSubscriptionError('')
+    setSubscriptionSaved(false)
     try {
-      const result = await onSaveAiSettings({
-        baseUrl,
-        model,
-        ...(apiKey ? { apiKey } : {}),
+      const result = await updateNotificationSubscription({
+        enabled: subscription.enabled,
+        localSendTime: subscription.localSendTime,
       })
-      setAiBaseUrlDraft(result.settings.baseUrl)
-      setAiApiKeyDraft('')
-      setAiModelDraft(result.settings.model)
-      setAiHasApiKey(result.settings.hasApiKey)
-      setAiDialogOpen(false)
-    } catch {
-      setAiSettingsError('AI 配置保存失败，请确认信息后重试。')
+      setSubscription(result.subscription)
+      setSubscriptionSaved(true)
+    } catch (error) {
+      setSubscriptionError(
+        error instanceof Error && error.message
+          ? error.message
+          : '每日推送设置保存失败，请稍后重试。',
+      )
     } finally {
-      setAiSettingsBusy(false)
+      setSubscriptionSaving(false)
     }
   }
 
@@ -3036,14 +3072,6 @@ function AccountMenu({
               aria-hidden
             />
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              openAiSettingsDialog()
-            }}
-          >
-            <Sparkle /> AI 配置
-          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onSignOut} variant="destructive">
             <SignOut /> 退出登录
@@ -3052,7 +3080,7 @@ function AccountMenu({
       </DropdownMenu>
 
       <Dialog open={accountDialogOpen} onOpenChange={changeAccountDialogOpen}>
-        <DialogContent>
+        <DialogContent className="account-settings-dialog">
           <DialogHeader>
             <DialogTitle>账户设置</DialogTitle>
             <DialogDescription>
@@ -3126,6 +3154,65 @@ function AccountMenu({
             <p className="form-note">
               绑定过程会跳转到飞书授权页；授权成功后自动回到 Veges，并保存当前飞书用户的 open_id。
             </p>
+            <section className="notification-subscription-panel" aria-labelledby="daily-digest-title">
+              <div className="notification-subscription-heading">
+                <div>
+                  <strong id="daily-digest-title">每日待办完成推送</strong>
+                  <p>每天通过飞书发送上一完整自然日的完成情况，默认关闭。</p>
+                </div>
+                <label className="notification-subscription-toggle">
+                  <input
+                    checked={subscription.enabled}
+                    disabled={subscriptionLoading || (!user?.feishuLinked && !subscription.enabled)}
+                    type="checkbox"
+                    onChange={(event) => {
+                      setSubscription((current) => ({ ...current, enabled: event.target.checked }))
+                      setSubscriptionError('')
+                      setSubscriptionSaved(false)
+                    }}
+                  />
+                  <span aria-hidden />
+                  <small>{subscription.enabled ? '已开启' : '已关闭'}</small>
+                </label>
+              </div>
+              <div className="notification-subscription-controls">
+                <Label>
+                  推送时间
+                  <Input
+                    disabled={subscriptionLoading || !user?.feishuLinked}
+                    type="time"
+                    value={subscription.localSendTime}
+                    onChange={(event) => {
+                      setSubscription((current) => ({
+                        ...current,
+                        localSendTime: event.target.value,
+                      }))
+                      setSubscriptionSaved(false)
+                    }}
+                  />
+                </Label>
+                <span className="notification-subscription-timezone">
+                  {subscription.timezone || 'Asia/Shanghai'}
+                </span>
+                <Button
+                  disabled={
+                    subscriptionLoading ||
+                    subscriptionSaving ||
+                    (!user?.feishuLinked && subscription.enabled)
+                  }
+                  type="button"
+                  variant="outline"
+                  onClick={() => void saveSubscription()}
+                >
+                  {subscriptionSaving ? '保存中' : '保存推送设置'}
+                </Button>
+              </div>
+              {!user?.feishuLinked ? (
+                <p className="notification-subscription-note">绑定飞书账号后才能开启个人推送。</p>
+              ) : null}
+              {subscriptionError ? <p className="form-error">{subscriptionError}</p> : null}
+              {subscriptionSaved ? <p className="form-success">推送设置已保存。</p> : null}
+            </section>
             <div className="account-password-section">
               <strong>修改密码</strong>
               <p>可选项。需要修改密码时再填写下面三项。</p>
@@ -3188,69 +3275,6 @@ function AccountMenu({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={aiDialogOpen} onOpenChange={setAiDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>AI 配置</DialogTitle>
-            <DialogDescription>
-              配置后才可以使用 AI 总结。API Key 只会保存在你的账号配置里，重新打开时不会明文展示。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="new-project-dialog-form ai-settings-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              saveAiSettings()
-            }}
-          >
-            <Label>
-              Base URL
-              <Input
-                autoFocus
-                placeholder="https://api.openai.com"
-                required
-                value={aiBaseUrlDraft}
-                onChange={(event) => setAiBaseUrlDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              API Key
-              <Input
-                placeholder={aiHasApiKey ? '已保存，留空则继续使用原 Key' : '请输入 API Key'}
-                required={!aiHasApiKey}
-                type="password"
-                value={aiApiKeyDraft}
-                onChange={(event) => setAiApiKeyDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              模型
-              <Input
-                placeholder="例如：gpt-4.1-mini"
-                required
-                value={aiModelDraft}
-                onChange={(event) => setAiModelDraft(event.target.value)}
-              />
-            </Label>
-            {aiSettingsError && <p className="form-error">{aiSettingsError}</p>}
-            {aiHasApiKey && !aiApiKeyDraft && (
-              <p className="form-note">当前已有 API Key，保存时留空会继续使用原 Key。</p>
-            )}
-            <DialogFooter>
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() => setAiDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={aiSettingsBusy}>
-                {aiSettingsBusy ? '保存中...' : '保存配置'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
@@ -3658,13 +3682,17 @@ function ProjectDetail({
       className={
         projectDetailTab === 'packages'
           ? 'detail-layout packages-mode'
+          : projectDetailTab === 'activity'
+            ? 'detail-layout activity-mode'
           : isProjectTodoFocusOpen
             ? 'detail-layout todo-detail-focus'
             : 'detail-layout'
       }
     >
       <div className="project-detail-main">
-        {projectDetailTab === 'packages' ? (
+        {projectDetailTab === 'activity' ? (
+          <TodoActivityPanel projectId={project.id} />
+        ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
             onAddItems={onInstallSelectPackages}
@@ -4392,6 +4420,7 @@ function ConfirmDialog({
 
 function ProjectActionsMenu({
   exportProject,
+  generateDailySummary,
   generateWeeklySummary,
   onDeleteProject,
   onEditDescriptionClick,
@@ -4399,6 +4428,7 @@ function ProjectActionsMenu({
   projectName,
 }: {
   exportProject: () => void
+  generateDailySummary: () => void
   generateWeeklySummary: () => void
   onDeleteProject: () => void
   onEditDescriptionClick: () => void
@@ -4430,6 +4460,9 @@ function ProjectActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={generateWeeklySummary}>
           <Sparkle /> 生成周总结
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={generateDailySummary}>
+          <CalendarBlank /> 生成日总结
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ConfirmDialog
@@ -6042,7 +6075,7 @@ function SearchView({
   allTags: string[]
   exportMarkdown: (projectId?: number) => Promise<void>
   filteredResults: Project[]
-  generateSummary: (projectId: number, type: Summary['type']) => void
+  generateSummary: (projectId: number, type: SummaryPeriodType) => Promise<boolean>
   onDeleteProject: (projectId: number) => void
   onEditProjectDescription: (projectId: number, description: string) => void
   onProjectClick: (id: number) => void
@@ -6162,6 +6195,7 @@ function SearchView({
                 </div>
                 <ProjectActionsMenu
                   exportProject={() => void exportMarkdown(project.id)}
+                  generateDailySummary={() => void generateSummary(project.id, 'daily')}
                   generateWeeklySummary={() => generateSummary(project.id, 'weekly')}
                   onDeleteProject={() => onDeleteProject(project.id)}
                   onEditDescriptionClick={() => openDescriptionDialog(project)}
@@ -6272,12 +6306,17 @@ function SummaryView({
   aiDraft,
   aiError,
   aiMessages,
+  memberships,
   onAiDraftChange,
   onAgentChange,
   onCreateSummaryFromAiMessage,
+  onGenerateSummary,
   onResetAiChat,
   onSendAgentMessage,
+  onSelectedProjectIdChange,
+  onWorkspace,
   projects,
+  selectedProjectId,
   summaries,
 }: {
   activeAiAgent: AiAgentType
@@ -6285,24 +6324,55 @@ function SummaryView({
   aiDraft: string
   aiError: string
   aiMessages: DisplayAiChatMessage[]
+  memberships: ProjectMembership[]
   onAiDraftChange: (value: string) => void
   onAgentChange: (agentType: AiAgentType) => void
   onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
+  onGenerateSummary: (projectId: number, type: SummaryPeriodType) => Promise<boolean>
   onResetAiChat: () => void
   onSendAgentMessage: () => void
+  onSelectedProjectIdChange: (projectId: number) => void
+  onWorkspace: (workspace: WorkspaceData) => void
   projects: Project[]
+  selectedProjectId: number | null
   summaries: Summary[]
 }) {
   const [selectedSummaryId, setSelectedSummaryId] = useState<number | null>(null)
   const [isSummaryFullscreen, setIsSummaryFullscreen] = useState(false)
   const [isComposing, setIsComposing] = useState(false)
-  const activeAgentMeta = aiAgentMeta[activeAiAgent]
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
+  const [aiStatusLoading, setAiStatusLoading] = useState(true)
+  const [aiStatusError, setAiStatusError] = useState('')
+  const [generatingType, setGeneratingType] = useState<SummaryPeriodType | null>(null)
+  const [generationError, setGenerationError] = useState('')
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
   const selectedProject = selectedSummary
     ? projects.find((project) => project.id === selectedSummary.projectId)
     : null
   const selectedDocumentOwner = selectedProject?.name ?? selectedSummary?.period ?? 'AI 总结文档'
+  const activeAgentMeta = aiAgentMeta[activeAiAgent]
+
+  const loadAiStatus = useCallback(async () => {
+    setAiStatusLoading(true)
+    setAiStatusError('')
+    try {
+      setAiStatus(await fetchAiStatus())
+    } catch (error) {
+      setAiStatus(null)
+      setAiStatusError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取系统 AI 状态。',
+      )
+    } finally {
+      setAiStatusLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadAiStatus()
+  }, [loadAiStatus])
 
   useEffect(() => {
     if (!isSummaryFullscreen) return
@@ -6317,136 +6387,214 @@ function SummaryView({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isSummaryFullscreen])
 
+  async function generate(type: SummaryPeriodType) {
+    if (!selectedProjectId || generatingType || !aiStatus?.configured) return
+    setGeneratingType(type)
+    setGenerationError('')
+    const success = await onGenerateSummary(selectedProjectId, type)
+    if (!success) setGenerationError('总结没有生成，已保留当前页面状态，请稍后重试。')
+    setGeneratingType(null)
+  }
+
   return (
     <div className={isSummaryFullscreen ? 'summary-layout is-document-fullscreen' : 'summary-layout'}>
-      <Card className="panel ai-agent-panel">
-	        <div className="agent-hero">
-	          <div className="agent-orb">
-	            {activeAgentMeta.avatar}
-	          </div>
-	          <div>
-	            <h3>{activeAgentMeta.title}</h3>
-	            <p>{activeAgentMeta.subtitle}</p>
-	          </div>
-	          <DropdownMenu>
-	            <DropdownMenuTrigger asChild>
-	              <Button
-	                className="agent-new-chat-button"
-	                type="button"
-	                variant="ghost"
-	                size="icon"
-	                aria-label="选择 AI 助理"
-	                title="选择 AI 助理"
-	              >
-	                <Plus size={28} />
-	              </Button>
-	            </DropdownMenuTrigger>
-	            <DropdownMenuContent align="end" className="agent-menu-content">
-	              <DropdownMenuItem
-	                data-selected={activeAiAgent === 'project-summary'}
-	                onSelect={() => onAgentChange('project-summary')}
-	              >
-	                <span className="agent-menu-check">
-	                  {activeAiAgent === 'project-summary' && <Check size={13} weight="bold" />}
-	                </span>
-	                <span>
-	                  <strong>项目总结助理</strong>
-	                  <small>整理项目、待办、风险与总结</small>
-	                </span>
-	              </DropdownMenuItem>
-	              <DropdownMenuItem
-	                data-selected={activeAiAgent === 'conversation-analysis'}
-	                onSelect={() => onAgentChange('conversation-analysis')}
-	              >
-	                <span className="agent-menu-check">
-	                  {activeAiAgent === 'conversation-analysis' && <Check size={13} weight="bold" />}
-	                </span>
-	                <span>
-	                  <strong>对话分析助理</strong>
-	                  <small>分析群聊中其他人的对话</small>
-	                </span>
-	              </DropdownMenuItem>
-	              <DropdownMenuSeparator />
-	              <DropdownMenuItem onSelect={onResetAiChat}>
-	                <span className="agent-menu-spacer" />
-	                <span>
-	                  <strong>清空当前对话</strong>
-	                  <small>保留当前助理类型</small>
-	                </span>
-	              </DropdownMenuItem>
-	            </DropdownMenuContent>
-	          </DropdownMenu>
-	        </div>
-        <div className="agent-messages">
-          {aiMessages.map((message, index) => (
-            <article
-              className={`agent-message ${message.role}`}
-              key={`${message.role}-${index}`}
+      <Card className="panel ai-agent-panel ai-workflow-panel">
+        <div className="ai-workflow-header">
+          <span className="agent-orb" aria-hidden>V</span>
+          <div>
+            <h3>AI 工作流</h3>
+            <p>系统统一模型，直接生成可保存的工作结果。</p>
+          </div>
+          <span className={aiStatus?.configured ? 'ai-status-badge is-ready' : 'ai-status-badge'}>
+            {aiStatusLoading
+              ? '检查中'
+              : aiStatus?.configured ? aiStatus.model || '已配置' : '未配置'}
+          </span>
+        </div>
+
+        {aiStatusError ? (
+          <div className="ai-status-error" role="alert">
+            <span>{aiStatusError}</span>
+            <Button size="sm" type="button" variant="ghost" onClick={() => void loadAiStatus()}>
+              重试
+            </Button>
+          </div>
+        ) : null}
+
+        <section className="summary-generation-workflow" aria-labelledby="summary-generation-title">
+          <div className="summary-generation-heading">
+            <div>
+              <h4 id="summary-generation-title">生成总结文档</h4>
+              <p>选择项目和周期，生成后直接进入右侧文档列表。</p>
+            </div>
+          </div>
+          <Label>
+            项目
+            <Select
+              disabled={aiBusy || Boolean(generatingType)}
+              value={selectedProjectId ? String(selectedProjectId) : 'none'}
+              onValueChange={(value) => {
+                if (value === 'none') return
+                onSelectedProjectIdChange(Number(value))
+                onResetAiChat()
+              }}
             >
-              <div className="agent-message-content">
-                <MarkdownPreview content={message.content} compact />
-              </div>
-              {message.role === 'assistant' && (
-                <div className="agent-message-footer">
-                  <time className="agent-message-time">{message.createdAt}</time>
-                  {index > 0 && (
+              <SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">选择项目</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Label>
+          <div className="summary-generation-actions">
+            <Button
+              disabled={!selectedProjectId || !aiStatus?.configured || Boolean(generatingType)}
+              type="button"
+              variant="outline"
+              onClick={() => void generate('daily')}
+            >
+              <CalendarBlank size={16} />
+              {generatingType === 'daily' ? '生成中' : '生成日总结'}
+            </Button>
+            <Button
+              disabled={!selectedProjectId || !aiStatus?.configured || Boolean(generatingType)}
+              type="button"
+              onClick={() => void generate('weekly')}
+            >
+              <CalendarCheck size={16} />
+              {generatingType === 'weekly' ? '生成中' : '生成周总结'}
+            </Button>
+          </div>
+          {!aiStatusLoading && !aiStatus?.configured && !aiStatusError ? (
+            <p className="form-error">系统 AI 尚未配置，请联系管理员。</p>
+          ) : null}
+          {generationError ? <p className="form-error">{generationError}</p> : null}
+        </section>
+
+        <TodoProposalWorkflow
+          memberships={memberships}
+          onWorkspace={onWorkspace}
+          projects={projects}
+        />
+
+        <section className="ai-chat-workflow" aria-labelledby="ai-chat-title">
+          <div className="ai-chat-header">
+            <span className="agent-orb" aria-hidden>{activeAgentMeta.avatar}</span>
+            <div>
+              <h4 id="ai-chat-title">{activeAgentMeta.title}</h4>
+              <p>{activeAgentMeta.subtitle}</p>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label="选择 AI 助理"
+                  className="agent-new-chat-button"
+                  size="icon"
+                  title="选择 AI 助理"
+                  type="button"
+                  variant="ghost"
+                >
+                  <DotsThree size={21} weight="bold" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="agent-menu-content">
+                <DropdownMenuItem
+                  data-selected={activeAiAgent === 'project-summary'}
+                  onSelect={() => onAgentChange('project-summary')}
+                >
+                  <span className="agent-menu-check">
+                    {activeAiAgent === 'project-summary' ? <Check size={13} weight="bold" /> : null}
+                  </span>
+                  <span><strong>项目总结助理</strong><small>项目、待办与风险</small></span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-selected={activeAiAgent === 'conversation-analysis'}
+                  onSelect={() => onAgentChange('conversation-analysis')}
+                >
+                  <span className="agent-menu-check">
+                    {activeAiAgent === 'conversation-analysis' ? <Check size={13} weight="bold" /> : null}
+                  </span>
+                  <span><strong>对话分析助理</strong><small>群聊对话分析</small></span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onResetAiChat}>
+                  <span className="agent-menu-spacer" />
+                  <span><strong>清空当前对话</strong><small>保留当前助理类型</small></span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <div className="agent-messages">
+            {aiMessages.length === 0 && !aiBusy ? (
+              <p className="ai-chat-empty">还没有对话。</p>
+            ) : null}
+            {aiMessages.map((message, index) => (
+              <article className={`agent-message ${message.role}`} key={`${message.role}-${index}`}>
+                <div className="agent-message-content">
+                  <MarkdownPreview content={message.content} compact />
+                </div>
+                {message.role === 'assistant' ? (
+                  <div className="agent-message-footer">
+                    <time className="agent-message-time">{message.createdAt}</time>
                     <Button
+                      aria-label="保存为总结文档"
                       className="agent-summary-button"
+                      size="icon"
+                      title="保存为总结文档"
                       type="button"
                       variant="ghost"
-                      size="icon"
-                      aria-label="生成总结文档"
-                      title="生成总结文档"
                       onClick={() => onCreateSummaryFromAiMessage(message)}
                     >
                       <FileText size={14} weight="bold" />
                     </Button>
-                  )}
+                  </div>
+                ) : null}
+              </article>
+            ))}
+            {aiBusy ? (
+              <article className="agent-message assistant">
+                <div className="agent-message-content">
+                  <MarkdownPreview content="正在整理上下文..." compact />
                 </div>
-              )}
-            </article>
-          ))}
-          {aiBusy && (
-            <article className="agent-message assistant">
-              <div className="agent-message-content">
-                <MarkdownPreview content="正在整理项目上下文..." compact />
-              </div>
-            </article>
-          )}
-        </div>
-        {aiError && <p className="form-error">{aiError}</p>}
-        <div className="agent-composer">
-          <Textarea
-            placeholder="例如：帮我生成本周所有进行中项目的总结，并列出下周最关键的 3 个动作..."
-            value={aiDraft}
-            onCompositionEnd={() => setIsComposing(false)}
-            onCompositionStart={() => setIsComposing(true)}
-            onChange={(event) => onAiDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent
-              if (
-                event.key === 'Enter' &&
-                !event.shiftKey &&
-                !isComposing &&
-                !nativeEvent.isComposing
-              ) {
-                event.preventDefault()
-                onSendAgentMessage()
-              }
-            }}
-          />
-          <Button
-            className="agent-send-button"
-            type="button"
-            disabled={aiBusy || !aiDraft.trim()}
-            variant="ghost"
-            size="icon"
-            aria-label="发送消息"
-            onClick={onSendAgentMessage}
-          >
-            <PaperPlaneTilt size={18} weight="bold" />
-          </Button>
-        </div>
+              </article>
+            ) : null}
+          </div>
+          {aiError ? <p className="form-error">{aiError}</p> : null}
+          <div className="agent-composer">
+            <Textarea
+              placeholder="输入需要分析或总结的内容"
+              value={aiDraft}
+              onCompositionEnd={() => setIsComposing(false)}
+              onCompositionStart={() => setIsComposing(true)}
+              onChange={(event) => onAiDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                const nativeEvent = event.nativeEvent as KeyboardEvent
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey &&
+                  !isComposing &&
+                  !nativeEvent.isComposing
+                ) {
+                  event.preventDefault()
+                  onSendAgentMessage()
+                }
+              }}
+            />
+            <Button
+              aria-label="发送消息"
+              className="agent-send-button"
+              disabled={aiBusy || !aiDraft.trim() || !aiStatus?.configured}
+              size="icon"
+              type="button"
+              variant="ghost"
+              onClick={onSendAgentMessage}
+            >
+              <PaperPlaneTilt size={18} weight="bold" />
+            </Button>
+          </div>
+        </section>
       </Card>
       <Card className={isSummaryFullscreen ? 'panel summary-list is-fullscreen' : 'panel summary-list'}>
         {selectedSummary ? (
@@ -7342,6 +7490,11 @@ function TodoEditorDialog({
                   <span>{creatorName} 创建</span>
                   <span>{confirmLabel}</span>
                 </div>
+                {todo?.done && todo.completedAt ? (
+                  <p className="todo-completion-meta">
+                    由 {todo.completedByName ?? '项目成员'} 于 {todo.completedAt.slice(0, 16)} 完成
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>

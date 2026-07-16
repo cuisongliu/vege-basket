@@ -28,6 +28,9 @@ export type Todo = {
   dueDate: string
   priority: Priority
   done: boolean
+  completedAt?: string
+  completedByUserId?: number
+  completedByName?: string
   confirmationStatus: TodoConfirmationStatus
   linkedToDeliveryEvent: boolean
   moduleId?: number
@@ -126,11 +129,46 @@ export type InboxItem = {
 export type Summary = {
   id: number
   projectId?: number
-  type: 'weekly' | 'monthly'
+  type: SummaryPeriodType | 'monthly'
   title: string
   period: string
   content: string
   createdAt: string
+}
+
+export type SummaryPeriodType = 'daily' | 'weekly'
+
+export type TodoActivityEvent = {
+  id: number
+  todoId?: number
+  projectId: number
+  eventType: 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected'
+  todoTitle: string
+  actorUserId?: number
+  actorName: string
+  assigneeUserId?: number
+  assigneeName?: string
+  dueDate?: string
+  priority?: Priority
+  occurredAt: string
+}
+
+export type NotificationSubscription = {
+  enabled: boolean
+  localSendTime: string
+  timezone: string
+}
+
+export type TodoProposal = {
+  projectId: number | null
+  moduleId: number | null
+  assigneeUserId: number | null
+  title: string
+  detail: string
+  dueDate: string | null
+  priority: Priority
+  confidence: number
+  sourceExcerpt: string
 }
 
 export type ProjectPackageEventType = 'init' | 'upgrade'

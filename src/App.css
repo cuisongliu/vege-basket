@@ -1719,6 +1719,13 @@ textarea:focus {
   margin-right: 1px;
 }
 
+.todo-completion-meta {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .todo-editor-form {
   display: grid;
   min-height: 0;
@@ -8003,6 +8010,647 @@ textarea:focus {
   font-size: 14px;
 }
 
+.form-success {
+  margin: 0;
+  color: var(--brand);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.account-settings-dialog {
+  width: min(92vw, 620px);
+  max-width: 620px;
+  max-height: min(90dvh, 820px);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.account-settings-dialog .account-settings-form {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+}
+
+.notification-subscription-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--brand) 6%, var(--surface));
+  padding: 12px;
+}
+
+.notification-subscription-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.notification-subscription-heading strong {
+  color: var(--strong);
+  font-size: 14px;
+}
+
+.notification-subscription-heading p,
+.notification-subscription-note {
+  margin: 3px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notification-subscription-toggle {
+  min-width: 82px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.notification-subscription-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.notification-subscription-toggle > span {
+  width: 34px;
+  height: 20px;
+  position: relative;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--muted);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.notification-subscription-toggle > span::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: var(--muted-text);
+  transition: transform 160ms ease, background-color 160ms ease;
+}
+
+.notification-subscription-toggle input:checked + span {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.notification-subscription-toggle input:checked + span::after {
+  background: var(--brand-foreground);
+  transform: translateX(14px);
+}
+
+.notification-subscription-toggle input:focus-visible + span {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 30%, transparent);
+}
+
+.notification-subscription-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.notification-subscription-toggle small {
+  min-width: 36px;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.notification-subscription-controls {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.55fr) auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.notification-subscription-controls label {
+  gap: 5px;
+  font-size: 12px;
+}
+
+.notification-subscription-timezone {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.detail-layout.activity-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.detail-layout.activity-mode .project-detail-main {
+  min-height: 0;
+}
+
+.todo-activity-panel {
+  min-height: min(620px, calc(100dvh - 150px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  overflow: hidden;
+}
+
+.todo-activity-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.todo-activity-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.todo-activity-header h3 {
+  margin: 7px 0 3px;
+  color: var(--strong);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.todo-activity-header p {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.todo-activity-refresh {
+  width: 40px;
+  height: 40px;
+}
+
+.todo-activity-state {
+  min-height: 260px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  color: var(--muted-text);
+  text-align: center;
+}
+
+.todo-activity-state strong {
+  color: var(--strong);
+  font-size: 15px;
+}
+
+.todo-activity-state p {
+  max-width: 360px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.todo-activity-state.is-error > svg {
+  color: var(--destructive);
+}
+
+.todo-activity-loading-mark {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: workflow-spin 800ms linear infinite;
+}
+
+.todo-activity-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.todo-activity-list li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 4px;
+}
+
+.todo-activity-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--muted);
+  color: var(--muted-text);
+}
+
+.todo-activity-list .is-completed .todo-activity-icon,
+.todo-activity-list .is-confirmed .todo-activity-icon {
+  background: color-mix(in oklch, var(--brand) 13%, var(--surface));
+  color: var(--brand);
+}
+
+.todo-activity-list .is-rejected .todo-activity-icon {
+  background: color-mix(in oklch, var(--destructive) 10%, var(--surface));
+  color: var(--destructive);
+}
+
+.todo-activity-copy {
+  min-width: 0;
+}
+
+.todo-activity-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.todo-activity-title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--strong);
+  font-size: 14px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-activity-title-row span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-text);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.todo-activity-copy p {
+  margin: 4px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.todo-activity-list time {
+  color: var(--muted-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.ai-workflow-panel {
+  display: block;
+  padding: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ai-workflow-header {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.ai-workflow-header .agent-orb {
+  width: 42px;
+  height: 42px;
+}
+
+.ai-workflow-header h3,
+.summary-generation-heading h4,
+.todo-proposal-heading h4 {
+  margin: 0;
+  color: var(--strong);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.ai-workflow-header p,
+.summary-generation-heading p,
+.todo-proposal-heading p {
+  margin: 3px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-status-badge {
+  max-width: min(160px, 30vw);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-text);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-status-badge.is-ready {
+  border-color: color-mix(in oklch, var(--brand) 36%, var(--line));
+  background: color-mix(in oklch, var(--brand) 10%, var(--surface));
+  color: var(--brand);
+}
+
+.ai-status-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--destructive);
+  padding: 9px 0;
+  font-size: 12px;
+}
+
+.summary-generation-workflow,
+.todo-proposal-workflow {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.todo-proposal-workflow {
+  padding-bottom: 14px;
+}
+
+.ai-chat-workflow {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.ai-chat-header {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 9px;
+}
+
+.ai-chat-header .agent-orb,
+.ai-chat-header .agent-new-chat-button {
+  width: 34px;
+  height: 34px;
+}
+
+.ai-chat-header h4 {
+  margin: 0;
+  color: var(--strong);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.ai-chat-header p,
+.ai-chat-empty {
+  margin: 2px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-chat-workflow .agent-messages {
+  min-height: 180px;
+  max-height: 360px;
+  padding: 8px 2px 2px 0;
+}
+
+.ai-chat-empty {
+  align-self: center;
+  justify-self: center;
+  margin: 0;
+}
+
+.summary-generation-workflow > label {
+  gap: 5px;
+  font-size: 12px;
+}
+
+.summary-generation-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.todo-proposal-heading {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.todo-proposal-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--brand) 10%, var(--surface));
+  color: var(--brand);
+}
+
+.todo-proposal-file-input {
+  display: none;
+}
+
+.todo-proposal-upload {
+  width: 100%;
+}
+
+.todo-proposal-file-name {
+  overflow: hidden;
+  color: var(--muted-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-proposal-dialog {
+  width: min(96vw, 1080px);
+  max-width: 1080px;
+  max-height: min(92dvh, 860px);
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+}
+
+.todo-proposal-review-toolbar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.todo-proposal-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+}
+
+.todo-proposal-item {
+  display: grid;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--muted) 62%, var(--surface));
+  padding: 12px;
+  opacity: 0.62;
+}
+
+.todo-proposal-item.is-selected {
+  border-color: color-mix(in oklch, var(--brand) 42%, var(--line));
+  background: var(--surface);
+  opacity: 1;
+}
+
+.todo-proposal-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.todo-proposal-selection {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.todo-proposal-selection input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.todo-proposal-selection > span {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--brand-foreground);
+}
+
+.todo-proposal-selection input:checked + span {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.todo-proposal-selection input:focus-visible + span {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 30%, transparent);
+}
+
+.todo-proposal-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.todo-proposal-grid label {
+  min-width: 0;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.todo-proposal-title-field {
+  grid-column: span 3;
+}
+
+.todo-proposal-detail-field {
+  grid-column: 1 / -1;
+}
+
+.todo-proposal-detail-field textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.todo-proposal-source {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted-text);
+  padding-top: 9px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.todo-proposal-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.is-spinning {
+  animation: workflow-spin 800ms linear infinite;
+}
+
+.is-pulsing {
+  animation: workflow-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes workflow-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes workflow-pulse {
+  to { opacity: 0.42; transform: scale(0.9); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning,
+  .is-pulsing,
+  .todo-activity-loading-mark {
+    animation: none;
+  }
+}
+
 :root:not(.dark) .package-empty-state,
 :root:not(.dark) .project-events-panel,
 :root:not(.dark) .event-workspace,
@@ -8872,5 +9520,96 @@ textarea:focus {
   .project-topbar-actions .ghost-button {
     width: 100%;
     justify-content: center;
+  }
+}
+
+@media (max-width: 1100px) {
+  .todo-activity-panel {
+    min-height: 520px;
+  }
+
+  .todo-proposal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .todo-proposal-title-field {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .account-settings-dialog,
+  .todo-proposal-dialog {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 16px;
+  }
+
+  .feishu-binding-panel,
+  .notification-subscription-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .feishu-binding-actions,
+  .notification-subscription-toggle {
+    justify-content: flex-start;
+  }
+
+  .notification-subscription-controls {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .notification-subscription-timezone {
+    min-height: auto;
+  }
+
+  .ai-workflow-header {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .ai-status-badge {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .summary-generation-actions,
+  .todo-proposal-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .todo-proposal-title-field,
+  .todo-proposal-detail-field {
+    grid-column: 1;
+  }
+
+  .todo-proposal-list {
+    padding-right: 0;
+  }
+
+  .todo-activity-panel {
+    min-height: 460px;
+  }
+
+  .todo-activity-list li {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .todo-activity-list time {
+    grid-column: 2;
+  }
+
+  .todo-activity-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .todo-activity-title-row strong {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
 }

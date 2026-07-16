@@ -16,8 +16,12 @@ import type {
   ProjectMembership,
   ProjectStatus,
   Summary,
+  SummaryPeriodType,
   Todo,
+  TodoActivityEvent,
   TodoNote,
+  TodoProposal,
+  NotificationSubscription,
 } from './types'
 import { ApiError } from './api-error'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
@@ -64,9 +68,8 @@ export type AiChatMessage = {
 
 export type AiAgentType = 'project-summary' | 'conversation-analysis'
 
-export type AiSettings = {
-  baseUrl: string
-  hasApiKey: boolean
+export type AiStatus = {
+  configured: boolean
   model: string
 }
 
@@ -188,19 +191,8 @@ export function updateCurrentPassword(payload: {
   })
 }
 
-export function fetchAiSettings() {
-  return request<{ settings: AiSettings }>('/api/ai/settings')
-}
-
-export function updateAiSettings(payload: {
-  apiKey?: string
-  baseUrl: string
-  model: string
-}) {
-  return request<{ settings: AiSettings }>('/api/ai/settings', {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
+export function fetchAiStatus() {
+  return request<AiStatus>('/api/ai/status')
 }
 
 export function createProject(payload: { name: string; tags: string[] }) {
@@ -449,10 +441,10 @@ export function removeTodo(todoId: number) {
   })
 }
 
-export function createSummary(projectId: number, type: Summary['type']) {
-  return request<WorkspaceData>('/api/summaries', {
+export function createSummary(projectId: number, type: SummaryPeriodType) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/summaries`, {
     method: 'POST',
-    body: JSON.stringify({ projectId, type }),
+    body: JSON.stringify({ type }),
   })
 }
 
@@ -465,6 +457,38 @@ export function createSummaryFromContent(payload: {
   return request<WorkspaceData>('/api/summaries', {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function fetchTodoActivity(projectId: number) {
+  return request<{ events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
+}
+
+export function fetchNotificationSubscription() {
+  return request<{ subscription: NotificationSubscription }>('/api/notification-subscription')
+}
+
+export function updateNotificationSubscription(payload: {
+  enabled: boolean
+  localSendTime: string
+}) {
+  return request<{ subscription: NotificationSubscription }>('/api/notification-subscription', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createTodoProposals(payload: { content: string; fileName: string }) {
+  return request<{ batchId: number; proposals: TodoProposal[] }>('/api/ai/todo-proposals', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function confirmTodoProposals(batchId: number, proposals: TodoProposal[]) {
+  return request<WorkspaceData>(`/api/ai/todo-proposals/${encodeURIComponent(batchId)}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ proposals }),
   })
 }
 

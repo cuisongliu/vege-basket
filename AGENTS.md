@@ -35,12 +35,17 @@ historical product context; current code and these operational docs take precede
   Retain old keys while any stored envelope references them.
 - Do not weaken AI URL validation: HTTPS only, no embedded credentials, public DNS/IPs
   only, and no redirect following.
+- Shared AI uses only `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL`. Do not restore
+  user-level AI settings. While shared AI is configured, password registration must
+  require an active project invite; keep both per-user and instance-wide request limits.
 - Do not sign or fetch arbitrary OSS object keys. Package keys must match configured
   rules/templates; todo images use their dedicated prefix and HMAC signature.
 - Feishu event challenges and events require the verification token. Conversation
   analysis requires configured Basic authentication.
 - Concurrency invariants belong in PostgreSQL unique indexes plus conflict-safe SQL, not
   select-before-insert checks alone.
+- Todo completion and reopen transitions must lock the todo row inside the same
+  transaction before updating `completed_at`, `completed_by_user_id`, or activity events.
 
 ## Database Safety
 
@@ -61,7 +66,8 @@ git diff --check
 ```
 
 For scoped work, run ESLint against the touched TypeScript files. The focused Node test
-suite currently covers notification policy and OSS endpoint normalization; do not claim
+suite covers notification policy, OSS endpoint normalization, AI provider and parsing
+rules, rate limiting, and digest scheduling; do not claim
 database, OSS, Feishu, browser, or deployment behavior is verified unless that surface
 was exercised in an authorized environment.
 
@@ -69,8 +75,8 @@ was exercised in an authorized environment.
 
 - Production container images default to `linux/amd64`; publish ARM only when explicitly
   requested.
-- Use immutable image tags or digests. Keep both image references in the Sealos template
-  aligned and verify the live workload image after deployment.
+- Use immutable image tags or digests. Keep `originImageName`, the application container,
+  and the todo-digest CronJob image aligned; verify both live workload images after deployment.
 - `.sealos/build/build-result.json` and `.sealos/state.json` are receipts, not proof of
   current source or runtime state.
 - App rollback does not roll back PostgreSQL. Keep a pre-release database snapshot and

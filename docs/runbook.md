@@ -6,6 +6,8 @@
 - PostgreSQL for any API runtime. Use a disposable development database locally.
 - Alibaba OSS credentials only when testing package-market or todo-image workflows.
 - Encryption keys generated and stored outside Git.
+- A company-owned Feishu custom application whose availability scope is restricted to
+  intended internal users before using OAuth as the shared-AI account bootstrap path.
 
 Use `.env.example` as a shape reference. Never commit `.env`, access keys, session
 tokens, database URLs with credentials, or encryption material.
@@ -31,6 +33,10 @@ npx eslint server/index.ts server/package-market.ts server/project-package-timel
 Do not use `npm run dev:api`, `npm run db:init`, or `npm run db:encrypt-existing` as a
 read-only check. Importing the running API validates encryption config and applies
 `server/schema.ts` to `DATABASE_URL`.
+
+`npm run worker:todo-digest` is also not a read-only check. It creates and updates digest
+runs and may send personal Feishu messages. Run it only with an authorized database,
+configured Feishu application, and explicit permission to deliver messages.
 
 ## Local Runtime
 
@@ -74,13 +80,18 @@ operator should:
 
 1. Run the read-only verification commands.
 2. Build and publish an immutable amd64 tag.
-3. Set both `originImageName` and the application container `image` in
-   `.sealos/template/index.yaml` to the same verified tag.
-4. Confirm secrets are injected by the platform and are absent from the image and Git.
+3. Set `originImageName`, the application container `image`, and the todo-digest CronJob
+   `image` in `.sealos/template/index.yaml` to the same verified tag.
+4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
+   deployment environment; confirm real credential values are absent from the image and Git.
 5. Deploy to a test environment first, then verify health, sign-in, one authorized
    project read, and any changed integration.
-6. Re-read the live workload image digest; do not infer deployment success from
-   `.sealos/build/build-result.json` or `.sealos/state.json` alone.
+   For Feishu OAuth, re-check the custom application's availability scope is limited to
+   the intended company users; the server treats successful OAuth as internal identity.
+6. Re-read the live application image digest and the CronJob template image. Do not infer
+   deployment success from `.sealos/build/build-result.json` or `.sealos/state.json` alone.
+7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
+   record in an authorized test database before enabling a real user's subscription.
 
 Useful preflight checks:
 
@@ -93,9 +104,11 @@ Publishing an image or mutating a cluster requires explicit authorization.
 
 ## Rollback
 
-Application rollback means restoring the previous immutable amd64 image while retaining
-the current database and all encryption keys. Because startup DDL has no down migration,
-an image rollback is safe only when the previous server can read the current schema.
+Application rollback means restoring the previous immutable amd64 image in both the
+application Deployment and todo-digest CronJob while retaining the current database and
+all encryption keys. Suspend the CronJob first when the incident involves duplicate or
+incorrect digest delivery. Because startup DDL has no down migration, an image rollback
+is safe only when the previous server can read the current schema.
 
 If a release performed an incompatible data change, stop writes and restore the
 pre-release database snapshot together with the previous image. Never run ad hoc reverse
@@ -112,7 +125,15 @@ encrypted record, and the workflow that triggered rollback.
   configured rules file, and allowed object-key roots.
 - Todo image upload fails: verify OSS config, upload size/type, and the URL-signing secret
   or its documented fallback.
-- AI returns 503: configure per-user settings through `/api/ai/settings`; deployment-level
-  `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are not consumed by the current server.
+- AI returns 503: verify `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are all present in the
+  application environment. The URL must be HTTPS and resolve only to public addresses.
+- Password registration returns 403 while AI is enabled: use a current project invite or
+  sign in through Feishu OAuth; existing password accounts can still log in normally.
+- Daily digest is not sent: verify the user subscription is enabled, the user has a bound
+  Feishu `open_id`, `FEISHU_DELIVERY_ENABLED` is not `false`, the CronJob uses the current
+  image, and the latest digest run is not `failed` or `skipped`.
 - Feishu callback returns 401: verify the callback token matches
   `FEISHU_VERIFICATION_TOKEN`; challenge payloads are authenticated too.
+- Unexpected users can complete Feishu OAuth: narrow the company custom application's
+  availability scope before re-enabling sign-in; Veges does not maintain a second tenant
+  or email-domain allowlist.
