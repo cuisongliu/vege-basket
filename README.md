@@ -82,10 +82,11 @@ npm run dev
 ```bash
 npm run lint
 npm run build
+npm test
 git diff --check
 ```
 
-当前仓库没有统一的自动化测试脚本。涉及邀请并发、数据库迁移或历史数据加密的变更，需要在明确授权的隔离数据库中补充集成验证。
+当前 Node 测试覆盖通知策略、API 错误信息脱敏和 OSS Endpoint 规范化。涉及邀请并发、数据库迁移或历史数据加密的变更，需要在明确授权的隔离数据库中补充集成验证。
 
 ## 部署边界
 
