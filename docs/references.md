@@ -33,7 +33,7 @@ Core and AI controls:
 | Variable | Default / behavior |
 | --- | --- |
 | `PORT` | `8787`. |
-| `AI_API_BASE` | Shared OpenAI-compatible HTTPS base URL; required to enable AI. |
+| `AI_API_BASE` | Shared OpenAI-compatible HTTPS public base URL; `198.18.0.0/15` proxy Fake-IP answers require successful public DNS-over-HTTPS verification. |
 | `AI_API_KEY` | Shared provider key; required to enable AI and never returned to the browser. |
 | `AI_MODEL` | Shared provider model name; required to enable AI. |
 | `AI_RATE_LIMIT` | `5` requests per user per in-memory window. |

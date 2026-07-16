@@ -34,7 +34,8 @@ historical product context; current code and these operational docs take precede
   encrypted columns require an idempotent `db:encrypt-existing` path for legacy rows.
   Retain old keys while any stored envelope references them.
 - Do not weaken AI URL validation: HTTPS only, no embedded credentials, public DNS/IPs
-  only, and no redirect following.
+  only, and no redirect following. Pin validated addresses to the outbound AI connection
+  while preserving the original hostname for TLS SNI and the HTTP Host header.
 - Shared AI uses only `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL`. Do not restore
   user-level AI settings. While shared AI is configured, password registration must
   require an active project invite; keep both per-user and instance-wide request limits.

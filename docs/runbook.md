@@ -127,6 +127,11 @@ encrypted record, and the workflow that triggered rollback.
   or its documented fallback.
 - AI returns 503: verify `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are all present in the
   application environment. The URL must be HTTPS and resolve only to public addresses.
+- AI reports that its base URL is not public: inspect the system DNS result. Hostnames
+  mapped by a local proxy to `198.18.0.0/15` are rechecked through public DNS-over-HTTPS;
+  if that verification fails, restore access to `https://cloudflare-dns.com` or exclude
+  the provider hostname from Fake-IP mode. Literal and ordinary private addresses are
+  intentionally rejected.
 - Password registration returns 403 while AI is enabled: use a current project invite or
   sign in through Feishu OAuth; existing password accounts can still log in normally.
 - Daily digest is not sent: verify the user subscription is enabled, the user has a bound

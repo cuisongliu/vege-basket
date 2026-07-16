@@ -63,7 +63,12 @@ External entry points have separate trust boundaries:
   requests.
 - Conversation-analysis webhooks require configured HTTP Basic credentials.
 - AI provider URLs must use HTTPS, contain no credentials, resolve only to public
-  addresses, and are fetched without following redirects.
+  addresses, and are fetched without following redirects. If system DNS returns only
+  `198.18.0.0/15` proxy Fake-IP addresses for a hostname, the provider boundary verifies
+  its A and AAAA records through a fixed public DNS-over-HTTPS endpoint before allowing
+  the request. Every validated result is pinned to the outbound connection while the
+  original hostname remains the TLS SNI and HTTP Host; literal and ordinary private
+  addresses remain forbidden.
 - OSS endpoints must be HTTPS origins. Package object keys must match configured package
   rules or base templates before storage and again before URL signing.
 - Todo image uploads require a user session; reads require an HMAC-signed object key.

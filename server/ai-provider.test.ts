@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { Dispatcher } from 'undici'
 import {
   AiProviderError,
   buildAiChatCompletionsEndpoint,
@@ -11,6 +12,7 @@ import {
 } from './ai-provider.ts'
 
 const publicLookup = async () => [{ address: '203.0.114.10' }]
+type AiRequestInit = Omit<RequestInit, 'dispatcher'> & { dispatcher?: Dispatcher }
 
 test('reads one deployment-level AI configuration without exposing its key in errors', () => {
   assert.equal(isAiProviderConfigured({
@@ -67,6 +69,77 @@ test('normalizes a public HTTPS base URL and rejects unsafe destinations', async
   await assert.rejects(normalizeAiBaseUrl('https://127.0.0.1'), /public network addresses/)
 })
 
+test('accepts proxy fake IPs only after public DNS verification', async () => {
+  let publicLookupCount = 0
+  const fakeIpLookup = async () => [{ address: '198.18.1.200' }]
+  const verifiedPublicLookup = async (hostname: string) => {
+    publicLookupCount += 1
+    assert.equal(hostname, 'aiproxy.usw-1.sealos.io')
+    return [{ address: '47.77.203.165' }]
+  }
+
+  assert.equal(
+    await normalizeAiBaseUrl(
+      'https://aiproxy.usw-1.sealos.io',
+      fakeIpLookup,
+      verifiedPublicLookup,
+    ),
+    'https://aiproxy.usw-1.sealos.io',
+  )
+  assert.equal(publicLookupCount, 1)
+
+  await assert.rejects(
+    normalizeAiBaseUrl(
+      'https://aiproxy.usw-1.sealos.io',
+      fakeIpLookup,
+      async () => [{ address: '10.0.0.2' }],
+    ),
+    /public network addresses/,
+  )
+
+  await assert.rejects(
+    normalizeAiBaseUrl(
+      'https://aiproxy.usw-1.sealos.io',
+      fakeIpLookup,
+      async () => [{ address: '47.77.203.165' }, { address: '10.0.0.2' }],
+    ),
+    /public network addresses/,
+  )
+
+  await assert.rejects(
+    normalizeAiBaseUrl(
+      'https://aiproxy.usw-1.sealos.io',
+      async () => [{ address: '198.18.1.200' }, { address: '10.0.0.2' }],
+      async () => {
+        assert.fail('mixed system DNS answers must not use public DNS verification')
+      },
+    ),
+    /public network addresses/,
+  )
+
+  await assert.rejects(
+    normalizeAiBaseUrl(
+      'https://ai.example.com',
+      async () => [{ address: '10.0.0.2' }],
+      async () => {
+        assert.fail('public DNS verification must not run for ordinary private addresses')
+      },
+    ),
+    /public network addresses/,
+  )
+
+  await assert.rejects(
+    normalizeAiBaseUrl(
+      'https://198.18.1.200',
+      fakeIpLookup,
+      async () => {
+        assert.fail('literal fake IP addresses must not use public DNS verification')
+      },
+    ),
+    /public network addresses/,
+  )
+})
+
 test('recognizes public and non-public IP address ranges', () => {
   assert.equal(isPublicNetworkAddress('8.8.8.8'), true)
   assert.equal(isPublicNetworkAddress('192.168.1.10'), false)
@@ -93,7 +166,7 @@ test('builds common OpenAI-compatible chat completion endpoints', () => {
 
 test('posts a bounded request with redirect disabled and untrusted-content instructions', async () => {
   let target = ''
-  let options: RequestInit | undefined
+  let options: AiRequestInit | undefined
   const responseContent = await requestAiChatCompletion(
     {
       apiKey: 'provider-key',
@@ -110,7 +183,7 @@ test('posts a bounded request with redirect disabled and untrusted-content instr
     {
       fetch: async (input, init) => {
         target = String(input)
-        options = init
+        options = init as AiRequestInit
         return new Response(JSON.stringify({
           choices: [{ message: { content: ' 总结结果 ' } }],
         }), { status: 200 })
@@ -123,6 +196,7 @@ test('posts a bounded request with redirect disabled and untrusted-content instr
   assert.equal(target, 'https://ai.example.com/v1/chat/completions')
   assert.equal(options?.method, 'POST')
   assert.equal(options?.redirect, 'manual')
+  assert.ok(options?.dispatcher)
   assert.equal((options?.headers as Record<string, string>).Authorization, 'Bearer provider-key')
   const body = JSON.parse(String(options?.body)) as {
     messages: Array<{ content: string; role: string }>
