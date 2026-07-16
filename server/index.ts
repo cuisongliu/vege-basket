@@ -17,6 +17,7 @@ import {
 } from './crypto.ts'
 import { pool, query } from './db.ts'
 import { shouldRetirePackageEventNotification } from './notification-policy.ts'
+import { createPackageItemFailureDiagnostic } from './package-item-diagnostics.ts'
 import {
   createPackageItemDownloadLink,
   getOssObject,
@@ -49,6 +50,7 @@ import {
 import type {
   ProjectPackageEventStatus,
   ProjectPackageEventType,
+  ProjectPackageItemInput,
 } from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
 
@@ -3664,31 +3666,116 @@ function buildFeishuInteractiveCard(
     }
   }
 
-  if (candidate.kind === 'package_event_assigned' && target.targetType === 'chat') {
+  if (candidate.kind === 'package_event_assigned') {
+    const eventTitle = sanitizeFeishuMarkdownText((candidate.eventTitle ?? candidate.title) || '未命名交付事件')
+    const projectName = sanitizeFeishuMarkdownText(candidate.projectName || '未命名项目')
+    const eventType = sanitizeFeishuMarkdownText(packageEventTypeLabel(candidate.eventType))
+    const assigneeText = target.targetType === 'chat'
+      ? buildFeishuAtText(
+        candidate.recipientFeishuOpenId,
+        candidate.recipientName,
+        options.mention !== false,
+      )
+      : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
+    const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
+    const headerTitle = target.targetType === 'chat'
+      ? `${operatorName} 新增了交付事件指派`
+      : `${operatorName} 给您新增了交付事件指派`
     return {
       config: {
         wide_screen_mode: true,
       },
       elements: [
         {
-          tag: 'div',
-          text: {
-            content: [
-              `${sanitizeFeishuMarkdownText(candidate.operatorName || '有人')} 新增了 1 个交付事件指派：`,
-              `- 指派给：${buildFeishuAtText(candidate.recipientFeishuOpenId, candidate.recipientName, options.mention !== false)}`,
-              `- 项目名称：${sanitizeFeishuMarkdownText(candidate.projectName)}`,
-              `- 交付事件：${sanitizeFeishuMarkdownText(candidate.eventTitle ?? candidate.title)}`,
-              `- 事件类型：${sanitizeFeishuMarkdownText(packageEventTypeLabel(candidate.eventType))}`,
-              `- 事件状态：${sanitizeFeishuMarkdownText(packageEventStatusLabel(candidate.eventStatus))}`,
-            ].join('\n'),
-            tag: 'lark_md',
-          },
+          tag: 'column_set',
+          flex_mode: 'none',
+          background_style: 'default',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**交付事件**',
+                      eventTitle,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**项目**',
+                      projectName,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          tag: 'hr',
+        },
+        {
+          tag: 'column_set',
+          flex_mode: 'none',
+          background_style: 'default',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+	                  text: {
+	                    content: [
+	                      '**事件类型**',
+	                      eventType,
+	                    ].join('\n'),
+	                    tag: 'lark_md',
+	                  },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    content: [
+                      '**指派给**',
+                      assigneeText,
+                    ].join('\n'),
+                    tag: 'lark_md',
+                  },
+                },
+              ],
+            },
+          ],
         },
       ],
       header: {
         template: 'green',
         title: {
-          content: 'Veges 通知',
+          content: `🚚 ${headerTitle}`,
           tag: 'plain_text',
         },
       },
@@ -5839,7 +5926,9 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', a
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  const items = Array.isArray(request.body.items)
+  const eventId = Number(request.params.eventId)
+  const requestId = crypto.randomUUID()
+  const items: ProjectPackageItemInput[] = Array.isArray(request.body.items)
     ? request.body.items
         .map((item: Record<string, unknown>) => ({
           sourcePackageId: String(item?.sourcePackageId ?? ''),
@@ -5855,17 +5944,81 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', a
         }))
         .filter((item: { objectKey: string; packageName: string }) => item.packageName && item.objectKey)
     : []
-  if (items.some((item: { objectKey: string }) => !isAllowedPackageMarketObjectKey(item.objectKey))) {
-    response.status(400).json({ error: 'Package object key is not allowed' })
+  const rejectedItems = items
+    .map((item, index) => ({ index, item }))
+    .filter(({ item }) => !isAllowedPackageMarketObjectKey(item.objectKey))
+    .map(({ index, item }) => ({
+      index: index + 1,
+      objectKey: item.objectKey,
+      packageName: item.packageName,
+    }))
+  if (rejectedItems.length > 0) {
+    response.status(400).json({
+      error: '安装包对象路径不在允许范围内',
+      code: 'PACKAGE_OBJECT_KEY_NOT_ALLOWED',
+      requestId,
+      details: {
+        projectId,
+        eventId,
+        itemCount: items.length,
+        phase: 'validate_object_keys',
+        rejectedItems,
+      },
+    })
     return
   }
-  await addProjectPackageItems({
-    projectId,
-    eventId: Number(request.params.eventId),
-    createdByUserId: userId,
-    items,
-  })
-  response.status(201).json(await getProjectPackageTimeline(projectId))
+  try {
+    await addProjectPackageItems({
+      projectId,
+      eventId,
+      createdByUserId: userId,
+      items,
+    })
+  } catch (error) {
+    const diagnostic = createPackageItemFailureDiagnostic(error, {
+      projectId,
+      eventId,
+      itemCount: items.length,
+      phase: 'persist_package_items',
+    })
+    console.error('Package item batch persistence failed', {
+      requestId,
+      projectId,
+      eventId,
+      itemCount: items.length,
+      diagnosticCode: diagnostic.body.code,
+      error,
+    })
+    response.status(diagnostic.status).json({
+      ...diagnostic.body,
+      requestId,
+    })
+    return
+  }
+
+  try {
+    response.status(201).json(await getProjectPackageTimeline(projectId))
+  } catch (error) {
+    const diagnostic = createPackageItemFailureDiagnostic(error, {
+      projectId,
+      eventId,
+      itemCount: items.length,
+      phase: 'read_package_timeline',
+    })
+    console.error('Package item batch persisted but timeline refresh failed', {
+      requestId,
+      projectId,
+      eventId,
+      itemCount: items.length,
+      diagnosticCode: diagnostic.body.code,
+      error,
+    })
+    response.status(diagnostic.status).json({
+      ...diagnostic.body,
+      error: '安装包已保存，但交付时间线刷新失败',
+      requestId,
+    })
+  }
 }))
 
 app.delete('/api/projects/:projectId/package-timeline/package-groups/:groupId', asyncHandler(async (request, response) => {

@@ -19,6 +19,8 @@ import {
   Package,
   Plus,
   ShoppingCartSimple,
+  SortAscending,
+  SortDescending,
   Trash,
 } from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
@@ -55,6 +57,12 @@ import {
   type TodoFilterCondition,
   type TodoFilterJoin,
 } from '@/components/todo-filter-builder-dialog'
+import { PackageEventFilterBuilderDialog } from '@/components/package-event-filter-builder-dialog'
+import {
+  matchesPackageEventFilterConditions,
+  type PackageEventFilterCondition,
+  type PackageEventFilterJoin,
+} from '@/components/package-event-filter'
 import type {
   PackageMarketChannel,
   PackageMarketDetail,
@@ -95,7 +103,7 @@ type PackageWorkbenchProps = {
     deliveryDate: string
     title: string
     type: ProjectPackageEventType
-  }) => Promise<void>
+  }) => Promise<ProjectPackageEvent | null>
   onCreateOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -496,6 +504,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventDeliveryDate, setEventDeliveryDate] = useState(getTodayDateStamp)
   const [eventTitle, setEventTitle] = useState('')
   const [eventType, setEventType] = useState<ProjectPackageEventType>('upgrade')
+  const [eventFilterDialogOpen, setEventFilterDialogOpen] = useState(false)
+  const [eventFilterJoin, setEventFilterJoin] = useState<PackageEventFilterJoin>('and')
+  const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
+  const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
   const [operationDialogOpen, setOperationDialogOpen] = useState(false)
   const [operationEditorReady, setOperationEditorReady] = useState(false)
   const [operationTitle, setOperationTitle] = useState('')
@@ -573,13 +585,30 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     return [...options.entries()].map(([id, name]) => ({ id, name }))
   }, [memberships, project.id, project.ownerName, project.ownerUserId])
   const [assignedOnly, setAssignedOnly] = useState(false)
-  const visibleEvents = useMemo(
-    () =>
-      assignedOnly && currentUserId
-        ? events.filter((event) => event.assigneeUserId === currentUserId)
-        : events,
-    [assignedOnly, currentUserId, events],
-  )
+  const activeEventFilterCount = eventFilterConditions.length
+  const visibleEvents = useMemo(() => {
+    const assignedEvents = assignedOnly && currentUserId
+      ? events.filter((event) => event.assigneeUserId === currentUserId)
+      : events
+    return assignedEvents
+      .filter((event) =>
+        matchesPackageEventFilterConditions(event, eventFilterConditions, eventFilterJoin),
+      )
+      .sort((left, right) => {
+        const deliveryDateComparison = getEventDeliveryDate(left)
+          .localeCompare(getEventDeliveryDate(right))
+        const createdAtComparison = left.createdAt.localeCompare(right.createdAt)
+        const comparison = deliveryDateComparison || createdAtComparison || left.id - right.id
+        return eventSortDirection === 'asc' ? comparison : -comparison
+      })
+  }, [
+    assignedOnly,
+    currentUserId,
+    eventFilterConditions,
+    eventFilterJoin,
+    eventSortDirection,
+    events,
+  ])
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
     [todos],
@@ -1121,12 +1150,19 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setBusyAction('event')
     try {
       if (eventDialogMode === 'create') {
-        await onCreateEvent({
+        const createdEvent = await onCreateEvent({
           assigneeUserId,
           deliveryDate: eventDeliveryDate,
           title: eventTitle.trim(),
           type: eventType,
         })
+        if (createdEvent) {
+          setAssignedOnly(false)
+          setEventFilterConditions([])
+          setEventFilterJoin('and')
+          setSelectedEventId(createdEvent.id)
+          setSelectedGroupId(createdEvent.groups[0]?.id ?? null)
+        }
       } else if (selectedEvent) {
         await onUpdateEvent(selectedEvent.id, {
           assigneeUserId,
@@ -1288,6 +1324,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     selectEvent: (eventId: number) => {
       const targetEvent = events.find((event) => event.id === eventId)
       setAssignedOnly(false)
+      setEventFilterConditions([])
+      setEventFilterJoin('and')
       setSelectedEventId(eventId)
       setSelectedGroupId(targetEvent?.groups[0]?.id ?? null)
     },
@@ -1323,8 +1361,26 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         <div className="project-event-layout">
           <aside className="project-events-panel">
             <div className="project-events-head">
-              <div>
+              <div className="project-events-title-row">
                 <h3>交付事件</h3>
+                <Button
+                  aria-label={activeEventFilterCount > 0
+                    ? `筛选交付事件，已应用 ${activeEventFilterCount} 个条件`
+                    : '筛选交付事件'}
+                  aria-pressed={activeEventFilterCount > 0}
+                  className={activeEventFilterCount > 0
+                    ? 'project-events-filter-button active'
+                    : 'project-events-filter-button'}
+                  size="icon-sm"
+                  title={activeEventFilterCount > 0
+                    ? `已应用 ${activeEventFilterCount} 个筛选条件`
+                    : '筛选交付事件'}
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setEventFilterDialogOpen(true)}
+                >
+                  <FunnelSimple size={14} />
+                </Button>
               </div>
               {canManageTimeline ? (
                 <Button className="solid-button" type="button" onClick={openCreateEventDialog}>
@@ -1332,18 +1388,54 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </Button>
               ) : null}
             </div>
-            <label className="project-events-assigned-toggle">
-              <input
-                type="checkbox"
-                checked={assignedOnly}
-                onChange={(event) => setAssignedOnly(event.target.checked)}
-              />
-              <span>只看我被指派的事件</span>
-            </label>
+            <PackageEventFilterBuilderDialog
+              assigneeOptions={memberOptions}
+              conditions={eventFilterConditions}
+              join={eventFilterJoin}
+              open={eventFilterDialogOpen}
+              onOpenChange={setEventFilterDialogOpen}
+              onApply={({ conditions: nextConditions, join: nextJoin }) => {
+                setEventFilterConditions(nextConditions)
+                setEventFilterJoin(nextJoin)
+              }}
+            />
+            <div className="project-events-controls-row">
+              <label className="project-events-assigned-toggle">
+                <input
+                  type="checkbox"
+                  checked={assignedOnly}
+                  onChange={(event) => setAssignedOnly(event.target.checked)}
+                />
+                <span>只看我被指派的事件</span>
+              </label>
+              <Button
+                aria-label={eventSortDirection === 'asc'
+                  ? '当前按交付日期正序排列，点击切换为倒序'
+                  : '当前按交付日期倒序排列，点击切换为正序'}
+                className="project-events-sort-button"
+                size="icon-sm"
+                title={eventSortDirection === 'asc' ? '切换为时间倒序' : '切换为时间正序'}
+                type="button"
+                variant="ghost"
+                onClick={() => setEventSortDirection((current) =>
+                  current === 'asc' ? 'desc' : 'asc'
+                )}
+              >
+                {eventSortDirection === 'asc' ? (
+                  <SortAscending size={14} />
+                ) : (
+                  <SortDescending size={14} />
+                )}
+              </Button>
+            </div>
             <div className="project-event-items">
               {visibleEvents.length === 0 ? (
                 <p className="project-events-empty">
-                  {assignedOnly ? '暂无指派给你的交付事件。' : '暂无交付事件。'}
+                  {activeEventFilterCount > 0
+                    ? '没有符合筛选条件的交付事件。'
+                    : assignedOnly
+                      ? '暂无指派给你的交付事件。'
+                      : '暂无交付事件。'}
                 </p>
               ) : visibleEvents.map((event) => (
                 <div
@@ -1706,8 +1798,17 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           ) : (
             <section className="event-workspace package-assigned-empty-workspace">
               <div className="package-empty-panel">
-                <h3>暂无指派给你的交付事件</h3>
-                <p>关闭「只看我被指派的事件」后，可以查看当前项目的全部交付事件。</p>
+                {activeEventFilterCount > 0 ? (
+                  <>
+                    <h3>没有符合筛选条件的交付事件</h3>
+                    <p>调整或清空筛选条件后，可以继续查看当前项目的交付事件。</p>
+                  </>
+                ) : (
+                  <>
+                    <h3>暂无指派给你的交付事件</h3>
+                    <p>关闭「只看我被指派的事件」后，可以查看当前项目的全部交付事件。</p>
+                  </>
+                )}
               </div>
             </section>
           )}

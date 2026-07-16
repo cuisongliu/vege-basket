@@ -73,6 +73,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
@@ -105,6 +106,7 @@ import {
   fetchAiSettings,
   fetchCurrentUser,
   fetchNotifications,
+  formatApiErrorDiagnostic,
   getAuthToken,
   getProjectInviteLink,
   inviteProjectMember,
@@ -155,6 +157,7 @@ import type {
   Priority,
   Project,
   ProjectModule,
+  ProjectPackageEvent,
   ProjectPackageEventStatus,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
@@ -1641,11 +1644,18 @@ function App() {
     return inviteUrl
   }
 
-  async function addProjectModule(projectId: number) {
-    const name = projectModuleDraft.trim()
-    if (!name) return
+  async function createModule(projectId: number, rawName: string): Promise<ProjectModule | null> {
+    const name = rawName.trim()
+    if (!name) return null
     const data = await runMutation(() => createProjectModule(projectId, { name }))
-    if (!data) return
+    if (!data) return null
+    const project = data.projects.find((item) => item.id === projectId)
+    return project?.modules.find((module) => module.name === name) ?? null
+  }
+
+  async function addProjectModule(projectId: number) {
+    const module = await createModule(projectId, projectModuleDraft)
+    if (!module) return
     setProjectModuleDraft('')
   }
 
@@ -1778,7 +1788,9 @@ function App() {
     title: string
     type: ProjectPackageEventType
   }) {
-    if (!selectedProject) return
+    if (!selectedProject) return null
+    const previousEvents = projectPackageTimelines[selectedProject.id]?.events ?? []
+    const previousEventIds = new Set(previousEvents.map((event) => event.id))
     try {
       const timeline = await createProjectPackageEvent(selectedProject.id, payload)
       setProjectPackageTimelines((current) => ({
@@ -1787,8 +1799,12 @@ function App() {
       }))
       await refreshNotifications()
       setWorkspaceError('')
+      return timeline.events
+        .filter((event) => !previousEventIds.has(event.id))
+        .sort((left, right) => right.id - left.id)[0] ?? null
     } catch {
       setWorkspaceError('安装事件创建失败，请稍后再试。')
+      return null
     }
   }
 
@@ -1864,8 +1880,8 @@ function App() {
         [selectedProject.id]: timeline,
       }))
       setWorkspaceError('')
-    } catch {
-      setWorkspaceError('安装包记录保存失败，请稍后再试。')
+    } catch (error) {
+      setWorkspaceError(formatApiErrorDiagnostic(error, '安装包记录保存失败，请稍后再试。'))
     }
   }
 
@@ -2409,7 +2425,19 @@ ${packageTimelineText}`
 
         {(!workspaceLoaded || workspaceError) && (
           <div className={workspaceError ? 'sync-banner error' : 'sync-banner'}>
-            {workspaceError || '正在从数据库同步工作区...'}
+            <span className="sync-banner-content">
+              {workspaceError || '正在从数据库同步工作区...'}
+            </span>
+            {workspaceError ? (
+              <button
+                className="sync-banner-dismiss"
+                type="button"
+                aria-label="关闭错误提示"
+                onClick={() => setWorkspaceError('')}
+              >
+                <X size={14} />
+              </button>
+            ) : null}
           </div>
         )}
 
@@ -2445,6 +2473,7 @@ ${packageTimelineText}`
             onUpdateJournalVisibility={updateJournalVisibility}
             onDeleteTodo={deleteTodo}
             onCreateTodoNote={addTodoNote}
+            onCreateTodoModule={createModule}
             onUpdateTodo={updateTodoDetails}
             onUpdateTodoNote={editTodoNote}
             onTodoCreateDraftClear={clearTodoCreateDraftState}
@@ -3362,6 +3391,7 @@ function ProjectDetail({
   onToggleJournalRisk,
   onUpdateJournalVisibility,
   onCreateTodoNote,
+  onCreateTodoModule,
   onDeleteTodo,
   onUpdateTodo,
   onUpdateTodoNote,
@@ -3400,7 +3430,7 @@ function ProjectDetail({
     deliveryDate: string
     title: string
     type: ProjectPackageEventType
-  }) => Promise<void>
+  }) => Promise<ProjectPackageEvent | null>
   onCreateInstallOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -3491,6 +3521,7 @@ function ProjectDetail({
     visibility: JournalVisibility,
   ) => void
   onCreateTodoNote: (todoId: number, content: string) => void
+  onCreateTodoModule: (projectId: number, name: string) => Promise<ProjectModule | null>
   onDeleteTodo: (todoId: number) => void
   onUpdateTodo: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
   onUpdateTodoNote: (todoId: number, noteId: number, content: string) => void
@@ -3932,6 +3963,7 @@ function ProjectDetail({
                   mode="create"
                   moduleId={todoModuleId}
                   modules={projectModules}
+                  canCreateModule={isOwner}
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
@@ -3941,6 +3973,7 @@ function ProjectDetail({
                   clearDisabled={!hasTodoCreateDraft}
                   onClear={() => onTodoCreateDraftClear(project.id)}
                   onCreatedAtChange={onTodoCreatedAtChange}
+                  onCreateModule={(name) => onCreateTodoModule(project.id, name)}
                   onDetailChange={onTodoDetailDraftChange}
                   onDueDateChange={onTodoDueDateChange}
                   onModuleIdChange={onTodoModuleChange}
@@ -4233,7 +4266,7 @@ function ProjectModulesPanel({
   }, [page, totalPages])
 
   return (
-    <div className="project-members-panel">
+    <div className="project-modules-panel">
       <form
         className="member-invite-form"
         onSubmit={(event) => {
@@ -5630,25 +5663,88 @@ function ProjectMemberPicker({
 }
 
 function ProjectModulePicker({
+  canCreate = false,
   compact = false,
   disabled = false,
   modules,
   onChange,
+  onCreate,
   value,
 }: {
+  canCreate?: boolean
   compact?: boolean
   disabled?: boolean
   modules: ProjectModule[]
   onChange: (id: number | null) => void
+  onCreate?: (name: string) => Promise<ProjectModule | null>
   value: number | null
 }) {
+  const [selectOpen, setSelectOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [moduleName, setModuleName] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [creating, setCreating] = useState(false)
   const selectedModule = modules.find((module) => module.id === value)
+  const createModuleValue = '__create_module__'
+
+  async function createInlineModule() {
+    const nextName = moduleName.trim()
+    if (!nextName || !onCreate || creating) return
+    const existingModule = modules.find((module) => module.name === nextName)
+    if (existingModule) {
+      onChange(existingModule.id)
+      setModuleName('')
+      setCreateError('')
+      setCreateOpen(false)
+      return
+    }
+
+    setCreating(true)
+    setCreateError('')
+    try {
+      const createdModule = await onCreate(nextName)
+      if (!createdModule) {
+        setCreateError('模块创建失败，请重试。')
+        return
+      }
+      onChange(createdModule.id)
+      setModuleName('')
+      setCreateOpen(false)
+    } catch {
+      setCreateError('模块创建失败，请重试。')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  function selectModule(nextValue: string) {
+    if (nextValue === createModuleValue) {
+      setSelectOpen(false)
+      setCreateOpen(true)
+      setCreateError('')
+      return
+    }
+    onChange(nextValue === 'none' ? null : Number(nextValue))
+    setCreateOpen(false)
+    setModuleName('')
+    setCreateError('')
+  }
+
   return (
-    <span className={compact ? 'member-picker compact' : 'member-picker'}>
+    <span className={compact ? 'member-picker compact' : 'member-picker project-module-picker'}>
       <Select
         disabled={disabled}
+        open={selectOpen}
         value={value ? String(value) : 'none'}
-        onValueChange={(nextValue) => onChange(nextValue === 'none' ? null : Number(nextValue))}
+        onOpenChange={(open) => {
+          setSelectOpen(open)
+          if (open) {
+            setCreateOpen(false)
+            setModuleName('')
+            setCreateError('')
+          }
+        }}
+        onValueChange={selectModule}
       >
         <SelectTrigger aria-label="待办所属模块">
           <SelectValue placeholder="选择模块">
@@ -5656,6 +5752,14 @@ function ProjectModulePicker({
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
+          {canCreate && onCreate ? (
+            <>
+              <SelectItem className="project-module-create-option" value={createModuleValue}>
+                <span><Plus size={15} /> 新增模块</span>
+              </SelectItem>
+              <SelectSeparator />
+            </>
+          ) : null}
           <SelectItem value="none">无模块</SelectItem>
           {modules.map((module) => (
             <SelectItem key={module.id} value={String(module.id)}>
@@ -5664,6 +5768,61 @@ function ProjectModulePicker({
           ))}
         </SelectContent>
       </Select>
+      {canCreate && onCreate && createOpen ? (
+        <span className="project-module-inline-create">
+          <Input
+            autoFocus
+            aria-invalid={Boolean(createError)}
+            aria-label="新模块名称"
+            disabled={creating}
+            maxLength={40}
+            placeholder="输入模块名称"
+            value={moduleName}
+            onChange={(event) => {
+              setModuleName(event.target.value)
+              if (createError) setCreateError('')
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void createInlineModule()
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setCreateOpen(false)
+                setModuleName('')
+                setCreateError('')
+              }
+            }}
+          />
+          <Button
+            className="project-module-inline-submit"
+            type="button"
+            disabled={!moduleName.trim() || creating}
+            onClick={() => void createInlineModule()}
+          >
+            <Plus size={14} />
+            {creating ? '新增中' : '新增'}
+          </Button>
+          <Button
+            className="project-module-inline-cancel"
+            type="button"
+            variant="outline"
+            aria-label="取消新增模块"
+            title="取消新增模块"
+            disabled={creating}
+            onClick={() => {
+              setCreateOpen(false)
+              setModuleName('')
+              setCreateError('')
+            }}
+          >
+            <X size={14} />
+          </Button>
+          {createError ? <small role="alert">{createError}</small> : null}
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -7052,6 +7211,7 @@ function TodoEditorDialog({
   assigneeUserId,
   backLabel = '返回待办列表',
   canEdit = false,
+  canCreateModule = false,
   clearDisabled = false,
   createdAt,
   currentUserId,
@@ -7065,6 +7225,7 @@ function TodoEditorDialog({
   onCancelEdit,
   onClear,
   onCreateTodoNote,
+  onCreateModule,
   onCreatedAtChange,
   onDetailChange,
   onDueDateChange,
@@ -7087,6 +7248,7 @@ function TodoEditorDialog({
   assigneeUserId: number | null
   backLabel?: string
   canEdit?: boolean
+  canCreateModule?: boolean
   clearDisabled?: boolean
   createdAt: string
   currentUserId?: number
@@ -7100,6 +7262,7 @@ function TodoEditorDialog({
   onCancelEdit?: () => void
   onClear?: () => void
   onCreateTodoNote?: (todoId: number, content: string) => void
+  onCreateModule?: (name: string) => Promise<ProjectModule | null>
   onCreatedAtChange: (value: string) => void
   onDetailChange: (value: string) => void
   onDueDateChange: (value: string) => void
@@ -7256,15 +7419,17 @@ function TodoEditorDialog({
                   </SelectContent>
                 </Select>
               </Label>
-              {modules.length > 0 ? (
-                <Label>
-                  所属模块
+              {modules.length > 0 || canCreateModule ? (
+                <div className="todo-editor-field">
+                  <span>所属模块</span>
                   <ProjectModulePicker
+                    canCreate={isCreateMode && canCreateModule}
                     modules={modules}
                     value={moduleId}
                     onChange={onModuleIdChange}
+                    onCreate={onCreateModule}
                   />
-                </Label>
+                </div>
               ) : null}
               <Label>
                 负责人
@@ -7788,7 +7953,11 @@ function TodoList({
                   </small>
                 </button>
                 <span
-                  className={todo.linkedToDeliveryEvent ? 'todo-actions has-delivery' : 'todo-actions'}
+                  className={[
+                    'todo-actions',
+                    todo.linkedToDeliveryEvent ? 'has-delivery' : '',
+                    rowCanManageTodo ? 'can-delete' : '',
+                  ].filter(Boolean).join(' ')}
                   onClick={(event) => event.stopPropagation()}
                 >
                   <span className="todo-content-indicators-slot">
@@ -7842,8 +8011,8 @@ function TodoList({
                       })
                     }
                   />
-                  <span className="todo-delete-slot">
-                    {rowCanManageTodo && (
+                  {rowCanManageTodo ? (
+                    <span className="todo-delete-slot">
                       <ConfirmDialog
                         confirmLabel="删除待办"
                         description={`删除「${todo.title}」后，这条待办将从当前项目移除。`}
@@ -7861,8 +8030,8 @@ function TodoList({
                           </Button>
                         }
                       />
-                    )}
-                  </span>
+                    </span>
+                  ) : null}
                 </span>
                 {todo.moduleName ? (
                   <Badge className="todo-module-badge todo-module-corner">{todo.moduleName}</Badge>

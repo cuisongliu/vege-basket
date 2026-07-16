@@ -113,3 +113,9 @@ Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid in
 401 for missing or invalid authentication, 403 for insufficient role, 404 for absent or
 inaccessible resources, 409 for state conflicts, 415 for unsupported image media, 429
 for AI throttling, and 503 for an unconfigured dependency.
+
+Package-item batch failures additionally return `code`, `requestId`, and `details`.
+`details.phase` is one of `validate_object_keys`, `persist_package_items`, or
+`read_package_timeline`; database failures may include safe `databaseCode`, `constraint`,
+`table`, `column`, and redacted `databaseDetail` fields. Responses never include a stack,
+raw SQL, credentials, encryption material, or unknown exception messages.

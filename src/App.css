@@ -687,12 +687,45 @@ textarea:focus {
   color: var(--brand);
   padding: 8px 10px;
   font-size: 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .sync-banner.error {
   border-color: color-mix(in oklch, var(--destructive) 20%, var(--border));
   background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
   color: var(--destructive);
+}
+
+.sync-banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.sync-banner.error .sync-banner-content {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.sync-banner-dismiss {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px -4px -2px 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  opacity: 0.72;
+}
+
+.sync-banner-dismiss:hover {
+  background: color-mix(in oklch, currentColor 10%, transparent);
+  opacity: 1;
 }
 
 .empty-workspace {
@@ -1737,6 +1770,7 @@ textarea:focus {
 .todo-editor-main > .todo-created-date-row,
 .todo-editor-main > .todo-editor-detail-field,
 .todo-editor-inline-grid > label,
+.todo-editor-inline-grid > .todo-editor-field,
 .todo-editor-inline-grid > .todo-created-date-row {
   min-width: 0;
   display: grid;
@@ -1754,12 +1788,75 @@ textarea:focus {
 }
 
 .todo-editor-inline-grid > label,
+.todo-editor-inline-grid > .todo-editor-field,
 .todo-editor-inline-grid > .todo-created-date-row {
   grid-column: span 2;
 }
 
 .todo-editor-inline-grid > .todo-inline-field-half {
   grid-column: span 1;
+}
+
+.todo-editor-field > span:first-child {
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.member-picker.project-module-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.project-module-create-option {
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.project-module-create-option > span:last-child,
+.project-module-create-option > span:last-child > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.project-module-inline-create {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  gap: 6px;
+  align-items: center;
+}
+
+.project-module-inline-create [data-slot='input'],
+.project-module-inline-create [data-slot='button'] {
+  height: 32px;
+  min-height: 32px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.project-module-inline-create [data-slot='input'] {
+  min-width: 0;
+  background: var(--control-bg);
+}
+
+.project-module-inline-submit {
+  padding-inline: 10px;
+}
+
+.project-module-inline-cancel {
+  width: 32px;
+  padding: 0;
+}
+
+.project-module-inline-create small {
+  grid-column: 1 / -1;
+  color: var(--destructive);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .todo-editor-inline-grid .member-picker,
@@ -2592,13 +2689,21 @@ textarea:focus {
 
 .todo-actions {
   display: grid;
-  grid-template-columns: 52px 28px 82px 24px;
+  grid-template-columns: 52px 28px 82px;
   align-items: center;
   gap: 6px;
   justify-self: end;
 }
 
+.todo-actions.can-delete {
+  grid-template-columns: 52px 28px 82px 24px;
+}
+
 .todo-actions.has-delivery {
+  grid-template-columns: 52px 40px 28px 82px;
+}
+
+.todo-actions.has-delivery.can-delete {
   grid-template-columns: 52px 40px 28px 82px 24px;
 }
 
@@ -3240,6 +3345,7 @@ textarea:focus {
   }
 
   .todo-editor-inline-grid > label,
+  .todo-editor-inline-grid > .todo-editor-field,
   .todo-editor-inline-grid > .todo-created-date-row,
   .todo-editor-inline-grid > .todo-inline-field-half {
     grid-column: span 1;
@@ -3252,6 +3358,7 @@ textarea:focus {
   }
 
   .todo-editor-inline-grid > label,
+  .todo-editor-inline-grid > .todo-editor-field,
   .todo-editor-inline-grid > .todo-created-date-row,
   .todo-editor-inline-grid > .todo-inline-field-half {
     grid-column: auto;
@@ -3717,6 +3824,20 @@ textarea:focus {
   gap: 12px;
   align-items: stretch;
   overflow: hidden;
+}
+
+.project-modules-panel {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.project-modules-panel [data-slot='input']:focus,
+.project-modules-panel [data-slot='input']:focus-visible {
+  border-color: var(--line);
+  box-shadow: none;
+  outline: none;
 }
 
 .project-members-dialog {
@@ -4761,6 +4882,31 @@ textarea:focus {
   padding: 20px;
   max-height: 100%;
   overflow-y: auto;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.project-events-panel:hover,
+.project-events-panel:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
+}
+
+.project-events-panel::-webkit-scrollbar {
+  width: 5px;
+}
+
+.project-events-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.project-events-panel::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.project-events-panel:hover::-webkit-scrollbar-thumb,
+.project-events-panel:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .project-events-head {
@@ -4771,12 +4917,61 @@ textarea:focus {
   margin-bottom: 18px;
 }
 
+.project-events-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-events-filter-button,
+.project-events-sort-button {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 6px;
+  color: var(--muted-text);
+  transition-property: color, background-color, transform;
+  transition-duration: 140ms;
+  transition-timing-function: ease;
+}
+
+.project-events-filter-button.active {
+  background: color-mix(in oklch, var(--brand) 10%, var(--surface));
+  color: var(--brand);
+}
+
+.project-events-filter-button.active::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.project-events-filter-button:active,
+.project-events-sort-button:active {
+  transform: scale(0.96);
+}
+
+.project-events-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
 .project-events-assigned-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   width: fit-content;
-  margin: 0 0 14px;
+  margin: 0;
   color: var(--muted-text);
   font-size: 13px;
   line-height: 1.4;

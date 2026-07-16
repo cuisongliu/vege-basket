@@ -19,6 +19,8 @@ import type {
   Todo,
   TodoNote,
 } from './types'
+import { ApiError } from './api-error'
+export { ApiError, formatApiErrorDiagnostic } from './api-error'
 
 export type WorkspaceData = {
   inbox: InboxItem[]
@@ -73,6 +75,12 @@ export type TodoImageUploadResponse = {
   objectKey: string
 }
 
+function apiErrorMessage(body: unknown, fallback: string) {
+  if (!body || typeof body !== 'object' || !('error' in body)) return fallback
+  const error = (body as { error?: unknown }).error
+  return typeof error === 'string' && error.trim() ? error.trim() : fallback
+}
+
 const tokenStorageKey = 'veges.authToken'
 let authToken =
   typeof window === 'undefined' ? '' : localStorage.getItem(tokenStorageKey) ?? ''
@@ -103,13 +111,20 @@ async function request<T>(path: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const fallbackMessage = `Request failed: ${response.status}`
-    let data: { error?: string }
+    const responseText = await response.text()
+    let responseBody: unknown = responseText
     try {
-      data = await response.json() as { error?: string }
-    } catch (error) {
-      throw new Error(fallbackMessage, { cause: error })
+      responseBody = responseText ? JSON.parse(responseText) : ''
+    } catch {
+      // Keep non-JSON response text for diagnostics.
     }
-    throw new Error(data.error || fallbackMessage)
+    throw new ApiError(apiErrorMessage(responseBody, fallbackMessage), {
+      method: String(options.method ?? 'GET').toUpperCase(),
+      path,
+      responseBody,
+      status: response.status,
+      statusText: response.statusText,
+    })
   }
 
   return response.json() as Promise<T>
