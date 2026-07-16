@@ -39,6 +39,9 @@ historical product context; current code and these operational docs take precede
 - Shared AI uses only `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL`. Do not restore
   user-level AI settings. While shared AI is configured, password registration must
   require an active project invite; keep both per-user and instance-wide request limits.
+- Project-scoped AI conversations must reset when the selected project changes, and every
+  in-flight response from the previous project must be invalidated before it can update
+  messages or saved output. Never combine one project's chat history with another project ID.
 - Do not sign or fetch arbitrary OSS object keys. Package keys must match configured
   rules/templates; todo images use their dedicated prefix and HMAC signature.
 - Feishu event challenges and events require the verification token. Conversation

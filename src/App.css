@@ -9613,3 +9613,866 @@ textarea:focus {
     white-space: normal;
   }
 }
+
+/* Veges AI uses one continuous workbench instead of stacked feature cards. */
+.veges-ai-layout {
+  --ai-canvas: color-mix(in oklch, var(--line) 42%, var(--surface));
+  width: min(100%, var(--content-max));
+  height: calc(100dvh - 118px);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 370px);
+  grid-template-rows: minmax(0, 1fr);
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.veges-ai-layout.is-document-fullscreen {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.veges-ai-layout.is-document-fullscreen .veges-ai-workspace {
+  display: none;
+}
+
+.veges-ai-mobile-switch {
+  display: none;
+}
+
+.veges-ai-workspace,
+.veges-ai-artifacts {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.veges-ai-workspace {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+}
+
+.veges-ai-header {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 20px 12px;
+}
+
+.veges-ai-mark {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--brand);
+  color: var(--brand-foreground);
+}
+
+.veges-ai-header h3,
+.veges-ai-header p {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.veges-ai-header h3 {
+  color: var(--strong);
+  font-size: 17px;
+  line-height: 1.2;
+  font-weight: 720;
+}
+
+.veges-ai-header p {
+  margin-top: 3px;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 520;
+}
+
+.veges-ai-header .ai-status-badge {
+  max-width: 180px;
+  grid-column: auto;
+  justify-self: end;
+}
+
+.veges-ai-tool-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 20px 12px;
+  border-radius: 8px;
+  background: var(--ai-canvas);
+  padding: 4px;
+}
+
+.veges-ai-tool-switcher button,
+.ai-agent-switcher button,
+.summary-period-switcher button,
+.veges-ai-mobile-switch button {
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.veges-ai-tool-switcher button {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.veges-ai-tool-switcher button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.veges-ai-tool-switcher button[aria-pressed='true']:disabled {
+  opacity: 1;
+}
+
+.veges-ai-tool-switcher button[aria-pressed='true'],
+.ai-agent-switcher button[aria-pressed='true'],
+.summary-period-switcher button[aria-pressed='true'],
+.veges-ai-mobile-switch button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--strong);
+  box-shadow: 0 1px 3px hsl(160 30% 10% / 0.11);
+}
+
+.veges-ai-tool-switcher button:active,
+.ai-agent-switcher button:active,
+.summary-period-switcher button:active,
+.veges-ai-mobile-switch button:active,
+.veges-ai-workspace button:active,
+.veges-ai-artifacts button:active {
+  transform: scale(0.97);
+}
+
+.veges-ai-tool-switcher button:focus-visible,
+.ai-agent-switcher button:focus-visible,
+.summary-period-switcher button:focus-visible,
+.veges-ai-mobile-switch button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.veges-ai-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0 20px 12px;
+  border: 1px solid color-mix(in oklch, var(--brand) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--brand) 8%, var(--surface));
+  color: var(--brand);
+  padding: 10px 11px;
+}
+
+.veges-ai-notice.is-error {
+  border-color: color-mix(in oklch, var(--destructive) 30%, var(--line));
+  background: color-mix(in oklch, var(--destructive) 7%, var(--surface));
+  color: var(--destructive);
+}
+
+.veges-ai-notice div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.veges-ai-notice strong,
+.veges-ai-notice span {
+  color: inherit;
+  letter-spacing: 0;
+}
+
+.veges-ai-notice strong {
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 680;
+}
+
+.veges-ai-notice span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.veges-ai-notice button {
+  color: var(--strong);
+  background: var(--surface);
+}
+
+.veges-ai-stage {
+  grid-row: 4;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--line);
+  padding: 18px 20px 20px;
+}
+
+.veges-ai-stage > [hidden] {
+  display: none !important;
+}
+
+.veges-ai-tool-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+}
+
+.veges-ai-stage .ai-chat-workflow {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(180px, 1fr) auto auto;
+  gap: 12px;
+  padding: 0;
+}
+
+.ai-chat-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-agent-switcher,
+.summary-period-switcher {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  border-radius: 8px;
+  background: var(--ai-canvas);
+  padding: 3px;
+}
+
+.ai-agent-switcher {
+  width: min(100%, 240px);
+}
+
+.ai-agent-switcher button,
+.summary-period-switcher button {
+  height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.ai-agent-switcher button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ai-agent-switcher button[aria-pressed='true']:disabled {
+  opacity: 1;
+}
+
+.ai-project-context {
+  min-width: min(100%, 280px);
+  display: grid;
+  grid-template-columns: auto minmax(150px, 220px);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-text);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.ai-project-context [data-slot='select-trigger'] {
+  background: var(--surface);
+}
+
+.veges-ai-stage .ai-chat-header {
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  border-bottom: 0;
+  padding: 2px 0 0;
+}
+
+.veges-ai-stage .ai-chat-header .agent-orb,
+.veges-ai-stage .ai-chat-header .agent-new-chat-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+}
+
+.veges-ai-stage .ai-chat-header .agent-orb {
+  border: 0;
+  background: color-mix(in oklch, var(--brand) 10%, var(--surface));
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.veges-ai-stage .ai-chat-header .agent-new-chat-button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.veges-ai-stage .ai-chat-header h4 {
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.veges-ai-stage .agent-messages {
+  min-height: 180px;
+  max-height: none;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--ai-canvas);
+  padding: 16px;
+}
+
+.veges-ai-stage .ai-chat-empty {
+  align-self: center;
+  justify-self: center;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  color: var(--muted-text);
+  text-align: center;
+}
+
+.veges-ai-stage .ai-chat-empty strong {
+  margin-top: 3px;
+  color: var(--strong);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.veges-ai-stage .ai-chat-empty span {
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.veges-ai-stage .agent-message {
+  max-width: min(82%, 620px);
+}
+
+.veges-ai-stage .agent-message-content {
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.veges-ai-stage .agent-message.user .agent-message-content {
+  background: var(--brand);
+}
+
+.veges-ai-stage .agent-message-content .markdown-preview p,
+.veges-ai-stage .agent-message-content .markdown-preview li {
+  font-size: 14px;
+  line-height: 1.65;
+  padding: 0;
+}
+
+.veges-ai-stage .agent-message-footer {
+  margin-top: 5px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.veges-ai-stage .agent-summary-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.veges-ai-stage .agent-composer {
+  grid-template-columns: minmax(0, 1fr) 34px;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 7px 8px 7px 12px;
+}
+
+.veges-ai-stage .agent-composer textarea {
+  min-height: 46px;
+  max-height: 120px;
+  padding: 6px 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.veges-ai-stage .agent-send-button {
+  border-radius: 7px;
+}
+
+.veges-ai-stage .summary-generation-workflow,
+.veges-ai-stage .todo-proposal-workflow {
+  width: min(100%, 680px);
+  align-self: start;
+  justify-self: center;
+  border: 0;
+  padding: 14px 0 0;
+}
+
+.veges-ai-stage .summary-generation-workflow {
+  display: grid;
+  gap: 20px;
+}
+
+.veges-ai-stage .summary-generation-heading,
+.veges-ai-stage .todo-proposal-heading {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.veges-ai-stage .summary-generation-heading > span,
+.veges-ai-stage .todo-proposal-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--brand) 10%, var(--surface));
+  color: var(--brand);
+}
+
+.veges-ai-stage .summary-generation-heading h4,
+.veges-ai-stage .todo-proposal-heading h4 {
+  color: var(--strong);
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.veges-ai-stage .summary-generation-heading p,
+.veges-ai-stage .todo-proposal-heading p {
+  max-width: 62ch;
+  margin-top: 4px;
+  color: var(--muted-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.summary-generation-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.summary-generation-form > label,
+.summary-period-field {
+  display: grid;
+  gap: 7px;
+  color: var(--strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.summary-period-switcher {
+  width: 100%;
+}
+
+.summary-period-switcher button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.summary-generate-button {
+  width: fit-content;
+  min-width: 132px;
+  height: 34px;
+  border-radius: 6px;
+  padding: 0 12px;
+}
+
+.veges-ai-stage .todo-proposal-workflow {
+  gap: 16px;
+}
+
+.veges-ai-stage .todo-proposal-upload {
+  min-height: 92px;
+  border: 1px dashed color-mix(in oklch, var(--brand) 34%, var(--line));
+  border-radius: 8px;
+  background: var(--ai-canvas);
+  color: var(--strong);
+}
+
+.veges-ai-stage .todo-proposal-upload:disabled {
+  cursor: not-allowed;
+}
+
+.veges-ai-artifacts {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  gap: 0;
+  border-left: 1px solid var(--line);
+  padding: 0;
+  overflow: hidden;
+}
+
+.veges-ai-artifacts.is-fullscreen {
+  border-left: 0;
+}
+
+.veges-ai-artifacts-header {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px 10px 15px;
+}
+
+.veges-ai-artifacts-header > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--strong);
+}
+
+.veges-ai-artifacts-header h3 {
+  margin: 0;
+  color: var(--strong);
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 680;
+}
+
+.veges-ai-artifacts-header span {
+  min-width: 20px;
+  border-radius: 999px;
+  background: var(--ai-canvas);
+  color: var(--muted-text);
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.veges-ai-artifacts-header button {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  color: var(--muted-text);
+}
+
+.veges-ai-artifacts .summary-doc-list {
+  min-height: 0;
+  display: block;
+  overflow: auto;
+  border-top: 0;
+  padding: 6px 8px 10px;
+}
+
+.veges-ai-artifacts .summary-doc-item {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 9px 6px;
+}
+
+.veges-ai-artifacts .summary-doc-item-icon {
+  grid-column: 1;
+  grid-row: 1;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--ai-canvas);
+  color: var(--brand);
+}
+
+.veges-ai-artifacts .summary-doc-item-copy {
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.veges-ai-artifacts .summary-doc-item-copy strong,
+.veges-ai-artifacts .summary-doc-item-copy small {
+  grid-column: auto;
+  grid-row: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.veges-ai-artifacts .summary-doc-item-copy strong {
+  color: var(--strong);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+
+.veges-ai-artifacts .summary-doc-item-copy small {
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.veges-ai-artifacts .summary-doc-item time {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
+  color: var(--muted-text);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.veges-ai-artifacts-empty {
+  min-height: 240px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 7px;
+  color: var(--muted-text);
+  padding: 28px 20px;
+  text-align: center;
+}
+
+.veges-ai-artifacts-empty strong {
+  margin-top: 4px;
+  color: var(--strong);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.veges-ai-artifacts-empty span {
+  max-width: 26ch;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.veges-ai-artifacts .summary-doc-detail {
+  grid-row: 1 / -1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.veges-ai-artifacts .summary-doc-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.veges-ai-artifacts .summary-back-button {
+  width: fit-content;
+  flex: 0 0 auto;
+}
+
+.veges-ai-artifacts.is-fullscreen .summary-doc-detail {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  padding: clamp(18px, 2.2vw, 34px);
+}
+
+.veges-ai-artifacts .summary-doc-header {
+  background: transparent;
+}
+
+@media (hover: hover) {
+  .veges-ai-tool-switcher button:hover,
+  .ai-agent-switcher button:hover,
+  .summary-period-switcher button:hover,
+  .veges-ai-mobile-switch button:hover {
+    color: var(--strong);
+  }
+
+  .veges-ai-stage .todo-proposal-upload:not(:disabled):hover,
+  .veges-ai-artifacts .summary-doc-item:hover {
+    background: color-mix(in oklch, var(--brand) 6%, var(--surface));
+  }
+
+  :root:not(.dark) .veges-ai-artifacts .summary-doc-item:hover {
+    background: color-mix(in oklch, var(--brand) 6%, var(--surface));
+  }
+}
+
+@media (max-height: 900px) and (min-width: 1101px) {
+  .veges-ai-layout {
+    height: calc(100dvh - 104px);
+  }
+}
+
+@media (max-width: 1100px) {
+  .veges-ai-layout {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .veges-ai-mobile-switch {
+    grid-column: 1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+    border-bottom: 1px solid var(--line);
+    background: var(--ai-canvas);
+    padding: 4px;
+  }
+
+  .veges-ai-mobile-switch button {
+    min-height: 36px;
+  }
+
+  .veges-ai-mobile-switch button span {
+    display: inline-block;
+    min-width: 18px;
+    margin-left: 4px;
+    border-radius: 999px;
+    background: var(--line);
+    padding: 1px 5px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .veges-ai-workspace,
+  .veges-ai-artifacts {
+    height: min(720px, calc(100dvh - 150px));
+    min-height: 540px;
+    border-left: 0;
+  }
+
+  .veges-ai-workspace.is-mobile-hidden,
+  .veges-ai-artifacts.is-mobile-hidden {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .veges-ai-header {
+    min-height: 62px;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    padding: 12px 14px 10px;
+  }
+
+  .veges-ai-header .ai-status-badge {
+    max-width: 104px;
+  }
+
+  .veges-ai-tool-switcher {
+    margin: 0 14px 10px;
+  }
+
+  .veges-ai-tool-switcher button {
+    height: 34px;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .veges-ai-notice {
+    grid-template-columns: auto minmax(0, 1fr);
+    margin: 0 14px 10px;
+  }
+
+  .veges-ai-notice button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .veges-ai-stage {
+    padding: 14px;
+  }
+
+  .ai-chat-toolbar {
+    display: grid;
+    align-items: stretch;
+  }
+
+  .ai-agent-switcher {
+    width: 100%;
+  }
+
+  .ai-project-context {
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .veges-ai-stage .agent-messages {
+    padding: 12px;
+  }
+
+  .veges-ai-stage .agent-message {
+    max-width: 94%;
+  }
+
+  .summary-generation-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .veges-ai-stage .summary-generation-workflow,
+  .veges-ai-stage .todo-proposal-workflow {
+    padding-top: 4px;
+  }
+}
+
+@media (max-width: 390px) {
+  .veges-ai-tool-switcher button svg {
+    display: none;
+  }
+
+  .veges-ai-header .ai-status-badge {
+    max-width: 88px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .veges-ai-tool-switcher button,
+  .ai-agent-switcher button,
+  .summary-period-switcher button,
+  .veges-ai-mobile-switch button {
+    transition-duration: 0.01ms;
+  }
+
+  .veges-ai-workspace button,
+  .veges-ai-artifacts button {
+    transition-duration: 0.01ms !important;
+  }
+}

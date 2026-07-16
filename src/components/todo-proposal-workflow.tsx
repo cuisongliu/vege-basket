@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import {
   Check,
   FileMd,
@@ -68,11 +68,15 @@ function confidenceLabel(value: number) {
 }
 
 export function TodoProposalWorkflow({
+  disabled = false,
   memberships,
+  onBusyChange,
   onWorkspace,
   projects,
 }: {
+  disabled?: boolean
   memberships: ProjectMembership[]
+  onBusyChange?: (busy: boolean) => void
   onWorkspace: (workspace: WorkspaceData) => void
   projects: Project[]
 }) {
@@ -87,6 +91,12 @@ export function TodoProposalWorkflow({
   const [error, setError] = useState('')
   const selectedCount = selectedIds.size
   const allSelected = proposals.length > 0 && selectedCount === proposals.length
+
+  useEffect(() => {
+    onBusyChange?.(generating || confirming)
+  }, [confirming, generating, onBusyChange])
+
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange])
 
   const invalidSelectedProposal = useMemo(
     () => proposals.find((proposal) => selectedIds.has(proposal.clientId) && (
@@ -209,7 +219,7 @@ export function TodoProposalWorkflow({
         />
         <Button
           className="ghost-button todo-proposal-upload"
-          disabled={generating}
+          disabled={disabled || generating}
           type="button"
           variant="outline"
           onClick={() => fileInputRef.current?.click()}
@@ -224,11 +234,15 @@ export function TodoProposalWorkflow({
             继续审核 {proposals.length} 项提案
           </Button>
         ) : null}
-        {error && !reviewOpen ? <p className="form-error">{error}</p> : null}
+        {error && !reviewOpen ? <p className="form-error" role="alert">{error}</p> : null}
       </section>
 
       <Dialog open={reviewOpen} onOpenChange={(open) => !confirming && setReviewOpen(open)}>
-        <DialogContent className="todo-proposal-dialog">
+        <DialogContent
+          aria-busy={confirming}
+          className="todo-proposal-dialog"
+          showCloseButton={!confirming}
+        >
           <DialogHeader>
             <DialogTitle>确认 AI 待办提案</DialogTitle>
             <DialogDescription>
@@ -239,6 +253,7 @@ export function TodoProposalWorkflow({
           <div className="todo-proposal-review-toolbar">
             <span>已选择 {selectedCount} / {proposals.length}</span>
             <Button
+              disabled={confirming}
               size="sm"
               type="button"
               variant="ghost"
@@ -264,6 +279,7 @@ export function TodoProposalWorkflow({
                     <label className="todo-proposal-selection">
                       <input
                         checked={selected}
+                        disabled={confirming}
                         type="checkbox"
                         onChange={() => toggleProposal(proposal.clientId)}
                       />
@@ -277,6 +293,7 @@ export function TodoProposalWorkflow({
                     <Label>
                       项目
                       <Select
+                        disabled={confirming}
                         value={proposal.projectId ? String(proposal.projectId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           assigneeUserId: null,
@@ -294,7 +311,7 @@ export function TodoProposalWorkflow({
                     <Label>
                       模块
                       <Select
-                        disabled={!project}
+                        disabled={confirming || !project}
                         value={proposal.moduleId ? String(proposal.moduleId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           moduleId: value === 'none' ? null : Number(value),
@@ -310,7 +327,7 @@ export function TodoProposalWorkflow({
                     <Label>
                       负责人
                       <Select
-                        disabled={!project}
+                        disabled={confirming || !project}
                         value={proposal.assigneeUserId ? String(proposal.assigneeUserId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           assigneeUserId: value === 'none' ? null : Number(value),
@@ -326,6 +343,7 @@ export function TodoProposalWorkflow({
                     <Label>
                       截止日期
                       <Input
+                        disabled={confirming}
                         type="date"
                         value={proposal.dueDate ?? ''}
                         onChange={(event) => updateProposal(proposal.clientId, { dueDate: event.target.value || null })}
@@ -334,6 +352,7 @@ export function TodoProposalWorkflow({
                     <Label>
                       优先级
                       <Select
+                        disabled={confirming}
                         value={proposal.priority}
                         onValueChange={(value) => updateProposal(proposal.clientId, { priority: value as Priority })}
                       >
@@ -346,6 +365,7 @@ export function TodoProposalWorkflow({
                     <Label className="todo-proposal-title-field">
                       标题
                       <Input
+                        disabled={confirming}
                         maxLength={160}
                         value={proposal.title}
                         onChange={(event) => updateProposal(proposal.clientId, { title: event.target.value })}
@@ -354,6 +374,7 @@ export function TodoProposalWorkflow({
                     <Label className="todo-proposal-detail-field">
                       详情
                       <Textarea
+                        disabled={confirming}
                         rows={3}
                         value={proposal.detail}
                         onChange={(event) => updateProposal(proposal.clientId, { detail: event.target.value })}

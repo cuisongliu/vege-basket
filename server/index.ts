@@ -480,7 +480,7 @@ function extractCoreSummaryFromAnalysis(value: string) {
 
 function buildFeishuInformationSummary(analysis: string) {
   const summary = stripMarkdownForSummary(extractCoreSummaryFromAnalysis(analysis))
-  if (!summary) return '飞书对话分析已完成，完整报告已保存到 AI 总结文档。'
+  if (!summary) return '飞书对话分析已完成，完整报告已保存到 Veges AI 的 AI 产物。'
   return summary.length > 200 ? `${summary.slice(0, 197)}...` : summary
 }
 
@@ -1642,7 +1642,7 @@ async function analyzeAndSaveFeishuConversation(messageId: string, messageType: 
     [
       '> AI 分析中...',
       '',
-      '正在分析飞书转发的群聊内容，完成后这里会更新为不超过 200 字的信息摘要；完整报告会保存到 AI 总结文档。',
+      '正在分析飞书转发的群聊内容，完成后这里会更新为不超过 200 字的信息摘要；完整报告会保存到 Veges AI 的 AI 产物。',
     ].join('\n'),
   )
   console.log('Feishu analysis pending draft saved', { contentLength: conversationText.length, draftId, title, userId })
@@ -6621,7 +6621,7 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
   response.status(201).json({
     ok: true,
     title,
-    savedTo: '草稿箱待归档内容 + AI总结文档',
+    savedTo: '草稿箱待归档内容 + Veges AI 的 AI 产物',
   })
 }))
 
