@@ -10485,13 +10485,13 @@ textarea:focus {
 }
 
 .veges-ai-artifacts-header {
-  min-height: 54px;
+  min-height: 50px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--line);
-  padding: 9px 10px 9px 15px;
+  padding: 7px 10px 7px 15px;
 }
 
 .veges-ai-artifacts-header > div:first-child {
