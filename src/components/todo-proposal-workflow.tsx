@@ -76,7 +76,9 @@ function confidenceLabel(value: number) {
 }
 
 export type TodoProposalWorkflowHandle = {
+  analyzeContent: (content: string, fileName?: string) => Promise<boolean>
   openFilePicker: () => void
+  reset: () => void
 }
 
 type TodoProposalWorkflowProps = {
@@ -100,6 +102,8 @@ export const TodoProposalWorkflow = forwardRef<
   showLauncher = true,
 }, ref) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const analysisInFlightRef = useRef(false)
+  const analysisRequestIdRef = useRef(0)
   const [fileName, setFileName] = useState('')
   const [batchId, setBatchId] = useState<number | null>(null)
   const [proposals, setProposals] = useState<EditableTodoProposal[]>([])
@@ -113,10 +117,12 @@ export const TodoProposalWorkflow = forwardRef<
   const showWorkflowStatus = showLauncher || Boolean(fileName || proposals.length || error)
 
   useImperativeHandle(ref, () => ({
+    analyzeContent,
     openFilePicker() {
-      if (!disabled && !generating) fileInputRef.current?.click()
+      if (!disabled && !analysisInFlightRef.current) fileInputRef.current?.click()
     },
-  }), [disabled, generating])
+    reset: resetWorkflow,
+  }))
 
   useEffect(() => {
     onBusyChange?.(generating || confirming)
@@ -131,25 +137,48 @@ export const TodoProposalWorkflow = forwardRef<
     [proposals, selectedIds],
   )
 
-  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    if (!file.name.toLowerCase().endsWith('.md')) {
-      setError('只支持 Markdown 文件，请选择扩展名为 .md 的文件。')
-      return
-    }
+  function clearProposalReviewState() {
+    setBatchId(null)
+    setProposals([])
+    setSelectedIds(new Set())
+    setReviewOpen(false)
+  }
 
-    setGenerating(true)
+  function resetWorkflow() {
+    analysisRequestIdRef.current += 1
+    analysisInFlightRef.current = false
+    setGenerating(false)
+    clearProposalReviewState()
+    setFileName('')
     setError('')
-    setFileName(file.name)
+  }
+
+  async function runAnalysis(
+    contentSource: string | Promise<string>,
+    requestedFileName = '输入内容.md',
+  ): Promise<boolean> {
+    if (disabled || analysisInFlightRef.current) return false
+
+    const trimmedFileName = requestedFileName.trim() || '输入内容.md'
+    const markdownFileName = trimmedFileName.toLowerCase().endsWith('.md')
+      ? trimmedFileName
+      : `${trimmedFileName}.md`
+    const requestId = analysisRequestIdRef.current + 1
+    analysisRequestIdRef.current = requestId
+    analysisInFlightRef.current = true
+    clearProposalReviewState()
+    setError('')
+    setFileName(markdownFileName)
+    setGenerating(true)
     try {
-      const content = await file.text()
+      const content = await contentSource
+      if (requestId !== analysisRequestIdRef.current) return false
       if (!content.trim()) {
         setError('这个 Markdown 文件没有可分析的内容。')
-        return
+        return false
       }
-      const result = await createTodoProposals({ content, fileName: file.name })
+      const result = await createTodoProposals({ content, fileName: markdownFileName })
+      if (requestId !== analysisRequestIdRef.current) return false
       const editable = result.proposals.map((proposal, index) => ({
         ...proposal,
         clientId: `${result.batchId}-${index}`,
@@ -158,15 +187,36 @@ export const TodoProposalWorkflow = forwardRef<
       setProposals(editable)
       setSelectedIds(new Set(editable.map((proposal) => proposal.clientId)))
       setReviewOpen(true)
+      return true
     } catch (generateError) {
+      if (requestId !== analysisRequestIdRef.current) return false
       setError(
         generateError instanceof Error && generateError.message
           ? generateError.message
           : 'AI 无法分析这个 Markdown 文件，请稍后重试。',
       )
+      return false
     } finally {
-      setGenerating(false)
+      if (requestId === analysisRequestIdRef.current) {
+        analysisInFlightRef.current = false
+        setGenerating(false)
+      }
     }
+  }
+
+  function analyzeContent(content: string, requestedFileName?: string) {
+    return runAnalysis(content, requestedFileName)
+  }
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      setError('只支持 Markdown 文件，请选择扩展名为 .md 的文件。')
+      return
+    }
+    await runAnalysis(file.text(), file.name)
   }
 
   function updateProposal(clientId: string, patch: Partial<TodoProposal>) {
@@ -263,7 +313,11 @@ export const TodoProposalWorkflow = forwardRef<
           ) : null}
           {fileName ? <small className="todo-proposal-file-name">{fileName}</small> : null}
           {proposals.length > 0 && !reviewOpen ? (
-            <Button type="button" onClick={() => setReviewOpen(true)}>
+            <Button
+              disabled={generating || confirming}
+              type="button"
+              onClick={() => setReviewOpen(true)}
+            >
               <Check size={16} weight="bold" />
               继续审核 {proposals.length} 项提案
             </Button>

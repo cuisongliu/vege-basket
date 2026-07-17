@@ -42,11 +42,15 @@ historical product context; current code and these operational docs take precede
 - Project-scoped AI conversations must reset when the selected project changes, and every
   in-flight response from the previous project must be invalidated before it can update
   messages or saved output. Never combine one project's chat history with another project ID.
-- Keep Veges AI as one chat surface. Present summary, Markdown todo extraction, and
-  conversation analysis as empty-chat actions, not visible capability tabs or assistant
-  modes. Select at most one project context through `@`, store its project ID separately
-  from display text, and keep capability routing internal. AI artifacts open on demand
-  instead of remaining permanently beside the conversation.
+- Keep Veges AI as one composer-only chat surface with no empty-state action cards,
+  visible capability tabs, or assistant modes. Trigger summary, Markdown todo extraction,
+  and conversation analysis only from explicit natural-language intent; ambiguous input
+  remains ordinary chat. Select at most one project context through `@`, store its project
+  ID separately from display text, and keep capability routing internal. Proposal review
+  and result artifacts may open on demand instead of remaining beside the conversation.
+- Dedicated project-summary generation requires a selected `@` project ID and current
+  daily or weekly intent. Do not broaden a missing project context to the whole workspace,
+  and do not map historical date wording onto the current daily or weekly endpoint.
 - Conversation analysis must clear visible project context because that agent does not
   receive project facts. Selecting a non-null `@` project must atomically restore the
   project-aware agent before a message can be sent.

@@ -180,7 +180,7 @@ Sidebar rows are 32px high with a 6px radius, left-aligned icon and label, and a
 
 ### Veges AI
 
-Treat Veges AI as one task canvas, not a collection of feature panels. The empty conversation uses three quiet action rows for project summaries, Markdown todo extraction, and conversation analysis; capability and agent routing remain invisible. A selected `@` project appears as one compact removable context chip, while the composer stays anchored to the bottom of the canvas.
+Treat Veges AI as one task canvas, not a collection of feature panels. The empty conversation is intentionally blank except for the composer; project summaries, pasted-Markdown todo extraction, and conversation analysis are invoked through explicit natural-language input, while capability and agent routing remain invisible. A selected `@` project appears as one compact removable context chip, while the composer stays anchored to the bottom of the canvas.
 
 AI artifacts are progressive disclosure. Open them from the chat toolbar as a bordered side panel on wide screens and as a full-width replacement pane on narrow screens. Do not add permanent capability tabs, a fixed project selector, a model badge, nested cards, or a second Veges AI heading inside the canvas.
 
