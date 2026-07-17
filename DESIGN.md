@@ -178,6 +178,10 @@ Surfaces are flat by default. Borders and background changes provide most separa
 
 Sidebar rows are 32px high with a 6px radius, left-aligned icon and label, and a muted active background. Counts sit in compact pills at the row end. On narrow screens, navigation and dense workspace regions collapse structurally rather than shrinking type.
 
+### Account Settings
+
+Treat account settings as a compact status overview with progressive disclosure, not one long form. Group the overview into Personal Profile, Feishu Notifications, and Login Security; selecting a row replaces the dialog body with one focused editor. Use flat rows and dividers instead of nested cards or category tabs. Each editor owns its validation, loading, error, and save state; successful saves return to the overview and restore focus. On narrow screens, focused editors use a near-full-screen dialog with one scrolling content region.
+
 ### Veges AI
 
 Treat Veges AI as one task canvas, not a collection of feature panels. The empty conversation is intentionally blank except for the composer; project summaries, pasted-Markdown todo extraction, and conversation analysis are invoked through explicit natural-language input, while capability and agent routing remain invisible. The composer uses one quiet two-level surface: an expandable text area above, then optional context chips and a bottom toolbar. Attachment and `@` controls stay at the lower left, while the primary send action stays at the lower right.

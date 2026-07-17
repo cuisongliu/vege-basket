@@ -54,6 +54,7 @@ import {
   X,
 } from '@phosphor-icons/react'
 import { JournalDatePicker } from '@/components/journal-date-picker'
+import { AccountSettingsDialog } from '@/components/account-settings-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -111,7 +112,6 @@ import {
   fetchWorkspace,
   fetchAiStatus,
   fetchCurrentUser,
-  fetchNotificationSubscription,
   fetchNotifications,
   formatApiErrorDiagnostic,
   getAuthToken,
@@ -142,8 +142,6 @@ import {
   updateTodo,
   updateTodoNote,
   uploadTodoImage,
-  updateNotificationSubscription,
-  updateCurrentPassword,
   setAuthToken,
   sendAiChat,
   updateCurrentUser,
@@ -1489,8 +1487,9 @@ function App() {
       })
       setAuthUser(result.user)
       setWorkspaceError('')
-    } catch {
+    } catch (error) {
       setWorkspaceError('账户设置保存失败，请稍后再试。')
+      throw error
     }
   }
 
@@ -2939,182 +2938,15 @@ function AccountMenu({
   onToggleTheme: () => void
 }) {
   const [accountDialogOpen, setAccountDialogOpen] = useState(false)
-  const [displayNameDraft, setDisplayNameDraft] = useState(getUserDisplayName(user))
-  const [currentPasswordDraft, setCurrentPasswordDraft] = useState('')
-  const [nextPasswordDraft, setNextPasswordDraft] = useState('')
-  const [confirmPasswordDraft, setConfirmPasswordDraft] = useState('')
-  const [accountBusy, setAccountBusy] = useState(false)
-  const [accountError, setAccountError] = useState('')
-  const [feishuBindingBusy, setFeishuBindingBusy] = useState(false)
-  const [passwordBusy, setPasswordBusy] = useState(false)
-  const [subscription, setSubscription] = useState({
-    enabled: false,
-    localSendTime: '10:00',
-    timezone: 'Asia/Shanghai',
-  })
-  const [subscriptionLoading, setSubscriptionLoading] = useState(false)
-  const [subscriptionSaving, setSubscriptionSaving] = useState(false)
-  const [subscriptionError, setSubscriptionError] = useState('')
-  const [subscriptionSaved, setSubscriptionSaved] = useState(false)
+  const accountTriggerRef = useRef<HTMLButtonElement>(null)
   const displayName = getUserDisplayName(user)
   const accountMeta = user?.username ?? '尚未登录'
-
-  function syncAccountDrafts() {
-    setDisplayNameDraft(displayName)
-    setAccountError('')
-  }
-
-  function resetPasswordForm() {
-    setCurrentPasswordDraft('')
-    setNextPasswordDraft('')
-    setConfirmPasswordDraft('')
-    setPasswordBusy(false)
-  }
-
-  function changeAccountDialogOpen(open: boolean) {
-    setAccountDialogOpen(open)
-    if (open) {
-      syncAccountDrafts()
-      void loadSubscription()
-      return
-    }
-    resetPasswordForm()
-    setAccountError('')
-  }
-
-  async function loadSubscription() {
-    setSubscriptionLoading(true)
-    setSubscriptionError('')
-    setSubscriptionSaved(false)
-    try {
-      const result = await fetchNotificationSubscription()
-      setSubscription(result.subscription)
-    } catch (error) {
-      setSubscriptionError(
-        error instanceof Error && error.message
-          ? error.message
-          : '无法读取每日推送设置，请稍后重试。',
-      )
-    } finally {
-      setSubscriptionLoading(false)
-    }
-  }
-
-  async function saveAccountSettings() {
-    const displayNameValue = displayNameDraft.trim()
-    if (!displayNameValue) {
-      setAccountError('昵称不能为空。')
-      return
-    }
-
-    const wantsPasswordChange =
-      Boolean(currentPasswordDraft || nextPasswordDraft || confirmPasswordDraft)
-    if (wantsPasswordChange && (!currentPasswordDraft || nextPasswordDraft.length < 6)) {
-      setAccountError('请输入旧密码，并确保新密码不少于 6 位。')
-      return
-    }
-    if (wantsPasswordChange && nextPasswordDraft !== confirmPasswordDraft) {
-      setAccountError('两次输入的新密码不一致。')
-      return
-    }
-
-    setAccountBusy(true)
-    setPasswordBusy(wantsPasswordChange)
-    setAccountError('')
-    try {
-      await onSaveAccountSettings({
-        displayName: displayNameValue,
-      })
-      if (wantsPasswordChange) {
-        await updateCurrentPassword({
-          currentPassword: currentPasswordDraft,
-          nextPassword: nextPasswordDraft,
-        })
-      }
-      setAccountDialogOpen(false)
-      resetPasswordForm()
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : wantsPasswordChange ? '保存失败，请确认旧密码是否正确。' : '保存失败，请稍后重试。',
-      )
-    } finally {
-      setAccountBusy(false)
-      setPasswordBusy(false)
-    }
-  }
-
-  async function bindFeishuAccount() {
-    setFeishuBindingBusy(true)
-    setAccountError('')
-    try {
-      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
-      const result = await createFeishuOAuthUrl({ returnTo })
-      window.location.href = result.url
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : '飞书授权链接生成失败，请稍后重试。',
-      )
-      setFeishuBindingBusy(false)
-    }
-  }
-
-  async function disconnectFeishu() {
-    setFeishuBindingBusy(true)
-    setAccountError('')
-    try {
-      const result = await onDisconnectFeishu()
-      setDisplayNameDraft(result.displayName || result.username)
-      setSubscription((current) => ({ ...current, enabled: false }))
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : '解除飞书绑定失败，请稍后重试。',
-      )
-    } finally {
-      setFeishuBindingBusy(false)
-    }
-  }
-
-  async function saveSubscription() {
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(subscription.localSendTime)) {
-      setSubscriptionError('请输入有效的 24 小时时间。')
-      return
-    }
-    if (subscription.enabled && !user?.feishuLinked) {
-      setSubscriptionError('请先绑定飞书账号，再开启每日推送。')
-      return
-    }
-    setSubscriptionSaving(true)
-    setSubscriptionError('')
-    setSubscriptionSaved(false)
-    try {
-      const result = await updateNotificationSubscription({
-        enabled: subscription.enabled,
-        localSendTime: subscription.localSendTime,
-      })
-      setSubscription(result.subscription)
-      setSubscriptionSaved(true)
-    } catch (error) {
-      setSubscriptionError(
-        error instanceof Error && error.message
-          ? error.message
-          : '每日推送设置保存失败，请稍后重试。',
-      )
-    } finally {
-      setSubscriptionSaving(false)
-    }
-  }
 
   return (
     <div className="sidebar-footer">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button className="account-trigger" variant="outline" type="button">
+          <Button ref={accountTriggerRef} className="account-trigger" variant="outline" type="button">
             <span className="account-status-dot" aria-hidden />
             <span className="account-copy">
               <strong>{displayName}</strong>
@@ -3125,10 +2957,7 @@ function AccountMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="account-menu-content">
           <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              changeAccountDialogOpen(true)
-            }}
+            onSelect={() => setAccountDialogOpen(true)}
           >
             <PencilSimple /> 账户设置
           </DropdownMenuItem>
@@ -3154,201 +2983,14 @@ function AccountMenu({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={accountDialogOpen} onOpenChange={changeAccountDialogOpen}>
-        <DialogContent className="account-settings-dialog">
-          <DialogHeader>
-            <DialogTitle>账户设置</DialogTitle>
-            <DialogDescription>
-              统一维护昵称、飞书通知身份和登录密码。绑定飞书账号后，可以接收 Veges 个人通知和群内 @。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            autoComplete="off"
-            className="new-project-dialog-form account-settings-form"
-            data-1p-ignore="true"
-            data-lpignore="true"
-            data-protonpass-ignore="true"
-            onSubmit={(event) => {
-              event.preventDefault()
-              saveAccountSettings()
-            }}
-          >
-            <div aria-hidden="true" className="autofill-decoys">
-              <input autoComplete="username" name="username" tabIndex={-1} type="text" />
-              <input autoComplete="current-password" name="password" tabIndex={-1} type="password" />
-              <input autoComplete="new-password" name="new-password" tabIndex={-1} type="password" />
-            </div>
-            <Label>
-              昵称
-              <Input
-                autoFocus
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                maxLength={32}
-                name="veges-account-display-name"
-                required
-                spellCheck={false}
-                value={displayNameDraft}
-                onChange={(event) => setDisplayNameDraft(event.target.value)}
-              />
-            </Label>
-            <section className="feishu-binding-panel" aria-label="飞书账号绑定">
-              <div>
-                <strong>飞书账号</strong>
-                <p>
-                  {user?.feishuLinked
-                    ? `已绑定${user.feishuEmail ? `：${user.feishuEmail}` : '，后续个人通知会发送到飞书。'}`
-                    : '未绑定。绑定后，Veges 会通过 OAuth 自动获取你的飞书 open_id。'}
-                </p>
-              </div>
-              <div className="feishu-binding-actions">
-                <Button
-                  type="button"
-                  variant={user?.feishuLinked ? 'outline' : 'default'}
-                  disabled={feishuBindingBusy}
-                  onClick={bindFeishuAccount}
-                >
-                  <LinkSimple />
-                  {feishuBindingBusy ? '处理中...' : user?.feishuLinked ? '重新绑定' : '绑定飞书账号'}
-                </Button>
-                {user?.feishuLinked && (
-                  <Button
-                    className="feishu-disconnect-button"
-                    type="button"
-                    variant="destructive"
-                    disabled={feishuBindingBusy}
-                    onClick={disconnectFeishu}
-                  >
-                    解除绑定
-                  </Button>
-                )}
-              </div>
-            </section>
-            <p className="form-note">
-              绑定过程会跳转到飞书授权页；授权成功后自动回到 Veges，并保存当前飞书用户的 open_id。
-            </p>
-            <section className="notification-subscription-panel" aria-labelledby="daily-digest-title">
-              <div className="notification-subscription-heading">
-                <div>
-                  <strong id="daily-digest-title">每日待办完成推送</strong>
-                  <p>每天通过飞书发送上一完整自然日的完成情况，默认关闭。</p>
-                </div>
-                <label className="notification-subscription-toggle">
-                  <input
-                    checked={subscription.enabled}
-                    disabled={subscriptionLoading || (!user?.feishuLinked && !subscription.enabled)}
-                    type="checkbox"
-                    onChange={(event) => {
-                      setSubscription((current) => ({ ...current, enabled: event.target.checked }))
-                      setSubscriptionError('')
-                      setSubscriptionSaved(false)
-                    }}
-                  />
-                  <span aria-hidden />
-                  <small>{subscription.enabled ? '已开启' : '已关闭'}</small>
-                </label>
-              </div>
-              <div className="notification-subscription-controls">
-                <Label>
-                  推送时间
-                  <Input
-                    disabled={subscriptionLoading || !user?.feishuLinked}
-                    type="time"
-                    value={subscription.localSendTime}
-                    onChange={(event) => {
-                      setSubscription((current) => ({
-                        ...current,
-                        localSendTime: event.target.value,
-                      }))
-                      setSubscriptionSaved(false)
-                    }}
-                  />
-                </Label>
-                <span className="notification-subscription-timezone">
-                  {subscription.timezone || 'Asia/Shanghai'}
-                </span>
-                <Button
-                  disabled={
-                    subscriptionLoading ||
-                    subscriptionSaving ||
-                    (!user?.feishuLinked && subscription.enabled)
-                  }
-                  type="button"
-                  variant="outline"
-                  onClick={() => void saveSubscription()}
-                >
-                  {subscriptionSaving ? '保存中' : '保存推送设置'}
-                </Button>
-              </div>
-              {!user?.feishuLinked ? (
-                <p className="notification-subscription-note">绑定飞书账号后才能开启个人推送。</p>
-              ) : null}
-              {subscriptionError ? <p className="form-error">{subscriptionError}</p> : null}
-              {subscriptionSaved ? <p className="form-success">推送设置已保存。</p> : null}
-            </section>
-            <div className="account-password-section">
-              <strong>修改密码</strong>
-              <p>可选项。需要修改密码时再填写下面三项。</p>
-            </div>
-            <Label>
-              旧密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                name="veges-account-current-secret"
-                type="password"
-                value={currentPasswordDraft}
-                onChange={(event) => setCurrentPasswordDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              新密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                minLength={6}
-                name="veges-account-next-secret"
-                type="password"
-                value={nextPasswordDraft}
-                onChange={(event) => setNextPasswordDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              确认新密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                minLength={6}
-                name="veges-account-confirm-secret"
-                type="password"
-                value={confirmPasswordDraft}
-                onChange={(event) => setConfirmPasswordDraft(event.target.value)}
-              />
-            </Label>
-            {accountError && <p className="form-error">{accountError}</p>}
-            <DialogFooter>
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() => changeAccountDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={accountBusy || passwordBusy}>
-                {accountBusy || passwordBusy ? '保存中...' : '保存设置'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <AccountSettingsDialog
+        open={accountDialogOpen}
+        returnFocusRef={accountTriggerRef}
+        user={user}
+        onDisconnectFeishu={onDisconnectFeishu}
+        onOpenChange={setAccountDialogOpen}
+        onSaveProfile={onSaveAccountSettings}
+      />
 
     </div>
   )

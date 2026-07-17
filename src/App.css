@@ -174,80 +174,6 @@ textarea:focus {
   line-height: 1.55;
 }
 
-.account-settings-grid {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
-  gap: 10px;
-}
-
-.account-password-section {
-  display: grid;
-  gap: 3px;
-  margin-top: 4px;
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-
-.account-password-section strong {
-  color: var(--strong);
-  font-size: 14px;
-}
-
-.account-password-section p {
-  margin: 0;
-  color: var(--muted-text);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.feishu-binding-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: color-mix(in oklch, var(--surface-2) 58%, transparent);
-  padding: 12px;
-}
-
-.feishu-binding-panel strong {
-  color: var(--strong);
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.feishu-binding-panel p {
-  margin: 4px 0 0;
-  color: var(--muted-text);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.feishu-binding-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.account-settings-form button {
-  font-size: 14px;
-  font-weight: 560;
-}
-
-.feishu-disconnect-button {
-  border-color: color-mix(in oklch, var(--destructive) 86%, black);
-  background: var(--destructive);
-  color: #ffffff;
-}
-
-.feishu-disconnect-button:hover {
-  border-color: color-mix(in oklch, var(--destructive) 76%, black);
-  background: color-mix(in oklch, var(--destructive) 86%, black);
-  color: #ffffff;
-}
-
 .login-invite-note {
   display: flex;
   align-items: flex-start;
@@ -3381,10 +3307,6 @@ textarea:focus {
 }
 
 @media (max-width: 760px) {
-  .account-settings-grid {
-    grid-template-columns: 1fr;
-  }
-
   .notification-item {
     grid-template-columns: 1fr;
   }
@@ -8018,50 +7940,267 @@ textarea:focus {
 }
 
 .account-settings-dialog {
-  width: min(92vw, 620px);
-  max-width: 620px;
-  max-height: min(90dvh, 820px);
-  grid-template-rows: auto minmax(0, 1fr);
+  width: min(calc(100vw - 32px), 520px);
+  max-width: 520px;
+  max-height: min(calc(100dvh - 48px), 560px);
+  gap: 0;
+  border-color: var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 0;
   overflow: hidden;
 }
 
-.account-settings-dialog .account-settings-form {
+.account-settings-dialog.is-profile {
+  height: min(360px, calc(100dvh - 48px));
+}
+
+.account-settings-dialog.is-overview {
+  height: min(330px, calc(100dvh - 48px));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.account-settings-dialog.is-notifications {
+  height: min(460px, calc(100dvh - 48px));
+}
+
+.account-settings-dialog.is-security {
+  height: min(500px, calc(100dvh - 48px));
+}
+
+.account-settings-dialog:not(.is-overview) {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.account-settings-dialog > [data-slot='dialog-header']:not(.account-settings-detail-header) {
+  border-bottom: 1px solid var(--line);
+  padding: 20px 52px 16px 20px;
+}
+
+.account-settings-dialog [data-slot='dialog-title'] {
+  color: var(--strong);
+  font-size: 16px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.account-settings-dialog [data-slot='dialog-description'] {
+  color: var(--muted-text);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.account-settings-dialog > [data-slot='dialog-close'] {
+  width: 40px;
+  height: 40px;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.account-settings-overview {
+  min-height: 0;
+  display: grid;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 12px 12px;
+  animation: account-settings-enter 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.account-settings-overview > [data-slot='separator'] {
+  width: calc(100% - 52px);
+  margin-left: 52px;
+}
+
+.account-settings-overview-row[data-slot='button'] {
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  height: auto;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto 16px;
+  justify-content: initial;
+  gap: 12px;
+  border-radius: 6px;
+  padding: 10px 8px;
+  color: var(--strong);
+  text-align: left;
+  white-space: normal;
+}
+
+.account-settings-overview-row[data-slot='button']:active {
+  transform: translateY(1px);
+}
+
+.account-settings-overview-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--muted) 78%, var(--surface));
+  color: var(--muted-text);
+}
+
+.account-settings-overview-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.account-settings-overview-copy strong,
+.account-settings-notification-heading strong {
+  color: var(--strong);
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+.account-settings-overview-copy small,
+.account-settings-notification-heading small {
+  color: var(--muted-text);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.account-settings-overview-saved {
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.account-settings-overview-caret {
+  color: var(--muted-text);
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.account-settings-overview-row:hover .account-settings-overview-caret,
+.account-settings-overview-row:focus-visible .account-settings-overview-caret {
+  transform: translateX(2px);
+}
+
+.account-settings-detail-header {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 52px 12px 12px;
+  animation: account-settings-enter 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.account-settings-back-button[data-slot='button'] {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+
+.account-settings-detail-heading {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.account-settings-detail-form {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.account-settings-detail-body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 3px;
+  scrollbar-gutter: stable;
+  padding: 22px 20px;
+  animation: account-settings-enter 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.notification-subscription-panel {
+.account-settings-detail-body [data-slot='label'] {
   display: grid;
-  gap: 10px;
-  border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--line));
-  border-radius: 8px;
-  background: color-mix(in oklch, var(--brand) 6%, var(--surface));
-  padding: 12px;
-}
-
-.notification-subscription-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.notification-subscription-heading strong {
+  gap: 7px;
   color: var(--strong);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.account-settings-dialog [data-slot='input'] {
+  min-height: 40px;
+  border-radius: 6px;
   font-size: 14px;
 }
 
-.notification-subscription-heading p,
-.notification-subscription-note {
-  margin: 3px 0 0;
-  color: var(--muted-text);
-  font-size: 12px;
-  line-height: 1.5;
+.account-settings-detail-actions {
+  min-height: 65px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px 20px;
 }
 
-.notification-subscription-toggle {
+.account-settings-detail-actions [data-slot='button'],
+.account-settings-notification-actions [data-slot='button'],
+.account-settings-load-error [data-slot='button'] {
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.account-settings-security-fields {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.account-settings-notification-body {
+  display: grid;
+  align-content: start;
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+.account-settings-notification-section {
+  display: grid;
+  gap: 12px;
+  padding: 2px 0 20px;
+}
+
+.account-settings-notification-section + [data-slot='separator'] + .account-settings-notification-section {
+  padding-top: 20px;
+  padding-bottom: 2px;
+}
+
+.account-settings-notification-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.account-settings-notification-heading > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.account-settings-notification-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.account-settings-notification-toggle {
   min-width: 82px;
   min-height: 40px;
   display: flex;
@@ -8071,14 +8210,14 @@ textarea:focus {
   cursor: pointer;
 }
 
-.notification-subscription-toggle input {
+.account-settings-notification-toggle input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
 }
 
-.notification-subscription-toggle > span {
+.account-settings-notification-toggle > span {
   width: 34px;
   height: 20px;
   position: relative;
@@ -8089,7 +8228,7 @@ textarea:focus {
   transition: background-color 160ms ease, border-color 160ms ease;
 }
 
-.notification-subscription-toggle > span::after {
+.account-settings-notification-toggle > span::after {
   content: '';
   width: 14px;
   height: 14px;
@@ -8101,51 +8240,83 @@ textarea:focus {
   transition: transform 160ms ease, background-color 160ms ease;
 }
 
-.notification-subscription-toggle input:checked + span {
+.account-settings-notification-toggle input:checked + span {
   border-color: var(--brand);
   background: var(--brand);
 }
 
-.notification-subscription-toggle input:checked + span::after {
+.account-settings-notification-toggle input:checked + span::after {
   background: var(--brand-foreground);
   transform: translateX(14px);
 }
 
-.notification-subscription-toggle input:focus-visible + span {
+.account-settings-notification-toggle input:focus-visible + span {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 30%, transparent);
 }
 
-.notification-subscription-toggle:has(input:disabled) {
+.account-settings-notification-toggle:has(input:disabled) {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.notification-subscription-toggle small {
+.account-settings-notification-toggle small {
   min-width: 36px;
   color: var(--muted-text);
   font-size: 12px;
 }
 
-.notification-subscription-controls {
+.account-settings-notification-time {
   display: grid;
-  grid-template-columns: minmax(120px, 0.55fr) auto auto;
+  grid-template-columns: minmax(150px, 180px) auto;
   align-items: end;
-  gap: 8px;
+  gap: 12px;
 }
 
-.notification-subscription-controls label {
-  gap: 5px;
-  font-size: 12px;
-}
-
-.notification-subscription-timezone {
-  min-height: 36px;
+.account-settings-notification-timezone {
+  min-height: 40px;
   display: inline-flex;
   align-items: center;
   color: var(--muted-text);
   font-family: var(--mono);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.account-settings-notification-note,
+.account-settings-inline-status {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.account-settings-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+@keyframes account-settings-enter {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .account-settings-overview,
+  .account-settings-detail-header,
+  .account-settings-detail-body {
+    animation: none;
+  }
+
+  .account-settings-overview-row,
+  .account-settings-overview-caret,
+  .account-settings-notification-toggle > span,
+  .account-settings-notification-toggle > span::after {
+    transition: none;
+  }
 }
 
 .detail-layout.activity-mode {
@@ -9543,27 +9714,108 @@ textarea:focus {
     width: calc(100vw - 24px);
     max-width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
+  }
+
+  .todo-proposal-dialog {
     padding: 16px;
   }
 
-  .feishu-binding-panel,
-  .notification-subscription-heading {
+  .account-settings-dialog:not(.is-overview) {
+    height: calc(100dvh - 24px);
+  }
+
+  .account-settings-dialog.is-overview {
+    height: min(330px, calc(100dvh - 24px));
+  }
+
+  .account-settings-dialog > [data-slot='dialog-header']:not(.account-settings-detail-header) {
+    padding: 18px 52px 14px 16px;
+  }
+
+  .account-settings-dialog > [data-slot='dialog-close'] {
+    width: 44px;
+    height: 44px;
+    top: 6px;
+    right: 6px;
+  }
+
+  .account-settings-overview {
+    padding: 4px 8px 10px;
+  }
+
+  .account-settings-overview > [data-slot='separator'] {
+    width: calc(100% - 48px);
+    margin-left: 48px;
+  }
+
+  .account-settings-overview-row[data-slot='button'] {
+    min-height: 70px;
+    grid-template-columns: 34px minmax(0, 1fr) auto 16px;
+    gap: 10px;
+    padding: 9px 8px;
+  }
+
+  .account-settings-overview-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .account-settings-detail-header {
+    grid-template-columns: 44px minmax(0, 1fr);
+    padding: 8px 52px 8px 6px;
+  }
+
+  .account-settings-back-button[data-slot='button'] {
+    width: 44px;
+    height: 44px;
+  }
+
+  .account-settings-detail-body {
+    scrollbar-gutter: auto;
+    padding: 18px 16px;
+  }
+
+  .account-settings-detail-actions {
+    padding: 12px 16px;
+  }
+
+  .account-settings-detail-actions [data-slot='button'] {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .account-settings-dialog [data-slot='input'],
+  .account-settings-notification-actions [data-slot='button'],
+  .account-settings-load-error [data-slot='button'] {
+    min-height: 44px;
+  }
+
+  .account-settings-notification-heading {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .feishu-binding-actions,
-  .notification-subscription-toggle {
+  .account-settings-notification-actions,
+  .account-settings-notification-toggle {
     justify-content: flex-start;
   }
 
-  .notification-subscription-controls {
+  .account-settings-notification-actions {
+    flex-wrap: wrap;
+  }
+
+  .account-settings-notification-time {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }
 
-  .notification-subscription-timezone {
+  .account-settings-notification-timezone {
     min-height: auto;
+  }
+
+  .account-settings-load-error {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .ai-workflow-header {
