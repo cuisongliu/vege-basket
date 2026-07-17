@@ -10281,7 +10281,7 @@ textarea:focus {
 .veges-ai-stage .agent-composer {
   position: relative;
   width: min(100%, 760px);
-  min-height: 148px;
+  min-height: 116px;
   justify-self: center;
   display: flex;
   flex-direction: column;
@@ -10300,7 +10300,7 @@ textarea:focus {
 }
 
 .veges-ai-stage .agent-composer textarea {
-  min-height: 76px;
+  min-height: 52px;
   max-height: 220px;
   border: 0;
   background: transparent;
@@ -10778,13 +10778,13 @@ textarea:focus {
   }
 
   .veges-ai-stage .agent-composer {
-    min-height: 132px;
+    min-height: 108px;
     gap: 6px;
     padding: 9px;
   }
 
   .veges-ai-stage .agent-composer textarea {
-    min-height: 64px;
+    min-height: 48px;
   }
 
   .ai-attachment-chip {

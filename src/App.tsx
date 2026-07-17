@@ -214,6 +214,12 @@ type DisplayAiChatMessage = AiChatMessage & {
 }
 type ThemeMode = 'dark' | 'light'
 type AiMobilePane = 'workspace' | 'artifacts'
+
+function getDefaultAiPane(): AiMobilePane {
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1101px)').matches
+    ? 'artifacts'
+    : 'workspace'
+}
 type AiMessageRoute = {
   agentType?: AiAgentType
   attachments?: DisplayAiAttachment[]
@@ -1099,7 +1105,7 @@ function App() {
   const [aiDraft, setAiDraft] = useState('')
   const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
   const [aiProjectId, setAiProjectId] = useState<number | null>(null)
-  const [aiMobilePane, setAiMobilePane] = useState<AiMobilePane>('workspace')
+  const [aiMobilePane, setAiMobilePane] = useState<AiMobilePane>(getDefaultAiPane)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
   const packageWorkbenchRef = useRef<ProjectPackageWorkbenchHandle>(null)
@@ -2319,7 +2325,7 @@ ${packageTimelineText}`
             <NavButton
               active={view === 'ai'}
               onClick={() => {
-                setAiMobilePane('workspace')
+                setAiMobilePane(getDefaultAiPane())
                 setView('ai')
               }}
             >
@@ -6616,7 +6622,7 @@ function VegesAiView({
                   ref={composerRef}
                   disabled={Boolean(generatingType) || todoWorkflowBusy}
                   placeholder="输入消息，或粘贴需要处理的内容"
-                  rows={3}
+                  rows={2}
                   value={aiDraft}
                   onCompositionEnd={() => setIsComposing(false)}
                   onCompositionStart={() => setIsComposing(true)}
