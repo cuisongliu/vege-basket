@@ -9661,20 +9661,12 @@ textarea:focus {
 }
 
 .veges-ai-toolbar {
-  min-height: 54px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  padding: 8px 12px 8px 16px;
-}
-
-.ai-context-slot {
-  min-width: 0;
-  min-height: 32px;
+  min-height: 50px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 12px;
 }
 
 .ai-project-chip {
@@ -9864,6 +9856,49 @@ textarea:focus {
   color: var(--brand-foreground);
 }
 
+.veges-ai-stage .agent-message-attachments {
+  max-width: 100%;
+  display: flex;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.veges-ai-stage .agent-message.user .agent-message-attachments {
+  justify-content: flex-end;
+}
+
+.veges-ai-stage .agent-message-attachments > span {
+  min-width: 0;
+  max-width: 240px;
+  height: 28px;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted-text);
+  padding: 0 8px;
+}
+
+.veges-ai-stage .agent-message-attachments > span > span {
+  overflow: hidden;
+  color: var(--strong);
+  font-size: 11px;
+  font-weight: 580;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.veges-ai-stage .agent-message-attachments small {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .veges-ai-stage .agent-message-content .markdown-preview p,
 .veges-ai-stage .agent-message-content .markdown-preview li {
   font-size: 14px;
@@ -9921,17 +9956,17 @@ textarea:focus {
 .veges-ai-stage .agent-composer {
   position: relative;
   width: min(100%, 760px);
-  min-height: 58px;
+  min-height: 148px;
   justify-self: center;
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 36px;
-  align-items: end;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
-  padding: 7px;
-  box-shadow: 0 8px 28px hsl(160 18% 8% / 0.06);
+  padding: 10px;
+  box-shadow: 0 2px 8px hsl(160 18% 8% / 0.045);
 }
 
 .veges-ai-stage .agent-composer:focus-within {
@@ -9940,11 +9975,11 @@ textarea:focus {
 }
 
 .veges-ai-stage .agent-composer textarea {
-  min-height: 42px;
-  max-height: 132px;
+  min-height: 76px;
+  max-height: 220px;
   border: 0;
   background: transparent;
-  padding: 9px 5px 6px;
+  padding: 2px 3px 8px;
   font-size: 14px;
   line-height: 1.55;
   box-shadow: none;
@@ -9956,6 +9991,84 @@ textarea:focus {
   box-shadow: none;
 }
 
+.ai-attachment-input {
+  display: none;
+}
+
+.ai-composer-context-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-composer-context-row .ai-project-chip {
+  max-width: min(100%, 260px);
+}
+
+.ai-attachment-chip {
+  min-width: 0;
+  max-width: min(100%, 280px);
+  height: 30px;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto 24px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ai-canvas);
+  color: var(--muted-text);
+  padding: 0 3px 0 8px;
+}
+
+.ai-attachment-chip > span {
+  overflow: hidden;
+  color: var(--strong);
+  font-size: 12px;
+  font-weight: 580;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-attachment-chip small {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ai-attachment-chip button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-text);
+  cursor: pointer;
+}
+
+.ai-attachment-chip button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ai-composer-toolbar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.veges-ai-stage .ai-attachment-trigger,
 .veges-ai-stage .ai-project-trigger,
 .veges-ai-stage .agent-send-button {
   width: 34px;
@@ -9963,15 +10076,26 @@ textarea:focus {
   border-radius: 6px;
 }
 
+.veges-ai-stage .ai-attachment-trigger,
 .veges-ai-stage .ai-project-trigger {
   color: var(--muted-text);
+}
+
+.veges-ai-stage .agent-send-button {
+  background: var(--brand);
+  color: var(--brand-foreground);
+}
+
+.veges-ai-stage .agent-send-button:not(:disabled):hover {
+  background: color-mix(in oklch, var(--brand) 88%, black);
+  color: var(--brand-foreground);
 }
 
 .ai-project-picker {
   position: absolute;
   z-index: 30;
-  bottom: calc(100% + 8px);
-  left: 0;
+  bottom: 52px;
+  left: 10px;
   width: min(100%, 360px);
   max-height: 260px;
   display: grid;
@@ -10206,6 +10330,7 @@ textarea:focus {
 
 .veges-ai-toolbar button:focus-visible,
 .ai-project-chip button:focus-visible,
+.ai-attachment-chip button:focus-visible,
 .ai-project-picker button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
@@ -10213,8 +10338,10 @@ textarea:focus {
 
 @media (hover: hover) {
   .ai-project-chip button:not(:disabled):hover,
+  .ai-attachment-chip button:not(:disabled):hover,
   .veges-ai-toolbar-actions > button:hover,
   .veges-ai-artifacts-actions > button:hover,
+  .veges-ai-stage .ai-attachment-trigger:hover,
   .veges-ai-stage .ai-project-trigger:hover {
     background: var(--ai-canvas);
     color: var(--strong);
@@ -10292,9 +10419,17 @@ textarea:focus {
   }
 
   .veges-ai-stage .agent-composer {
-    min-height: 54px;
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
-    padding: 6px;
+    min-height: 132px;
+    gap: 6px;
+    padding: 9px;
+  }
+
+  .veges-ai-stage .agent-composer textarea {
+    min-height: 64px;
+  }
+
+  .ai-attachment-chip {
+    max-width: 100%;
   }
 
   .ai-project-picker {
@@ -10315,8 +10450,8 @@ textarea:focus {
     display: none;
   }
 
-  .ai-project-chip {
-    max-width: min(100%, 150px);
+  .ai-composer-context-row .ai-project-chip {
+    max-width: 100%;
   }
 
   .veges-ai-artifacts .summary-doc-item {

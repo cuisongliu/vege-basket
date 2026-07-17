@@ -125,6 +125,13 @@ must remain bound to the authorized project ID.
 - Supported todo images: PNG, JPEG, WebP, GIF.
 - Package download expiry choices: 30, 60, 90, 120, 300, or 600 minutes.
 
+`GET /api/ai/status` returns `configured`, `model`, and the effective positive
+`maxMessageLength`; the browser uses that limit to reject an oversized composed message
+before the provider can silently trim it. Veges AI text attachments are read locally and
+embedded in the existing chat message content rather than sent to a separate upload route.
+The composer accepts at most four supported text files, 64 KiB each and 20,000 combined
+attachment characters; the effective chat message limit may be lower.
+
 Daily and weekly AI summaries are generated from authorized period facts and saved
 immediately as summary documents. Markdown ingestion accepts `.md` content only; AI may
 infer project, module, assignee, due date, priority, title, and detail, but project and due

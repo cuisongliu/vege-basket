@@ -27,6 +27,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 
 - `src/App.tsx`, `src/components/`: UI state and user workflows. They must not hold
   database, OSS credential, or authorization decisions.
+- `src/ai-attachments.ts`: browser-side text attachment format checks, display sizing,
+  and bounded serialization into the existing AI chat message contract. Attachments are
+  not uploaded to object storage or assigned project identity here.
 - `src/api.ts`, `src/types.ts`: browser API adapter and public client-side contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
   validation, Feishu/AI orchestration, and static-file serving.
@@ -56,6 +59,12 @@ configuration. Users never submit or read AI credentials. When that shared provi
 configured, password registration requires an active project invite; Feishu OAuth can
 still create or link an internal user. AI calls pass both per-user and application-replica
 sliding-window limits.
+
+Veges AI text attachments stay in browser memory and are serialized into the user message
+sent through `POST /api/ai/chat`; only filename and size metadata are rendered in the chat
+bubble. The selected project ID remains a separate request field and is never parsed from
+attachment text. Pending browser file reads are invalidated when project or conversation
+context changes, preventing content from a previous context from being appended later.
 
 External entry points have separate trust boundaries:
 

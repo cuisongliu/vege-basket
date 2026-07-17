@@ -70,6 +70,7 @@ export type AiAgentType = 'project-summary' | 'conversation-analysis'
 
 export type AiStatus = {
   configured: boolean
+  maxMessageLength: number
   model: string
 }
 

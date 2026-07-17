@@ -127,6 +127,10 @@ encrypted record, and the workflow that triggered rollback.
   or its documented fallback.
 - AI returns 503: verify `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are all present in the
   application environment. The URL must be HTTPS and resolve only to public addresses.
+- Veges AI rejects a text attachment message as too long: split the input or reduce the
+  attachments. The composer enforces both its attachment limits and the effective
+  `AI_MAX_MESSAGE_LENGTH` returned by `GET /api/ai/status`; raising the provider limit
+  requires a deliberate deployment configuration change.
 - AI reports that its base URL is not public: inspect the system DNS result. Hostnames
   mapped by a local proxy to `198.18.0.0/15` are rechecked through public DNS-over-HTTPS;
   if that verification fails, restore access to `https://cloudflare-dns.com` or exclude

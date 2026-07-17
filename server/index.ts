@@ -177,7 +177,10 @@ app.set('trust proxy', true)
 const port = Number(process.env.PORT ?? 8787)
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
 const clientDistPath = path.resolve(serverDir, '../dist')
-const aiMaxMessageLength = Number(process.env.AI_MAX_MESSAGE_LENGTH ?? 2_000)
+const configuredAiMaxMessageLength = Number(process.env.AI_MAX_MESSAGE_LENGTH ?? 2_000)
+const aiMaxMessageLength = Number.isSafeInteger(configuredAiMaxMessageLength) && configuredAiMaxMessageLength > 0
+  ? configuredAiMaxMessageLength
+  : 2_000
 const aiMaxContextChars = Number(process.env.AI_MAX_CONTEXT_CHARS ?? 12_000)
 const todoImageUploadMaxBytes = Number(process.env.TODO_IMAGE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024)
 const todoImageObjectPrefix = String(process.env.TODO_IMAGE_OBJECT_PREFIX ?? 'todo-images')
@@ -2864,6 +2867,7 @@ app.get('/api/ai/status', asyncHandler(async (request, response) => {
   const model = String(process.env.AI_MODEL ?? '').trim()
   response.json({
     configured: isAiProviderConfigured(),
+    maxMessageLength: aiMaxMessageLength,
     model,
   })
 }))

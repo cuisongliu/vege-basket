@@ -48,6 +48,12 @@ historical product context; current code and these operational docs take precede
   remains ordinary chat. Select at most one project context through `@`, store its project
   ID separately from display text, and keep capability routing internal. Proposal review
   and result artifacts may open on demand instead of remaining beside the conversation.
+- AI composer attachments are browser-read text, not separately uploaded objects. Accept
+  at most four supported text files, 64 KiB each and 20,000 combined characters; keep the
+  original attachment content in AI history while rendering only safe name/size metadata.
+  Never derive project identity from attachment content or filenames. Invalidate pending
+  file reads before a project change, context removal, conversation reset, or unmount so
+  stale content cannot reappear in another project context.
 - Dedicated project-summary generation requires a selected `@` project ID and current
   daily or weekly intent. Do not broaden a missing project context to the whole workspace,
   and do not map historical date wording onto the current daily or weekly endpoint.

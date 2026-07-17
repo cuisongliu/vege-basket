@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type ClipboardEvent,
   type CSSProperties,
   type ComponentProps,
@@ -36,6 +37,7 @@ import {
   ListChecks,
   MagnifyingGlass,
   NotePencil,
+  Paperclip,
   PaperPlaneTilt,
   Plus,
   ShoppingCartSimple,
@@ -191,16 +193,34 @@ import {
   startNotificationRefreshSchedule,
 } from './notifications'
 import { classifyAiInput } from './ai-input-intent'
+import {
+  AI_ATTACHMENT_MAX_BYTES,
+  AI_ATTACHMENT_MAX_CHARACTERS,
+  AI_ATTACHMENT_MAX_COUNT,
+  buildAiMessageContent,
+  formatAttachmentSize,
+  isSupportedAiAttachment,
+  totalAttachmentCharacters,
+  type AiTextAttachment,
+} from './ai-attachments'
 import './App.css'
 
 type View = 'project' | 'inbox' | 'notifications' | 'search' | 'ai'
 type DetailEntrySource = 'project' | 'notifications'
-type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
+type DisplayAiAttachment = Pick<AiTextAttachment, 'id' | 'name' | 'size'>
+type DisplayAiChatMessage = AiChatMessage & {
+  aiContent?: string
+  attachments?: DisplayAiAttachment[]
+  createdAt: string
+}
 type ThemeMode = 'dark' | 'light'
 type AiMobilePane = 'workspace' | 'artifacts'
 type AiMessageRoute = {
   agentType?: AiAgentType
+  attachments?: DisplayAiAttachment[]
   content?: string
+  displayContent?: string
+  draftContent?: string
 }
 type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
   assigneeUserId?: number | null
@@ -2111,8 +2131,9 @@ function App() {
   }
 
   async function sendAgentMessage(route: AiMessageRoute = {}) {
-    const content = (route.content ?? aiDraft).trim()
-    if (!content || aiBusy) return
+    const aiContent = (route.content ?? aiDraft).trim()
+    const displayContent = (route.displayContent ?? aiContent).trim()
+    if (!aiContent || !displayContent || aiBusy) return false
 
     const agentType = route.agentType ?? activeAiAgent
     const agentChanged = agentType !== activeAiAgent
@@ -2123,7 +2144,13 @@ function App() {
 
     const nextMessages: DisplayAiChatMessage[] = [
       ...baseMessages,
-      { role: 'user', content, createdAt: getCurrentDateTimeStamp() },
+      {
+        role: 'user',
+        content: displayContent,
+        aiContent,
+        attachments: route.attachments,
+        createdAt: getCurrentDateTimeStamp(),
+      },
     ]
     if (agentType === 'conversation-analysis') setAiProjectId(null)
     setActiveAiAgent(agentType)
@@ -2136,14 +2163,14 @@ function App() {
         ? aiProjectId ?? undefined
         : undefined
       const result = await sendAiChat(
-        nextMessages.map(({ role, content: messageContent }) => ({
+        nextMessages.map(({ role, content: messageContent, aiContent: hiddenContent }) => ({
           role,
-          content: messageContent,
+          content: hiddenContent ?? messageContent,
         })),
         agentType,
         scopedProjectId,
       )
-      if (aiRequestIdRef.current !== requestId) return
+      if (aiRequestIdRef.current !== requestId) return false
       setAiMessages([
         ...nextMessages,
         {
@@ -2152,13 +2179,17 @@ function App() {
           createdAt: getCurrentDateTimeStamp(),
         },
       ])
+      return true
     } catch (error) {
-      if (aiRequestIdRef.current !== requestId) return
+      if (aiRequestIdRef.current !== requestId) return false
+      setAiMessages(baseMessages)
+      setAiDraft(route.draftContent ?? displayContent)
       setAiError(
         error instanceof Error && error.message
           ? error.message
           : 'AI 暂时没有响应，请稍后重试。',
       )
+      return false
     } finally {
       if (aiRequestIdRef.current === requestId) setAiBusy(false)
     }
@@ -6376,7 +6407,7 @@ function VegesAiView({
   onGenerateSummary: (projectId: number, type: SummaryPeriodType) => Promise<boolean>
   onMobilePaneChange: (pane: AiMobilePane) => void
   onResetAiChat: () => void
-  onSendAgentMessage: (route?: AiMessageRoute) => void
+  onSendAgentMessage: (route?: AiMessageRoute) => Promise<boolean>
   onSelectedProjectIdChange: (projectId: number | null) => void
   onWorkspace: (workspace: WorkspaceData) => void
   projects: Project[]
@@ -6395,6 +6426,11 @@ function VegesAiView({
   const [generatingType, setGeneratingType] = useState<SummaryPeriodType | null>(null)
   const [generationError, setGenerationError] = useState('')
   const [todoWorkflowBusy, setTodoWorkflowBusy] = useState(false)
+  const [attachments, setAttachments] = useState<AiTextAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentReading, setAttachmentReading] = useState(false)
+  const attachmentInputRef = useRef<HTMLInputElement>(null)
+  const attachmentReadRequestIdRef = useRef(0)
   const artifactsRef = useRef<HTMLDivElement>(null)
   const artifactsTriggerRef = useRef<HTMLButtonElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -6416,7 +6452,8 @@ function VegesAiView({
     )
   }, [projectQuery, projects])
   const aiConfigured = Boolean(aiStatus?.configured)
-  const workspaceBusy = aiBusy || Boolean(generatingType) || todoWorkflowBusy
+  const workspaceBusy =
+    aiBusy || attachmentReading || Boolean(generatingType) || todoWorkflowBusy
   const artifactsOpen = mobilePane === 'artifacts'
   const documentFullscreen = isSummaryFullscreen && artifactsOpen
 
@@ -6440,6 +6477,10 @@ function VegesAiView({
   useEffect(() => {
     void loadAiStatus()
   }, [loadAiStatus])
+
+  useEffect(() => () => {
+    attachmentReadRequestIdRef.current += 1
+  }, [])
 
   useEffect(() => {
     if (!artifactsOpen) return
@@ -6494,6 +6535,7 @@ function VegesAiView({
   function handleDraftChange(value: string, caret: number) {
     onAiDraftChange(value)
     setGenerationError('')
+    setAttachmentError('')
     const prefix = value.slice(0, caret)
     const match = prefix.match(/(?:^|\s)@([^\s@]*)$/)
     if (!match) {
@@ -6516,8 +6558,13 @@ function VegesAiView({
       nextDraft = `${aiDraft.slice(0, projectMention.start)}${aiDraft.slice(projectMention.end)}`
     }
     const shouldRestoreDraft = Boolean(projectMention) || selectedProjectId == null
+    const isChangingProject = selectedProjectId != null && selectedProjectId !== projectId
+    attachmentReadRequestIdRef.current += 1
+    setAttachmentReading(false)
     onSelectedProjectIdChange(projectId)
     if (shouldRestoreDraft) onAiDraftChange(nextDraft)
+    if (isChangingProject) setAttachments([])
+    setAttachmentError('')
     setGenerationError('')
     setProjectPickerOpen(false)
     setProjectMention(null)
@@ -6526,36 +6573,130 @@ function VegesAiView({
   }
 
   function removeProjectContext() {
+    attachmentReadRequestIdRef.current += 1
+    setAttachmentReading(false)
     onSelectedProjectIdChange(null)
+    setAttachments([])
+    setAttachmentError('')
     setProjectPickerOpen(false)
     setProjectMention(null)
     setProjectQuery('')
     window.requestAnimationFrame(() => composerRef.current?.focus())
   }
 
-  async function sendComposerMessage() {
-    const content = aiDraft.trim()
-    if (!content || workspaceBusy || !aiConfigured) return
+  async function handleAttachmentSelection(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (selectedFiles.length === 0) return
 
-    const intent = classifyAiInput(content)
-    setGenerationError('')
-
-    if (intent.kind === 'todo-extraction') {
-      const success = await todoWorkflowRef.current?.analyzeContent(
-        intent.content,
-        'veges-ai-input.md',
-      )
-      if (success) onAiDraftChange('')
+    if (attachments.length + selectedFiles.length > AI_ATTACHMENT_MAX_COUNT) {
+      setAttachmentError(`最多添加 ${AI_ATTACHMENT_MAX_COUNT} 个附件。`)
       return
     }
 
-    if (intent.kind === 'project-summary') {
+    const requestId = attachmentReadRequestIdRef.current + 1
+    attachmentReadRequestIdRef.current = requestId
+    setAttachmentReading(true)
+    const accepted: AiTextAttachment[] = []
+    const rejected: string[] = []
+    const duplicateKeys = new Set(
+      attachments.map((attachment) => `${attachment.name}\u0000${attachment.size}`),
+    )
+    let characterCount = totalAttachmentCharacters(attachments)
+
+    for (const file of selectedFiles) {
+      const duplicateKey = `${file.name}\u0000${file.size}`
+      if (duplicateKeys.has(duplicateKey)) {
+        rejected.push(`${file.name} 已添加`)
+        continue
+      }
+      if (!isSupportedAiAttachment(file.name, file.type)) {
+        rejected.push(`${file.name} 不是支持的文本格式`)
+        continue
+      }
+      if (file.size === 0) {
+        rejected.push(`${file.name} 是空文件`)
+        continue
+      }
+      if (file.size > AI_ATTACHMENT_MAX_BYTES) {
+        rejected.push(`${file.name} 超过 64 KB`)
+        continue
+      }
+
+      try {
+        const content = await file.text()
+        if (!content.trim()) {
+          rejected.push(`${file.name} 没有可读内容`)
+          continue
+        }
+        if (characterCount + content.length > AI_ATTACHMENT_MAX_CHARACTERS) {
+          rejected.push(`${file.name} 会使附件内容超过 20,000 字符`)
+          continue
+        }
+        accepted.push({
+          content,
+          id: crypto.randomUUID(),
+          name: file.name,
+          size: file.size,
+        })
+        duplicateKeys.add(duplicateKey)
+        characterCount += content.length
+      } catch {
+        rejected.push(`${file.name} 无法读取`)
+      }
+    }
+
+    if (attachmentReadRequestIdRef.current !== requestId) return
+    if (accepted.length > 0) setAttachments((current) => [...current, ...accepted])
+    setAttachmentError(rejected.join('；'))
+    setAttachmentReading(false)
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function removeAttachment(id: string) {
+    attachmentReadRequestIdRef.current += 1
+    setAttachmentReading(false)
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
+    setAttachmentError('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  async function sendComposerMessage() {
+    const draftContent = aiDraft.trim()
+    if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
+
+    const content = buildAiMessageContent(draftContent, attachments)
+    const displayContent = draftContent || '请阅读附件内容。'
+    const displayAttachments = attachments.map(({ id, name, size }) => ({ id, name, size }))
+
+    const intent = classifyAiInput(content)
+    setGenerationError('')
+    setAttachmentError('')
+
+    if (intent.kind === 'todo-extraction') {
+      if (intent.content.length > AI_ATTACHMENT_MAX_CHARACTERS) {
+        setAttachmentError('待办提取内容最多 20,000 字符，请减少附件或输入内容。')
+        return
+      }
+      const success = await todoWorkflowRef.current?.analyzeContent(
+        intent.content,
+        attachments.length === 1 ? attachments[0].name : 'veges-ai-input.md',
+      )
+      if (success) {
+        onAiDraftChange('')
+        setAttachments([])
+      }
+      return
+    }
+
+    if (intent.kind === 'project-summary' && attachments.length === 0) {
       if (selectedProjectId) {
         setGeneratingType(intent.period)
         const success = await onGenerateSummary(selectedProjectId, intent.period)
         if (!success) setGenerationError('总结没有生成，请稍后重试。')
         if (success) {
           onAiDraftChange('')
+          setAttachments([])
           setIsSummaryFullscreen(false)
           setSelectedSummaryId(null)
           openArtifacts()
@@ -6568,16 +6709,41 @@ function VegesAiView({
       return
     }
 
-    if (intent.kind === 'conversation-analysis') {
-      onSendAgentMessage({ agentType: 'conversation-analysis', content })
+    const maxMessageLength = aiStatus?.maxMessageLength ?? 2_000
+    if (content.length > maxMessageLength) {
+      setAttachmentError(
+        `当前模型单条消息最多 ${maxMessageLength.toLocaleString()} 字符，请减少附件或输入内容。`,
+      )
       return
     }
 
-    onSendAgentMessage()
+    if (intent.kind === 'conversation-analysis') {
+      const success = await onSendAgentMessage({
+        agentType: 'conversation-analysis',
+        attachments: displayAttachments,
+        content,
+        displayContent,
+        draftContent,
+      })
+      if (success) setAttachments([])
+      return
+    }
+
+    const success = await onSendAgentMessage({
+      attachments: displayAttachments,
+      content,
+      displayContent,
+      draftContent,
+    })
+    if (success) setAttachments([])
   }
 
   function resetConversation() {
+    attachmentReadRequestIdRef.current += 1
+    setAttachmentReading(false)
     setGenerationError('')
+    setAttachmentError('')
+    setAttachments([])
     todoWorkflowRef.current?.reset()
     onResetAiChat()
   }
@@ -6586,27 +6752,10 @@ function VegesAiView({
     <div className={`veges-ai-layout${artifactsOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
       <Card className="panel veges-ai-workspace">
         <header className="veges-ai-toolbar">
-          <div className="ai-context-slot">
-            {selectedProject ? (
-              <span className="ai-project-chip">
-                <At size={14} weight="bold" aria-hidden />
-                <span>{selectedProject.name}</span>
-                <button
-                  aria-label={`移除项目 ${selectedProject.name}`}
-                  disabled={Boolean(generatingType) || todoWorkflowBusy}
-                  title="移除项目"
-                  type="button"
-                  onClick={removeProjectContext}
-                >
-                  <X size={13} weight="bold" />
-                </button>
-              </span>
-            ) : null}
-          </div>
           <div className="veges-ai-toolbar-actions">
             <Button
               aria-label="开始新对话"
-              disabled={workspaceBusy || (aiMessages.length === 0 && !aiDraft)}
+              disabled={workspaceBusy || (aiMessages.length === 0 && !aiDraft && attachments.length === 0)}
               size="icon"
               title="开始新对话"
               type="button"
@@ -6669,6 +6818,17 @@ function VegesAiView({
                     <div className="agent-message-content">
                       <MarkdownPreview content={message.content} compact />
                     </div>
+                    {message.attachments?.length ? (
+                      <div className="agent-message-attachments" aria-label="消息附件">
+                        {message.attachments.map((attachment) => (
+                          <span key={attachment.id} title={attachment.name}>
+                            <FileText size={13} aria-hidden />
+                            <span>{attachment.name}</span>
+                            <small>{formatAttachmentSize(attachment.size)}</small>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                     {message.role === 'assistant' && selectedProjectId ? (
                       <div className="agent-message-footer">
                         <time className="agent-message-time">{message.createdAt}</time>
@@ -6695,8 +6855,10 @@ function VegesAiView({
                   </article>
                 ) : null}
               </div>
-              {aiError || generationError ? (
-                <p className="form-error" role="alert">{aiError || generationError}</p>
+              {aiError || generationError || attachmentError ? (
+                <p className="form-error" role="alert">
+                  {aiError || generationError || attachmentError}
+                </p>
               ) : null}
               <div className="ai-todo-workflow-status">
                 <TodoProposalWorkflow
@@ -6710,6 +6872,15 @@ function VegesAiView({
                 />
               </div>
               <div className="agent-composer" ref={composerShellRef}>
+                <input
+                  ref={attachmentInputRef}
+                  accept=".csv,.json,.log,.md,.markdown,.text,.txt,.yaml,.yml,application/json,application/yaml,application/x-yaml,text/csv,text/markdown,text/plain,text/x-log"
+                  aria-label="选择文本附件"
+                  className="ai-attachment-input"
+                  multiple
+                  type="file"
+                  onChange={(event) => void handleAttachmentSelection(event)}
+                />
                 {projectPickerOpen ? (
                   <div className="ai-project-picker" role="listbox" aria-label="选择项目上下文">
                     {filteredProjects.length > 0 ? filteredProjects.map((project) => (
@@ -6729,29 +6900,11 @@ function VegesAiView({
                     )}
                   </div>
                 ) : null}
-                <Button
-                  aria-expanded={projectPickerOpen}
-                  aria-haspopup="listbox"
-                  aria-label="关联项目"
-                  className="ai-project-trigger"
-                  disabled={Boolean(generatingType) || todoWorkflowBusy}
-                  size="icon"
-                  title="关联项目"
-                  type="button"
-                  variant="ghost"
-                  onClick={() => {
-                    setProjectMention(null)
-                    setProjectQuery('')
-                    setProjectPickerOpen((current) => !current)
-                    window.requestAnimationFrame(() => composerRef.current?.focus())
-                  }}
-                >
-                  <At size={18} weight="bold" />
-                </Button>
                 <Textarea
                   ref={composerRef}
                   disabled={Boolean(generatingType) || todoWorkflowBusy}
-                  placeholder="输入消息"
+                  placeholder="输入消息，或粘贴需要处理的内容"
+                  rows={3}
                   value={aiDraft}
                   onCompositionEnd={() => setIsComposing(false)}
                   onCompositionStart={() => setIsComposing(true)}
@@ -6792,21 +6945,91 @@ function VegesAiView({
                     }
                   }}
                 />
-                <Button
-                  aria-label="发送消息"
-                  className="agent-send-button"
-                  disabled={
-                    workspaceBusy ||
-                    !aiDraft.trim() ||
-                    !aiConfigured
-                  }
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                  onClick={() => void sendComposerMessage()}
-                >
-                  <PaperPlaneTilt size={18} weight="bold" />
-                </Button>
+                {selectedProject || attachments.length > 0 ? (
+                  <div className="ai-composer-context-row">
+                    {selectedProject ? (
+                      <span className="ai-project-chip">
+                        <At size={14} weight="bold" aria-hidden />
+                        <span>{selectedProject.name}</span>
+                        <button
+                          aria-label={`移除项目 ${selectedProject.name}`}
+                          disabled={workspaceBusy}
+                          title="移除项目"
+                          type="button"
+                          onClick={removeProjectContext}
+                        >
+                          <X size={13} weight="bold" />
+                        </button>
+                      </span>
+                    ) : null}
+                    {attachments.map((attachment) => (
+                      <span className="ai-attachment-chip" key={attachment.id}>
+                        <FileText size={14} aria-hidden />
+                        <span title={attachment.name}>{attachment.name}</span>
+                        <small>{formatAttachmentSize(attachment.size)}</small>
+                        <button
+                          aria-label={`移除附件 ${attachment.name}`}
+                          disabled={workspaceBusy}
+                          title="移除附件"
+                          type="button"
+                          onClick={() => removeAttachment(attachment.id)}
+                        >
+                          <X size={13} weight="bold" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="ai-composer-toolbar">
+                  <div className="ai-composer-tools">
+                    <Button
+                      aria-label="添加文本附件"
+                      className="ai-attachment-trigger"
+                      disabled={workspaceBusy || attachments.length >= AI_ATTACHMENT_MAX_COUNT}
+                      size="icon"
+                      title="添加文本附件"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => attachmentInputRef.current?.click()}
+                    >
+                      <Paperclip size={18} weight="bold" />
+                    </Button>
+                    <Button
+                      aria-expanded={projectPickerOpen}
+                      aria-haspopup="listbox"
+                      aria-label="关联项目"
+                      className="ai-project-trigger"
+                      disabled={workspaceBusy}
+                      size="icon"
+                      title="关联项目"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setProjectMention(null)
+                        setProjectQuery('')
+                        setProjectPickerOpen((current) => !current)
+                        window.requestAnimationFrame(() => composerRef.current?.focus())
+                      }}
+                    >
+                      <At size={18} weight="bold" />
+                    </Button>
+                  </div>
+                  <Button
+                    aria-label="发送消息"
+                    className="agent-send-button"
+                    disabled={
+                      workspaceBusy ||
+                      (!aiDraft.trim() && attachments.length === 0) ||
+                      !aiConfigured
+                    }
+                    size="icon"
+                    title="发送消息"
+                    type="button"
+                    onClick={() => void sendComposerMessage()}
+                  >
+                    <PaperPlaneTilt size={17} weight="fill" />
+                  </Button>
+                </div>
               </div>
         </section>
       </Card>
