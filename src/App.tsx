@@ -17,9 +17,11 @@ import { createPortal } from 'react-dom'
 import {
   Archive,
   AddressBook,
+  At,
   Bell,
   CalendarBlank,
   CalendarCheck,
+  Chats,
   Check,
   CopySimple,
   CornersIn,
@@ -41,6 +43,7 @@ import {
   ShoppingCartSimple,
   SignIn,
   SignOut,
+  SidebarSimple,
   Sparkle,
   Sun,
   Target,
@@ -176,7 +179,10 @@ import type {
   TodoNote,
 } from './types'
 import { TodoActivityPanel } from './components/todo-activity-panel'
-import { TodoProposalWorkflow } from './components/todo-proposal-workflow'
+import {
+  TodoProposalWorkflow,
+  type TodoProposalWorkflowHandle,
+} from './components/todo-proposal-workflow'
 import {
   ProjectPackageWorkbench,
   type ProjectPackageWorkbenchHandle,
@@ -192,7 +198,6 @@ type View = 'project' | 'inbox' | 'notifications' | 'search' | 'ai'
 type DetailEntrySource = 'project' | 'notifications'
 type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
 type ThemeMode = 'dark' | 'light'
-type AiWorkspaceTool = 'chat' | 'summaries' | 'todos'
 type AiMobilePane = 'workspace' | 'artifacts'
 type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
   assigneeUserId?: number | null
@@ -241,19 +246,6 @@ type TodoFilterCondition = {
   id: string
   operator: TodoFilterOperator
   value: string
-}
-
-const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
-  'project-summary': {
-    avatar: 'V',
-    subtitle: '理解项目、待办与风险',
-    title: '项目助理',
-  },
-  'conversation-analysis': {
-    avatar: '析',
-    subtitle: '整理群聊中的事实与行动',
-    title: '对话分析',
-  },
 }
 
 const initialAiMessages: DisplayAiChatMessage[] = []
@@ -1084,6 +1076,7 @@ function App() {
   const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
   const [aiDraft, setAiDraft] = useState('')
   const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
+  const [aiProjectId, setAiProjectId] = useState<number | null>(null)
   const [aiMobilePane, setAiMobilePane] = useState<AiMobilePane>('workspace')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
@@ -1091,7 +1084,6 @@ function App() {
   const acceptingInviteTokenRef = useRef('')
   const notificationRefreshRequestIdRef = useRef(0)
   const aiRequestIdRef = useRef(0)
-  const aiProjectContextIdRef = useRef<number | null | undefined>(undefined)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', themeMode === 'dark')
@@ -1236,20 +1228,15 @@ function App() {
   const selectedProjectDraftId = selectedProject?.id
 
   useEffect(() => {
-    const projectId = selectedProject?.id ?? null
-    if (aiProjectContextIdRef.current === undefined) {
-      aiProjectContextIdRef.current = projectId
-      return
-    }
-    if (aiProjectContextIdRef.current === projectId) return
+    if (aiProjectId == null || projects.some((project) => project.id === aiProjectId)) return
 
-    aiProjectContextIdRef.current = projectId
     aiRequestIdRef.current += 1
+    setAiProjectId(null)
     setAiMessages(initialAiMessages)
     setAiDraft('')
     setAiBusy(false)
     setAiError('')
-  }, [selectedProject?.id])
+  }, [aiProjectId, projects])
 
   useEffect(() => {
     if (view !== 'project' || requestedTodoDetailId == null) return
@@ -2107,7 +2094,7 @@ function App() {
 
   async function generateSummaryFromAiMessage(message: DisplayAiChatMessage) {
     const content = message.content.trim()
-    const projectId = selectedProject?.id ?? projects[0]?.id
+    const projectId = aiProjectId
     if (!content || !projectId) return
 
     await runMutation(() =>
@@ -2136,8 +2123,9 @@ function App() {
     setAiBusy(true)
     setAiError('')
     try {
-      const scopedProjectId =
-        activeAiAgent === 'project-summary' ? selectedProject?.id : undefined
+      const scopedProjectId = activeAiAgent === 'project-summary'
+        ? aiProjectId ?? undefined
+        : undefined
       const result = await sendAiChat(
         nextMessages.map(({ role, content: messageContent }) => ({
           role,
@@ -2173,12 +2161,28 @@ function App() {
     setAiDraft('')
     setAiBusy(false)
     setAiError('')
+    setActiveAiAgent('project-summary')
   }
 
   function changeActiveAiAgent(agentType: AiAgentType) {
     if (aiBusy || agentType === activeAiAgent) return
+    aiRequestIdRef.current += 1
+    setAiMessages(initialAiMessages)
+    setAiDraft('')
+    setAiBusy(false)
+    setAiError('')
     setActiveAiAgent(agentType)
-    resetAiConversation()
+  }
+
+  function changeAiProjectContext(projectId: number | null) {
+    if (projectId === aiProjectId) return
+    aiRequestIdRef.current += 1
+    setAiProjectId(projectId)
+    setAiMessages(initialAiMessages)
+    setAiDraft('')
+    setAiBusy(false)
+    setAiError('')
+    if (projectId != null) setActiveAiAgent('project-summary')
   }
 
   async function exportMarkdown(projectId?: number) {
@@ -2634,7 +2638,6 @@ ${packageTimelineText}`
 
         {view === 'ai' && (
           <VegesAiView
-            activeAiAgent={activeAiAgent}
             aiBusy={aiBusy}
             aiDraft={aiDraft}
             aiError={aiError}
@@ -2649,10 +2652,10 @@ ${packageTimelineText}`
             onMobilePaneChange={setAiMobilePane}
             onResetAiChat={resetAiConversation}
             onSendAgentMessage={sendAgentMessage}
-            onSelectedProjectIdChange={setSelectedProjectId}
+            onSelectedProjectIdChange={changeAiProjectContext}
             onWorkspace={applyWorkspace}
             projects={projects}
-            selectedProjectId={selectedProject?.id ?? null}
+            selectedProjectId={aiProjectId}
             summaries={summaries}
           />
         )}
@@ -6344,7 +6347,6 @@ function SearchView({
 }
 
 function VegesAiView({
-  activeAiAgent,
   aiBusy,
   aiDraft,
   aiError,
@@ -6365,7 +6367,6 @@ function VegesAiView({
   selectedProjectId,
   summaries,
 }: {
-  activeAiAgent: AiAgentType
   aiBusy: boolean
   aiDraft: string
   aiError: string
@@ -6380,17 +6381,20 @@ function VegesAiView({
   onMobilePaneChange: (pane: AiMobilePane) => void
   onResetAiChat: () => void
   onSendAgentMessage: () => void
-  onSelectedProjectIdChange: (projectId: number) => void
+  onSelectedProjectIdChange: (projectId: number | null) => void
   onWorkspace: (workspace: WorkspaceData) => void
   projects: Project[]
   selectedProjectId: number | null
   summaries: Summary[]
 }) {
-  const [activeTool, setActiveTool] = useState<AiWorkspaceTool>('chat')
   const [summaryPeriod, setSummaryPeriod] = useState<SummaryPeriodType>('weekly')
+  const [summarySetupOpen, setSummarySetupOpen] = useState(false)
   const [selectedSummaryId, setSelectedSummaryId] = useState<number | null>(null)
   const [isSummaryFullscreen, setIsSummaryFullscreen] = useState(false)
   const [isComposing, setIsComposing] = useState(false)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectMention, setProjectMention] = useState<{ end: number; start: number } | null>(null)
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
   const [aiStatusLoading, setAiStatusLoading] = useState(true)
   const [aiStatusError, setAiStatusError] = useState('')
@@ -6398,19 +6402,29 @@ function VegesAiView({
   const [generationError, setGenerationError] = useState('')
   const [todoWorkflowBusy, setTodoWorkflowBusy] = useState(false)
   const artifactsRef = useRef<HTMLDivElement>(null)
+  const artifactsTriggerRef = useRef<HTMLButtonElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const composerShellRef = useRef<HTMLDivElement>(null)
+  const todoWorkflowRef = useRef<TodoProposalWorkflowHandle>(null)
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null
   const selectedDocumentProject = selectedSummary
     ? projects.find((project) => project.id === selectedSummary.projectId)
     : null
-  const selectedDocumentOwner = selectedDocumentProject?.name ?? selectedSummary?.period ?? 'Veges AI'
-  const activeAgentMeta = aiAgentMeta[activeAiAgent]
-  const activeToolLabel = activeTool === 'chat'
-    ? 'AI 对话'
-    : activeTool === 'summaries' ? '项目总结' : '待办提取'
+  const selectedDocumentOwner =
+    selectedDocumentProject?.name ?? selectedSummary?.period ?? 'Veges AI'
+  const filteredProjects = useMemo(() => {
+    const normalizedQuery = projectQuery.trim().toLocaleLowerCase()
+    if (!normalizedQuery) return projects
+    return projects.filter((project) =>
+      project.name.toLocaleLowerCase().includes(normalizedQuery),
+    )
+  }, [projectQuery, projects])
   const aiConfigured = Boolean(aiStatus?.configured)
   const workspaceBusy = aiBusy || Boolean(generatingType) || todoWorkflowBusy
-  const documentFullscreen = isSummaryFullscreen && mobilePane === 'artifacts'
+  const artifactsOpen = mobilePane === 'artifacts'
+  const documentFullscreen = isSummaryFullscreen && artifactsOpen
 
   const loadAiStatus = useCallback(async () => {
     setAiStatusLoading(true)
@@ -6434,27 +6448,108 @@ function VegesAiView({
   }, [loadAiStatus])
 
   useEffect(() => {
-    if (mobilePane !== 'artifacts') return
+    if (!artifactsOpen) return
     const frame = window.requestAnimationFrame(() => artifactsRef.current?.focus())
     return () => window.cancelAnimationFrame(frame)
-  }, [mobilePane])
+  }, [artifactsOpen])
 
   useEffect(() => {
-    if (!documentFullscreen) return
+    if (!artifactsOpen) return
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        setIsSummaryFullscreen(false)
+        if (documentFullscreen) {
+          setIsSummaryFullscreen(false)
+          return
+        }
+        onMobilePaneChange('workspace')
+        window.requestAnimationFrame(() => artifactsTriggerRef.current?.focus())
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [documentFullscreen])
+  }, [artifactsOpen, documentFullscreen, onMobilePaneChange])
 
-  function changeMobilePane(pane: AiMobilePane) {
+  useEffect(() => {
+    if (!projectPickerOpen) return
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!composerShellRef.current?.contains(event.target as Node)) {
+        setProjectPickerOpen(false)
+        setProjectMention(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [projectPickerOpen])
+
+  function openArtifacts() {
     setIsSummaryFullscreen(false)
-    onMobilePaneChange(pane)
+    onMobilePaneChange('artifacts')
+    window.requestAnimationFrame(() => artifactsRef.current?.focus())
+  }
+
+  function closeArtifacts() {
+    setIsSummaryFullscreen(false)
+    onMobilePaneChange('workspace')
+    window.requestAnimationFrame(() => artifactsTriggerRef.current?.focus())
+  }
+
+  function openSummarySetup() {
+    setProjectPickerOpen(false)
+    setProjectMention(null)
+    setGenerationError('')
+    setSummarySetupOpen(true)
+    onAgentChange('project-summary')
+  }
+
+  function openConversationAnalysis() {
+    setSummarySetupOpen(false)
+    if (selectedProjectId != null) onSelectedProjectIdChange(null)
+    onAgentChange('conversation-analysis')
+    onAiDraftChange('请分析以下对话，并整理关键事实、决定和待办：\n\n')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function handleDraftChange(value: string, caret: number) {
+    onAiDraftChange(value)
+    const prefix = value.slice(0, caret)
+    const match = prefix.match(/(?:^|\s)@([^\s@]*)$/)
+    if (!match) {
+      setProjectPickerOpen(false)
+      setProjectMention(null)
+      setProjectQuery('')
+      return
+    }
+
+    const matchStart = match.index ?? 0
+    const mentionStart = matchStart + match[0].lastIndexOf('@')
+    setProjectMention({ end: caret, start: mentionStart })
+    setProjectQuery(match[1])
+    setProjectPickerOpen(true)
+  }
+
+  function selectProjectContext(projectId: number) {
+    let nextDraft = aiDraft
+    if (projectMention) {
+      nextDraft = `${aiDraft.slice(0, projectMention.start)}${aiDraft.slice(projectMention.end)}`
+    }
+    onSelectedProjectIdChange(projectId)
+    if (nextDraft !== aiDraft) onAiDraftChange(nextDraft)
+    setProjectPickerOpen(false)
+    setProjectMention(null)
+    setProjectQuery('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function removeProjectContext() {
+    onSelectedProjectIdChange(null)
+    setProjectPickerOpen(false)
+    setProjectMention(null)
+    setProjectQuery('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
   }
 
   async function generate() {
@@ -6466,79 +6561,64 @@ function VegesAiView({
     if (success) {
       setIsSummaryFullscreen(false)
       setSelectedSummaryId(null)
-      onMobilePaneChange('artifacts')
-      window.requestAnimationFrame(() => artifactsRef.current?.focus())
+      setSummarySetupOpen(false)
+      openArtifacts()
     }
     setGeneratingType(null)
   }
 
   return (
-    <div className={documentFullscreen ? 'veges-ai-layout is-document-fullscreen' : 'veges-ai-layout'}>
-      {!documentFullscreen ? (
-        <div className="veges-ai-mobile-switch" aria-label="Veges AI 视图" role="group">
-          <button
-            aria-pressed={mobilePane === 'workspace'}
-            type="button"
-            onClick={() => changeMobilePane('workspace')}
-          >
-            工作台
-          </button>
-          <button
-            aria-pressed={mobilePane === 'artifacts'}
-            type="button"
-            onClick={() => changeMobilePane('artifacts')}
-          >
-            AI 产物 <span>{summaries.length}</span>
-          </button>
-        </div>
-      ) : null}
-
-      <Card className={`panel veges-ai-workspace${mobilePane === 'artifacts' ? ' is-mobile-hidden' : ''}`}>
-        <header className="veges-ai-header">
-          <span className="veges-ai-mark" aria-hidden><Sparkle size={18} weight="fill" /></span>
-          <div>
-            <h3>Veges AI</h3>
-            <p>{activeToolLabel}</p>
+    <div className={`veges-ai-layout${artifactsOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
+      <Card className="panel veges-ai-workspace">
+        <header className="veges-ai-toolbar">
+          <div className="ai-context-slot">
+            {selectedProject ? (
+              <span className="ai-project-chip">
+                <At size={14} weight="bold" aria-hidden />
+                <span>{selectedProject.name}</span>
+                <button
+                  aria-label={`移除项目 ${selectedProject.name}`}
+                  disabled={Boolean(generatingType) || todoWorkflowBusy}
+                  title="移除项目"
+                  type="button"
+                  onClick={removeProjectContext}
+                >
+                  <X size={13} weight="bold" />
+                </button>
+              </span>
+            ) : null}
           </div>
-          <span
-            className={aiConfigured ? 'ai-status-badge is-ready' : 'ai-status-badge'}
-            title={aiConfigured ? aiStatus?.model || '模型已连接' : '模型未连接'}
-          >
-            {aiStatusLoading
-              ? '检查连接'
-              : aiConfigured ? aiStatus?.model || '模型已连接' : '模型未连接'}
-          </span>
+          <div className="veges-ai-toolbar-actions">
+            <Button
+              aria-label="开始新对话"
+              disabled={aiBusy || (aiMessages.length === 0 && !aiDraft)}
+              size="icon"
+              title="开始新对话"
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSummarySetupOpen(false)
+                onResetAiChat()
+              }}
+            >
+              <Plus size={17} weight="bold" />
+            </Button>
+            <Button
+              ref={artifactsTriggerRef}
+              aria-label={`AI 产物 ${summaries.length}`}
+              aria-expanded={artifactsOpen}
+              className="ai-artifacts-trigger"
+              title="打开 AI 产物"
+              type="button"
+              variant="ghost"
+              onClick={openArtifacts}
+            >
+              <SidebarSimple size={17} />
+              <span>AI 产物</span>
+              <small>{summaries.length}</small>
+            </Button>
+          </div>
         </header>
-
-        <nav className="veges-ai-tool-switcher" aria-label="AI 能力">
-          <button
-            aria-pressed={activeTool === 'chat'}
-            disabled={workspaceBusy}
-            type="button"
-            onClick={() => setActiveTool('chat')}
-          >
-            <Sparkle size={16} />
-            AI 对话
-          </button>
-          <button
-            aria-pressed={activeTool === 'summaries'}
-            disabled={workspaceBusy}
-            type="button"
-            onClick={() => setActiveTool('summaries')}
-          >
-            <FileText size={16} />
-            项目总结
-          </button>
-          <button
-            aria-pressed={activeTool === 'todos'}
-            disabled={workspaceBusy}
-            type="button"
-            onClick={() => setActiveTool('todos')}
-          >
-            <ListChecks size={16} />
-            待办提取
-          </button>
-        </nav>
 
         {aiStatusError ? (
           <div className="veges-ai-notice is-error" role="alert">
@@ -6564,85 +6644,112 @@ function VegesAiView({
           </div>
         ) : null}
 
-        <div className="veges-ai-stage">
-          <section
-            aria-labelledby="ai-chat-title"
-            className="ai-chat-workflow"
-            hidden={activeTool !== 'chat'}
-          >
-              <div className="ai-chat-toolbar">
-                <div className="ai-agent-switcher" aria-label="对话类型" role="group">
-                  <button
-                    aria-pressed={activeAiAgent === 'project-summary'}
-                    disabled={aiBusy}
-                    type="button"
-                    onClick={() => onAgentChange('project-summary')}
-                  >
-                    项目助理
-                  </button>
-                  <button
-                    aria-pressed={activeAiAgent === 'conversation-analysis'}
-                    disabled={aiBusy}
-                    type="button"
-                    onClick={() => onAgentChange('conversation-analysis')}
-                  >
-                    对话分析
-                  </button>
-                </div>
-                {activeAiAgent === 'project-summary' ? (
-                  <Label className="ai-project-context">
-                    <span>当前项目</span>
-                    <Select
-                      disabled={aiBusy}
-                      value={selectedProjectId ? String(selectedProjectId) : 'none'}
-                      onValueChange={(value) => {
-                        if (value === 'none') return
-                        onSelectedProjectIdChange(Number(value))
-                        onResetAiChat()
-                      }}
-                    >
-                      <SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">选择项目</SelectItem>
-                        {projects.map((project) => (
-                          <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Label>
-                ) : null}
-              </div>
-              <div className="ai-chat-header">
-                <span className="agent-orb" aria-hidden>{activeAgentMeta.avatar}</span>
-                <div>
-                  <h4 id="ai-chat-title">{activeAgentMeta.title}</h4>
-                  <p>{activeAgentMeta.subtitle}</p>
-                </div>
-                <Button
-                  aria-label="开始新对话"
-                  className="agent-new-chat-button"
-                  disabled={aiBusy || (aiMessages.length === 0 && !aiDraft)}
-                  size="icon"
-                  title="开始新对话"
-                  type="button"
-                  variant="ghost"
-                  onClick={onResetAiChat}
-                >
-                  <Plus size={17} weight="bold" />
-                </Button>
-              </div>
+        <section aria-label="Veges AI 对话" className="veges-ai-stage">
               <div
                 aria-busy={aiBusy}
                 aria-live="polite"
                 aria-relevant="additions text"
-                className="agent-messages"
+                className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
                 role="log"
               >
-                {aiMessages.length === 0 && !aiBusy ? (
-                  <div className="ai-chat-empty">
-                    <Sparkle size={22} />
-                    <strong>开始一次对话</strong>
-                    <span>{activeAiAgent === 'project-summary' ? '围绕当前项目提出问题' : '粘贴需要分析的对话内容'}</span>
+                {aiMessages.length === 0 && !aiBusy && !summarySetupOpen ? (
+                  <div className="ai-empty-actions" aria-label="开始使用 Veges AI">
+                    <button
+                      disabled={!aiConfigured || aiStatusLoading || workspaceBusy}
+                      type="button"
+                      onClick={openSummarySetup}
+                    >
+                      <FileText size={18} />
+                      <span>总结一个项目</span>
+                    </button>
+                    <button
+                      disabled={!aiConfigured || aiStatusLoading || workspaceBusy}
+                      type="button"
+                      onClick={() => todoWorkflowRef.current?.openFilePicker()}
+                    >
+                      <ListChecks size={18} />
+                      <span>从 Markdown 提取待办</span>
+                    </button>
+                    <button
+                      disabled={!aiConfigured || aiStatusLoading || workspaceBusy}
+                      type="button"
+                      onClick={openConversationAnalysis}
+                    >
+                      <Chats size={18} />
+                      <span>分析一段对话</span>
+                    </button>
+                  </div>
+                ) : null}
+                {summarySetupOpen && aiMessages.length === 0 && !aiBusy ? (
+                  <div className="ai-summary-setup">
+                    <div className="ai-summary-setup-header">
+                      <strong>总结一个项目</strong>
+                      <Button
+                        aria-label="关闭总结设置"
+                        size="icon"
+                        title="关闭"
+                        type="button"
+                        variant="ghost"
+                        onClick={() => setSummarySetupOpen(false)}
+                      >
+                        <X size={16} />
+                      </Button>
+                    </div>
+                    <div className="ai-summary-fields">
+                      <Label>
+                        项目
+                        <Select
+                          disabled={Boolean(generatingType)}
+                          value={selectedProjectId ? String(selectedProjectId) : 'none'}
+                          onValueChange={(value) => {
+                            if (value !== 'none') selectProjectContext(Number(value))
+                          }}
+                        >
+                          <SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">选择项目</SelectItem>
+                            {projects.map((project) => (
+                              <SelectItem key={project.id} value={String(project.id)}>
+                                {project.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Label>
+                      <div className="summary-period-field">
+                        <span>周期</span>
+                        <div className="summary-period-switcher" aria-label="总结周期" role="group">
+                          <button
+                            aria-pressed={summaryPeriod === 'daily'}
+                            disabled={Boolean(generatingType)}
+                            type="button"
+                            onClick={() => setSummaryPeriod('daily')}
+                          >
+                            <CalendarBlank size={16} /> 日总结
+                          </button>
+                          <button
+                            aria-pressed={summaryPeriod === 'weekly'}
+                            disabled={Boolean(generatingType)}
+                            type="button"
+                            onClick={() => setSummaryPeriod('weekly')}
+                          >
+                            <CalendarCheck size={16} /> 周总结
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <Button
+                      className="summary-generate-button"
+                      disabled={!selectedProjectId || !aiConfigured || Boolean(generatingType)}
+                      type="button"
+                      onClick={() => void generate()}
+                    >
+                      <Sparkle className={generatingType ? 'is-pulsing' : undefined} size={16} />
+                      {generatingType
+                        ? '正在生成总结'
+                        : `生成${summaryPeriod === 'daily' ? '日' : '周'}总结`}
+                    </Button>
+                    {generationError ? <p className="form-error" role="alert">{generationError}</p> : null}
                   </div>
                 ) : null}
                 {aiMessages.map((message, index) => (
@@ -6650,7 +6757,7 @@ function VegesAiView({
                     <div className="agent-message-content">
                       <MarkdownPreview content={message.content} compact />
                     </div>
-                    {message.role === 'assistant' ? (
+                    {message.role === 'assistant' && selectedProjectId ? (
                       <div className="agent-message-footer">
                         <time className="agent-message-time">{message.createdAt}</time>
                         <Button
@@ -6677,22 +6784,92 @@ function VegesAiView({
                 ) : null}
               </div>
               {aiError ? <p className="form-error" role="alert">{aiError}</p> : null}
-              <div className="agent-composer">
+              <div className="ai-todo-workflow-status">
+                <TodoProposalWorkflow
+                  ref={todoWorkflowRef}
+                  disabled={!aiConfigured}
+                  memberships={memberships}
+                  onBusyChange={setTodoWorkflowBusy}
+                  onWorkspace={onWorkspace}
+                  projects={projects}
+                  showLauncher={false}
+                />
+              </div>
+              <div className="agent-composer" ref={composerShellRef}>
+                {projectPickerOpen ? (
+                  <div className="ai-project-picker" role="listbox" aria-label="选择项目上下文">
+                    {filteredProjects.length > 0 ? filteredProjects.map((project) => (
+                      <button
+                        aria-selected={project.id === selectedProjectId}
+                        key={project.id}
+                        role="option"
+                        type="button"
+                        onClick={() => selectProjectContext(project.id)}
+                      >
+                        <At size={15} weight="bold" />
+                        <span>{project.name}</span>
+                        {project.id === selectedProjectId ? <Check size={15} weight="bold" /> : null}
+                      </button>
+                    )) : (
+                      <p>没有匹配的项目</p>
+                    )}
+                  </div>
+                ) : null}
+                <Button
+                  aria-expanded={projectPickerOpen}
+                  aria-haspopup="listbox"
+                  aria-label="关联项目"
+                  className="ai-project-trigger"
+                  disabled={Boolean(generatingType) || todoWorkflowBusy}
+                  size="icon"
+                  title="关联项目"
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setProjectMention(null)
+                    setProjectQuery('')
+                    setProjectPickerOpen((current) => !current)
+                    window.requestAnimationFrame(() => composerRef.current?.focus())
+                  }}
+                >
+                  <At size={18} weight="bold" />
+                </Button>
                 <Textarea
-                  placeholder={activeAiAgent === 'project-summary' ? '询问当前项目' : '输入需要分析的对话'}
+                  ref={composerRef}
+                  placeholder="输入消息"
                   value={aiDraft}
                   onCompositionEnd={() => setIsComposing(false)}
                   onCompositionStart={() => setIsComposing(true)}
-                  onChange={(event) => onAiDraftChange(event.target.value)}
+                  onChange={(event) => handleDraftChange(
+                    event.target.value,
+                    event.target.selectionStart ?? event.target.value.length,
+                  )}
                   onKeyDown={(event) => {
                     const nativeEvent = event.nativeEvent as KeyboardEvent
+                    if (event.key === 'Escape' && projectPickerOpen) {
+                      event.preventDefault()
+                      setProjectPickerOpen(false)
+                      setProjectMention(null)
+                      return
+                    }
                     if (
                       event.key === 'Enter' &&
                       !event.shiftKey &&
                       !isComposing &&
                       !nativeEvent.isComposing &&
-                      aiConfigured &&
-                      (activeAiAgent !== 'project-summary' || Boolean(selectedProjectId))
+                      projectPickerOpen &&
+                      filteredProjects[0]
+                    ) {
+                      event.preventDefault()
+                      selectProjectContext(filteredProjects[0].id)
+                      return
+                    }
+                    if (
+                      event.key === 'Enter' &&
+                      !event.shiftKey &&
+                      !isComposing &&
+                      !nativeEvent.isComposing &&
+                      aiConfigured
                     ) {
                       event.preventDefault()
                       onSendAgentMessage()
@@ -6705,8 +6882,7 @@ function VegesAiView({
                   disabled={
                     aiBusy ||
                     !aiDraft.trim() ||
-                    !aiConfigured ||
-                    (activeAiAgent === 'project-summary' && !selectedProjectId)
+                    !aiConfigured
                   }
                   size="icon"
                   type="button"
@@ -6716,128 +6892,55 @@ function VegesAiView({
                   <PaperPlaneTilt size={18} weight="bold" />
                 </Button>
               </div>
-          </section>
+        </section>
+      </Card>
 
-          <section
-            aria-labelledby="summary-generation-title"
-            className="summary-generation-workflow"
-            hidden={activeTool !== 'summaries'}
-          >
-              <div className="summary-generation-heading">
-                <span aria-hidden><FileText size={20} weight="duotone" /></span>
-                <div>
-                  <h4 id="summary-generation-title">生成项目总结</h4>
-                  <p>从项目记录、待办和风险中生成一份可保存的文档。</p>
-                </div>
-              </div>
-              <div className="summary-generation-form">
-                <Label>
-                  项目
-                  <Select
-                    disabled={aiBusy || Boolean(generatingType)}
-                    value={selectedProjectId ? String(selectedProjectId) : 'none'}
-                    onValueChange={(value) => {
-                      if (value === 'none') return
-                      onSelectedProjectIdChange(Number(value))
-                      onResetAiChat()
-                    }}
-                  >
-                    <SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">选择项目</SelectItem>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Label>
-                <div className="summary-period-field">
-                  <span>总结周期</span>
-                  <div className="summary-period-switcher" aria-label="总结周期" role="group">
-                    <button
-                      aria-pressed={summaryPeriod === 'daily'}
-                      disabled={Boolean(generatingType)}
-                      type="button"
-                      onClick={() => setSummaryPeriod('daily')}
-                    >
-                      <CalendarBlank size={16} /> 日总结
-                    </button>
-                    <button
-                      aria-pressed={summaryPeriod === 'weekly'}
-                      disabled={Boolean(generatingType)}
-                      type="button"
-                      onClick={() => setSummaryPeriod('weekly')}
-                    >
-                      <CalendarCheck size={16} /> 周总结
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <Button
-                className="summary-generate-button"
-                disabled={!selectedProjectId || !aiConfigured || Boolean(generatingType)}
-                type="button"
-                onClick={() => void generate()}
-              >
-                <Sparkle className={generatingType ? 'is-pulsing' : undefined} size={16} />
-                {generatingType ? '正在生成总结' : `生成${summaryPeriod === 'daily' ? '日' : '周'}总结`}
-              </Button>
-              {generationError ? <p className="form-error" role="alert">{generationError}</p> : null}
-          </section>
-
-          <div className="veges-ai-tool-pane" hidden={activeTool !== 'todos'}>
-            <TodoProposalWorkflow
-              disabled={!aiConfigured}
-              memberships={memberships}
-              onBusyChange={setTodoWorkflowBusy}
-              onWorkspace={onWorkspace}
-              projects={projects}
+      {artifactsOpen ? (
+        <Card
+          ref={artifactsRef}
+          aria-label={selectedSummary ? 'AI 文档' : 'AI 产物'}
+          className={`panel summary-list veges-ai-artifacts${documentFullscreen ? ' is-fullscreen' : ''}`}
+          tabIndex={-1}
+        >
+          {selectedSummary ? (
+            <SummaryDocumentDetail
+              isFullscreen={documentFullscreen}
+              projectName={selectedDocumentOwner}
+              summary={selectedSummary}
+              onBack={() => {
+                setIsSummaryFullscreen(false)
+                setSelectedSummaryId(null)
+                window.requestAnimationFrame(() => artifactsRef.current?.focus())
+              }}
+              onClose={closeArtifacts}
+              onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
             />
-          </div>
-        </div>
-      </Card>
-
-      <Card
-        ref={artifactsRef}
-        aria-label={selectedSummary ? 'AI 文档' : 'AI 产物'}
-        className={`panel summary-list veges-ai-artifacts${documentFullscreen ? ' is-fullscreen' : ''}${mobilePane === 'workspace' ? ' is-mobile-hidden' : ''}`}
-        tabIndex={-1}
-      >
-        {selectedSummary ? (
-          <SummaryDocumentDetail
-            isFullscreen={documentFullscreen}
-            projectName={selectedDocumentOwner}
-            summary={selectedSummary}
-            onBack={() => {
-              setIsSummaryFullscreen(false)
-              setSelectedSummaryId(null)
-              window.requestAnimationFrame(() => artifactsRef.current?.focus())
-            }}
-            onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
-          />
-        ) : (
-          <AiArtifactList
-            onExport={onExportWorkspace}
-            projects={projects}
-            summaries={summaries}
-            onSelect={(id) => {
-              setSelectedSummaryId(id)
-              onMobilePaneChange('artifacts')
-              window.requestAnimationFrame(() => artifactsRef.current?.focus())
-            }}
-          />
-        )}
-      </Card>
+          ) : (
+            <AiArtifactList
+              onClose={closeArtifacts}
+              onExport={onExportWorkspace}
+              projects={projects}
+              summaries={summaries}
+              onSelect={(id) => {
+                setSelectedSummaryId(id)
+                window.requestAnimationFrame(() => artifactsRef.current?.focus())
+              }}
+            />
+          )}
+        </Card>
+      ) : null}
     </div>
   )
 }
 
 function AiArtifactList({
+  onClose,
   onExport,
   onSelect,
   projects,
   summaries,
 }: {
+  onClose: () => void
   onExport: () => void
   onSelect: (id: number) => void
   projects: Project[]
@@ -6851,17 +6954,29 @@ function AiArtifactList({
           <h3>AI 产物</h3>
           <span>{summaries.length}</span>
         </div>
-        <Button
-          aria-label="导出工作区"
-          disabled={projects.length === 0}
-          size="icon"
-          title="导出工作区"
-          type="button"
-          variant="ghost"
-          onClick={onExport}
-        >
-          <DownloadSimple size={16} />
-        </Button>
+        <div className="veges-ai-artifacts-actions">
+          <Button
+            aria-label="导出工作区"
+            disabled={projects.length === 0}
+            size="icon"
+            title="导出工作区"
+            type="button"
+            variant="ghost"
+            onClick={onExport}
+          >
+            <DownloadSimple size={16} />
+          </Button>
+          <Button
+            aria-label="关闭 AI 产物"
+            size="icon"
+            title="关闭"
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </Button>
+        </div>
       </header>
       <div className="summary-doc-list">
         {summaries.length === 0 ? (
@@ -6899,12 +7014,14 @@ function AiArtifactList({
 function SummaryDocumentDetail({
   isFullscreen,
   onBack,
+  onClose,
   onToggleFullscreen,
   projectName,
   summary,
 }: {
   isFullscreen: boolean
   onBack: () => void
+  onClose: () => void
   onToggleFullscreen: () => void
   projectName: string
   summary: Summary
@@ -6916,18 +7033,30 @@ function SummaryDocumentDetail({
           <Button className="ghost-button summary-back-button" variant="outline" type="button" onClick={onBack}>
             <ArrowLeft size={15} /> 返回列表
           </Button>
-          <Button
-            className="summary-fullscreen-button"
-            variant="ghost"
-            size="icon"
-            type="button"
-            aria-label={isFullscreen ? '退出展开阅读 AI 文档' : '展开阅读 AI 文档'}
-            aria-pressed={isFullscreen}
-            title={isFullscreen ? '退出展开阅读' : '展开阅读'}
-            onClick={onToggleFullscreen}
-          >
-            {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
-          </Button>
+          <div className="veges-ai-artifacts-actions">
+            <Button
+              className="summary-fullscreen-button"
+              variant="ghost"
+              size="icon"
+              type="button"
+              aria-label={isFullscreen ? '退出展开阅读 AI 文档' : '展开阅读 AI 文档'}
+              aria-pressed={isFullscreen}
+              title={isFullscreen ? '退出展开阅读' : '展开阅读'}
+              onClick={onToggleFullscreen}
+            >
+              {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
+            </Button>
+            <Button
+              aria-label="关闭 AI 产物"
+              size="icon"
+              title="关闭"
+              type="button"
+              variant="ghost"
+              onClick={onClose}
+            >
+              <X size={16} />
+            </Button>
+          </div>
         </div>
         <div className="summary-doc-meta">
           <span>{projectName}</span>

@@ -42,6 +42,14 @@ historical product context; current code and these operational docs take precede
 - Project-scoped AI conversations must reset when the selected project changes, and every
   in-flight response from the previous project must be invalidated before it can update
   messages or saved output. Never combine one project's chat history with another project ID.
+- Keep Veges AI as one chat surface. Present summary, Markdown todo extraction, and
+  conversation analysis as empty-chat actions, not visible capability tabs or assistant
+  modes. Select at most one project context through `@`, store its project ID separately
+  from display text, and keep capability routing internal. AI artifacts open on demand
+  instead of remaining permanently beside the conversation.
+- Conversation analysis must clear visible project context because that agent does not
+  receive project facts. Selecting a non-null `@` project must atomically restore the
+  project-aware agent before a message can be sent.
 - Do not sign or fetch arbitrary OSS object keys. Package keys must match configured
   rules/templates; todo images use their dedicated prefix and HMAC signature.
 - Feishu event challenges and events require the verification token. Conversation

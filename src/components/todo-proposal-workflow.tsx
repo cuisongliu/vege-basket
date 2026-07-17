@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react'
 import {
   Check,
   FileMd,
@@ -67,19 +75,30 @@ function confidenceLabel(value: number) {
   return `${Math.max(0, Math.min(100, Math.round(normalized)))}% 置信度`
 }
 
-export function TodoProposalWorkflow({
-  disabled = false,
-  memberships,
-  onBusyChange,
-  onWorkspace,
-  projects,
-}: {
+export type TodoProposalWorkflowHandle = {
+  openFilePicker: () => void
+}
+
+type TodoProposalWorkflowProps = {
   disabled?: boolean
   memberships: ProjectMembership[]
   onBusyChange?: (busy: boolean) => void
   onWorkspace: (workspace: WorkspaceData) => void
   projects: Project[]
-}) {
+  showLauncher?: boolean
+}
+
+export const TodoProposalWorkflow = forwardRef<
+  TodoProposalWorkflowHandle,
+  TodoProposalWorkflowProps
+>(function TodoProposalWorkflow({
+  disabled = false,
+  memberships,
+  onBusyChange,
+  onWorkspace,
+  projects,
+  showLauncher = true,
+}, ref) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [fileName, setFileName] = useState('')
   const [batchId, setBatchId] = useState<number | null>(null)
@@ -91,6 +110,13 @@ export function TodoProposalWorkflow({
   const [error, setError] = useState('')
   const selectedCount = selectedIds.size
   const allSelected = proposals.length > 0 && selectedCount === proposals.length
+  const showWorkflowStatus = showLauncher || Boolean(fileName || proposals.length || error)
+
+  useImperativeHandle(ref, () => ({
+    openFilePicker() {
+      if (!disabled && !generating) fileInputRef.current?.click()
+    },
+  }), [disabled, generating])
 
   useEffect(() => {
     onBusyChange?.(generating || confirming)
@@ -202,40 +228,49 @@ export function TodoProposalWorkflow({
 
   return (
     <>
-      <section className="todo-proposal-workflow" aria-labelledby="todo-proposal-title">
-        <div className="todo-proposal-heading">
-          <span className="todo-proposal-icon" aria-hidden><FileMd size={18} weight="duotone" /></span>
-          <div>
-            <h4 id="todo-proposal-title">从 Markdown 提取待办</h4>
-            <p>选择一个 .md 文件，AI 会先生成可编辑提案，确认后才会创建待办。</p>
-          </div>
-        </div>
-        <input
-          ref={fileInputRef}
-          accept=".md,text/markdown"
-          className="todo-proposal-file-input"
-          type="file"
-          onChange={(event) => void handleFile(event)}
-        />
-        <Button
-          className="ghost-button todo-proposal-upload"
-          disabled={disabled || generating}
-          type="button"
-          variant="outline"
-          onClick={() => fileInputRef.current?.click()}
+      <input
+        ref={fileInputRef}
+        accept=".md,text/markdown"
+        className="todo-proposal-file-input"
+        type="file"
+        onChange={(event) => void handleFile(event)}
+      />
+      {showWorkflowStatus ? (
+        <section
+          className="todo-proposal-workflow"
+          aria-labelledby={showLauncher ? 'todo-proposal-title' : undefined}
         >
-          {generating ? <Sparkle className="is-pulsing" size={16} /> : <FilePlus size={16} />}
-          {generating ? '正在分析文档' : '选择 Markdown 文件'}
-        </Button>
-        {fileName ? <small className="todo-proposal-file-name">{fileName}</small> : null}
-        {proposals.length > 0 && !reviewOpen ? (
-          <Button type="button" onClick={() => setReviewOpen(true)}>
-            <Check size={16} weight="bold" />
-            继续审核 {proposals.length} 项提案
-          </Button>
-        ) : null}
-        {error && !reviewOpen ? <p className="form-error" role="alert">{error}</p> : null}
-      </section>
+          {showLauncher ? (
+            <div className="todo-proposal-heading">
+              <span className="todo-proposal-icon" aria-hidden><FileMd size={18} weight="duotone" /></span>
+              <div>
+                <h4 id="todo-proposal-title">从 Markdown 提取待办</h4>
+                <p>选择一个 .md 文件，AI 会先生成可编辑提案，确认后才会创建待办。</p>
+              </div>
+            </div>
+          ) : null}
+          {showLauncher ? (
+            <Button
+              className="ghost-button todo-proposal-upload"
+              disabled={disabled || generating}
+              type="button"
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {generating ? <Sparkle className="is-pulsing" size={16} /> : <FilePlus size={16} />}
+              {generating ? '正在分析文档' : '选择 Markdown 文件'}
+            </Button>
+          ) : null}
+          {fileName ? <small className="todo-proposal-file-name">{fileName}</small> : null}
+          {proposals.length > 0 && !reviewOpen ? (
+            <Button type="button" onClick={() => setReviewOpen(true)}>
+              <Check size={16} weight="bold" />
+              继续审核 {proposals.length} 项提案
+            </Button>
+          ) : null}
+          {error && !reviewOpen ? <p className="form-error" role="alert">{error}</p> : null}
+        </section>
+      ) : null}
 
       <Dialog open={reviewOpen} onOpenChange={(open) => !confirming && setReviewOpen(open)}>
         <DialogContent
@@ -410,4 +445,4 @@ export function TodoProposalWorkflow({
       </Dialog>
     </>
   )
-}
+})

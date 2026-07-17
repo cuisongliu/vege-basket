@@ -178,6 +178,12 @@ Surfaces are flat by default. Borders and background changes provide most separa
 
 Sidebar rows are 32px high with a 6px radius, left-aligned icon and label, and a muted active background. Counts sit in compact pills at the row end. On narrow screens, navigation and dense workspace regions collapse structurally rather than shrinking type.
 
+### Veges AI
+
+Treat Veges AI as one task canvas, not a collection of feature panels. The empty conversation uses three quiet action rows for project summaries, Markdown todo extraction, and conversation analysis; capability and agent routing remain invisible. A selected `@` project appears as one compact removable context chip, while the composer stays anchored to the bottom of the canvas.
+
+AI artifacts are progressive disclosure. Open them from the chat toolbar as a bordered side panel on wide screens and as a full-width replacement pane on narrow screens. Do not add permanent capability tabs, a fixed project selector, a model badge, nested cards, or a second Veges AI heading inside the canvas.
+
 ### Project Package Workbench
 
 Treat package market, delivery event, operation, and related-todo controls as one dense tool surface. Keep object keys and versions in mono text, preserve request and error state, and use dialogs only for edits that cannot fit safely inline.
