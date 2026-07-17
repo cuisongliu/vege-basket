@@ -10084,6 +10084,79 @@ textarea:focus {
   align-content: center;
 }
 
+.veges-ai-prompt-examples {
+  width: min(100%, 760px);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  justify-self: center;
+}
+
+.veges-ai-prompt-examples button {
+  position: relative;
+  min-width: 0;
+  min-height: 132px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 88%, var(--ai-canvas));
+  color: var(--muted-text);
+  padding: 14px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.veges-ai-prompt-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--brand) 9%, var(--surface));
+  color: var(--brand);
+}
+
+.veges-ai-prompt-copy {
+  min-width: 0;
+  display: grid;
+  align-self: end;
+  gap: 4px;
+}
+
+.veges-ai-prompt-copy strong {
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.veges-ai-prompt-copy small {
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.veges-ai-prompt-send-icon {
+  position: absolute;
+  top: 22px;
+  right: 15px;
+  transition: transform 140ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .veges-ai-prompt-examples button,
+  .veges-ai-prompt-send-icon {
+    transition: none;
+  }
+}
+
 .veges-ai-stage .agent-message {
   width: fit-content;
   max-width: min(82%, 650px);
@@ -10581,6 +10654,7 @@ textarea:focus {
 }
 
 .veges-ai-toolbar button:focus-visible,
+.veges-ai-prompt-examples button:focus-visible,
 .ai-project-chip button:focus-visible,
 .ai-attachment-chip button:focus-visible,
 .ai-project-picker button:focus-visible {
@@ -10597,6 +10671,17 @@ textarea:focus {
   .veges-ai-stage .ai-project-trigger:hover {
     background: var(--ai-canvas);
     color: var(--strong);
+  }
+
+  .veges-ai-prompt-examples button:hover {
+    border-color: color-mix(in oklch, var(--brand) 32%, var(--line));
+    background: color-mix(in oklch, var(--brand) 5%, var(--surface));
+    color: var(--brand);
+    transform: translateY(-1px);
+  }
+
+  .veges-ai-prompt-examples button:hover .veges-ai-prompt-send-icon {
+    transform: translateX(2px);
   }
 
   .ai-project-picker button:hover,
@@ -10664,6 +10749,28 @@ textarea:focus {
 
   .veges-ai-stage .agent-messages {
     padding: 4px 2px 12px;
+  }
+
+  .veges-ai-prompt-examples {
+    grid-template-columns: none;
+    grid-auto-columns: minmax(220px, 78vw);
+    grid-auto-flow: column;
+    gap: 8px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+  }
+
+  .veges-ai-prompt-examples button {
+    min-height: 118px;
+    padding: 12px;
+    scroll-snap-align: start;
+  }
+
+  .veges-ai-prompt-send-icon {
+    top: 20px;
+    right: 13px;
   }
 
   .veges-ai-stage .agent-message {

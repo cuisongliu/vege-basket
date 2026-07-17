@@ -87,3 +87,43 @@ test('allows explicit commands to include output questions', () => {
     { content: '# 计划\n- [ ] 发布', kind: 'todo-extraction' },
   )
 })
+
+test('routes the empty-chat example prompts through their intended capabilities', () => {
+  assert.deepEqual(
+    classifyAiInput('帮我梳理本周进展，并给出下一步行动建议。'),
+    { kind: 'chat' },
+  )
+  assert.deepEqual(
+    classifyAiInput('生成这个项目的周报'),
+    { kind: 'project-summary', period: 'weekly' },
+  )
+  assert.deepEqual(
+    classifyAiInput([
+      '分析下面这段对话里的结论和分歧：',
+      '',
+      '小王：本周先上线搜索，导出功能下周再做。',
+      '小李：我认为导出更影响交付，应该优先。',
+      '小王：那先补导出，搜索顺延到下周。',
+    ].join('\n')),
+    { kind: 'conversation-analysis' },
+  )
+  assert.deepEqual(
+    classifyAiInput([
+      '从下面的 Markdown 示例中提取待办：',
+      '',
+      '## 发布准备',
+      '- [ ] 完成移动端回归',
+      '- [ ] 更新部署说明',
+      '- [x] 确认版本号',
+    ].join('\n')),
+    {
+      content: [
+        '## 发布准备',
+        '- [ ] 完成移动端回归',
+        '- [ ] 更新部署说明',
+        '- [x] 确认版本号',
+      ].join('\n'),
+      kind: 'todo-extraction',
+    },
+  )
+})

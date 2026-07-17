@@ -22,6 +22,7 @@ import {
   Bell,
   CalendarBlank,
   Check,
+  ChatCircleDots,
   CopySimple,
   CornersIn,
   CornersOut,
@@ -6303,8 +6304,8 @@ function VegesAiView({
     window.requestAnimationFrame(() => composerRef.current?.focus())
   }
 
-  async function sendComposerMessage() {
-    const draftContent = aiDraft.trim()
+  async function sendComposerMessage(prompt = aiDraft) {
+    const draftContent = prompt.trim()
     if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
 
     const content = buildAiMessageContent(draftContent, attachments)
@@ -6390,6 +6391,53 @@ function VegesAiView({
     onResetAiChat()
   }
 
+  const showPromptExamples =
+    aiConfigured &&
+    !aiStatusLoading &&
+    aiMessages.length === 0 &&
+    !aiDraft.trim() &&
+    attachments.length === 0 &&
+    !workspaceBusy
+  const promptExamples = [
+    {
+      description: selectedProject
+        ? '基于当前项目事实生成本周周报'
+        : '把零散进展整理成周报与下一步',
+      icon: <Sparkle aria-hidden size={18} weight="fill" />,
+      label: selectedProject
+        ? `总结 ${selectedProject.name} 本周进展`
+        : '梳理本周进展和下一步',
+      prompt: selectedProject
+        ? '生成这个项目的周报'
+        : '帮我梳理本周进展，并给出下一步行动建议。',
+    },
+    {
+      description: '提炼结论、分歧和推进建议',
+      icon: <ChatCircleDots aria-hidden size={19} weight="fill" />,
+      label: '分析一段对话的结论和分歧',
+      prompt: [
+        '分析下面这段对话里的结论和分歧：',
+        '',
+        '小王：本周先上线搜索，导出功能下周再做。',
+        '小李：我认为导出更影响交付，应该优先。',
+        '小王：那先补导出，搜索顺延到下周。',
+      ].join('\n'),
+    },
+    {
+      description: '识别可执行事项并进入候选审核',
+      icon: <ListChecks aria-hidden size={19} weight="fill" />,
+      label: '从 Markdown 示例提取待办',
+      prompt: [
+        '从下面的 Markdown 示例中提取待办：',
+        '',
+        '## 发布准备',
+        '- [ ] 完成移动端回归',
+        '- [ ] 更新部署说明',
+        '- [x] 确认版本号',
+      ].join('\n'),
+    },
+  ]
+
   return (
     <div className={`veges-ai-layout${artifactsOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
       <Card className="panel veges-ai-workspace">
@@ -6450,11 +6498,33 @@ function VegesAiView({
         <section aria-label="Veges AI 对话" className="veges-ai-stage">
               <div
                 aria-busy={aiBusy}
-                aria-live="polite"
+                aria-live={showPromptExamples ? 'off' : 'polite'}
                 aria-relevant="additions text"
                 className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
                 role="log"
               >
+                {showPromptExamples ? (
+                  <div aria-label="示例提示" className="veges-ai-prompt-examples">
+                    {promptExamples.map((example) => (
+                      <button
+                        key={example.label}
+                        type="button"
+                        onClick={() => void sendComposerMessage(example.prompt)}
+                      >
+                        <span className="veges-ai-prompt-icon">{example.icon}</span>
+                        <span className="veges-ai-prompt-copy">
+                          <strong>{example.label}</strong>
+                          <small>{example.description}</small>
+                        </span>
+                        <PaperPlaneTilt
+                          aria-hidden
+                          className="veges-ai-prompt-send-icon"
+                          size={15}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {aiMessages.map((message, index) => (
                   <article className={`agent-message ${message.role}`} key={`${message.role}-${index}`}>
                     <div className="agent-message-content">

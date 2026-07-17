@@ -42,12 +42,15 @@ historical product context; current code and these operational docs take precede
 - Project-scoped AI conversations must reset when the selected project changes, and every
   in-flight response from the previous project must be invalidated before it can update
   messages or saved output. Never combine one project's chat history with another project ID.
-- Keep Veges AI as one composer-only chat surface with no empty-state action cards,
-  visible capability tabs, or assistant modes. Trigger summary, Markdown todo extraction,
-  and conversation analysis only from explicit natural-language intent; ambiguous input
-  remains ordinary chat. Select at most one project context through `@`, store its project
-  ID separately from display text, and keep capability routing internal. Proposal review
-  and result artifacts may open on demand instead of remaining beside the conversation.
+- Keep Veges AI as one composer-only chat surface with no visible capability tabs or
+  assistant modes. The empty conversation may show one row of three prompt cards, but each
+  card must send a complete natural-language message through the same composer path and
+  disappear once the user types, attaches a file, or sends. Trigger summary, Markdown todo
+  extraction, and conversation analysis only from explicit natural-language intent;
+  ambiguous input remains ordinary chat. Select at most one project context through `@`,
+  store its project ID separately from display text, and keep capability routing internal.
+  Proposal review and result artifacts may open on demand instead of remaining beside the
+  conversation.
 - AI composer attachments are browser-read text, not separately uploaded objects. Accept
   at most four supported text files, 64 KiB each and 20,000 combined characters; keep the
   original attachment content in AI history while rendering only safe name/size metadata.
