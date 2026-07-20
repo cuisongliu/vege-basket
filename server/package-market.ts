@@ -385,6 +385,34 @@ function middlewareRootAllowsObjectKey(objectKey: string) {
   return false
 }
 
+function cacheClusterPackageAllowsObjectKey(objectKey: string) {
+  const releaseMatch = objectKey.match(
+    /^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/releases?\/([^/]+)\/([^/]+)$/,
+  )
+  if (releaseMatch) {
+    const [, packageName, rawVersion, fileName] = releaseMatch
+    const version = normalizeVersion(rawVersion)
+    if (!packageName || !version || !fileName) return false
+
+    return new RegExp(
+      `^${escapeRegExp(packageName)}-[a-zA-Z0-9._-]+-cache-cluster-${escapeRegExp(version)}\\.tar(?:\\.gz)?$`,
+    ).test(fileName)
+  }
+
+  const ciMatch = objectKey.match(
+    /^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/ci\/main\/([a-zA-Z0-9._-]+)\/([^/]+)$/,
+  )
+  if (!ciMatch) return false
+
+  const [, packageName, rawHash, fileName] = ciMatch
+  const hash = normalizeString(rawHash)
+  if (!packageName || !hash || !fileName) return false
+
+  return new RegExp(
+    `^${escapeRegExp(packageName)}-[a-zA-Z0-9._-]+-cache-cluster-(?:main|latest)-${escapeRegExp(hash)}\\.tar(?:\\.gz)?$`,
+  ).test(fileName)
+}
+
 export function isAllowedPackageMarketObjectKey(value: unknown) {
   const objectKey = normalizeString(value)
   if (
@@ -405,6 +433,7 @@ export function isAllowedPackageMarketObjectKey(value: unknown) {
   if (parseRulesFile().some((rule) => ruleAllowsObjectKey(rule, objectKey))) {
     return true
   }
+  if (cacheClusterPackageAllowsObjectKey(objectKey)) return true
   if (middlewareRootAllowsObjectKey(objectKey)) return true
 
   for (const deployType of ['pro', 'oss']) {
@@ -1217,13 +1246,18 @@ export function normalizePackageMarketExpireMinutes(value: unknown) {
 }
 
 export async function listPackageMarketRules() {
-  const client = ossClient()
   const yamlRules = parseRulesFile().map(publicRule)
-  const yamlMiddlewareNames = new Set(
-    yamlRules.filter((rule) => rule.category === 'middleware').map((rule) => rule.name),
-  )
-  const middlewareRules = await publicProMiddlewareRules(client, yamlMiddlewareNames)
-  return [...yamlRules, ...middlewareRules]
+  try {
+    const client = ossClient()
+    const yamlMiddlewareNames = new Set(
+      yamlRules.filter((rule) => rule.category === 'middleware').map((rule) => rule.name),
+    )
+    const middlewareRules = await publicProMiddlewareRules(client, yamlMiddlewareNames)
+    return [...yamlRules, ...middlewareRules]
+  } catch (error) {
+    if (yamlRules.length > 0) return yamlRules
+    throw error
+  }
 }
 
 export async function getPackageMarketDetail(params: {

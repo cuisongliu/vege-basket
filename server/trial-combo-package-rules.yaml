@@ -103,6 +103,36 @@ rules:
       - objectstorage-cluster-main-%s-%s.tar.gz
       - objectstorage-cluster-latest-%s-%s.tar
       - objectstorage-cluster-latest-%s-%s.tar.gz
+  offline-center:
+    name: offline-center
+    release_roots:
+      - offline/sealos-apps/offline-center/release/
+    file_name_formats:
+      - offline-center-cluster-%s-%s.tar
+      - offline-center-cluster-%s-%s.tar.gz
+      - offline-center-%s-%s.tar
+      - offline-center-%s-%s.tar.gz
+    ci_file_name_formats:
+      - offline-center-cluster-main-%s-%s.tar
+      - offline-center-cluster-main-%s-%s.tar.gz
+      - offline-center-cluster-latest-%s-%s.tar
+      - offline-center-cluster-latest-%s-%s.tar.gz
+  offline-center-desktop-cache:
+    name: offline-center-desktop-cache
+    parent: offline-center
+    release_roots:
+      - offline/sealos-apps/offline-center/release/
+    file_name_formats:
+      - offline-center-desktop-cache-cluster-%s.tar
+      - offline-center-desktop-cache-cluster-%s.tar.gz
+  offline-center-vscode-cache:
+    name: offline-center-vscode-cache
+    parent: offline-center
+    release_roots:
+      - offline/sealos-apps/offline-center/release/
+    file_name_formats:
+      - offline-center-vscode-cache-cluster-%s.tar
+      - offline-center-vscode-cache-cluster-%s.tar.gz
   cronjob:
     name: cronjob
     release_roots:

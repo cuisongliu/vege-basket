@@ -53,6 +53,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import {
   TodoFilterBuilderDialog,
+  createTodoFilterCondition,
   matchesTodoFilterConditions,
   type TodoFilterCondition,
   type TodoFilterJoin,
@@ -318,12 +319,30 @@ function itemChannelLabel(item: Pick<ProjectPackageItem, 'channel' | 'channelLab
   return item.channel === 'ci' ? '测试包' : '正式包'
 }
 
+function packageItemFileName(item: Pick<ProjectPackageItem, 'objectKey' | 'packageName'>) {
+  return item.objectKey.split('/').filter(Boolean).at(-1) || item.packageName
+}
+
+function summarizeGroupDetails(group: ProjectPackageGroup) {
+  return Array.from(
+    new Set(
+      group.items
+        .map((item) =>
+          [itemChannelLabel(item), item.arch, item.version || '未知版本'].filter(Boolean).join(' · '),
+        )
+        .filter(Boolean),
+    ),
+  )
+}
+
 function summarizeGroup(group: ProjectPackageGroup) {
-  return group.items
-    .map((item) =>
-      [itemChannelLabel(item), item.arch, item.version || '未知版本'].filter(Boolean).join(' · '),
-    )
-    .join('；')
+  return summarizeGroupDetails(group).join('；')
+}
+
+function summarizeGroupFileNames(group: ProjectPackageGroup) {
+  return Array.from(
+    new Set(group.items.map((item) => packageItemFileName(item)).filter(Boolean)),
+  )
 }
 
 function operationHeading(operation: ProjectPackageOperation) {
@@ -366,6 +385,10 @@ function todoSearchMeta(todo: Todo) {
   ]
     .join(' ')
     .toLowerCase()
+}
+
+function packageMarketSearchMeta(value: string) {
+  return value.trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
 }
 
 function renderOperationTodoChips(
@@ -616,7 +639,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectableTodos = useMemo(
     () =>
       [...todos]
-        .filter((todo) => todo.confirmationStatus === 'confirmed')
+        .filter((todo) => todo.confirmationStatus !== 'rejected')
         .sort((left, right) => {
         if (left.done !== right.done) return Number(left.done) - Number(right.done)
         if (left.dueDate !== right.dueDate) return left.dueDate.localeCompare(right.dueDate)
@@ -704,12 +727,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     selectedEvent?.groups.find((group) => group.id === selectedGroupId) ??
     selectedEvent?.groups[0] ??
     null
+  const selectedEventObjectKeys = useMemo(
+    () => new Set(selectedEvent?.groups.flatMap((group) => group.items.map((item) => item.objectKey)) ?? []),
+    [selectedEvent],
+  )
+  const selectedEventAddedObjectKeys = useMemo(() => {
+    const next = new Set(selectedEventObjectKeys)
+    cartItems.forEach((item) => next.add(item.objectKey))
+    return next
+  }, [cartItems, selectedEventObjectKeys])
   const selectedEventProgress = selectedEvent
     ? getEventCompletionProgress(selectedEvent, todosById)
     : { completed: 0, percent: 0, total: 0 }
 
   const filteredRules = useMemo(() => {
-    const query = marketSearch.trim().toLowerCase()
+    const query = packageMarketSearchMeta(marketSearch)
     const baseRules: PackageMarketRule[] = [
       {
         id: 'base-pro',
@@ -735,7 +767,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     ]
     return baseRules.filter((rule) => {
       if (!query) return true
-      return `${rule.id} ${rule.name}`.toLowerCase().includes(query)
+      return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
     })
   }, [marketRules, marketSearch])
 
@@ -770,22 +802,25 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     detail: PackageMarketDetail,
     link: PackageMarketDetail['links'][number],
   ) {
-    if (!context) return
-    setCartItems((current) => [
-      ...current,
-      {
-        sourcePackageId: context.packageId,
-        sourcePackageName: detail.title,
-        packageName: link.name,
-        channel: context.channel,
-        channelLabel: channelLabel(context.channel),
-        arch: context.arch,
-        version: link.version,
-        objectKey: link.objectKey,
-        objectLastModified: link.lastModified,
-        sizeBytes: link.size,
-      },
-    ])
+    if (!context || selectedEventObjectKeys.has(link.objectKey)) return
+    setCartItems((current) => {
+      if (current.some((item) => item.objectKey === link.objectKey)) return current
+      return [
+        ...current,
+        {
+          sourcePackageId: context.packageId,
+          sourcePackageName: detail.title,
+          packageName: link.name,
+          channel: context.channel,
+          channelLabel: channelLabel(context.channel),
+          arch: context.arch,
+          version: link.version,
+          objectKey: link.objectKey,
+          objectLastModified: link.lastModified,
+          sizeBytes: link.size,
+        },
+      ]
+    })
   }
 
   useEffect(() => {
@@ -1062,7 +1097,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       Object.fromEntries(todos.map((todo) => [todo.id, todo.done] as const)),
     )
     setTodoDialogSearch('')
-    setTodoFilterConditions([])
+    setTodoFilterConditions([createTodoFilterCondition('done')])
     setTodoFilterJoin('and')
     setTodoFilterDialogOpen(false)
     setTodoPickerOpen(false)
@@ -1264,12 +1299,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     context: PackageMarketDetailContext | null,
     link: PackageMarketDetail['links'][number],
   ) {
+    const fileName = link.objectKey.split('/').filter(Boolean).at(-1) || link.name
+    const alreadyAdded = selectedEventAddedObjectKeys.has(link.objectKey)
     return (
       <article className="package-market-link-card" key={`${context?.packageId ?? detail.title}-${link.objectKey}-${link.version}`}>
         <div className="package-market-link-head">
-          <div>
-            <strong>{link.name}</strong>
-            <small>{` · ${link.version}${link.size ? ` · ${formatBytes(link.size)}` : ''}`}</small>
+          <div className="package-market-link-meta">
+            <strong>{fileName}</strong>
+            {link.size ? <small>{formatBytes(link.size)}</small> : null}
           </div>
           <div className="package-market-link-actions">
             <Button
@@ -1283,16 +1320,15 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 )
               }
             >
-              <Copy size={15} /> {copiedLabel(`copy-download-url-${link.objectKey}`, '复制下载链接')}
+              <Copy size={15} /> {copiedLabel(`copy-download-url-${link.objectKey}`, '链接')}
             </Button>
             <Button
-              className="ghost-button"
-              variant="outline"
+              className="solid-button"
               type="button"
-              disabled={!context}
+              disabled={!context || alreadyAdded}
               onClick={() => addMarketLinkToCart(context, detail, link)}
             >
-              <Package size={16} /> 添加
+              <Package size={16} /> {alreadyAdded ? '已添加' : '添加'}
             </Button>
           </div>
         </div>
@@ -1309,7 +1345,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               void copyToClipboard(link.objectKey, `copy-object-key-${link.objectKey}`)
             }
           >
-            <Copy size={15} /> {copiedLabel(`copy-object-key-${link.objectKey}`, '复制 Key')}
+            <Copy size={15} /> {copiedLabel(`copy-object-key-${link.objectKey}`, 'Key')}
           </Button>
         </div>
       </article>
@@ -1655,7 +1691,20 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                             onClick={() => setSelectedGroupId(group.id)}
                           >
                             <strong>{group.packageName}</strong>
-                            <span className="package-meta-text">{summarizeGroup(group) || `${group.items.length} 条记录`}</span>
+                            <span className="package-meta-block">
+                              <span className="package-meta-text">
+                                {summarizeGroup(group) || `${group.items.length} 条记录`}
+                              </span>
+                              {summarizeGroupFileNames(group).length > 0 ? (
+                                <span className="package-file-list">
+                                  {summarizeGroupFileNames(group).map((fileName) => (
+                                    <span className="package-file-list-text" key={fileName}>
+                                      {fileName}
+                                    </span>
+                                  ))}
+                                </span>
+                              ) : null}
+                            </span>
                           </button>
                           {canManageTimeline ? (
                             <DeleteConfirmDialog
@@ -1684,7 +1733,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       <div>
                         <h3>{selectedGroup?.packageName ?? '包级时间线'}</h3>
                         {selectedGroup ? (
-                          <p className="package-meta-text">{summarizeGroup(selectedGroup)}</p>
+                          <div className="package-meta-block">
+                            <p className="package-meta-text">{summarizeGroup(selectedGroup)}</p>
+                            {summarizeGroupFileNames(selectedGroup).length > 0 ? (
+                              <div className="package-file-list">
+                                {summarizeGroupFileNames(selectedGroup).map((fileName) => (
+                                  <p className="package-file-list-text" key={fileName}>
+                                    {fileName}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
                       {canManageTimeline && selectedGroup ? (
@@ -1981,183 +2041,185 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           if (!open) clearOperationTodoDialogState()
         }}
       >
-        <DialogContent className="package-operation-dialog">
+        <DialogContent className="package-operation-dialog operation-todo-link-dialog">
           <DialogHeader>
             <DialogTitle>关联待办</DialogTitle>
             <DialogDescription>
               在这里统一管理待办关联、完成状态和备注说明；复选框会与外部待办列表的勾选状态保持同步。
             </DialogDescription>
           </DialogHeader>
-          {selectableTodos.length > 0 ? (
-            <div className="operation-todo-picker">
-              <span className="operation-todo-picker-label">选择待办</span>
-              <DropdownMenu
-                open={todoPickerOpen}
-                onOpenChange={(open) => {
-                  setTodoPickerOpen(open)
-                }}
-              >
-                <DropdownMenuTrigger asChild>
-                  <Button className="operation-todo-picker-trigger" variant="outline" type="button">
-                    <span className="operation-todo-picker-trigger-content">
-                      {todoDialogSelectedTodos.length === 0 ? (
-                        <span className="operation-todo-picker-placeholder">搜索并选择待办</span>
-                      ) : (
-                        <span className="operation-todo-picker-tags">
-                          {todoDialogSelectedTodos.slice(0, 3).map((todo) => (
-                            <span className="operation-todo-picker-tag" key={todo.id}>
-                              {todo.title}
-                            </span>
-                          ))}
-                          {todoDialogSelectedTodos.length > 3 ? (
-                            <span className="operation-todo-picker-tag">
-                              +{todoDialogSelectedTodos.length - 3}
-                            </span>
-                          ) : null}
-                        </span>
-                      )}
-                    </span>
-                    <CaretDown
-                      className={todoPickerOpen ? 'operation-todo-picker-caret open' : 'operation-todo-picker-caret'}
-                      size={14}
-                      weight="bold"
-                    />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="start"
-                  className={
-                    todoPickerOptionsOverflowing
-                      ? 'operation-todo-picker-content has-options-scrollbar'
-                      : 'operation-todo-picker-content'
-                  }
-                  collisionPadding={20}
-                  onCloseAutoFocus={(event) => event.preventDefault()}
-                  sideOffset={8}
+          <div className={selectableTodos.length > 0 ? 'operation-todo-dialog-body has-picker' : 'operation-todo-dialog-body'}>
+            {selectableTodos.length > 0 ? (
+              <div className="operation-todo-picker">
+                <span className="operation-todo-picker-label">选择待办</span>
+                <DropdownMenu
+                  open={todoPickerOpen}
+                  onOpenChange={(open) => {
+                    setTodoPickerOpen(open)
+                  }}
                 >
-                  <div className="operation-todo-picker-search-row">
-                    <Input
-                      ref={todoPickerSearchRef}
-                      value={todoDialogSearch}
-                      onChange={(event) => setTodoDialogSearch(event.target.value)}
-                      onKeyDown={(event) => event.stopPropagation()}
-                      placeholder="搜索标题、负责人、提交人、创建日期"
-                    />
-                    <Button
-                      className={
-                        activeTodoFilterCount > 0
-                          ? 'todo-filter-open-button operation-todo-filter-open-button active'
-                          : 'todo-filter-open-button operation-todo-filter-open-button'
-                      }
-                      variant="outline"
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setTodoFilterDialogOpen(true)
-                      }}
-                    >
-                      <FunnelSimple size={14} />
-                      <span>{todoFilterSummary}</span>
-                    </Button>
-                  </div>
-                  <TodoFilterBuilderDialog
-                    assigneeOptions={todoDialogAssigneeOptions}
-                    conditions={todoFilterConditions}
-                    creatorOptions={todoDialogCreatorOptions}
-                    join={todoFilterJoin}
-                    moduleOptions={todoDialogModuleOptions}
-                    open={todoFilterDialogOpen}
-                    onOpenChange={setTodoFilterDialogOpen}
-                    onApply={({ conditions: nextConditions, join: nextJoin }) => {
-                      setTodoFilterConditions(nextConditions)
-                      setTodoFilterJoin(nextJoin)
-                    }}
-                  />
-                  <div className="operation-todo-picker-options" ref={todoPickerOptionsRef}>
-                    {filteredTodoDialogTodos.length === 0 ? (
-                      <p className="operation-empty">没有搜索到匹配的待办。</p>
-                    ) : (
-                      filteredTodoDialogTodos.map((todo) => {
-                        const selected = todoDialogSelectedIds.has(todo.id)
-                        const done = Boolean(todoDialogTodoDoneMap[todo.id])
-                        const meta = todoDialogMeta(todo, done)
-                        return (
-                          <button
-                            className={selected ? 'operation-todo-picker-option selected' : 'operation-todo-picker-option'}
-                            key={todo.id}
-                            type="button"
-                            onClick={() => toggleTodoDialogTodo(todo.id)}
-                          >
-                            <span className="operation-todo-picker-option-check" aria-hidden="true" />
-                            <span className="operation-todo-picker-option-text">
-                              <strong>
+                  <DropdownMenuTrigger asChild>
+                    <Button className="operation-todo-picker-trigger" variant="outline" type="button">
+                      <span className="operation-todo-picker-trigger-content">
+                        {todoDialogSelectedTodos.length === 0 ? (
+                          <span className="operation-todo-picker-placeholder">搜索并选择待办</span>
+                        ) : (
+                          <span className="operation-todo-picker-tags">
+                            {todoDialogSelectedTodos.slice(0, 3).map((todo) => (
+                              <span className="operation-todo-picker-tag" key={todo.id}>
                                 {todo.title}
-                                {todo.moduleName ? (
-                                  <Badge className="todo-module-badge">{todo.moduleName}</Badge>
-                                ) : null}
-                              </strong>
-                              <small>{meta}</small>
-                            </span>
-                          </button>
-                        )
-                      })
-                    )}
-                  </div>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : null}
-          <div className="operation-todo-dialog-list">
-            {selectableTodos.length === 0 ? (
-              <div className="operation-todo-dialog-empty-state">
-                <strong>暂未关联待办</strong>
-                <span>当前项目还没有已确认的待办可供关联。</span>
-              </div>
-            ) : todoDialogSelectedTodos.length === 0 ? (
-              <div className="operation-todo-dialog-empty-state">
-                <strong>暂未关联待办</strong>
-                <span>先在上方搜索并选择待办，选择后再填写备注并同步完成状态。</span>
-              </div>
-            ) : (
-              todoDialogSelectedTodos.map((todo) => {
-                const done = Boolean(todoDialogTodoDoneMap[todo.id])
-                const meta = todoDialogMeta(todo, done)
-                return (
-                  <article
-                    className={done ? 'operation-todo-dialog-item selected done' : 'operation-todo-dialog-item selected'}
-                    key={todo.id}
+                              </span>
+                            ))}
+                            {todoDialogSelectedTodos.length > 3 ? (
+                              <span className="operation-todo-picker-tag">
+                                +{todoDialogSelectedTodos.length - 3}
+                              </span>
+                            ) : null}
+                          </span>
+                        )}
+                      </span>
+                      <CaretDown
+                        className={todoPickerOpen ? 'operation-todo-picker-caret open' : 'operation-todo-picker-caret'}
+                        size={14}
+                        weight="bold"
+                      />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className={
+                      todoPickerOptionsOverflowing
+                        ? 'operation-todo-picker-content has-options-scrollbar'
+                        : 'operation-todo-picker-content'
+                    }
+                    collisionPadding={20}
+                    onCloseAutoFocus={(event) => event.preventDefault()}
+                    sideOffset={8}
                   >
-                    <span className="operation-todo-dialog-item-head">
-                      <span className="operation-todo-dialog-item-text">
-                        <strong>
-                          {todo.title}
+                    <div className="operation-todo-picker-search-row">
+                      <Input
+                        ref={todoPickerSearchRef}
+                        value={todoDialogSearch}
+                        onChange={(event) => setTodoDialogSearch(event.target.value)}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        placeholder="搜索标题、负责人、提交人、创建日期"
+                      />
+                      <Button
+                        className={
+                          activeTodoFilterCount > 0
+                            ? 'todo-filter-open-button operation-todo-filter-open-button active'
+                            : 'todo-filter-open-button operation-todo-filter-open-button'
+                        }
+                        variant="outline"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setTodoFilterDialogOpen(true)
+                        }}
+                      >
+                        <FunnelSimple size={14} />
+                        <span>{todoFilterSummary}</span>
+                      </Button>
+                    </div>
+                    <TodoFilterBuilderDialog
+                      assigneeOptions={todoDialogAssigneeOptions}
+                      conditions={todoFilterConditions}
+                      creatorOptions={todoDialogCreatorOptions}
+                      join={todoFilterJoin}
+                      moduleOptions={todoDialogModuleOptions}
+                      open={todoFilterDialogOpen}
+                      onOpenChange={setTodoFilterDialogOpen}
+                      onApply={({ conditions: nextConditions, join: nextJoin }) => {
+                        setTodoFilterConditions(nextConditions)
+                        setTodoFilterJoin(nextJoin)
+                      }}
+                    />
+                    <div className="operation-todo-picker-options" ref={todoPickerOptionsRef}>
+                      {filteredTodoDialogTodos.length === 0 ? (
+                        <p className="operation-empty">没有搜索到匹配的待办。</p>
+                      ) : (
+                        filteredTodoDialogTodos.map((todo) => {
+                          const selected = todoDialogSelectedIds.has(todo.id)
+                          const done = Boolean(todoDialogTodoDoneMap[todo.id])
+                          const meta = todoDialogMeta(todo, done)
+                          return (
+                            <button
+                              className={selected ? 'operation-todo-picker-option selected' : 'operation-todo-picker-option'}
+                              key={todo.id}
+                              type="button"
+                              onClick={() => toggleTodoDialogTodo(todo.id)}
+                            >
+                              <span className="operation-todo-picker-option-check" aria-hidden="true" />
+                              <span className="operation-todo-picker-option-text">
+                                <strong>
+                                  <span className="operation-todo-dialog-item-title">{todo.title}</span>
+                                  {todo.moduleName ? (
+                                    <Badge className="todo-module-badge">{todo.moduleName}</Badge>
+                                  ) : null}
+                                </strong>
+                                <small>{meta}</small>
+                              </span>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ) : null}
+            <div className="operation-todo-dialog-list">
+              {selectableTodos.length === 0 ? (
+                <div className="operation-todo-dialog-empty-state">
+                  <strong>暂未关联待办</strong>
+                  <span>当前项目还没有可供关联的待办。</span>
+                </div>
+              ) : todoDialogSelectedTodos.length === 0 ? (
+                <div className="operation-todo-dialog-empty-state">
+                  <strong>暂未关联待办</strong>
+                  <span>先在上方搜索并选择待办，选择后再填写备注并同步完成状态。</span>
+                </div>
+              ) : (
+                todoDialogSelectedTodos.map((todo) => {
+                  const done = Boolean(todoDialogTodoDoneMap[todo.id])
+                  const meta = todoDialogMeta(todo, done)
+                  return (
+                    <article
+                      className={done ? 'operation-todo-dialog-item selected done' : 'operation-todo-dialog-item selected'}
+                      key={todo.id}
+                    >
+                      <div className="operation-todo-dialog-item-head">
+                        <div className="operation-todo-dialog-item-text">
+                          <strong>
+                            <span className="operation-todo-dialog-item-title">{todo.title}</span>
+                          </strong>
                           {todo.moduleName ? (
                             <Badge className="todo-module-badge">{todo.moduleName}</Badge>
                           ) : null}
-                        </strong>
-                        <small>{meta}</small>
-                      </span>
-                      <span className="operation-todo-dialog-item-controls">
-                        <label className="operation-todo-dialog-done-toggle">
-                          <input
-                            type="checkbox"
-                            checked={done}
-                            onChange={() => toggleTodoDialogDone(todo.id)}
-                          />
-                          <span>完成待办</span>
-                        </label>
-                      </span>
-                    </span>
-                    <Textarea
-                      className="operation-todo-dialog-note"
-                      placeholder="写一下未完成原因、完成情况或补充说明..."
-                      value={todoDialogRelatedTodoNotes[todo.id] ?? ''}
-                      onChange={(event) => updateTodoDialogNote(todo.id, event.target.value)}
-                    />
-                  </article>
-                )
-              })
-            )}
+                          <small>{meta}</small>
+                        </div>
+                        <div className="operation-todo-dialog-item-controls">
+                          <label className="operation-todo-dialog-done-toggle">
+                            <input
+                              type="checkbox"
+                              checked={done}
+                              onChange={() => toggleTodoDialogDone(todo.id)}
+                            />
+                            <span>完成待办</span>
+                          </label>
+                        </div>
+                      </div>
+                      <Textarea
+                        className="operation-todo-dialog-note"
+                        placeholder="写一下未完成原因、完成情况或补充说明..."
+                        value={todoDialogRelatedTodoNotes[todo.id] ?? ''}
+                        onChange={(event) => updateTodoDialogNote(todo.id, event.target.value)}
+                      />
+                    </article>
+                  )
+                })
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button

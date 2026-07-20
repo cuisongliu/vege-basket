@@ -78,9 +78,24 @@ create table if not exists project_invite_links (
   project_id bigint not null references projects(id) on delete cascade,
   owner_user_id bigint not null references users(id) on delete cascade,
   token text not null unique,
+  password_hash text not null default '',
   created_at timestamptz not null default now(),
+  expires_at timestamptz,
   revoked_at timestamptz
 );
+
+alter table project_invite_links
+  add column if not exists expires_at timestamptz;
+
+alter table project_invite_links
+  add column if not exists password_hash text not null default '';
+
+update project_invite_links
+set expires_at = created_at + interval '10 minutes'
+where expires_at is null;
+
+alter table project_invite_links
+  alter column expires_at set not null;
 
 create table if not exists journal_entries (
   id bigserial primary key,
@@ -108,7 +123,7 @@ create table if not exists todos (
   priority text not null default 'medium',
   done boolean not null default false,
   confirmation_status text not null default 'confirmed'
-    check (confirmation_status in ('confirmed', 'rejected')),
+    check (confirmation_status in ('confirmed', 'pending_review', 'rejected')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -160,7 +175,7 @@ alter table todos
 
 alter table todos
   add constraint todos_confirmation_status_check
-  check (confirmation_status in ('confirmed', 'rejected'));
+  check (confirmation_status in ('confirmed', 'pending_review', 'rejected'));
 
 alter table todos
   drop column if exists confirmed;

@@ -48,12 +48,16 @@ export type AuthUser = {
 }
 
 export type AuthResponse = {
+  isNewUser?: boolean
   token: string
   user: AuthUser
   workspace: WorkspaceData
 }
 
 export type ProjectInviteLinkResponse = {
+  expiresAt: string
+  expiresInMinutes: number
+  passwordRequired: boolean
   token: string
 }
 
@@ -142,14 +146,24 @@ export function fetchCurrentUser() {
   return request<{ user: AuthUser; workspace: WorkspaceData }>('/api/auth/me')
 }
 
-export function registerAccount(payload: { inviteToken?: string; password: string; username: string }) {
+export function registerAccount(payload: {
+  invitePassword?: string
+  inviteToken?: string
+  password: string
+  username: string
+}) {
   return request<AuthResponse>('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function loginAccount(payload: { inviteToken?: string; password: string; username: string }) {
+export function loginAccount(payload: {
+  invitePassword?: string
+  inviteToken?: string
+  password: string
+  username: string
+}) {
   return request<AuthResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -165,7 +179,11 @@ export function updateCurrentUser(payload: {
   })
 }
 
-export function createFeishuOAuthUrl(payload: { inviteToken?: string; returnTo: string }) {
+export function createFeishuOAuthUrl(payload: {
+  invitePassword?: string
+  inviteToken?: string
+  returnTo: string
+}) {
   return request<{ url: string }>('/api/auth/feishu/oauth/url', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -364,17 +382,38 @@ export function inviteProjectMember(projectId: number, payload: { username: stri
   })
 }
 
-export function getProjectInviteLink(projectId: number) {
+export function getProjectInviteLink(
+  projectId: number,
+  payload: { expiresInMinutes?: number; password?: string; rotate?: boolean } = {},
+) {
   return request<ProjectInviteLinkResponse>(`/api/projects/${projectId}/invite-link`, {
     method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 
-export function acceptProjectInviteLink(token: string) {
+export function fetchProjectInviteLinkInfo(token: string) {
+  return request<{ passwordRequired: boolean; valid: true }>(
+    `/api/project-invite-links/${encodeURIComponent(token)}`,
+  )
+}
+
+export function verifyProjectInviteLink(token: string, payload: { password?: string } = {}) {
+  return request<{ passwordRequired: boolean; valid: true }>(
+    `/api/project-invite-links/${encodeURIComponent(token)}/verify`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function acceptProjectInviteLink(token: string, payload: { password?: string } = {}) {
   return request<{ workspace: WorkspaceData }>(
     `/api/project-invite-links/${encodeURIComponent(token)}/accept`,
     {
       method: 'POST',
+      body: JSON.stringify(payload),
     },
   )
 }

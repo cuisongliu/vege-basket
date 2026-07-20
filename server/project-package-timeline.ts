@@ -242,7 +242,22 @@ function eventTypeLabel(type: ProjectPackageEventType) {
   return type === 'init' ? '初始化安装' : '升级'
 }
 
+function formatLocalizedDateTimeString(value: string) {
+  const match = String(value ?? '')
+    .trim()
+    .match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{2}):(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const [, year, month, day, hour, minute, second] = match
+  return `${Number(year)}/${Number(month)}/${Number(day)} ${hour}:${minute}:${second}`
+}
+
 function formatExportDateTime(value: Date | string) {
+  if (typeof value === 'string') {
+    const localized = formatLocalizedDateTimeString(value)
+    if (localized) {
+      return localized
+    }
+  }
   return new Date(value).toLocaleString('zh-CN', {
     hour12: false,
     timeZone: 'Asia/Shanghai',
@@ -773,6 +788,18 @@ function packageDownloadUrlValue(objectKey: string) {
   }
 }
 
+function packageFileName(objectKey: string, fallback: string) {
+  const segments = String(objectKey ?? '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  return segments.at(-1) || textValue(fallback)
+}
+
+function escapeMarkdownLinkLabel(value: string) {
+  return value.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+}
+
 function normalizeExportNoteText(value: unknown, fallback = '未填写') {
   const normalized = String(value ?? '').trim()
   if (!normalized) return fallback
@@ -804,7 +831,11 @@ function buildOperationMarkdown(
   operation: ProjectPackageOperation,
   relatedTodoDetails: OperationRelatedTodoExportDetail[] = [],
   level = '###',
-  options: { listStyle?: boolean } = {},
+  options: {
+    headingNumber?: string
+    listStyle?: boolean
+    relatedTodoHeadingNumber?: string
+  } = {},
 ) {
   const createdAt = formatExportDateTime(operation.createdAt)
   const relatedTodoLines = relatedTodoDetails.flatMap((detail, index) => {
@@ -816,11 +847,16 @@ function buildOperationMarkdown(
     return index === 0 ? lines : ['', ...lines]
   })
   const relatedTodoBlock = relatedTodoLines.length > 0
-    ? ['', '#### 关联待办说明', '', ...relatedTodoLines]
+    ? [
+      '',
+      `${level} ${options.relatedTodoHeadingNumber ? `${options.relatedTodoHeadingNumber} ` : ''}关联待办说明`,
+      '',
+      ...relatedTodoLines,
+    ]
     : []
   if (operation.kind === 'document') {
     return [
-      `${level} 文档：${textValue(operation.title, '未命名操作文档')}`,
+      `${level} ${options.headingNumber ? `${options.headingNumber} ` : ''}文档：${textValue(operation.title, '未命名操作文档')}`,
       '',
       `- 时间：${createdAt}`,
       '',
@@ -847,7 +883,7 @@ function buildOperationMarkdown(
 
   const detailLevel = `${level}#`
   const lines = [
-    `${level} ${createdAt}`,
+    `${level} ${options.headingNumber ? `${options.headingNumber} ` : ''}${createdAt}`,
     '',
     `${detailLevel} ${eventLabel}`,
   ]
@@ -865,37 +901,47 @@ function buildOperationMarkdown(
 function buildPackageTimelineMarkdown(
   group: ProjectPackageGroup,
   relatedTodoDetailsByOperation: Map<number, OperationRelatedTodoExportDetail[]>,
-  headingLevel = '##',
+  options: {
+    headingLevel?: string
+    sectionNumber?: string
+  } = {},
 ) {
+  const headingLevel = options.headingLevel ?? '##'
   const lines: string[] = []
   const nodes = buildPackageTimelineNodes(group)
   const packageOperations = nodes.filter((node) => node.type !== 'package-operation')
   const packageRecords = nodes.filter((node) => node.type === 'package-operation')
+  const headingPrefix = options.sectionNumber ? `${options.sectionNumber}. ` : ''
+  const linkSectionPrefix = options.sectionNumber ? `${options.sectionNumber}.1 ` : ''
 
   if (packageRecords.length > 0) {
-    const details = packageRecords.map((node) => {
-      if (node.type !== 'package-operation') return ''
-      const item = node.item
-      return [textValue(item.channelLabel), textValue(item.arch), textValue(item.version, '未知版本')]
-        .filter(Boolean)
-        .join(' · ')
-    })
-    lines.push(`${headingLevel} ${group.packageName} · ${details.join('；')}`, '')
-    lines.push(`${headingLevel}# 临时下载链接`, '')
+    const details = Array.from(
+      new Set(
+        packageRecords.map((node) => {
+          if (node.type !== 'package-operation') return ''
+          const item = node.item
+          return [textValue(item.channelLabel), textValue(item.arch), textValue(item.version, '未知版本')]
+            .filter(Boolean)
+            .join(' · ')
+        }).filter(Boolean),
+      ),
+    )
+    lines.push(`${headingLevel} ${headingPrefix}${group.packageName} · ${details.join('；')}`, '')
+    lines.push(`${headingLevel}# ${linkSectionPrefix}临时下载链接`, '')
     packageRecords.forEach((node) => {
       if (node.type !== 'package-operation') return
       const item = node.item
-      const label = [
-        textValue(item.packageName),
-        textValue(item.channelLabel),
-        textValue(item.arch),
-        textValue(item.version, '未知版本'),
-      ].filter(Boolean).join(' · ')
-      lines.push(`- ${label}：${packageDownloadUrlValue(item.objectKey)}`)
+      const fileName = packageFileName(item.objectKey, item.packageName)
+      const downloadUrl = packageDownloadUrlValue(item.objectKey)
+      if (downloadUrl.startsWith('临时下载链接生成失败：')) {
+        lines.push(`- ${textValue(fileName)}：${downloadUrl}`)
+        return
+      }
+      lines.push(`- [${escapeMarkdownLinkLabel(textValue(fileName))}](${downloadUrl})`)
     })
     lines.push('')
   } else {
-    lines.push(`${headingLevel} ${group.packageName}`, '')
+    lines.push(`${headingLevel} ${headingPrefix}${group.packageName}`, '')
   }
 
   if (packageOperations.length === 0) {
@@ -947,29 +993,43 @@ function buildProjectPackageTimelineMarkdown(
 
   timeline.events.forEach((event, eventIndex) => {
     const createdAt = formatExportDateTime(event.createdAt)
+    if (eventIndex > 0) {
+      lines.push('', '---', '')
+    }
     lines.push(
       '',
       `## ${createdAt}`,
       '',
-      `### ${eventIndex + 1}. ${textValue(event.title, '未命名事件')}`,
+      `### ${textValue(event.title, '未命名事件')}`,
       '',
       `- 交付人：${textValue(event.assigneeName, '未指派')}`,
       '',
-      '### 操作文档',
+      '### 1. 操作文档',
       '',
     )
     if (event.operations.length === 0) {
       lines.push('暂无操作文档。', '')
     } else {
-      event.operations.forEach((operation, index) => {
+      let operationHeadingIndex = 1
+      event.operations.forEach((operation) => {
+        const relatedTodoDetails = relatedTodoDetailsByOperation.get(operation.id) ?? []
+        const headingNumber = `1.${operationHeadingIndex}`
+        const relatedTodoHeadingNumber = relatedTodoDetails.length > 0
+          ? `1.${operationHeadingIndex + 1}`
+          : undefined
         lines.push(
           ...buildOperationMarkdown(
             operation,
-            relatedTodoDetailsByOperation.get(operation.id) ?? [],
-            `#### ${index + 1}.`,
+            relatedTodoDetails,
+            '####',
+            {
+              headingNumber,
+              relatedTodoHeadingNumber,
+            },
           ),
           '',
         )
+        operationHeadingIndex += relatedTodoDetails.length > 0 ? 2 : 1
       })
     }
 
@@ -981,9 +1041,12 @@ function buildProjectPackageTimelineMarkdown(
     event.groups
       .slice()
       .sort((left, right) => left.packageName.localeCompare(right.packageName, 'zh-CN'))
-      .forEach((group) => {
+      .forEach((group, groupIndex) => {
       lines.push(
-        ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, '####'),
+        ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, {
+          headingLevel: '###',
+          sectionNumber: String(groupIndex + 2),
+        }),
         '',
       )
     })

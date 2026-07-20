@@ -223,7 +223,7 @@ export function TodoFilterBuilderDialog({
   useEffect(() => {
     if (!open) return
     setDraftJoin(join)
-    setDraftConditions(conditions.length > 0 ? conditions : [createTodoFilterCondition()])
+    setDraftConditions(conditions)
   }, [conditions, join, open])
 
   function updateCondition(id: string, patch: Partial<TodoFilterCondition>) {
@@ -365,6 +365,7 @@ export function TodoFilterBuilderDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="confirmed">已确认</SelectItem>
+            <SelectItem value="pending_review">待验收</SelectItem>
             <SelectItem value="rejected">已驳回</SelectItem>
           </SelectContent>
         </Select>

@@ -84,7 +84,7 @@ families are:
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
 | Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes |
-| Projects | `/api/projects`, journals, risks, modules, invitations, invite links, Feishu project settings |
+| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
@@ -100,7 +100,7 @@ must remain bound to the authorized project ID.
 
 - Project status: `active`, `paused`, `completed`, `archived`.
 - Todo priority: `high`, `medium`, `low`.
-- Todo confirmation: `confirmed`, `rejected`.
+- Todo confirmation: `confirmed`, `pending_review`, `rejected`.
 - Package event type: `init`, `upgrade`.
 - Package event status: `draft`, `delivering`, `delivered`.
 - Package operation kind: `document`, `event`.
@@ -113,6 +113,12 @@ Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid in
 401 for missing or invalid authentication, 403 for insufficient role, 404 for absent or
 inaccessible resources, 409 for state conflicts, 415 for unsupported image media, 429
 for AI throttling, and 503 for an unconfigured dependency.
+
+Project invite links default to a 10 minute lifetime. Owners can request one of the
+supported durations when generating a link. Invite links may optionally require a share
+password; the server stores only a bcrypt hash and requires the password during login,
+registration, Feishu sign-in, or explicit invite acceptance. Expired, revoked, or
+password-mismatched tokens are rejected during invite acceptance.
 
 Package-item batch failures additionally return `code`, `requestId`, and `details`.
 `details.phase` is one of `validate_object_keys`, `persist_package_items`, or
