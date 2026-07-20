@@ -8024,7 +8024,8 @@ textarea:focus {
 }
 
 .account-settings-nav-item[data-active='true'] {
-  background: var(--muted);
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface));
   color: var(--strong);
 }
 
