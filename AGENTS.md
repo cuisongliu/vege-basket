@@ -39,9 +39,27 @@ historical product context; current code and these operational docs take precede
 - Shared AI uses only `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL`. Do not restore
   user-level AI settings. While shared AI is configured, password registration must
   require an active project invite; keep both per-user and instance-wide request limits.
-- Project-scoped AI conversations must reset when the selected project changes, and every
-  in-flight response from the previous project must be invalidated before it can update
-  messages or saved output. Never combine one project's chat history with another project ID.
+- AI conversations are private to one user and have an immutable `general`, `project`, or
+  `conversation-analysis` context. Changing or removing `@项目` starts a blank conversation;
+  never rebind an existing conversation or combine history from different contexts. General
+  chat receives no implicit project or workspace facts.
+- PostgreSQL is the canonical AI-history source. The browser submits only one new user turn,
+  its client UUID, and optional text attachments; it must never submit assistant history.
+  Keep turn creation idempotent, permit only one processing turn per conversation, and use
+  lease-token checks so cancellation, retry, or a stale provider response cannot write twice.
+  A cancel that arrives before turn creation must leave a bounded server-canonical
+  `ai_turn_cancellations` claim so every delayed replay is rejected before it can call the
+  provider. Serialize claim lookup and creation with the per-user cancellation advisory lock,
+  and never rebind a turn UUID claim to another conversation. Do not hold a database transaction
+  open while calling the external AI provider.
+- Recheck project access when listing, reading, sending, retrying, and completing a project
+  conversation. Lost access hides the conversation; project deletion removes it. Deleting a
+  conversation must preserve saved summaries and already-created todos, while a linked pending
+  proposal batch may be deleted with its source turn. Record a permanent
+  `ai_conversation_tombstones` row before deleting conversation history so a delayed request
+  cannot recreate the same conversation UUID.
+- Project-bound AI turn creation/completion, proposal confirmation, and project deletion must
+  share the same project advisory lock. Acquire multiple project locks in numeric order.
 - Keep Veges AI as one composer-only chat surface with no visible capability tabs or
   assistant modes. The empty conversation may show one row of three prompt cards, but each
   card must send a complete natural-language message through the same composer path and
@@ -53,10 +71,10 @@ historical product context; current code and these operational docs take precede
   conversation.
 - AI composer attachments are browser-read text, not separately uploaded objects. Accept
   at most four supported text files, 64 KiB each and 20,000 combined characters; keep the
-  original attachment content in AI history while rendering only safe name/size metadata.
-  Never derive project identity from attachment content or filenames. Invalidate pending
-  file reads before a project change, context removal, conversation reset, or unmount so
-  stale content cannot reappear in another project context.
+  original name and content encrypted with the source turn while returning only safe name/size
+  metadata to the browser. Never derive project identity from attachment content or filenames.
+  Invalidate pending file reads before a project change, context removal, conversation reset,
+  or unmount so stale content cannot reappear in another project context.
 - Dedicated project-summary generation requires a selected `@` project ID and current
   daily or weekly intent. Do not broaden a missing project context to the whole workspace,
   and do not map historical date wording onto the current daily or weekly endpoint.
@@ -92,7 +110,7 @@ git diff --check
 
 For scoped work, run ESLint against the touched TypeScript files. The focused Node test
 suite covers notification policy, OSS endpoint normalization, AI provider and parsing
-rules, rate limiting, and digest scheduling; do not claim
+rules, AI conversation domain/client state, rate limiting, and digest scheduling; do not claim
 database, OSS, Feishu, browser, or deployment behavior is verified unless that surface
 was exercised in an authorized environment.
 

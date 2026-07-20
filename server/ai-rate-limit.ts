@@ -30,19 +30,33 @@ export function createAiRateLimiter(
   const userRequests = new Map<number, number[]>()
   let globalRequests: number[] = []
 
+  function currentRequests(userId: number) {
+    const currentTime = now()
+    const windowStart = currentTime - config.windowMs
+    const recentUserRequests = (userRequests.get(userId) ?? [])
+      .filter((requestTime) => requestTime > windowStart)
+    globalRequests = globalRequests.filter((requestTime) => requestTime > windowStart)
+    userRequests.set(userId, recentUserRequests)
+    return { currentTime, recentUserRequests }
+  }
+
+  function hasCapacity(userId: number) {
+    const { recentUserRequests } = currentRequests(userId)
+    return recentUserRequests.length < config.perUserLimit &&
+      globalRequests.length < config.globalLimit
+  }
+
   return {
+    canAllow(userId: number) {
+      return hasCapacity(userId)
+    },
     allow(userId: number) {
-      const currentTime = now()
-      const windowStart = currentTime - config.windowMs
-      const recentUserRequests = (userRequests.get(userId) ?? [])
-        .filter((requestTime) => requestTime > windowStart)
-      globalRequests = globalRequests.filter((requestTime) => requestTime > windowStart)
+      const { currentTime, recentUserRequests } = currentRequests(userId)
 
       if (
         recentUserRequests.length >= config.perUserLimit ||
         globalRequests.length >= config.globalLimit
       ) {
-        userRequests.set(userId, recentUserRequests)
         return false
       }
 

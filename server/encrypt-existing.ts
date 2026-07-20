@@ -15,7 +15,7 @@ async function encryptColumn(table: string, column: string) {
     if (!row.value || isEncryptedText(row.value)) continue
     await query(`update ${table} set ${column} = $1 where id = $2`, [
       encryptText(row.value),
-      Number(row.id),
+      row.id,
     ])
   }
 }
@@ -79,6 +79,12 @@ async function main() {
   await encryptColumn('todos', 'detail')
   await encryptColumn('risks', 'content')
   await encryptColumn('draft_items', 'content')
+  await encryptColumn('ai_conversations', 'title')
+  await encryptColumn('ai_turns', 'user_content')
+  await encryptColumn('ai_turns', 'intent_payload')
+  await encryptColumn('ai_turns', 'assistant_content')
+  await encryptColumn('ai_turn_attachments', 'name')
+  await encryptColumn('ai_turn_attachments', 'content')
   await encryptColumn('summaries', 'title')
   await encryptColumn('summaries', 'period')
   await encryptColumn('summaries', 'content')

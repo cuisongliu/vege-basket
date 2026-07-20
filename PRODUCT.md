@@ -12,6 +12,12 @@ Veges serves people who run several projects at once and need to recover context
 
 Veges is a daily project cockpit. It keeps project context, journals, drafts, todos, summaries, collaboration signals, and package delivery timelines in one searchable workspace. Success means a user can open a project, understand what changed, see what needs action, and record the next decision without reconstructing context from several tools.
 
+Veges AI is a private, recoverable work conversation rather than a stateless prompt box.
+Users can resume personal history across refreshes, start a project-bound conversation with
+`@项目`, or work without project facts in a general conversation. Summaries, Markdown todo
+proposals, and conversation analysis stay in the same timeline; AI-created todos still require
+review and confirmation, while generated summaries are saved as independent documents.
+
 ## Brand Personality
 
 Calm, focused, dependable. Copy should be direct and operational. The interface should feel ready for repeated daily work, with enough density for scanning and enough restraint that status, ownership, and errors remain obvious.

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { classifyAiInput } from '../src/ai-input-intent.ts'
+import {
+  buildAiClassificationContent,
+  classifyAiInput,
+} from '../src/ai-input-intent.ts'
 
 test('routes explicit Markdown todo extraction with source content', () => {
   assert.deepEqual(
@@ -22,6 +25,14 @@ test('routes explicit conversation analysis', () => {
     classifyAiInput('请分析下面这段对话，并整理决定和待办：\nA：周五发布。\nB：我来验收。'),
     { kind: 'conversation-analysis' },
   )
+})
+
+test('classifies attachment-only intent from raw attachment content', () => {
+  const content = buildAiClassificationContent('', [{
+    content: '请分析下面这段对话：\nA：周五发布。\nB：我来验收。',
+  }])
+
+  assert.deepEqual(classifyAiInput(content), { kind: 'conversation-analysis' })
 })
 
 test('routes project summary requests and infers the requested period', () => {

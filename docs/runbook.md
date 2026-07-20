@@ -64,6 +64,16 @@ applies the schema and encrypts supported legacy plaintext fields. Both are muta
 operations and require explicit approval, a current backup or snapshot, the intended
 `DATABASE_URL`, and the complete encryption key ring.
 
+AI conversation changes require an authorized disposable PostgreSQL database before any
+runtime claim. Apply `schemaSql` twice, then verify the conversation/turn/attachment checks
+and indexes, encrypted `veges:enc:` values, two-user isolation, project-access loss and
+rejoin, project deletion cascade, idempotent turn replay, one-processing-turn enforcement,
+expired-lease recovery, cancel-before-create claims, cancel/retry races, and conversation
+deletion with saved-summary and created-todo preservation. Also verify that a deleted
+conversation UUID cannot be recreated by a delayed request and that a cancellation claim cannot
+move to another conversation. Do not use production for this validation. No such database test
+is implied by `npm test` or `npm run build`.
+
 Before an encryption-key change:
 
 1. Back up the database and the current key ring separately.
@@ -92,6 +102,15 @@ operator should:
    deployment success from `.sealos/build/build-result.json` or `.sealos/state.json` alone.
 7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
    record in an authorized test database before enabling a real user's subscription.
+
+The first AI conversation-history release replaces the stateless `/api/ai/chat` browser
+contract and the old `/api/ai/todo-proposals` extraction route. Keep one release of both
+compatibility responses: an already-open old SPA receives `AI_CLIENT_UPGRADE_REQUIRED` and
+a visible refresh instruction instead of an unexplained 404.
+Do not serve old and new application images concurrently: use a controlled single-replica
+replacement or a short maintenance window, then confirm every ready Pod uses the same
+immutable image before accepting AI traffic. Database additions are forward compatible with
+the old image, but old browser code cannot continue a conversation until it refreshes.
 
 Useful preflight checks:
 
@@ -131,6 +150,15 @@ encrypted record, and the workflow that triggered rollback.
   attachments. The composer enforces both its attachment limits and the effective
   `AI_MAX_MESSAGE_LENGTH` returned by `GET /api/ai/status`; raising the provider limit
   requires a deliberate deployment configuration change.
+- AI history is empty after sign-in: verify the conversation belongs to the current user.
+  Project conversations are intentionally hidden while project access is inactive; restoring
+  active membership makes retained history visible again.
+- An AI turn remains `processing`: the normal lease is 60 seconds. Replaying the same turn
+  while its lease is active returns the canonical processing state. The browser polls the
+  authenticated reconcile route; after expiry it marks the turn failed so the latest turn can
+  be retried. Check replica restarts and database clock drift before modifying rows manually.
+- AI retry returns `409`: only the latest failed or cancelled turn is retryable, and a
+  conversation cannot run two processing turns. Refresh canonical history before retrying.
 - AI reports that its base URL is not public: inspect the system DNS result. Hostnames
   mapped by a local proxy to `198.18.0.0/15` are rechecked through public DNS-over-HTTPS;
   if that verification fails, restore access to `https://cloudflare-dns.com` or exclude

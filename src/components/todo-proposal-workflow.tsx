@@ -5,19 +5,14 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
 } from 'react'
 import {
   Check,
-  FileMd,
-  FilePlus,
-  Sparkle,
   WarningCircle,
 } from '@phosphor-icons/react'
 
 import {
   confirmTodoProposals,
-  createTodoProposals,
   type WorkspaceData,
 } from '@/api'
 import type {
@@ -48,6 +43,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 
 type EditableTodoProposal = TodoProposal & { clientId: string }
+type TodoProposalBatchStatus = 'confirmed' | 'discarded' | 'pending'
 
 const priorityOptions: Array<{ label: string; value: Priority }> = [
   { label: '高', value: 'high' },
@@ -76,59 +72,60 @@ function confidenceLabel(value: number) {
 }
 
 export type TodoProposalWorkflowHandle = {
-  analyzeContent: (content: string, fileName?: string) => Promise<boolean>
-  openFilePicker: () => void
+  openProposals: (
+    batchId: number,
+    proposals: TodoProposal[],
+    fileName?: string,
+    status?: TodoProposalBatchStatus,
+  ) => void
   reset: () => void
 }
 
 type TodoProposalWorkflowProps = {
-  disabled?: boolean
   memberships: ProjectMembership[]
   onBusyChange?: (busy: boolean) => void
-  onWorkspace: (workspace: WorkspaceData) => void
+  onWorkspace: (workspace: WorkspaceData, sessionGeneration: number) => void
   projects: Project[]
-  showLauncher?: boolean
+  sessionGeneration: number
 }
 
 export const TodoProposalWorkflow = forwardRef<
   TodoProposalWorkflowHandle,
   TodoProposalWorkflowProps
 >(function TodoProposalWorkflow({
-  disabled = false,
   memberships,
   onBusyChange,
   onWorkspace,
   projects,
-  showLauncher = true,
+  sessionGeneration,
 }, ref) {
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const analysisInFlightRef = useRef(false)
-  const analysisRequestIdRef = useRef(0)
   const [fileName, setFileName] = useState('')
   const [batchId, setBatchId] = useState<number | null>(null)
+  const [batchStatus, setBatchStatus] = useState<TodoProposalBatchStatus>('pending')
   const [proposals, setProposals] = useState<EditableTodoProposal[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [reviewOpen, setReviewOpen] = useState(false)
-  const [generating, setGenerating] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
+  const confirmationRequestIdRef = useRef(0)
   const selectedCount = selectedIds.size
   const allSelected = proposals.length > 0 && selectedCount === proposals.length
-  const showWorkflowStatus = showLauncher || Boolean(fileName || proposals.length || error)
+  const readOnly = batchStatus !== 'pending'
+  const showWorkflowStatus = Boolean(fileName || proposals.length || error)
 
   useImperativeHandle(ref, () => ({
-    analyzeContent,
-    openFilePicker() {
-      if (!disabled && !analysisInFlightRef.current) fileInputRef.current?.click()
-    },
+    openProposals,
     reset: resetWorkflow,
   }))
 
   useEffect(() => {
-    onBusyChange?.(generating || confirming)
-  }, [confirming, generating, onBusyChange])
+    onBusyChange?.(confirming)
+  }, [confirming, onBusyChange])
 
-  useEffect(() => () => onBusyChange?.(false), [onBusyChange])
+  useEffect(() => () => {
+    confirmationRequestIdRef.current += 1
+    onBusyChange?.(false)
+  }, [onBusyChange])
 
   const invalidSelectedProposal = useMemo(
     () => proposals.find((proposal) => selectedIds.has(proposal.clientId) && (
@@ -139,84 +136,38 @@ export const TodoProposalWorkflow = forwardRef<
 
   function clearProposalReviewState() {
     setBatchId(null)
+    setBatchStatus('pending')
     setProposals([])
     setSelectedIds(new Set())
     setReviewOpen(false)
   }
 
   function resetWorkflow() {
-    analysisRequestIdRef.current += 1
-    analysisInFlightRef.current = false
-    setGenerating(false)
+    confirmationRequestIdRef.current += 1
     clearProposalReviewState()
     setFileName('')
     setError('')
   }
 
-  async function runAnalysis(
-    contentSource: string | Promise<string>,
-    requestedFileName = '输入内容.md',
-  ): Promise<boolean> {
-    if (disabled || analysisInFlightRef.current) return false
-
-    const trimmedFileName = requestedFileName.trim() || '输入内容.md'
-    const markdownFileName = trimmedFileName.toLowerCase().endsWith('.md')
-      ? trimmedFileName
-      : `${trimmedFileName}.md`
-    const requestId = analysisRequestIdRef.current + 1
-    analysisRequestIdRef.current = requestId
-    analysisInFlightRef.current = true
-    clearProposalReviewState()
+  function openProposals(
+    nextBatchId: number,
+    nextProposals: TodoProposal[],
+    requestedFileName = 'AI 对话输入.md',
+    status: TodoProposalBatchStatus = 'pending',
+  ) {
+    confirmationRequestIdRef.current += 1
+    setConfirming(false)
     setError('')
-    setFileName(markdownFileName)
-    setGenerating(true)
-    try {
-      const content = await contentSource
-      if (requestId !== analysisRequestIdRef.current) return false
-      if (!content.trim()) {
-        setError('这个 Markdown 文件没有可分析的内容。')
-        return false
-      }
-      const result = await createTodoProposals({ content, fileName: markdownFileName })
-      if (requestId !== analysisRequestIdRef.current) return false
-      const editable = result.proposals.map((proposal, index) => ({
-        ...proposal,
-        clientId: `${result.batchId}-${index}`,
-      }))
-      setBatchId(result.batchId)
-      setProposals(editable)
-      setSelectedIds(new Set(editable.map((proposal) => proposal.clientId)))
-      setReviewOpen(true)
-      return true
-    } catch (generateError) {
-      if (requestId !== analysisRequestIdRef.current) return false
-      setError(
-        generateError instanceof Error && generateError.message
-          ? generateError.message
-          : 'AI 无法分析这个 Markdown 文件，请稍后重试。',
-      )
-      return false
-    } finally {
-      if (requestId === analysisRequestIdRef.current) {
-        analysisInFlightRef.current = false
-        setGenerating(false)
-      }
-    }
-  }
-
-  function analyzeContent(content: string, requestedFileName?: string) {
-    return runAnalysis(content, requestedFileName)
-  }
-
-  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    if (!file.name.toLowerCase().endsWith('.md')) {
-      setError('只支持 Markdown 文件，请选择扩展名为 .md 的文件。')
-      return
-    }
-    await runAnalysis(file.text(), file.name)
+    setFileName(requestedFileName)
+    const editable = nextProposals.map((proposal, index) => ({
+      ...proposal,
+      clientId: `${nextBatchId}-${index}`,
+    }))
+    setBatchId(nextBatchId)
+    setBatchStatus(status)
+    setProposals(editable)
+    setSelectedIds(new Set(editable.map((proposal) => proposal.clientId)))
+    setReviewOpen(true)
   }
 
   function updateProposal(clientId: string, patch: Partial<TodoProposal>) {
@@ -257,69 +208,43 @@ export const TodoProposalWorkflow = forwardRef<
       }))
     setConfirming(true)
     setError('')
+    const requestId = confirmationRequestIdRef.current + 1
+    confirmationRequestIdRef.current = requestId
+    const requestSessionGeneration = sessionGeneration
     try {
       const workspace = await confirmTodoProposals(batchId, selected)
-      onWorkspace(workspace)
+      if (confirmationRequestIdRef.current !== requestId) return
+      onWorkspace(workspace, requestSessionGeneration)
       setReviewOpen(false)
       setBatchId(null)
       setProposals([])
       setSelectedIds(new Set())
       setFileName('')
     } catch (confirmError) {
+      if (confirmationRequestIdRef.current !== requestId) return
       setError(
         confirmError instanceof Error && confirmError.message
           ? confirmError.message
           : '待办创建失败，已保留你的修改，请重试。',
       )
     } finally {
-      setConfirming(false)
+      if (confirmationRequestIdRef.current === requestId) setConfirming(false)
     }
   }
 
   return (
     <>
-      <input
-        ref={fileInputRef}
-        accept=".md,text/markdown"
-        className="todo-proposal-file-input"
-        type="file"
-        onChange={(event) => void handleFile(event)}
-      />
       {showWorkflowStatus ? (
-        <section
-          className="todo-proposal-workflow"
-          aria-labelledby={showLauncher ? 'todo-proposal-title' : undefined}
-        >
-          {showLauncher ? (
-            <div className="todo-proposal-heading">
-              <span className="todo-proposal-icon" aria-hidden><FileMd size={18} weight="duotone" /></span>
-              <div>
-                <h4 id="todo-proposal-title">从 Markdown 提取待办</h4>
-                <p>选择一个 .md 文件，AI 会先生成可编辑提案，确认后才会创建待办。</p>
-              </div>
-            </div>
-          ) : null}
-          {showLauncher ? (
-            <Button
-              className="ghost-button todo-proposal-upload"
-              disabled={disabled || generating}
-              type="button"
-              variant="outline"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {generating ? <Sparkle className="is-pulsing" size={16} /> : <FilePlus size={16} />}
-              {generating ? '正在分析文档' : '选择 Markdown 文件'}
-            </Button>
-          ) : null}
+        <section className="todo-proposal-workflow">
           {fileName ? <small className="todo-proposal-file-name">{fileName}</small> : null}
           {proposals.length > 0 && !reviewOpen ? (
             <Button
-              disabled={generating || confirming}
+              disabled={confirming}
               type="button"
               onClick={() => setReviewOpen(true)}
             >
               <Check size={16} weight="bold" />
-              继续审核 {proposals.length} 项提案
+              {readOnly ? '查看' : '继续审核'} {proposals.length} 项提案
             </Button>
           ) : null}
           {error && !reviewOpen ? <p className="form-error" role="alert">{error}</p> : null}
@@ -333,25 +258,29 @@ export const TodoProposalWorkflow = forwardRef<
           showCloseButton={!confirming}
         >
           <DialogHeader>
-            <DialogTitle>确认 AI 待办提案</DialogTitle>
+            <DialogTitle>{readOnly ? '查看 AI 待办提案' : '确认 AI 待办提案'}</DialogTitle>
             <DialogDescription>
-              已分析 {fileName}。检查归属和日期，只会创建你勾选的待办。
+              {readOnly
+                ? `${fileName} 的提案批次已${batchStatus === 'confirmed' ? '确认' : '丢弃'}，当前仅供查看。`
+                : `已分析 ${fileName}。检查归属和日期，只会创建你勾选的待办。`}
             </DialogDescription>
           </DialogHeader>
 
           <div className="todo-proposal-review-toolbar">
-            <span>已选择 {selectedCount} / {proposals.length}</span>
-            <Button
-              disabled={confirming}
-              size="sm"
-              type="button"
-              variant="ghost"
-              onClick={() => setSelectedIds(
-                allSelected ? new Set() : new Set(proposals.map((proposal) => proposal.clientId)),
-              )}
-            >
-              {allSelected ? '取消全选' : '全选'}
-            </Button>
+            <span>{readOnly ? `共 ${proposals.length} 项` : `已选择 ${selectedCount} / ${proposals.length}`}</span>
+            {!readOnly ? (
+              <Button
+                disabled={confirming}
+                size="sm"
+                type="button"
+                variant="ghost"
+                onClick={() => setSelectedIds(
+                  allSelected ? new Set() : new Set(proposals.map((proposal) => proposal.clientId)),
+                )}
+              >
+                {allSelected ? '取消全选' : '全选'}
+              </Button>
+            ) : null}
           </div>
 
           <div className="todo-proposal-list">
@@ -368,7 +297,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <label className="todo-proposal-selection">
                       <input
                         checked={selected}
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         type="checkbox"
                         onChange={() => toggleProposal(proposal.clientId)}
                       />
@@ -382,7 +311,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label>
                       项目
                       <Select
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         value={proposal.projectId ? String(proposal.projectId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           assigneeUserId: null,
@@ -400,7 +329,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label>
                       模块
                       <Select
-                        disabled={confirming || !project}
+                        disabled={confirming || readOnly || !project}
                         value={proposal.moduleId ? String(proposal.moduleId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           moduleId: value === 'none' ? null : Number(value),
@@ -416,7 +345,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label>
                       负责人
                       <Select
-                        disabled={confirming || !project}
+                        disabled={confirming || readOnly || !project}
                         value={proposal.assigneeUserId ? String(proposal.assigneeUserId) : 'none'}
                         onValueChange={(value) => updateProposal(proposal.clientId, {
                           assigneeUserId: value === 'none' ? null : Number(value),
@@ -432,7 +361,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label>
                       截止日期
                       <Input
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         type="date"
                         value={proposal.dueDate ?? ''}
                         onChange={(event) => updateProposal(proposal.clientId, { dueDate: event.target.value || null })}
@@ -441,7 +370,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label>
                       优先级
                       <Select
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         value={proposal.priority}
                         onValueChange={(value) => updateProposal(proposal.clientId, { priority: value as Priority })}
                       >
@@ -454,7 +383,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label className="todo-proposal-title-field">
                       标题
                       <Input
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         maxLength={160}
                         value={proposal.title}
                         onChange={(event) => updateProposal(proposal.clientId, { title: event.target.value })}
@@ -463,7 +392,7 @@ export const TodoProposalWorkflow = forwardRef<
                     <Label className="todo-proposal-detail-field">
                       详情
                       <Textarea
-                        disabled={confirming}
+                        disabled={confirming || readOnly}
                         rows={3}
                         value={proposal.detail}
                         onChange={(event) => updateProposal(proposal.clientId, { detail: event.target.value })}
@@ -485,15 +414,17 @@ export const TodoProposalWorkflow = forwardRef<
           ) : null}
           <DialogFooter>
             <Button disabled={confirming} type="button" variant="outline" onClick={() => setReviewOpen(false)}>
-              稍后处理
+              {readOnly ? '关闭' : '稍后处理'}
             </Button>
-            <Button
-              disabled={confirming || selectedCount === 0}
-              type="button"
-              onClick={() => void confirmSelected()}
-            >
-              {confirming ? '正在创建' : `确认创建 ${selectedCount} 项`}
-            </Button>
+            {!readOnly ? (
+              <Button
+                disabled={confirming || selectedCount === 0}
+                type="button"
+                onClick={() => void confirmSelected()}
+              >
+                {confirming ? '正在创建' : `确认创建 ${selectedCount} 项`}
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>

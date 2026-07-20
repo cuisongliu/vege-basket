@@ -20,6 +20,7 @@ RUN printf '%s\n' \
   && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY server ./server
+COPY shared ./shared
 USER node
 EXPOSE 8787
 CMD ["node", "server/index.ts"]

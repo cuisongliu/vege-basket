@@ -9907,7 +9907,8 @@ textarea:focus {
 }
 
 .veges-ai-workspace,
-.veges-ai-artifacts {
+.veges-ai-artifacts,
+.veges-ai-history {
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -9928,9 +9929,28 @@ textarea:focus {
   min-height: 50px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 12px;
   border-bottom: 1px solid var(--line);
   padding: 7px 12px;
+}
+
+.veges-ai-conversation-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-text);
+}
+
+.veges-ai-conversation-title strong {
+  overflow: hidden;
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-project-chip {
@@ -9989,20 +10009,23 @@ textarea:focus {
   color: var(--muted-text);
 }
 
-.veges-ai-toolbar-actions .ai-artifacts-trigger {
+.veges-ai-toolbar-actions .ai-artifacts-trigger,
+.veges-ai-toolbar-actions .ai-history-trigger {
   width: auto;
-  min-width: 96px;
+  min-width: 82px;
   gap: 6px;
   padding: 0 9px;
   color: var(--strong);
 }
 
-.ai-artifacts-trigger span {
+.ai-artifacts-trigger span,
+.ai-history-trigger span {
   font-size: 12px;
   font-weight: 620;
 }
 
-.ai-artifacts-trigger small {
+.ai-artifacts-trigger small,
+.ai-history-trigger small {
   min-width: 18px;
   border-radius: 999px;
   background: var(--ai-canvas);
@@ -10011,6 +10034,10 @@ textarea:focus {
   font-size: 10px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
+}
+
+.veges-ai-toolbar-actions .ai-artifacts-trigger {
+  min-width: 96px;
 }
 
 .veges-ai-workspace > .veges-ai-notice {
@@ -10244,9 +10271,37 @@ textarea:focus {
 }
 
 .veges-ai-stage .agent-message-footer {
+  justify-content: space-between;
+  flex-wrap: wrap;
   margin-top: 5px;
   border-top: 0;
   padding-top: 0;
+}
+
+.veges-ai-stage .agent-message-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.veges-ai-stage .agent-message-actions > button:not(.agent-summary-button) {
+  min-height: 28px;
+  padding: 0 7px;
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.veges-ai-stage .agent-message.is-failed .agent-message-content,
+.veges-ai-stage .agent-message.is-cancelled .agent-message-content {
+  border: 1px solid color-mix(in oklch, var(--destructive) 28%, var(--line));
+  background: color-mix(in oklch, var(--destructive) 5%, var(--surface));
+}
+
+.veges-ai-stage .ai-load-earlier {
+  justify-self: center;
+  color: var(--muted-text);
+  font-size: 11px;
 }
 
 .veges-ai-stage .agent-summary-button {
@@ -10428,6 +10483,11 @@ textarea:focus {
   color: var(--brand-foreground);
 }
 
+.veges-ai-stage .agent-send-button.is-stop {
+  background: var(--destructive);
+  color: white;
+}
+
 .ai-project-picker {
   position: absolute;
   z-index: 30;
@@ -10490,6 +10550,13 @@ textarea:focus {
   overflow: hidden;
   border-left: 1px solid var(--line);
   padding: 0;
+}
+
+.veges-ai-history {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
 }
 
 .veges-ai-artifacts.is-fullscreen {
@@ -10724,6 +10791,10 @@ textarea:focus {
   .veges-ai-artifacts {
     border-left: 0;
   }
+
+  .veges-ai-history {
+    border-left: 0;
+  }
 }
 
 @media (max-width: 620px) {
@@ -10813,11 +10884,13 @@ textarea:focus {
 }
 
 @media (max-width: 390px) {
-  .veges-ai-toolbar-actions .ai-artifacts-trigger {
+  .veges-ai-toolbar-actions .ai-artifacts-trigger,
+  .veges-ai-toolbar-actions .ai-history-trigger {
     min-width: 58px;
   }
 
-  .ai-artifacts-trigger span {
+  .ai-artifacts-trigger span,
+  .ai-history-trigger span {
     display: none;
   }
 

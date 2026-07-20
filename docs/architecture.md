@@ -28,14 +28,22 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `src/App.tsx`, `src/components/`: UI state and user workflows. They must not hold
   database, OSS credential, or authorization decisions.
 - `src/ai-attachments.ts`: browser-side text attachment format checks, display sizing,
-  and bounded serialization into the existing AI chat message contract. Attachments are
+  and bounded serialization into a new AI turn. Attachments are
   not uploaded to object storage or assigned project identity here.
+- `src/ai-conversation-state.ts`, `src/components/ai-conversation-history-panel.tsx`:
+  client-only history navigation, immutable-context selection, pagination merge, and
+  responsive history UI. PostgreSQL remains the conversation source of truth.
 - `src/api.ts`, `src/types.ts`: browser API adapter and public client-side contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
   validation, Feishu/AI orchestration, and static-file serving.
 - `server/ai-provider.ts`, `server/ai-period-summary.ts`,
   `server/ai-todo-proposals.ts`: shared AI configuration, provider network boundary,
   period facts, and strict Markdown proposal parsing.
+- `server/ai-conversations.ts`, `server/ai-conversation-store.ts`: conversation domain
+  validation, encrypted persistence, authorization, canonical model history, turn leases,
+  idempotency, retry/cancel transitions, and artifact links.
+- `shared/ai-input-intent.ts`: one natural-language intent classifier shared by the browser
+  and server without importing browser code into the production server image.
 - `server/todo-digest.ts`, `server/todo-digest-worker.ts`: local-time scheduling,
   deterministic digest formatting, run leases, retries, and Feishu delivery.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
@@ -60,11 +68,40 @@ configured, password registration requires an active project invite; Feishu OAut
 still create or link an internal user. AI calls pass both per-user and application-replica
 sliding-window limits.
 
-Veges AI text attachments stay in browser memory and are serialized into the user message
-sent through `POST /api/ai/chat`; only filename and size metadata are rendered in the chat
-bubble. The selected project ID remains a separate request field and is never parsed from
-attachment text. Pending browser file reads are invalidated when project or conversation
-context changes, preventing content from a previous context from being appended later.
+Veges AI conversations are private to the authenticated user and persist in PostgreSQL.
+Each conversation has an immutable `general`, `project`, or `conversation-analysis`
+context. General chat receives no implicit workspace facts; project context is selected
+explicitly by ID and is reauthorized on every list, read, send, retry, and completion path.
+Lost project access hides history without rewriting it, while project deletion cascades it.
+
+The browser sends only one user turn with client-generated conversation/turn UUIDs. The
+server serializes the first-turn claim with a transaction-scoped advisory lock, stores the
+encrypted structured intent and user turn before the provider call, builds model history
+from the latest three completed canonical turns, and never trusts client-submitted assistant
+history. The same advisory lock makes a concurrent replay wait for the canonical turn before
+the rate-limit callback is consumed, while a rate-limited new UUID fails before conversation,
+turn, or attachment writes. One partial unique index permits only one processing turn per
+conversation. External provider calls run without an open database transaction;
+completion writes require the same active lease token and unexpired lease. Cancellation clears
+the lease; if cancellation wins before creation, a bounded `ai_turn_cancellations` claim is
+serialized by both the conversation lock and a per-user cancellation lock. The claim keeps one
+immutable conversation owner for its turn UUID and makes every delayed replay exit before any
+provider call. Retry assigns a new lease, and the authenticated reconcile route turns an expired
+processing lease into a retryable failure. A duplicate turn UUID with the same payload returns
+the canonical turn without consuming another provider request.
+
+Project-bound turn creation/completion, proposal confirmation, and project deletion also
+share a project advisory lock. Multi-project confirmation acquires those locks in numeric
+order. Deletion then locks conversations and pending batches before the project row, so an
+in-flight completion cannot insert an orphan proposal batch and confirmation cannot deadlock
+against project removal.
+
+Text attachments are read in the browser and submitted with their source turn. Original
+names and content are encrypted in `ai_turn_attachments`; history responses expose only
+safe name, media type, size, and ordering metadata, and their SQL path does not select
+attachment content. The selected project ID remains a
+separate field and is never parsed from attachment text. Pending browser file reads are
+invalidated when project or conversation context changes.
 
 External entry points have separate trust boundaries:
 
@@ -92,15 +129,23 @@ The schema is normalized around these groups:
 - Project knowledge: `journal_entries`, `todos`, `project_modules`,
   `todo_activity_events`, `todo_notes`, `todo_note_mentions`, `risks`, `draft_items`,
   `summaries`, `ai_todo_proposal_batches`, `ai_todo_proposals`.
+- Personal AI history: `ai_conversations`, `ai_turns`, `ai_turn_attachments`, permanent deleted
+  UUID records in `ai_conversation_tombstones`, and bounded pre-creation cancellation claims in
+  `ai_turn_cancellations`. Summary and todo-proposal outcomes link back through `source_turn_id`.
 - Notifications: `notification_states`, `notification_deliveries`,
   `notification_subscriptions`, `notification_digest_runs`.
 - Package delivery: `project_package_events`, `project_package_groups`,
   `project_package_items`, `project_package_operations`,
   `project_package_operation_todos`.
 
-Foreign keys define deletion behavior. Unique indexes protect active invite links,
-membership identity, generated todo notes, and one auto-generated operation per package
-group.
+Foreign keys define deletion behavior. Deleting an AI conversation first records its UUID in a
+tombstone, then cascades its turns and attachments; saved summaries and processed proposal
+batches retain nullable source links, while the delete transaction explicitly removes only
+linked pending proposal batches. Start and delete share the conversation advisory lock, so a
+late turn request cannot race past the tombstone and recreate deleted history.
+Already-created todos remain independent. Unique indexes protect active invite
+links, membership identity, generated todo notes, one processing AI turn per conversation,
+one artifact link per source turn, and one auto-generated operation per package group.
 
 ## Encryption And Integrity
 
@@ -111,7 +156,8 @@ lookups where ciphertext is nondeterministic.
 
 Protected data includes project names/descriptions/tags, journals, todo titles/details,
 activity snapshots and notes, risks, drafts, summaries, Markdown proposal sources and
-candidate text, digest content, collaborator/member identity fields, package event
+candidate text, AI conversation titles, turn content, attachment names/content, digest
+content, encrypted AI intent payloads, collaborator/member identity fields, package event
 titles, package operation titles/content, and operation-to-todo notes.
 Identity keys, status fields, timestamps, object keys, and relationship IDs remain
 queryable metadata.
@@ -125,8 +171,16 @@ Atomicity rules:
 - Todo creation and state changes commit the todo and append-only activity events
   together. Completion or reopen first locks the todo row so concurrent requests observe
   one authoritative previous state and preserve the actual completion actor and time.
-- Confirming a Markdown proposal batch locks the batch and creates every selected todo
-  plus its activity events in one transaction; incomplete candidates never partially save.
+- Confirming a Markdown proposal batch locks the batch, its current project access, and the
+  referenced project/module/assignee rows. A project conversation cannot redirect candidates
+  to another project. Selected todos and activity events commit together; incomplete or
+  unauthorized candidates never partially save.
+- Starting an AI turn takes a per-conversation advisory lock, creates or locks the
+  conversation, validates the immutable context, allocates a monotonic turn number, stores
+  encrypted intent/content/attachments, and installs the lease in one transaction. Provider
+  work runs outside that transaction. Completion locks the conversation and turn, rechecks
+  project access and lease identity, and returns the canonical turn snapshot from the same
+  transaction that commits assistant content plus any summary/proposal artifact.
 - Disconnecting Feishu disables the user's daily digest subscription in the same
   transaction that clears the bound identity.
 - Concurrency safety must be enforced by database constraints plus conflict-safe SQL,

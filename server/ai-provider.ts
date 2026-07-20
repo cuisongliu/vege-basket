@@ -18,6 +18,7 @@ export type AiProviderConfig = {
 export type AiCompletionRequest = {
   messages: AiChatMessage[]
   responseFormat?: 'json_object'
+  signal?: AbortSignal
   systemPrompt: string
   temperature?: number
   timeoutMs?: number
@@ -304,7 +305,9 @@ export function buildAiChatCompletionsEndpoint(baseUrl: string) {
 
 function trimContent(value: string, maxLength: number) {
   const trimmed = value.trim()
-  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed
+  if (trimmed.length <= maxLength) return trimmed
+  if (maxLength <= 3) return '.'.repeat(maxLength)
+  return `${trimmed.slice(0, maxLength - 3)}...`
 }
 
 function requestMessages(config: AiProviderConfig, request: AiCompletionRequest) {
@@ -375,6 +378,9 @@ export async function requestAiChatCompletion(
   const dispatcher = createPinnedDispatcher(resolution.addresses)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? defaultTimeoutMs)
+  const signal = request.signal
+    ? AbortSignal.any([controller.signal, request.signal])
+    : controller.signal
 
   try {
     const fetchImplementation = dependencies.fetch ?? (undiciFetch as unknown as AiFetch)
@@ -391,7 +397,7 @@ export async function requestAiChatCompletion(
       },
       method: 'POST',
       redirect: 'manual',
-      signal: controller.signal,
+      signal,
       dispatcher,
     })
 
@@ -410,6 +416,9 @@ export async function requestAiChatCompletion(
     return content.trim()
   } catch (error) {
     if (error instanceof AiProviderError) throw error
+    if (request.signal?.aborted) {
+      throw new AiProviderError('AI_REQUEST_CANCELLED', 'AI request cancelled', 499)
+    }
     if (controller.signal.aborted) {
       throw new AiProviderError('AI_REQUEST_TIMEOUT', 'AI request timed out', 504)
     }

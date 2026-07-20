@@ -28,7 +28,9 @@ test('enforces both per-user and instance-wide request windows', () => {
   }, () => currentTime)
 
   assert.equal(limiter.allow(1), true)
+  assert.equal(limiter.canAllow(1), true)
   assert.equal(limiter.allow(1), true)
+  assert.equal(limiter.canAllow(1), false)
   assert.equal(limiter.allow(1), false)
   assert.equal(limiter.allow(2), true)
   assert.equal(limiter.allow(3), false)

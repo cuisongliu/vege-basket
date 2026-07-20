@@ -1,5 +1,9 @@
 import type {
   InboxItem,
+  AiConversationContextKind,
+  AiConversationPage,
+  AiTurnPage,
+  AiTurnRunResponse,
   JournalVisibility,
   PackageMarketChannel,
   PackageMarketDetail,
@@ -60,13 +64,6 @@ export type AuthResponse = {
 export type ProjectInviteLinkResponse = {
   token: string
 }
-
-export type AiChatMessage = {
-  role: 'user' | 'assistant'
-  content: string
-}
-
-export type AiAgentType = 'project-summary' | 'conversation-analysis'
 
 export type AiStatus = {
   configured: boolean
@@ -479,11 +476,10 @@ export function updateNotificationSubscription(payload: {
   })
 }
 
-export function createTodoProposals(payload: { content: string; fileName: string }) {
-  return request<{ batchId: number; proposals: TodoProposal[] }>('/api/ai/todo-proposals', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
+export function fetchTodoProposalBatch(batchId: number) {
+  return request<{ batchId: number; proposals: TodoProposal[]; status: string }>(
+    `/api/ai/todo-proposals/${encodeURIComponent(batchId)}`,
+  )
 }
 
 export function confirmTodoProposals(batchId: number, proposals: TodoProposal[]) {
@@ -493,15 +489,97 @@ export function confirmTodoProposals(batchId: number, proposals: TodoProposal[])
   })
 }
 
-export function sendAiChat(
-  messages: AiChatMessage[],
-  agentType: AiAgentType,
-  projectId?: number,
+export function fetchAiConversations(cursor?: string) {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  return request<AiConversationPage>(`/api/ai/conversations${query}`)
+}
+
+export function fetchAiConversationTurns(
+  conversationId: string,
+  beforeTurn?: number,
+  limit?: number,
 ) {
-  return request<{ message: string }>('/api/ai/chat', {
-    method: 'POST',
-    body: JSON.stringify({ agentType, messages, projectId }),
-  })
+  const search = new URLSearchParams()
+  if (beforeTurn) search.set('beforeTurn', String(beforeTurn))
+  if (limit) search.set('limit', String(limit))
+  const query = search.size > 0 ? `?${search.toString()}` : ''
+  return request<AiTurnPage>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns${query}`,
+  )
+}
+
+export function sendAiConversationTurn(payload: {
+  attachments: Array<{
+    content: string
+    mediaType?: string
+    name: string
+    size: number
+  }>
+  content: string
+  contextKind: AiConversationContextKind
+  conversationId: string
+  projectId: number | null
+  turnId: string
+}) {
+  return request<AiTurnRunResponse>(
+    `/api/ai/conversations/${encodeURIComponent(payload.conversationId)}/turns`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        attachments: payload.attachments,
+        content: payload.content,
+        contextKind: payload.contextKind,
+        projectId: payload.projectId,
+        turnId: payload.turnId,
+      }),
+    },
+  )
+}
+
+export function retryAiConversationTurn(conversationId: string, turnId: string) {
+  return request<AiTurnRunResponse>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
+    { method: 'POST' },
+  )
+}
+
+export function cancelAiConversationTurn(conversationId: string, turnId: string) {
+  return request<
+    | { cancelled: true; pending: true }
+    | {
+      cancelled: boolean
+      conversation: AiConversationPage['conversations'][number]
+      pending: false
+      turn: AiTurnRunResponse['turn']
+    }
+  >(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+    { method: 'POST' },
+  )
+}
+
+export function reconcileAiConversationTurn(conversationId: string, turnId: string) {
+  return request<{
+    conversation: AiConversationPage['conversations'][number]
+    turn: AiTurnRunResponse['turn']
+  }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/reconcile`,
+    { method: 'POST' },
+  )
+}
+
+export function renameAiConversation(conversationId: string, title: string) {
+  return request<{ conversation: AiConversationPage['conversations'][number] }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'PATCH', body: JSON.stringify({ title }) },
+  )
+}
+
+export function deleteAiConversation(conversationId: string) {
+  return request<{ ok: true }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'DELETE' },
+  )
 }
 
 export function fetchProjectPackageTimeline(projectId: number) {

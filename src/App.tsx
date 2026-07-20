@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type ChangeEvent,
@@ -113,8 +114,12 @@ import {
   fetchProjectPackageTimeline,
   fetchWorkspace,
   fetchAiStatus,
+  fetchAiConversations,
+  fetchAiConversationTurns,
+  fetchTodoProposalBatch,
   fetchCurrentUser,
   fetchNotifications,
+  ApiError,
   formatApiErrorDiagnostic,
   getAuthToken,
   getProjectInviteLink,
@@ -145,10 +150,13 @@ import {
   updateTodoNote,
   uploadTodoImage,
   setAuthToken,
-  sendAiChat,
+  sendAiConversationTurn,
+  retryAiConversationTurn,
+  cancelAiConversationTurn,
+  reconcileAiConversationTurn,
+  renameAiConversation,
+  deleteAiConversation,
   updateCurrentUser,
-  type AiAgentType,
-  type AiChatMessage,
   type AiStatus,
   type AuthUser,
   type WorkspaceData,
@@ -174,6 +182,11 @@ import type {
   ProjectStatus,
   Summary,
   SummaryPeriodType,
+  AiConversation,
+  AiConversationContextKind,
+  AiTurn,
+  AiTurnOutcome,
+  AiTurnRunResponse,
   Todo,
   TodoNotification,
   TodoNote,
@@ -183,6 +196,21 @@ import {
   TodoProposalWorkflow,
   type TodoProposalWorkflowHandle,
 } from './components/todo-proposal-workflow'
+import { AiConversationHistoryPanel } from './components/ai-conversation-history-panel'
+import {
+  GENERAL_AI_CONVERSATION_CONTEXT,
+  aiConversationHistoryReducer,
+  canonicalProcessingAiTurn,
+  createAiConversationHistoryState,
+  currentAiConversationId,
+  isAiTurnCanonicalStateUnknown,
+  latestRetryableAiTurnId,
+  mergeAiTurns,
+  nextAiTurnNumber,
+  type AiConversationContext,
+  type AiConversationHistoryState,
+  type AiConversationListItem,
+} from './ai-conversation-state'
 import {
   ProjectPackageWorkbench,
   type ProjectPackageWorkbenchHandle,
@@ -192,7 +220,7 @@ import {
   removeTodoNotifications,
   startNotificationRefreshSchedule,
 } from './notifications'
-import { classifyAiInput } from './ai-input-intent'
+import { buildAiClassificationContent, classifyAiInput } from './ai-input-intent'
 import {
   AI_ATTACHMENT_MAX_BYTES,
   AI_ATTACHMENT_MAX_CHARACTERS,
@@ -207,14 +235,23 @@ import './App.css'
 
 type View = 'project' | 'inbox' | 'notifications' | 'search' | 'ai'
 type DetailEntrySource = 'project' | 'notifications'
-type DisplayAiAttachment = Pick<AiTextAttachment, 'id' | 'name' | 'size'>
-type DisplayAiChatMessage = AiChatMessage & {
-  aiContent?: string
+type DisplayAiAttachment = {
+  id: number | string
+  name: string
+  size: number
+}
+type DisplayAiChatMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
   attachments?: DisplayAiAttachment[]
   createdAt: string
+  outcome?: AiTurnOutcome
+  turnId: string
+  turnStatus: AiTurn['status']
 }
 type ThemeMode = 'dark' | 'light'
-type AiMobilePane = 'workspace' | 'artifacts'
+type AiMobilePane = 'workspace' | 'history' | 'artifacts'
 
 function getDefaultAiPane(): AiMobilePane {
   return typeof window !== 'undefined' && window.matchMedia('(min-width: 1101px)').matches
@@ -222,11 +259,79 @@ function getDefaultAiPane(): AiMobilePane {
     : 'workspace'
 }
 type AiMessageRoute = {
-  agentType?: AiAgentType
-  attachments?: DisplayAiAttachment[]
+  attachments?: AiTextAttachment[]
   content?: string
-  displayContent?: string
-  draftContent?: string
+  contextKind?: AiConversationContextKind
+}
+
+function displayMessagesFromAiTurn(turn: AiTurn): DisplayAiChatMessage[] {
+  const attachments = turn.attachments.map(({ id, name, size }) => ({ id, name, size }))
+  const messages: DisplayAiChatMessage[] = [{
+    attachments,
+    content: turn.userContent || '请阅读附件内容。',
+    createdAt: turn.createdAt,
+    id: `${turn.id}:user`,
+    role: 'user',
+    turnId: turn.id,
+    turnStatus: turn.status,
+  }]
+  const statusContent = turn.status === 'processing'
+    ? '正在整理上下文...'
+    : turn.status === 'failed'
+      ? '这次回复没有生成完成。'
+      : turn.status === 'cancelled'
+        ? '回复已停止。'
+        : turn.assistantContent
+  if (statusContent) {
+    messages.push({
+      content: statusContent,
+      createdAt: turn.completedAt ?? turn.updatedAt,
+      id: `${turn.id}:assistant`,
+      outcome: turn.outcome,
+      role: 'assistant',
+      turnId: turn.id,
+      turnStatus: turn.status,
+    })
+  }
+  return messages
+}
+
+function toAiConversationListItem(conversation: AiConversation): AiConversationListItem {
+  return {
+    contextType: conversation.contextKind,
+    createdAt: conversation.createdAt,
+    id: conversation.id,
+    lastTurnAt: conversation.lastTurnAt,
+    projectId: conversation.projectId,
+    projectName: conversation.projectName,
+    title: conversation.title,
+    updatedAt: conversation.updatedAt,
+  }
+}
+
+function aiConversationContext(
+  contextKind: AiConversationContextKind,
+  projectId: number | null,
+  projects: Project[],
+): AiConversationContext {
+  return {
+    contextType: contextKind,
+    projectId: contextKind === 'project' ? projectId : null,
+    projectName: contextKind === 'project'
+      ? projects.find((project) => project.id === projectId)?.name ?? null
+      : null,
+  }
+}
+
+function formatAiMessageTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
 }
 type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
   assigneeUserId?: number | null
@@ -276,8 +381,6 @@ type TodoFilterCondition = {
   operator: TodoFilterOperator
   value: string
 }
-
-const initialAiMessages: DisplayAiChatMessage[] = []
 
 const themeStorageKey = 'veges.theme'
 const todoCreateDraftStoragePrefix = 'veges.todoCreateDraft.v1'
@@ -494,11 +597,6 @@ function getPreviousDateStamp(dateStamp = getTodayStamp()) {
   const date = new Date(`${dateStamp}T00:00:00+08:00`)
   date.setDate(date.getDate() - 1)
   return getShanghaiDateParts(date).date
-}
-
-function getCurrentDateTimeStamp() {
-  const parts = getShanghaiDateParts()
-  return `${parts.date} ${parts.time}`
 }
 
 function getProjectJournalSortKey(project: Project) {
@@ -1102,17 +1200,73 @@ function App() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
-  const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
+  const [aiHistory, dispatchAiHistory] = useReducer(
+    aiConversationHistoryReducer,
+    GENERAL_AI_CONVERSATION_CONTEXT,
+    createAiConversationHistoryState,
+  )
+  const [aiTurns, setAiTurns] = useState<AiTurn[]>([])
+  const [aiTurnsLoading, setAiTurnsLoading] = useState(false)
+  const [aiTurnsError, setAiTurnsError] = useState('')
+  const [aiNextBeforeTurn, setAiNextBeforeTurn] = useState<number | null>(null)
   const [aiDraft, setAiDraft] = useState('')
-  const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
-  const [aiProjectId, setAiProjectId] = useState<number | null>(null)
   const [aiMobilePane, setAiMobilePane] = useState<AiMobilePane>(getDefaultAiPane)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiReconcileAttempt, setAiReconcileAttempt] = useState(0)
   const packageWorkbenchRef = useRef<ProjectPackageWorkbenchHandle>(null)
   const acceptingInviteTokenRef = useRef('')
   const notificationRefreshRequestIdRef = useRef(0)
   const aiRequestIdRef = useRef(0)
+  const authSessionGenerationRef = useRef(0)
+  const aiHistoryRequestIdRef = useRef(0)
+  const aiTurnsRequestIdRef = useRef(0)
+  const deletingAiConversationIdsRef = useRef(new Set<string>())
+  const summariesRef = useRef(summaries)
+  summariesRef.current = summaries
+  const activeAiTurnRef = useRef<{
+    awaitingCanonical?: boolean
+    conversationId: string
+    localRequestId: number | null
+    stopRequested?: boolean
+    turnId: string
+    userContent?: string
+  } | null>(null)
+  const aiSelectionRef = useRef(aiHistory.selection)
+  aiSelectionRef.current = aiHistory.selection
+  const aiProjectId = aiHistory.selection.context.projectId
+  const selectedAiConversationId = currentAiConversationId(aiHistory.selection)
+  const aiMessages = useMemo(() => aiTurns.flatMap(displayMessagesFromAiTurn), [aiTurns])
+
+  const replaceAiConversationTurns = useCallback((
+    result: Awaited<ReturnType<typeof fetchAiConversationTurns>>,
+    mode: 'merge' | 'replace' = 'replace',
+  ) => {
+    dispatchAiHistory({
+      type: 'conversation/upserted',
+      conversation: toAiConversationListItem(result.conversation),
+    })
+    setAiTurns((current) => mode === 'merge'
+      ? mergeAiTurns(current, result.turns)
+      : result.turns)
+    if (mode === 'replace') setAiNextBeforeTurn(result.nextBeforeTurn)
+    setAiTurnsError('')
+    const processing = canonicalProcessingAiTurn(result.turns)
+    if (processing) {
+      const currentActive = activeAiTurnRef.current
+      activeAiTurnRef.current = currentActive?.turnId === processing.id
+        ? currentActive
+        : {
+            conversationId: result.conversation.id,
+            localRequestId: null,
+            turnId: processing.id,
+          }
+      setAiBusy(true)
+    } else if (activeAiTurnRef.current?.conversationId === result.conversation.id) {
+      activeAiTurnRef.current = null
+      setAiBusy(false)
+    }
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', themeMode === 'dark')
@@ -1144,6 +1298,36 @@ function App() {
     })
   }, [])
 
+  const applyAiRunOutcome = useCallback(async (outcome: AiTurnRunResponse['outcome']) => {
+    if (
+      outcome?.type !== 'summary' ||
+      summariesRef.current.some((summary) => summary.id === outcome.summaryId)
+    ) return
+    const sessionGeneration = authSessionGenerationRef.current
+    try {
+      const workspace = await fetchWorkspace()
+      if (authSessionGenerationRef.current !== sessionGeneration) return
+      applyWorkspace(workspace)
+    } catch {
+      if (authSessionGenerationRef.current !== sessionGeneration) return
+      setAiError('AI 文档已保存，但工作区刷新失败，请重新载入页面。')
+    }
+  }, [applyWorkspace])
+
+  const applyCanonicalAiTurnOutcome = useCallback(async (turn: AiTurn | null | undefined) => {
+    if (turn?.status !== 'completed') return
+    setAiError('')
+    await applyAiRunOutcome(turn.outcome)
+  }, [applyAiRunOutcome])
+
+  const applyAiWorkspaceForSession = useCallback((
+    data: WorkspaceData,
+    sessionGeneration: number,
+  ) => {
+    if (authSessionGenerationRef.current !== sessionGeneration) return
+    applyWorkspace(data)
+  }, [applyWorkspace])
+
   const refreshNotifications = useCallback(async () => {
     const requestId = notificationRefreshRequestIdRef.current + 1
     notificationRefreshRequestIdRef.current = requestId
@@ -1161,21 +1345,194 @@ function App() {
   useEffect(() => {
     if (!loggedIn) return
 
+    const sessionGeneration = authSessionGenerationRef.current
     fetchCurrentUser()
       .then((data) => {
+        if (authSessionGenerationRef.current !== sessionGeneration) return
         setAuthUser(data.user)
         applyWorkspace(data.workspace)
         void refreshNotifications()
         setWorkspaceError('')
       })
       .catch(() => {
+        if (authSessionGenerationRef.current !== sessionGeneration) return
+        authSessionGenerationRef.current += 1
         clearAuthToken()
         setLoggedIn(false)
         setWorkspaceError('')
         setAuthError('登录状态已失效，请重新登录。')
       })
-      .finally(() => setWorkspaceLoaded(true))
+      .finally(() => {
+        if (authSessionGenerationRef.current === sessionGeneration) setWorkspaceLoaded(true)
+      })
   }, [applyWorkspace, loggedIn, refreshNotifications])
+
+  useEffect(() => {
+    if (!loggedIn || !authUser) return
+
+    const historyRequestId = aiHistoryRequestIdRef.current + 1
+    aiHistoryRequestIdRef.current = historyRequestId
+    dispatchAiHistory({ type: 'history/load-started', mode: 'initial' })
+    fetchAiConversations()
+      .then(async (page) => {
+        if (aiHistoryRequestIdRef.current !== historyRequestId) return
+        const conversations = page.conversations
+          .filter((conversation) => !deletingAiConversationIdsRef.current.has(conversation.id))
+          .map(toAiConversationListItem)
+        dispatchAiHistory({
+          type: 'history/load-succeeded',
+          conversations,
+          mode: 'initial',
+          nextCursor: page.nextCursor,
+        })
+        const latest = conversations[0]
+        if (!latest) {
+          setAiTurns([])
+          setAiNextBeforeTurn(null)
+          setAiTurnsError('')
+          dispatchAiHistory({
+            type: 'conversation/blanked',
+            context: GENERAL_AI_CONVERSATION_CONTEXT,
+          })
+          return
+        }
+
+        const turnsRequestId = aiTurnsRequestIdRef.current + 1
+        aiTurnsRequestIdRef.current = turnsRequestId
+        setAiTurnsLoading(true)
+        setAiTurnsError('')
+        try {
+          const result = await fetchAiConversationTurns(latest.id)
+          if (
+            aiHistoryRequestIdRef.current !== historyRequestId ||
+            aiTurnsRequestIdRef.current !== turnsRequestId
+          ) return
+          replaceAiConversationTurns(result)
+          await applyCanonicalAiTurnOutcome(
+            [...result.turns].reverse().find((turn) =>
+              turn.status === 'completed' && turn.outcome?.type === 'summary'),
+          )
+        } catch (error) {
+          if (
+            aiHistoryRequestIdRef.current !== historyRequestId ||
+            aiTurnsRequestIdRef.current !== turnsRequestId
+          ) return
+          setAiTurnsError(
+            error instanceof Error && error.message
+              ? error.message
+              : '无法恢复最近的对话。',
+          )
+        }
+      })
+      .catch((error) => {
+        if (aiHistoryRequestIdRef.current !== historyRequestId) return
+        const message = error instanceof Error && error.message
+          ? error.message
+          : '无法读取历史对话。'
+        dispatchAiHistory({ type: 'history/load-failed', error: message })
+        setAiTurnsError(message)
+      })
+      .finally(() => {
+        if (aiHistoryRequestIdRef.current === historyRequestId) setAiTurnsLoading(false)
+      })
+
+    return () => {
+      if (aiHistoryRequestIdRef.current === historyRequestId) {
+        aiHistoryRequestIdRef.current += 1
+        aiTurnsRequestIdRef.current += 1
+      }
+    }
+  }, [applyCanonicalAiTurnOutcome, authUser, loggedIn, replaceAiConversationTurns])
+
+  useEffect(() => {
+    const processing = canonicalProcessingAiTurn(aiTurns)
+    const active = activeAiTurnRef.current
+    const conversationId = selectedAiConversationId ?? (
+      active && processing && active.turnId === processing.id ? active.conversationId : null
+    )
+    if (!loggedIn || !conversationId || !processing) return
+
+    if (
+      !active ||
+      active.conversationId !== conversationId ||
+      active.turnId !== processing.id
+    ) {
+      activeAiTurnRef.current = {
+        conversationId,
+        localRequestId: null,
+        turnId: processing.id,
+      }
+    }
+    setAiBusy(true)
+
+    let cancelled = false
+    const sessionGeneration = authSessionGenerationRef.current
+    const isCurrentRequest = () => {
+      if (cancelled || authSessionGenerationRef.current !== sessionGeneration) return false
+      const currentConversationId = currentAiConversationId(aiSelectionRef.current)
+      const currentActive = activeAiTurnRef.current
+      return currentConversationId === conversationId || (
+        currentActive?.conversationId === conversationId &&
+        currentActive.turnId === processing.id
+      )
+    }
+    const timeout = window.setTimeout(() => {
+      reconcileAiConversationTurn(conversationId, processing.id)
+        .then(async (result) => {
+          if (!isCurrentRequest()) return
+          dispatchAiHistory({
+            type: 'conversation/upserted',
+            conversation: toAiConversationListItem(result.conversation),
+          })
+          setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+          setAiTurnsError('')
+          if (result.turn.status !== 'processing') {
+            if (activeAiTurnRef.current?.turnId === result.turn.id) {
+              activeAiTurnRef.current = null
+            }
+            setAiBusy(false)
+            await applyCanonicalAiTurnOutcome(result.turn)
+          }
+        })
+        .catch((error) => {
+          if (!isCurrentRequest()) return
+          const activeTurn = activeAiTurnRef.current
+          if (
+            error instanceof ApiError &&
+            error.status === 404 &&
+            activeTurn?.localRequestId === null &&
+            !activeTurn.awaitingCanonical &&
+            !activeTurn.stopRequested
+          ) {
+            setAiTurns((current) => current.filter((turn) => turn.id !== processing.id))
+            if (activeTurn.turnId === processing.id) activeAiTurnRef.current = null
+            setAiDraft((current) => current || processing.userContent)
+            setAiBusy(false)
+            setAiTurnsError('')
+            return
+          }
+          if (activeTurn?.localRequestId === null) {
+            setAiTurnsError(
+              error instanceof Error && error.message
+                ? error.message
+                : '无法刷新正在生成的回复。',
+            )
+          }
+          setAiReconcileAttempt((current) => current + 1)
+        })
+    }, 1_500)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [
+    aiReconcileAttempt,
+    aiTurns,
+    applyCanonicalAiTurnOutcome,
+    loggedIn,
+    selectedAiConversationId,
+  ])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -1260,8 +1617,17 @@ function App() {
     if (aiProjectId == null || projects.some((project) => project.id === aiProjectId)) return
 
     aiRequestIdRef.current += 1
-    setAiProjectId(null)
-    setAiMessages(initialAiMessages)
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    activeAiTurnRef.current = null
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: GENERAL_AI_CONVERSATION_CONTEXT,
+    })
+    setAiTurns([])
+    setAiTurnsLoading(false)
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('当前项目已不可访问，已开始新的普通对话。')
     setAiDraft('')
     setAiBusy(false)
     setAiError('')
@@ -1473,7 +1839,13 @@ function App() {
   }
 
   function signOut() {
+    authSessionGenerationRef.current += 1
     notificationRefreshRequestIdRef.current += 1
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    activeAiTurnRef.current = null
+    deletingAiConversationIdsRef.current.clear()
     clearAuthToken()
     setLoggedIn(false)
     setAuthUser(null)
@@ -1481,6 +1853,15 @@ function App() {
     setWorkspaceError('')
     setWorkspaceLoaded(false)
     setNotifications(emptyNotifications)
+    dispatchAiHistory({ type: 'session/reset' })
+    setAiTurns([])
+    setAiTurnsLoading(false)
+    setAiTurnsError('')
+    setAiNextBeforeTurn(null)
+    setAiDraft('')
+    setAiBusy(false)
+    setAiError('')
+    setAiMobilePane(getDefaultAiPane())
   }
 
   async function updateAccountSettings(payload: {
@@ -2137,89 +2518,530 @@ function App() {
     )
   }
 
-  async function sendAgentMessage(route: AiMessageRoute = {}) {
-    const aiContent = (route.content ?? aiDraft).trim()
-    const displayContent = (route.displayContent ?? aiContent).trim()
-    if (!aiContent || !displayContent || aiBusy) return false
+  async function stopActiveAiTurn() {
+    const active = activeAiTurnRef.current
+    if (!active) return
 
-    const agentType = route.agentType ?? activeAiAgent
-    const agentChanged = agentType !== activeAiAgent
-    const baseMessages = agentChanged ? initialAiMessages : aiMessages
-
-    const requestId = aiRequestIdRef.current + 1
-    aiRequestIdRef.current = requestId
-
-    const nextMessages: DisplayAiChatMessage[] = [
-      ...baseMessages,
-      {
-        role: 'user',
-        content: displayContent,
-        aiContent,
-        attachments: route.attachments,
-        createdAt: getCurrentDateTimeStamp(),
-      },
-    ]
-    if (agentType === 'conversation-analysis') setAiProjectId(null)
-    setActiveAiAgent(agentType)
-    setAiMessages(nextMessages)
-    setAiDraft('')
+    const requestId = aiRequestIdRef.current
+    activeAiTurnRef.current = { ...active, localRequestId: null, stopRequested: true }
     setAiBusy(true)
     setAiError('')
     try {
-      const scopedProjectId = agentType === 'project-summary'
-        ? aiProjectId ?? undefined
-        : undefined
-      const result = await sendAiChat(
-        nextMessages.map(({ role, content: messageContent, aiContent: hiddenContent }) => ({
-          role,
-          content: hiddenContent ?? messageContent,
-        })),
-        agentType,
-        scopedProjectId,
-      )
-      if (aiRequestIdRef.current !== requestId) return false
-      setAiMessages([
-        ...nextMessages,
-        {
-          role: 'assistant',
-          content: result.message,
-          createdAt: getCurrentDateTimeStamp(),
-        },
-      ])
-      return true
+      const result = await cancelAiConversationTurn(active.conversationId, active.turnId)
+      if (aiRequestIdRef.current !== requestId) return
+      aiRequestIdRef.current += 1
+      if (result.pending) {
+        activeAiTurnRef.current = null
+        setAiTurns((current) => current.filter((turn) => turn.id !== active.turnId))
+        if (active.userContent) setAiDraft((current) => current || active.userContent || '')
+        setAiBusy(false)
+        setAiTurnsError('')
+        return
+      }
+      dispatchAiHistory({
+        type: 'conversation/upserted',
+        conversation: toAiConversationListItem(result.conversation),
+      })
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status !== 'processing') {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
     } catch (error) {
-      if (aiRequestIdRef.current !== requestId) return false
-      setAiMessages(baseMessages)
-      setAiDraft(route.draftContent ?? displayContent)
-      setAiError(
-        error instanceof Error && error.message
-          ? error.message
-          : 'AI 暂时没有响应，请稍后重试。',
-      )
-      return false
-    } finally {
-      if (aiRequestIdRef.current === requestId) setAiBusy(false)
+      if (aiRequestIdRef.current !== requestId) return
+      try {
+        const restored = await fetchAiConversationTurns(active.conversationId)
+        if (aiRequestIdRef.current !== requestId) return
+        const canonicalTurn = restored.turns.find((turn) => turn.id === active.turnId)
+        if (!canonicalTurn) {
+          setAiError('停止状态尚未确认，请再次停止或等待状态刷新。')
+          return
+        }
+        aiRequestIdRef.current += 1
+        replaceAiConversationTurns(restored, 'merge')
+        await applyCanonicalAiTurnOutcome(canonicalTurn)
+        return
+      } catch {
+        if (aiRequestIdRef.current !== requestId) return
+      }
+      if (activeAiTurnRef.current) {
+        setAiError(
+          error instanceof Error && error.message
+            ? error.message
+            : '停止回复尚未确认，请重试或等待状态刷新。',
+        )
+      }
     }
   }
 
-  function resetAiConversation() {
-    aiRequestIdRef.current += 1
-    setAiMessages(initialAiMessages)
-    setAiDraft('')
-    setAiBusy(false)
-    setAiError('')
-    setActiveAiAgent('project-summary')
+  async function loadAiHistoryPage(mode: 'initial' | 'more' = 'initial') {
+    if (mode === 'more' && !aiHistory.nextCursor) return null
+    const requestId = aiHistoryRequestIdRef.current + 1
+    aiHistoryRequestIdRef.current = requestId
+    dispatchAiHistory({ type: 'history/load-started', mode })
+    try {
+      const page = await fetchAiConversations(
+        mode === 'more' ? aiHistory.nextCursor ?? undefined : undefined,
+      )
+      if (aiHistoryRequestIdRef.current !== requestId) return null
+      const conversations = page.conversations
+        .filter((conversation) => !deletingAiConversationIdsRef.current.has(conversation.id))
+        .map(toAiConversationListItem)
+      dispatchAiHistory({
+        type: 'history/load-succeeded',
+        conversations,
+        mode,
+        nextCursor: page.nextCursor,
+      })
+      return conversations
+    } catch (error) {
+      if (aiHistoryRequestIdRef.current !== requestId) return
+      dispatchAiHistory({
+        type: 'history/load-failed',
+        error: error instanceof Error && error.message
+          ? error.message
+          : '无法读取历史对话。',
+      })
+      return null
+    }
   }
 
-  function changeAiProjectContext(projectId: number | null) {
-    if (projectId === aiProjectId) return
+  async function retryAiHistory() {
+    const conversations = await loadAiHistoryPage('initial')
+    if (!conversations) return
+    const currentId = currentAiConversationId(aiSelectionRef.current)
+    const target = conversations.find((conversation) => conversation.id === currentId)
+      ?? conversations[0]
+    if (target) await selectAiConversationHistory(target, true)
+    else setAiTurnsError('')
+  }
+
+  async function selectAiConversationHistory(
+    conversation: AiConversationListItem,
+    force = false,
+  ) {
+    if (deletingAiConversationIdsRef.current.has(conversation.id)) return
+    if (!force && currentAiConversationId(aiSelectionRef.current) === conversation.id) {
+      if (window.matchMedia('(max-width: 1100px)').matches) setAiMobilePane('workspace')
+      return
+    }
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
     aiRequestIdRef.current += 1
-    setAiProjectId(projectId)
-    setAiMessages(initialAiMessages)
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    const requestId = aiTurnsRequestIdRef.current + 1
+    aiTurnsRequestIdRef.current = requestId
+    setAiTurnsLoading(true)
+    setAiTurnsError('')
+    try {
+      const result = await fetchAiConversationTurns(conversation.id)
+      if (
+        aiTurnsRequestIdRef.current !== requestId ||
+        deletingAiConversationIdsRef.current.has(conversation.id)
+      ) return
+      replaceAiConversationTurns(result)
+      await applyCanonicalAiTurnOutcome(
+        [...result.turns].reverse().find((turn) =>
+          turn.status === 'completed' && turn.outcome?.type === 'summary'),
+      )
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiDraft('')
+      setAiError('')
+      if (window.matchMedia('(max-width: 1100px)').matches) setAiMobilePane('workspace')
+    } catch (error) {
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurnsError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取这段对话。',
+      )
+    } finally {
+      if (aiTurnsRequestIdRef.current === requestId) setAiTurnsLoading(false)
+    }
+  }
+
+  async function loadEarlierAiTurns() {
+    const conversationId = currentAiConversationId(aiHistory.selection)
+    if (!conversationId || aiNextBeforeTurn == null || aiTurnsLoading) return
+    const requestId = aiTurnsRequestIdRef.current + 1
+    aiTurnsRequestIdRef.current = requestId
+    setAiTurnsLoading(true)
+    setAiTurnsError('')
+    try {
+      const result = await fetchAiConversationTurns(conversationId, aiNextBeforeTurn)
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurns((current) => mergeAiTurns(result.turns, current))
+      setAiNextBeforeTurn(result.nextBeforeTurn)
+      await applyCanonicalAiTurnOutcome(
+        [...result.turns].reverse().find((turn) =>
+          turn.status === 'completed' && turn.outcome?.type === 'summary'),
+      )
+    } catch (error) {
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurnsError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法加载更早的消息。',
+      )
+    } finally {
+      if (aiTurnsRequestIdRef.current === requestId) setAiTurnsLoading(false)
+    }
+  }
+
+  async function renameAiConversationHistory(conversationId: string, title: string) {
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    const result = await renameAiConversation(conversationId, title)
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    const conversation = toAiConversationListItem(result.conversation)
+    dispatchAiHistory({
+      type: 'conversation/renamed',
+      conversationId,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt,
+    })
+  }
+
+  async function deleteAiConversationHistory(conversationId: string) {
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    deletingAiConversationIdsRef.current.add(conversationId)
+    const deletedCurrent = currentAiConversationId(aiSelectionRef.current) === conversationId
+    const deletingActive = activeAiTurnRef.current?.conversationId === conversationId
+    if (deletedCurrent || deletingActive) {
+      aiTurnsRequestIdRef.current += 1
+      setAiTurnsLoading(false)
+    }
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    if (deletingActive) await stopActiveAiTurn()
+    if (activeAiTurnRef.current?.conversationId === conversationId) {
+      deletingAiConversationIdsRef.current.delete(conversationId)
+      return
+    }
+    if (deletedCurrent) aiRequestIdRef.current += 1
+    try {
+      await deleteAiConversation(conversationId)
+    } catch (error) {
+      deletingAiConversationIdsRef.current.delete(conversationId)
+      throw error
+    }
+    dispatchAiHistory({ type: 'conversation/deleted', conversationId })
+    if (deletedCurrent) {
+      aiTurnsRequestIdRef.current += 1
+      setAiTurns([])
+      setAiNextBeforeTurn(null)
+      setAiTurnsError('')
+      setAiDraft('')
+      setAiError('')
+    }
+  }
+
+  async function sendAgentMessage(
+    route: AiMessageRoute = {},
+  ): Promise<AiTurnRunResponse | false> {
+    const content = (route.content ?? aiDraft).trim()
+    const attachments = route.attachments ?? []
+    if ((!content && attachments.length === 0) || aiBusy || aiTurnsLoading) return false
+
+    const currentContext = aiHistory.selection.context
+    const contextKind = route.contextKind ?? currentContext.contextType
+    const projectId = contextKind === 'project' ? currentContext.projectId : null
+    const targetContext = aiConversationContext(contextKind, projectId, projects)
+    const contextChanged =
+      currentContext.contextType !== targetContext.contextType ||
+      currentContext.projectId !== targetContext.projectId
+    const existingConversationId = contextChanged
+      ? null
+      : currentAiConversationId(aiHistory.selection)
+    const conversationId = existingConversationId ?? crypto.randomUUID()
+    const turnId = crypto.randomUUID()
+    const now = new Date().toISOString()
+    const classified = classifyAiInput(buildAiClassificationContent(content, attachments))
+    const optimisticTurn: AiTurn = {
+      assistantContent: null,
+      attachments: attachments.map((attachment, index) => ({
+        id: -(index + 1),
+        mediaType: 'text/plain',
+        name: attachment.name,
+        ordinal: index,
+        size: attachment.size,
+      })),
+      attemptCount: 1,
+      completedAt: null,
+      createdAt: now,
+      errorCode: null,
+      id: turnId,
+      intentKind: classified.kind,
+      outcome: null,
+      status: 'processing',
+      turnNo: nextAiTurnNumber(aiTurns),
+      updatedAt: now,
+      userContent: content,
+    }
+
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    if (!existingConversationId) {
+      dispatchAiHistory({ type: 'conversation/blanked', context: targetContext })
+      setAiTurns([optimisticTurn])
+      setAiNextBeforeTurn(null)
+    } else {
+      setAiTurns((current) => mergeAiTurns(current, [optimisticTurn]))
+    }
+    const requestId = aiRequestIdRef.current + 1
+    aiRequestIdRef.current = requestId
+    activeAiTurnRef.current = {
+      conversationId,
+      localRequestId: requestId,
+      turnId,
+      userContent: content,
+    }
     setAiDraft('')
-    setAiBusy(false)
+    setAiBusy(true)
     setAiError('')
-    if (projectId != null) setActiveAiAgent('project-summary')
+    setAiTurnsError('')
+    try {
+      const result = await sendAiConversationTurn({
+        attachments: attachments.map(({ content: attachmentContent, name, size }) => ({
+          content: attachmentContent,
+          mediaType: 'text/plain',
+          name,
+          size,
+        })),
+        content,
+        contextKind,
+        conversationId,
+        projectId,
+        turnId,
+      })
+      if (aiRequestIdRef.current !== requestId) return false
+      if (result.conversation) {
+        dispatchAiHistory({
+          type: 'conversation/upserted',
+          conversation: toAiConversationListItem(result.conversation),
+        })
+      }
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+      } else if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+      await applyAiRunOutcome(result.outcome)
+      return result
+    } catch (error) {
+      if (aiRequestIdRef.current !== requestId) return false
+      const transportStateUnknown = isAiTurnCanonicalStateUnknown(
+        error instanceof ApiError ? error.status : null,
+      )
+      if (transportStateUnknown) {
+        if (activeAiTurnRef.current?.turnId === turnId) {
+          activeAiTurnRef.current = {
+            ...activeAiTurnRef.current,
+            awaitingCanonical: true,
+            localRequestId: null,
+          }
+        }
+      } else {
+        setAiTurns((current) => current.map((turn) =>
+          turn.id === turnId
+            ? {
+              ...turn,
+              errorCode: 'AI_REQUEST_FAILED',
+              status: 'failed',
+              updatedAt: new Date().toISOString(),
+            }
+            : turn,
+        ))
+      }
+      setAiError(
+        transportStateUnknown
+          ? '发送状态尚未确认，请停止回复或等待状态刷新。'
+          : error instanceof Error && error.message
+          ? error.message
+          : 'AI 暂时没有响应，可以重试这条消息。',
+      )
+      try {
+        const restored = await fetchAiConversationTurns(conversationId)
+        if (aiRequestIdRef.current === requestId) {
+          const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
+          if (canonicalTurn) {
+            replaceAiConversationTurns(restored, 'merge')
+          } else if (!transportStateUnknown) {
+            dispatchAiHistory({
+              type: 'conversation/upserted',
+              conversation: toAiConversationListItem(restored.conversation),
+            })
+            setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
+            if (activeAiTurnRef.current?.turnId === turnId) {
+              activeAiTurnRef.current = null
+              setAiBusy(false)
+            }
+          }
+          if (canonicalTurn?.status === 'processing') {
+            activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+          }
+          if (canonicalTurn?.status === 'completed') {
+            setAiError('')
+            await applyAiRunOutcome(canonicalTurn.outcome)
+          }
+          if (!canonicalTurn) {
+            if (!transportStateUnknown) setAiDraft(content)
+          }
+        }
+      } catch {
+        if (
+          !transportStateUnknown &&
+          !existingConversationId &&
+          aiRequestIdRef.current === requestId
+        ) {
+          setAiTurns([])
+          setAiDraft(content)
+        }
+        if (!transportStateUnknown && activeAiTurnRef.current?.turnId === turnId) {
+          activeAiTurnRef.current = null
+          setAiBusy(false)
+        }
+      }
+      return false
+    } finally {
+      if (
+        aiRequestIdRef.current === requestId &&
+        activeAiTurnRef.current?.localRequestId === requestId
+      ) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+    }
+  }
+
+  async function retryAiTurn(turnId: string): Promise<AiTurnRunResponse | false> {
+    const conversationId = currentAiConversationId(aiHistory.selection)
+    if (!conversationId || aiBusy || aiTurnsLoading) return false
+    const requestId = aiRequestIdRef.current + 1
+    aiRequestIdRef.current = requestId
+    activeAiTurnRef.current = { conversationId, localRequestId: requestId, turnId }
+    setAiTurns((current) => current.map((turn) =>
+      turn.id === turnId
+        ? {
+          ...turn,
+          errorCode: null,
+          status: 'processing',
+          updatedAt: new Date().toISOString(),
+        }
+        : turn,
+    ))
+    setAiBusy(true)
+    setAiError('')
+    try {
+      const result = await retryAiConversationTurn(conversationId, turnId)
+      if (aiRequestIdRef.current !== requestId) return false
+      dispatchAiHistory({
+        type: 'conversation/upserted',
+        conversation: toAiConversationListItem(result.conversation),
+      })
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+      } else if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+      await applyAiRunOutcome(result.outcome)
+      return result
+    } catch (error) {
+      if (aiRequestIdRef.current !== requestId) return false
+      let recoveredCompletedTurn = false
+      try {
+        const restored = await fetchAiConversationTurns(conversationId)
+        if (aiRequestIdRef.current === requestId) {
+          const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
+          if (canonicalTurn) {
+            replaceAiConversationTurns(restored, 'merge')
+          } else {
+            dispatchAiHistory({
+              type: 'conversation/upserted',
+              conversation: toAiConversationListItem(restored.conversation),
+            })
+            setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
+            if (activeAiTurnRef.current?.turnId === turnId) {
+              activeAiTurnRef.current = null
+              setAiBusy(false)
+            }
+          }
+          if (canonicalTurn?.status === 'processing') {
+            activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+          }
+          if (canonicalTurn?.status === 'completed') {
+            setAiError('')
+            await applyAiRunOutcome(canonicalTurn.outcome)
+            recoveredCompletedTurn = true
+          }
+        }
+      } catch (restoreError) {
+        if (restoreError instanceof ApiError && restoreError.status === 404) {
+          setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
+          if (activeAiTurnRef.current?.turnId === turnId) {
+            activeAiTurnRef.current = null
+            setAiBusy(false)
+          }
+        }
+      }
+      if (recoveredCompletedTurn) return false
+      setAiError(
+        error instanceof Error && error.message
+          ? error.message
+          : '重试失败，请稍后再试。',
+      )
+      return false
+    } finally {
+      if (
+        aiRequestIdRef.current === requestId &&
+        activeAiTurnRef.current?.localRequestId === requestId
+      ) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+    }
+  }
+
+  async function resetAiConversation() {
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    setAiTurnsLoading(false)
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: aiHistory.selection.context,
+    })
+    setAiTurns([])
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiDraft('')
+    setAiError('')
+  }
+
+  async function changeAiProjectContext(projectId: number | null) {
+    if (projectId === aiProjectId && aiHistory.selection.context.contextType !== 'conversation-analysis') {
+      return
+    }
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    setAiTurnsLoading(false)
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: aiConversationContext(projectId == null ? 'general' : 'project', projectId, projects),
+    })
+    setAiTurns([])
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiError('')
   }
 
   async function exportMarkdown(projectId?: number) {
@@ -2678,19 +3500,34 @@ ${packageTimelineText}`
             aiBusy={aiBusy}
             aiDraft={aiDraft}
             aiError={aiError}
+            aiHistory={aiHistory}
             aiMessages={aiMessages}
+            aiNextBeforeTurn={aiNextBeforeTurn}
+            aiTurnsError={aiTurnsError}
+            aiTurnsLoading={aiTurnsLoading}
+            retryableAiTurnId={latestRetryableAiTurnId(aiTurns)}
             memberships={memberships}
             mobilePane={aiMobilePane}
             onAiDraftChange={setAiDraft}
             onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
+            onDeleteConversation={deleteAiConversationHistory}
             onExportWorkspace={() => exportMarkdown()}
-            onGenerateSummary={generateSummary}
+            onLoadEarlierTurns={loadEarlierAiTurns}
+            onLoadHistory={async (mode) => {
+              await loadAiHistoryPage(mode)
+            }}
             onMobilePaneChange={setAiMobilePane}
+            onRenameConversation={renameAiConversationHistory}
             onResetAiChat={resetAiConversation}
+            onRetryHistory={retryAiHistory}
+            onRetryTurn={retryAiTurn}
+            onSelectConversation={selectAiConversationHistory}
             onSendAgentMessage={sendAgentMessage}
             onSelectedProjectIdChange={changeAiProjectContext}
-            onWorkspace={applyWorkspace}
+            onStopAiTurn={stopActiveAiTurn}
+            onWorkspace={applyAiWorkspaceForSession}
             projects={projects}
+            sessionGeneration={authSessionGenerationRef.current}
             selectedProjectId={aiProjectId}
             summaries={summaries}
           />
@@ -6029,38 +6866,64 @@ function VegesAiView({
   aiBusy,
   aiDraft,
   aiError,
+  aiHistory,
   aiMessages,
+  aiNextBeforeTurn,
+  aiTurnsError,
+  aiTurnsLoading,
+  retryableAiTurnId,
   memberships,
   mobilePane,
   onAiDraftChange,
   onCreateSummaryFromAiMessage,
+  onDeleteConversation,
   onExportWorkspace,
-  onGenerateSummary,
+  onLoadEarlierTurns,
+  onLoadHistory,
   onMobilePaneChange,
+  onRenameConversation,
   onResetAiChat,
+  onRetryHistory,
+  onRetryTurn,
+  onSelectConversation,
   onSendAgentMessage,
   onSelectedProjectIdChange,
+  onStopAiTurn,
   onWorkspace,
   projects,
+  sessionGeneration,
   selectedProjectId,
   summaries,
 }: {
   aiBusy: boolean
   aiDraft: string
   aiError: string
+  aiHistory: AiConversationHistoryState
   aiMessages: DisplayAiChatMessage[]
+  aiNextBeforeTurn: number | null
+  aiTurnsError: string
+  aiTurnsLoading: boolean
+  retryableAiTurnId: string | null
   memberships: ProjectMembership[]
   mobilePane: AiMobilePane
   onAiDraftChange: (value: string) => void
   onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
+  onDeleteConversation: (conversationId: string) => Promise<void>
   onExportWorkspace: () => void
-  onGenerateSummary: (projectId: number, type: SummaryPeriodType) => Promise<boolean>
+  onLoadEarlierTurns: () => Promise<void>
+  onLoadHistory: (mode: 'initial' | 'more') => Promise<void>
   onMobilePaneChange: (pane: AiMobilePane) => void
-  onResetAiChat: () => void
-  onSendAgentMessage: (route?: AiMessageRoute) => Promise<boolean>
-  onSelectedProjectIdChange: (projectId: number | null) => void
-  onWorkspace: (workspace: WorkspaceData) => void
+  onRenameConversation: (conversationId: string, title: string) => Promise<void>
+  onResetAiChat: () => Promise<void>
+  onRetryHistory: () => Promise<void>
+  onRetryTurn: (turnId: string) => Promise<AiTurnRunResponse | false>
+  onSelectConversation: (conversation: AiConversationListItem) => Promise<void>
+  onSendAgentMessage: (route?: AiMessageRoute) => Promise<AiTurnRunResponse | false>
+  onSelectedProjectIdChange: (projectId: number | null) => Promise<void>
+  onStopAiTurn: () => Promise<void>
+  onWorkspace: (workspace: WorkspaceData, sessionGeneration: number) => void
   projects: Project[]
+  sessionGeneration: number
   selectedProjectId: number | null
   summaries: Summary[]
 }) {
@@ -6073,7 +6936,6 @@ function VegesAiView({
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
   const [aiStatusLoading, setAiStatusLoading] = useState(true)
   const [aiStatusError, setAiStatusError] = useState('')
-  const [generatingType, setGeneratingType] = useState<SummaryPeriodType | null>(null)
   const [generationError, setGenerationError] = useState('')
   const [todoWorkflowBusy, setTodoWorkflowBusy] = useState(false)
   const [attachments, setAttachments] = useState<AiTextAttachment[]>([])
@@ -6081,8 +6943,11 @@ function VegesAiView({
   const [attachmentReading, setAttachmentReading] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const attachmentReadRequestIdRef = useRef(0)
+  const todoOutcomeRequestIdRef = useRef(0)
   const artifactsRef = useRef<HTMLDivElement>(null)
   const artifactsTriggerRef = useRef<HTMLButtonElement>(null)
+  const historyRef = useRef<HTMLElement>(null)
+  const historyTriggerRef = useRef<HTMLButtonElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const composerShellRef = useRef<HTMLDivElement>(null)
   const todoWorkflowRef = useRef<TodoProposalWorkflowHandle>(null)
@@ -6103,9 +6968,18 @@ function VegesAiView({
   }, [projectQuery, projects])
   const aiConfigured = Boolean(aiStatus?.configured)
   const workspaceBusy =
-    aiBusy || attachmentReading || Boolean(generatingType) || todoWorkflowBusy
+    aiBusy || aiTurnsLoading || attachmentReading || todoWorkflowBusy
   const artifactsOpen = mobilePane === 'artifacts'
+  const historyOpen = mobilePane === 'history'
+  const auxiliaryOpen = artifactsOpen || historyOpen
   const documentFullscreen = isSummaryFullscreen && artifactsOpen
+  const currentConversationId = currentAiConversationId(aiHistory.selection)
+  const currentConversation = aiHistory.conversations.find(
+    (conversation) => conversation.id === currentConversationId,
+  ) ?? null
+  const currentConversationTitle = currentConversation?.title ?? (
+    selectedProject ? `新对话 · ${selectedProject.name}` : '新对话'
+  )
 
   const loadAiStatus = useCallback(async () => {
     setAiStatusLoading(true)
@@ -6130,6 +7004,7 @@ function VegesAiView({
 
   useEffect(() => () => {
     attachmentReadRequestIdRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
   }, [])
 
   useEffect(() => {
@@ -6157,6 +7032,23 @@ function VegesAiView({
   }, [artifactsOpen, documentFullscreen, onMobilePaneChange])
 
   useEffect(() => {
+    if (!historyOpen) return
+    const frame = window.requestAnimationFrame(() => historyRef.current?.focus())
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      onMobilePaneChange('workspace')
+      window.requestAnimationFrame(() => historyTriggerRef.current?.focus())
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [historyOpen, onMobilePaneChange])
+
+  useEffect(() => {
     if (!projectPickerOpen) return
 
     function handlePointerDown(event: PointerEvent) {
@@ -6180,6 +7072,54 @@ function VegesAiView({
     setIsSummaryFullscreen(false)
     onMobilePaneChange('workspace')
     window.requestAnimationFrame(() => artifactsTriggerRef.current?.focus())
+  }
+
+  function openHistory() {
+    setIsSummaryFullscreen(false)
+    onMobilePaneChange('history')
+    window.requestAnimationFrame(() => historyRef.current?.focus())
+  }
+
+  function closeHistory() {
+    onMobilePaneChange('workspace')
+    window.requestAnimationFrame(() => historyTriggerRef.current?.focus())
+  }
+
+  async function openTodoProposalOutcome(batchId: number) {
+    const requestId = todoOutcomeRequestIdRef.current + 1
+    todoOutcomeRequestIdRef.current = requestId
+    setGenerationError('')
+    try {
+      const result = await fetchTodoProposalBatch(batchId)
+      if (todoOutcomeRequestIdRef.current !== requestId) return
+      todoWorkflowRef.current?.openProposals(
+        result.batchId,
+        result.proposals,
+        'AI 对话输入.md',
+        result.status === 'confirmed' || result.status === 'discarded'
+          ? result.status
+          : 'pending',
+      )
+    } catch (error) {
+      if (todoOutcomeRequestIdRef.current !== requestId) return
+      setGenerationError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取这批待办候选。',
+      )
+    }
+  }
+
+  async function retryTurn(turnId: string) {
+    const result = await onRetryTurn(turnId)
+    if (!result) return
+    if (result.outcome?.type === 'todo-proposals') {
+      await openTodoProposalOutcome(result.outcome.batchId)
+    }
+    if (result.outcome?.type === 'summary') {
+      setSelectedSummaryId(result.outcome.summaryId)
+      openArtifacts()
+    }
   }
 
   function handleDraftChange(value: string, caret: number) {
@@ -6210,6 +7150,7 @@ function VegesAiView({
     const shouldRestoreDraft = Boolean(projectMention) || selectedProjectId == null
     const isChangingProject = selectedProjectId != null && selectedProjectId !== projectId
     attachmentReadRequestIdRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     onSelectedProjectIdChange(projectId)
     if (shouldRestoreDraft) onAiDraftChange(nextDraft)
@@ -6224,6 +7165,7 @@ function VegesAiView({
 
   function removeProjectContext() {
     attachmentReadRequestIdRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     onSelectedProjectIdChange(null)
     setAttachments([])
@@ -6315,11 +7257,8 @@ function VegesAiView({
     const draftContent = prompt.trim()
     if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
 
-    const content = buildAiMessageContent(draftContent, attachments)
-    const displayContent = draftContent || '请阅读附件内容。'
-    const displayAttachments = attachments.map(({ id, name, size }) => ({ id, name, size }))
-
-    const intent = classifyAiInput(content)
+    const modelContent = buildAiMessageContent(draftContent, attachments)
+    const intent = classifyAiInput(buildAiClassificationContent(draftContent, attachments))
     setGenerationError('')
     setAttachmentError('')
 
@@ -6328,74 +7267,82 @@ function VegesAiView({
         setAttachmentError('待办提取内容最多 20,000 字符，请减少附件或输入内容。')
         return
       }
-      const success = await todoWorkflowRef.current?.analyzeContent(
-        intent.content,
-        attachments.length === 1 ? attachments[0].name : 'veges-ai-input.md',
-      )
-      if (success) {
-        onAiDraftChange('')
-        setAttachments([])
-      }
-      return
     }
 
-    if (intent.kind === 'project-summary' && attachments.length === 0) {
-      if (selectedProjectId) {
-        setGeneratingType(intent.period)
-        const success = await onGenerateSummary(selectedProjectId, intent.period)
-        if (!success) setGenerationError('总结没有生成，请稍后重试。')
-        if (success) {
-          onAiDraftChange('')
-          setAttachments([])
-          setIsSummaryFullscreen(false)
-          setSelectedSummaryId(null)
-          openArtifacts()
-        }
-        setGeneratingType(null)
-        return
-      }
-
+    if (intent.kind === 'project-summary' && !selectedProjectId) {
       setGenerationError('请先用 @ 选择一个项目，再生成项目总结。')
+      return
+    }
+    if (intent.kind === 'project-summary' && attachments.length > 0) {
+      setGenerationError('生成项目总结时不能同时添加附件。')
       return
     }
 
     const maxMessageLength = aiStatus?.maxMessageLength ?? 2_000
-    if (content.length > maxMessageLength) {
+    if (modelContent.length > maxMessageLength) {
       setAttachmentError(
         `当前模型单条消息最多 ${maxMessageLength.toLocaleString()} 字符，请减少附件或输入内容。`,
       )
       return
     }
 
-    if (intent.kind === 'conversation-analysis') {
-      const success = await onSendAgentMessage({
-        agentType: 'conversation-analysis',
-        attachments: displayAttachments,
-        content,
-        displayContent,
-        draftContent,
-      })
-      if (success) setAttachments([])
-      return
-    }
-
-    const success = await onSendAgentMessage({
-      attachments: displayAttachments,
-      content,
-      displayContent,
-      draftContent,
+    const result = await onSendAgentMessage({
+      attachments,
+      content: draftContent,
+      contextKind: intent.kind === 'conversation-analysis'
+        ? 'conversation-analysis'
+        : intent.kind === 'todo-extraction' &&
+            aiHistory.selection.context.contextType === 'conversation-analysis'
+          ? 'general'
+          : undefined,
     })
-    if (success) setAttachments([])
+    if (!result) return
+
+    setAttachments([])
+    if (result.outcome?.type === 'todo-proposals') {
+      await openTodoProposalOutcome(result.outcome.batchId)
+    }
+    if (result.outcome?.type === 'summary') {
+      setSelectedSummaryId(result.outcome.summaryId)
+      setIsSummaryFullscreen(false)
+      openArtifacts()
+    }
   }
 
   function resetConversation() {
     attachmentReadRequestIdRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     setGenerationError('')
     setAttachmentError('')
     setAttachments([])
     todoWorkflowRef.current?.reset()
-    onResetAiChat()
+    void onResetAiChat()
+    if (historyOpen) closeHistory()
+  }
+
+  async function selectConversationHistory(conversation: AiConversationListItem) {
+    attachmentReadRequestIdRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
+    setAttachmentReading(false)
+    setAttachments([])
+    setAttachmentError('')
+    setGenerationError('')
+    todoWorkflowRef.current?.reset()
+    await onSelectConversation(conversation)
+  }
+
+  async function deleteConversationHistory(conversationId: string) {
+    if (conversationId === currentConversationId) {
+      attachmentReadRequestIdRef.current += 1
+      todoOutcomeRequestIdRef.current += 1
+      setAttachmentReading(false)
+      setAttachments([])
+      setAttachmentError('')
+      setGenerationError('')
+      todoWorkflowRef.current?.reset()
+    }
+    await onDeleteConversation(conversationId)
   }
 
   const showPromptExamples =
@@ -6446,9 +7393,13 @@ function VegesAiView({
   ]
 
   return (
-    <div className={`veges-ai-layout${artifactsOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
+    <div className={`veges-ai-layout${auxiliaryOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
       <Card className="panel veges-ai-workspace">
         <header className="veges-ai-toolbar">
+          <div className="veges-ai-conversation-title">
+            <ChatCircleDots aria-hidden size={17} weight="duotone" />
+            <strong title={currentConversationTitle}>{currentConversationTitle}</strong>
+          </div>
           <div className="veges-ai-toolbar-actions">
             <Button
               aria-label="开始新对话"
@@ -6460,6 +7411,20 @@ function VegesAiView({
               onClick={resetConversation}
             >
               <Plus size={17} weight="bold" />
+            </Button>
+            <Button
+              ref={historyTriggerRef}
+              aria-label={`历史对话 ${aiHistory.conversations.length}`}
+              aria-expanded={historyOpen}
+              className="ai-history-trigger"
+              title="打开历史对话"
+              type="button"
+              variant="ghost"
+              onClick={openHistory}
+            >
+              <ClockCounterClockwise size={17} />
+              <span>历史</span>
+              <small>{aiHistory.conversations.length}</small>
             </Button>
             <Button
               ref={artifactsTriggerRef}
@@ -6510,6 +7475,19 @@ function VegesAiView({
                 className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
                 role="log"
               >
+                {aiNextBeforeTurn != null ? (
+                  <Button
+                    className="ai-load-earlier"
+                    disabled={aiTurnsLoading}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void onLoadEarlierTurns()}
+                  >
+                    <ClockCounterClockwise aria-hidden size={14} />
+                    {aiTurnsLoading ? '正在加载…' : '加载更早消息'}
+                  </Button>
+                ) : null}
                 {showPromptExamples ? (
                   <div aria-label="示例提示" className="veges-ai-prompt-examples">
                     {promptExamples.map((example) => (
@@ -6532,8 +7510,11 @@ function VegesAiView({
                     ))}
                   </div>
                 ) : null}
-                {aiMessages.map((message, index) => (
-                  <article className={`agent-message ${message.role}`} key={`${message.role}-${index}`}>
+                {aiMessages.map((message) => (
+                  <article
+                    className={`agent-message ${message.role} is-${message.turnStatus}`}
+                    key={message.id}
+                  >
                     <div className="agent-message-content">
                       <MarkdownPreview content={message.content} compact />
                     </div>
@@ -6548,46 +7529,101 @@ function VegesAiView({
                         ))}
                       </div>
                     ) : null}
-                    {message.role === 'assistant' && selectedProjectId ? (
+                    {message.role === 'assistant' ? (
                       <div className="agent-message-footer">
-                        <time className="agent-message-time">{message.createdAt}</time>
-                        <Button
-                          aria-label="保存为 AI 文档"
-                          className="agent-summary-button"
-                          size="icon"
-                          title="保存为 AI 文档"
-                          type="button"
-                          variant="ghost"
-                          onClick={() => onCreateSummaryFromAiMessage(message)}
-                        >
-                          <FileText size={14} weight="bold" />
-                        </Button>
+                        <time className="agent-message-time" dateTime={message.createdAt}>
+                          {formatAiMessageTime(message.createdAt)}
+                        </time>
+                        <div className="agent-message-actions">
+                          {message.turnId === retryableAiTurnId &&
+                          (message.turnStatus === 'failed' || message.turnStatus === 'cancelled') ? (
+                            <Button
+                              disabled={workspaceBusy}
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void retryTurn(message.turnId)}
+                            >
+                              <ClockCounterClockwise aria-hidden size={14} />
+                              重试
+                            </Button>
+                          ) : null}
+                          {message.turnStatus === 'processing' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void onStopAiTurn()}
+                            >
+                              <X aria-hidden size={14} />
+                              停止
+                            </Button>
+                          ) : null}
+                          {message.outcome?.type === 'todo-proposals' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                const outcome = message.outcome
+                                if (outcome?.type === 'todo-proposals') {
+                                  void openTodoProposalOutcome(outcome.batchId)
+                                }
+                              }}
+                            >
+                              <ListChecks aria-hidden size={14} />
+                              查看待办候选
+                            </Button>
+                          ) : null}
+                          {message.outcome?.type === 'summary' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                const outcome = message.outcome
+                                if (outcome?.type === 'summary') {
+                                  setSelectedSummaryId(outcome.summaryId)
+                                  openArtifacts()
+                                }
+                              }}
+                            >
+                              <FileText aria-hidden size={14} />
+                              打开 AI 文档
+                            </Button>
+                          ) : null}
+                          {selectedProjectId && message.turnStatus === 'completed' && !message.outcome ? (
+                            <Button
+                              aria-label="保存为 AI 文档"
+                              className="agent-summary-button"
+                              size="icon"
+                              title="保存为 AI 文档"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => onCreateSummaryFromAiMessage(message)}
+                            >
+                              <FileText size={14} weight="bold" />
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
                     ) : null}
                   </article>
                 ))}
-                {aiBusy ? (
-                  <article className="agent-message assistant">
-                    <div className="agent-message-content">
-                      <MarkdownPreview content="正在整理上下文..." compact />
-                    </div>
-                  </article>
-                ) : null}
               </div>
-              {aiError || generationError || attachmentError ? (
+              {aiTurnsError || aiError || generationError || attachmentError ? (
                 <p className="form-error" role="alert">
-                  {aiError || generationError || attachmentError}
+                  {aiTurnsError || aiError || generationError || attachmentError}
                 </p>
               ) : null}
               <div className="ai-todo-workflow-status">
                 <TodoProposalWorkflow
                   ref={todoWorkflowRef}
-                  disabled={!aiConfigured}
                   memberships={memberships}
                   onBusyChange={setTodoWorkflowBusy}
                   onWorkspace={onWorkspace}
                   projects={projects}
-                  showLauncher={false}
+                  sessionGeneration={sessionGeneration}
                 />
               </div>
               <div className="agent-composer" ref={composerShellRef}>
@@ -6601,7 +7637,7 @@ function VegesAiView({
                   onChange={(event) => void handleAttachmentSelection(event)}
                 />
                 {projectPickerOpen ? (
-                  <div className="ai-project-picker" role="listbox" aria-label="选择项目上下文">
+                  <div aria-label="选择项目上下文" className="ai-project-picker" role="listbox">
                     {filteredProjects.length > 0 ? filteredProjects.map((project) => (
                       <button
                         aria-selected={project.id === selectedProjectId}
@@ -6621,7 +7657,8 @@ function VegesAiView({
                 ) : null}
                 <Textarea
                   ref={composerRef}
-                  disabled={Boolean(generatingType) || todoWorkflowBusy}
+                  aria-label="Veges AI 消息"
+                  disabled={aiTurnsLoading || todoWorkflowBusy}
                   placeholder="输入消息，或粘贴需要处理的内容"
                   rows={2}
                   value={aiDraft}
@@ -6734,24 +7771,54 @@ function VegesAiView({
                     </Button>
                   </div>
                   <Button
-                    aria-label="发送消息"
-                    className="agent-send-button"
+                    aria-label={aiBusy ? '停止回复' : '发送消息'}
+                    className={`agent-send-button${aiBusy ? ' is-stop' : ''}`}
                     disabled={
-                      workspaceBusy ||
-                      (!aiDraft.trim() && attachments.length === 0) ||
-                      !aiConfigured
+                      !aiConfigured || (
+                        !aiBusy && (
+                          aiTurnsLoading ||
+                          attachmentReading ||
+                          todoWorkflowBusy ||
+                          (!aiDraft.trim() && attachments.length === 0)
+                        )
+                      )
                     }
                     size="icon"
-                    title="发送消息"
+                    title={aiBusy ? '停止回复' : '发送消息'}
                     type="button"
-                    onClick={() => void sendComposerMessage()}
+                    onClick={() => {
+                      if (aiBusy) void onStopAiTurn()
+                      else void sendComposerMessage()
+                    }}
                   >
-                    <PaperPlaneTilt size={17} weight="fill" />
+                    {aiBusy
+                      ? <X size={17} weight="bold" />
+                      : <PaperPlaneTilt size={17} weight="fill" />}
                   </Button>
                 </div>
               </div>
         </section>
       </Card>
+
+      {historyOpen ? (
+        <AiConversationHistoryPanel
+          className="veges-ai-history"
+          conversations={aiHistory.conversations}
+          currentConversationId={currentConversationId}
+          error={aiHistory.error || aiTurnsError}
+          hasLoaded={aiHistory.hasLoaded}
+          loadState={aiHistory.loadState}
+          nextCursor={aiHistory.nextCursor}
+          panelRef={historyRef}
+          onClose={closeHistory}
+          onCreateConversation={resetConversation}
+          onDeleteConversation={deleteConversationHistory}
+          onLoadMore={() => onLoadHistory('more')}
+          onRenameConversation={onRenameConversation}
+          onRetry={onRetryHistory}
+          onSelectConversation={selectConversationHistory}
+        />
+      ) : null}
 
       {artifactsOpen ? (
         <Card

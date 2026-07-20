@@ -200,6 +200,97 @@ create table if not exists draft_items (
   created_at timestamptz not null default now()
 );
 
+create table if not exists ai_conversations (
+  id uuid primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  project_id bigint references projects(id) on delete cascade,
+  context_kind text not null
+    check (context_kind in ('general', 'project', 'conversation-analysis')),
+  title text not null,
+  next_turn_no integer not null default 1 check (next_turn_no > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_turn_at timestamptz not null default now(),
+  check (
+    (context_kind = 'project' and project_id is not null)
+    or (context_kind <> 'project' and project_id is null)
+  )
+);
+
+create table if not exists ai_conversation_tombstones (
+  conversation_id uuid primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  deleted_at timestamptz not null default now()
+);
+
+create table if not exists ai_turn_cancellations (
+  user_id bigint not null references users(id) on delete cascade,
+  conversation_id uuid not null,
+  turn_id uuid not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, turn_id)
+);
+
+create table if not exists ai_turns (
+  id uuid primary key,
+  conversation_id uuid not null references ai_conversations(id) on delete cascade,
+  turn_no integer not null check (turn_no > 0),
+  intent_kind text not null
+    check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis')),
+  intent_payload text,
+  status text not null
+    check (status in ('processing', 'completed', 'failed', 'cancelled')),
+  user_content text not null,
+  assistant_content text,
+  error_code text,
+  attempt_count integer not null default 1 check (attempt_count > 0),
+  lease_token uuid,
+  lease_until timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (conversation_id, turn_no),
+  check (
+    (
+      status = 'processing'
+      and assistant_content is null
+      and error_code is null
+      and lease_token is not null
+      and lease_until is not null
+      and completed_at is null
+    )
+    or (
+      status = 'completed'
+      and assistant_content is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+    )
+    or (
+      status in ('failed', 'cancelled')
+      and assistant_content is null
+      and error_code is not null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is null
+    )
+  )
+);
+
+create table if not exists ai_turn_attachments (
+  id bigserial primary key,
+  turn_id uuid not null references ai_turns(id) on delete cascade,
+  ordinal smallint not null check (ordinal between 0 and 3),
+  name text not null,
+  media_type text not null,
+  size_bytes integer not null check (size_bytes between 1 and 65536),
+  content_characters integer not null check (content_characters between 1 and 20000),
+  content text not null,
+  created_at timestamptz not null default now(),
+  unique (turn_id, ordinal)
+);
+
 create table if not exists ai_todo_proposal_batches (
   id bigserial primary key,
   user_id bigint not null references users(id) on delete cascade,
@@ -210,6 +301,38 @@ create table if not exists ai_todo_proposal_batches (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table ai_todo_proposal_batches
+  add column if not exists source_turn_id uuid;
+
+alter table ai_turns
+  add column if not exists intent_payload text;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'ai_todo_proposal_batches_source_turn_id_fkey'
+      and conrelid = 'ai_todo_proposal_batches'::regclass
+      and confdeltype <> 'n'
+  ) then
+    alter table ai_todo_proposal_batches
+      drop constraint ai_todo_proposal_batches_source_turn_id_fkey;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'ai_todo_proposal_batches_source_turn_id_fkey'
+      and conrelid = 'ai_todo_proposal_batches'::regclass
+  ) then
+    alter table ai_todo_proposal_batches
+      add constraint ai_todo_proposal_batches_source_turn_id_fkey
+      foreign key (source_turn_id) references ai_turns(id) on delete set null;
+  end if;
+end
+$$;
 
 create table if not exists ai_todo_proposals (
   id bigserial primary key,
@@ -253,6 +376,9 @@ where summaries.project_id = projects.id
 
 alter table summaries
   alter column project_id drop not null;
+
+alter table summaries
+  add column if not exists source_turn_id uuid references ai_turns(id) on delete set null;
 
 create table if not exists notification_states (
   id bigserial primary key,
@@ -485,12 +611,32 @@ create index if not exists idx_collaborators_project_id on collaborators(project
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
+create index if not exists idx_ai_conversations_user_activity
+  on ai_conversations(user_id, last_turn_at desc, id desc);
+create index if not exists idx_ai_conversations_project_user
+  on ai_conversations(project_id, user_id)
+  where project_id is not null;
+create index if not exists idx_ai_turn_cancellations_user_created
+  on ai_turn_cancellations(user_id, created_at);
+create index if not exists idx_ai_turns_conversation_order
+  on ai_turns(conversation_id, turn_no desc);
+create unique index if not exists idx_ai_turns_one_processing
+  on ai_turns(conversation_id)
+  where status = 'processing';
+create index if not exists idx_ai_turn_attachments_turn
+  on ai_turn_attachments(turn_id, ordinal);
 create index if not exists idx_ai_todo_proposal_batches_user_status
   on ai_todo_proposal_batches(user_id, status, created_at desc);
+create unique index if not exists idx_ai_todo_proposal_batches_source_turn
+  on ai_todo_proposal_batches(source_turn_id)
+  where source_turn_id is not null;
 create index if not exists idx_ai_todo_proposals_batch_status
   on ai_todo_proposals(batch_id, status, id);
 create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
+create unique index if not exists idx_summaries_source_turn
+  on summaries(source_turn_id)
+  where source_turn_id is not null;
 create index if not exists idx_notification_states_user_kind
   on notification_states(user_id, kind);
 create index if not exists idx_project_integrations_project_provider

@@ -12,6 +12,7 @@
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
+| AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `shared/ai-input-intent.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
@@ -102,7 +103,7 @@ families are:
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
-| AI | `GET /api/ai/status`, `POST /api/ai/chat`, `POST /api/projects/:projectId/summaries`, `POST /api/ai/todo-proposals`, `POST /api/ai/todo-proposals/:batchId/confirm` |
+| AI | `GET /api/ai/status`, `GET /api/ai/conversations`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
@@ -116,6 +117,9 @@ must remain bound to the authorized project ID.
 - Todo confirmation: `confirmed`, `rejected`.
 - Todo activity event: `created`, `assigned`, `confirmed`, `rejected`, `completed`, `reopened`.
 - Todo proposal batch: `pending`, `confirmed`, `discarded`; proposal item: `pending`, `accepted`, `rejected`.
+- AI conversation context: `general`, `project`, `conversation-analysis`; AI turn intent:
+  `chat`, `project-summary`, `todo-extraction`, `conversation-analysis`; AI turn status:
+  `processing`, `completed`, `failed`, `cancelled`.
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
 - Package event type: `init`, `upgrade`.
 - Package event status: `draft`, `delivering`, `delivered`.
@@ -128,9 +132,46 @@ must remain bound to the authorized project ID.
 `GET /api/ai/status` returns `configured`, `model`, and the effective positive
 `maxMessageLength`; the browser uses that limit to reject an oversized composed message
 before the provider can silently trim it. Veges AI text attachments are read locally and
-embedded in the existing chat message content rather than sent to a separate upload route.
+sent with one turn rather than uploaded to a separate object route. The server encrypts the
+original name and content; turn responses contain attachment metadata but never content.
 The composer accepts at most four supported text files, 64 KiB each and 20,000 combined
-attachment characters; the effective chat message limit may be lower.
+attachment characters; the effective message limit may be lower.
+
+Conversation list pagination uses an opaque `(lastTurnAt, id)` cursor and returns newest
+activity first. Turn pagination uses `beforeTurn` and returns each page oldest-to-newest for
+rendering. A new conversation is created
+lazily by the first `POST .../turns`, using browser-generated UUIDs for the conversation and
+turn. Repeating the same turn UUID with identical content is idempotent; reusing it with a
+different payload is `409`. Project conversations are visible only while the user owns or is
+an active member of that project. Rename accepts 1-80 characters. Deleting a conversation is
+permanent for its chat history and linked pending proposal batches, but does not delete saved
+summaries, processed proposal audit batches, or already-created todos. The deleted UUID remains
+reserved by a server tombstone, so delayed requests receive `404` instead of recreating it.
+
+The unified turn endpoint records ordinary replies and routes explicit project summary,
+Markdown todo extraction, and conversation-analysis intent through the same timeline.
+First responses and idempotent replays use the same stable summary or proposal-batch reference;
+the browser refreshes the workspace or fetches the batch to open the artifact. Confirmed and
+discarded proposal batches reopen read-only, and confirmed reads expose accepted candidates
+instead of their rejected source copies. Project-context confirmation cannot move a candidate
+to another project and rechecks project, module, assignee, and caller access in the write
+transaction. The server supplies at most three prior completed turns (six messages) plus the
+current user input to the provider.
+
+Project-bound AI writes and project deletion share `ai-project:<projectId>` advisory lock
+keys; multi-project proposal confirmation acquires IDs in ascending order.
+
+`POST .../reconcile` returns the canonical conversation and requested turn, and atomically marks
+an expired processing lease as `failed` with `AI_REQUEST_STALE`; an active or terminal turn is
+unchanged. Cancel and start share the conversation advisory lock plus a per-user cancellation
+lock. A cancel that arrives before the turn
+creates a short-lived, per-user claim (at most 20 current claims); the delayed start observes
+that stable rejection and returns `AI_REQUEST_CANCELLED` before persistence or provider
+execution. Replays remain cancelled for the claim's 10-minute lifetime.
+`POST /api/ai/chat` and the old `POST /api/ai/todo-proposals` remain temporarily as
+compatibility responses for an already-open old SPA. Both return
+`AI_CLIENT_UPGRADE_REQUIRED` with a refresh instruction and do not call the provider or
+create data.
 
 Daily and weekly AI summaries are generated from authorized period facts and saved
 immediately as summary documents. Markdown ingestion accepts `.md` content only; AI may
