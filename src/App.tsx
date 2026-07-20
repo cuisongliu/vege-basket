@@ -34,6 +34,7 @@ import {
   DownloadSimple,
   FileText,
   FunnelSimple,
+  GearSix,
   LinkSimple,
   ListChecks,
   MagnifyingGlass,
@@ -2966,7 +2967,7 @@ function AccountMenu({
           <DropdownMenuItem
             onSelect={() => setAccountDialogOpen(true)}
           >
-            <PencilSimple /> 账户设置
+            <GearSix /> 账户设置
           </DropdownMenuItem>
           <DropdownMenuItem
             className="theme-menu-item"

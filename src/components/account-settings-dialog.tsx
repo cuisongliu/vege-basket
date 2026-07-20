@@ -1,7 +1,5 @@
 import {
-  ArrowLeft,
   Bell,
-  CaretRight,
   LinkSimple,
   LockKey,
   UserCircle,
@@ -36,8 +34,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 
-type AccountSettingsView = 'overview' | 'profile' | 'notifications' | 'security'
-type AccountSettingsDetailView = Exclude<AccountSettingsView, 'overview'>
+type AccountSettingsSection = 'profile' | 'notifications' | 'security'
 type MutationToken = {
   generation: number
   id: number
@@ -75,14 +72,14 @@ export function AccountSettingsDialog({
   onSaveProfile,
   returnFocusRef,
 }: AccountSettingsDialogProps) {
-  const [view, setView] = useState<AccountSettingsView>('overview')
-  const [lastSavedView, setLastSavedView] = useState<AccountSettingsDetailView | null>(null)
+  const [section, setSection] = useState<AccountSettingsSection>('profile')
   const [savedDisplayName, setSavedDisplayName] = useState<string | null>(null)
   const [feishuDisconnected, setFeishuDisconnected] = useState(false)
 
   const [profileDraft, setProfileDraft] = useState(getDisplayName(user))
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
+  const [profileSuccess, setProfileSuccess] = useState('')
 
   const [feishuBusy, setFeishuBusy] = useState(false)
   const [feishuError, setFeishuError] = useState('')
@@ -96,22 +93,23 @@ export function AccountSettingsDialog({
   const [subscriptionLoadError, setSubscriptionLoadError] = useState('')
   const [subscriptionSaving, setSubscriptionSaving] = useState(false)
   const [subscriptionSaveError, setSubscriptionSaveError] = useState('')
+  const [subscriptionSuccess, setSubscriptionSuccess] = useState('')
 
   const [currentPasswordDraft, setCurrentPasswordDraft] = useState('')
   const [nextPasswordDraft, setNextPasswordDraft] = useState('')
   const [confirmPasswordDraft, setConfirmPasswordDraft] = useState('')
   const [passwordBusy, setPasswordBusy] = useState(false)
   const [passwordError, setPasswordError] = useState('')
+  const [passwordSuccess, setPasswordSuccess] = useState('')
 
   const wasOpenRef = useRef(false)
   const openGenerationRef = useRef(0)
   const nextMutationIdRef = useRef(0)
   const activeMutationIdRef = useRef<number | null>(null)
   const subscriptionRequestIdRef = useRef(0)
-  const profileOverviewButtonRef = useRef<HTMLButtonElement>(null)
-  const notificationOverviewButtonRef = useRef<HTMLButtonElement>(null)
-  const securityOverviewButtonRef = useRef<HTMLButtonElement>(null)
+  const profileInputRef = useRef<HTMLInputElement>(null)
   const notificationPrimaryActionRef = useRef<HTMLButtonElement>(null)
+  const securityInputRef = useRef<HTMLInputElement>(null)
 
   const displayName = savedDisplayName ?? getDisplayName(user)
   const feishuLinked = !feishuDisconnected && Boolean(user?.feishuLinked)
@@ -121,12 +119,19 @@ export function AccountSettingsDialog({
     subscriptionDraft.enabled !== persistedSubscription.enabled ||
     subscriptionDraft.localSendTime !== persistedSubscription.localSendTime
   const notificationMutationBusy = feishuBusy || subscriptionSaving
+  const accountMutationBusy = profileBusy || notificationMutationBusy || passwordBusy
+  const notificationSummary = subscriptionLoading
+    ? '正在读取'
+    : subscriptionLoadError
+      ? '读取失败'
+      : `飞书${feishuLinked ? '已绑定' : '未绑定'} · 推送${persistedSubscription.enabled ? '已开启' : '已关闭'}`
 
   const loadSubscription = useCallback(async () => {
     const requestId = subscriptionRequestIdRef.current + 1
     subscriptionRequestIdRef.current = requestId
     setSubscriptionLoading(true)
     setSubscriptionLoadError('')
+    setSubscriptionSuccess('')
     try {
       const result = await fetchNotificationSubscription()
       if (subscriptionRequestIdRef.current === requestId) {
@@ -150,21 +155,23 @@ export function AccountSettingsDialog({
     if (open && !wasOpenRef.current) {
       openGenerationRef.current += 1
       activeMutationIdRef.current = null
-      setView('overview')
-      setLastSavedView(null)
+      setSection('profile')
       setSavedDisplayName(null)
       setFeishuDisconnected(false)
       setProfileDraft(getDisplayName(user))
       setProfileBusy(false)
       setProfileError('')
+      setProfileSuccess('')
       setFeishuBusy(false)
       setFeishuError('')
       setFeishuSuccess('')
       setPersistedSubscription(defaultSubscription)
       setSubscriptionDraft(defaultSubscription)
       setSubscriptionSaveError('')
+      setSubscriptionSuccess('')
       setSubscriptionSaving(false)
       setPasswordError('')
+      setPasswordSuccess('')
       setPasswordBusy(false)
       setCurrentPasswordDraft('')
       setNextPasswordDraft('')
@@ -176,32 +183,28 @@ export function AccountSettingsDialog({
       openGenerationRef.current += 1
       activeMutationIdRef.current = null
       subscriptionRequestIdRef.current += 1
-      setView('overview')
-      setLastSavedView(null)
+      setSection('profile')
       setProfileError('')
+      setProfileSuccess('')
       setProfileBusy(false)
       setFeishuError('')
       setFeishuSuccess('')
       setFeishuBusy(false)
       setSubscriptionLoadError('')
       setSubscriptionSaveError('')
+      setSubscriptionSuccess('')
       setSubscriptionLoading(false)
       setSubscriptionSaving(false)
       setCurrentPasswordDraft('')
       setNextPasswordDraft('')
       setConfirmPasswordDraft('')
       setPasswordError('')
+      setPasswordSuccess('')
       setPasswordBusy(false)
     }
 
     wasOpenRef.current = open
   }, [loadSubscription, open, user])
-
-  useEffect(() => {
-    if (!lastSavedView) return
-    const timeoutId = window.setTimeout(() => setLastSavedView(null), 2400)
-    return () => window.clearTimeout(timeoutId)
-  }, [lastSavedView])
 
   function beginMutation(): MutationToken | null {
     if (activeMutationIdRef.current !== null) return null
@@ -229,46 +232,14 @@ export function AccountSettingsDialog({
     onOpenChange(nextOpen)
   }
 
-  function focusOverviewRow(detailView: AccountSettingsDetailView) {
-    if (detailView === 'profile') profileOverviewButtonRef.current?.focus()
-    if (detailView === 'notifications') notificationOverviewButtonRef.current?.focus()
-    if (detailView === 'security') securityOverviewButtonRef.current?.focus()
-  }
-
-  function returnToOverview(
-    detailView: AccountSettingsDetailView,
-    discardNotificationDraft = true,
-  ) {
-    if (detailView === 'notifications' && discardNotificationDraft) {
-      setSubscriptionDraft(persistedSubscription)
-      setSubscriptionSaveError('')
-    }
-    setView('overview')
-    window.requestAnimationFrame(() => focusOverviewRow(detailView))
-  }
-
-  function openDetail(detailView: AccountSettingsDetailView) {
-    setLastSavedView(null)
-    if (detailView === 'profile') {
-      setProfileDraft(displayName)
-      setProfileError('')
-    }
-    if (detailView === 'notifications') {
-      setFeishuError('')
-      setFeishuSuccess('')
-      setSubscriptionDraft(persistedSubscription)
-      setSubscriptionSaveError('')
-    }
-    if (detailView === 'security') {
-      setCurrentPasswordDraft('')
-      setNextPasswordDraft('')
-      setConfirmPasswordDraft('')
-      setPasswordError('')
-    }
-    setView(detailView)
-    if (detailView === 'notifications') {
-      window.requestAnimationFrame(() => notificationPrimaryActionRef.current?.focus())
-    }
+  function selectSection(nextSection: AccountSettingsSection) {
+    if (accountMutationBusy || nextSection === section) return
+    setSection(nextSection)
+    window.requestAnimationFrame(() => {
+      if (nextSection === 'profile') profileInputRef.current?.focus()
+      if (nextSection === 'notifications') notificationPrimaryActionRef.current?.focus()
+      if (nextSection === 'security') securityInputRef.current?.focus()
+    })
   }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
@@ -284,13 +255,13 @@ export function AccountSettingsDialog({
 
     setProfileBusy(true)
     setProfileError('')
+    setProfileSuccess('')
     try {
       await onSaveProfile({ displayName: displayNameValue })
       if (!isMutationCurrent(mutation)) return
       setSavedDisplayName(displayNameValue)
       setProfileDraft(displayNameValue)
-      setLastSavedView('profile')
-      returnToOverview('profile')
+      setProfileSuccess('个人资料已保存。')
     } catch (error) {
       if (isMutationCurrent(mutation)) {
         setProfileError(getErrorMessage(error, '保存失败，请稍后重试。'))
@@ -309,6 +280,7 @@ export function AccountSettingsDialog({
     setFeishuBusy(true)
     setFeishuError('')
     setFeishuSuccess('')
+    setSubscriptionSuccess('')
     try {
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
       const result = await createFeishuOAuthUrl({ returnTo })
@@ -342,6 +314,7 @@ export function AccountSettingsDialog({
       setSubscriptionDraft((current) => ({ ...current, enabled: false }))
       setSubscriptionLoading(false)
       setSubscriptionSaveError('')
+      setSubscriptionSuccess('')
       setFeishuSuccess('飞书账号已解除绑定。')
     } catch (error) {
       if (isMutationCurrent(mutation)) {
@@ -370,6 +343,7 @@ export function AccountSettingsDialog({
 
     setSubscriptionSaving(true)
     setSubscriptionSaveError('')
+    setSubscriptionSuccess('')
     try {
       const result = await updateNotificationSubscription({
         enabled: subscriptionDraft.enabled,
@@ -378,8 +352,7 @@ export function AccountSettingsDialog({
       if (!isMutationCurrent(mutation)) return
       setPersistedSubscription(result.subscription)
       setSubscriptionDraft(result.subscription)
-      setLastSavedView('notifications')
-      returnToOverview('notifications', false)
+      setSubscriptionSuccess('通知设置已保存。')
     } catch (error) {
       if (isMutationCurrent(mutation)) {
         setSubscriptionSaveError(
@@ -409,6 +382,7 @@ export function AccountSettingsDialog({
 
     setPasswordBusy(true)
     setPasswordError('')
+    setPasswordSuccess('')
     try {
       await updateCurrentPassword({
         currentPassword: currentPasswordDraft,
@@ -418,8 +392,7 @@ export function AccountSettingsDialog({
       setCurrentPasswordDraft('')
       setNextPasswordDraft('')
       setConfirmPasswordDraft('')
-      setLastSavedView('security')
-      returnToOverview('security')
+      setPasswordSuccess('登录密码已更新。')
     } catch (error) {
       if (isMutationCurrent(mutation)) {
         setPasswordError(getErrorMessage(error, '修改失败，请确认旧密码是否正确。'))
@@ -431,153 +404,88 @@ export function AccountSettingsDialog({
     }
   }
 
-  function renderDetailHeader(
-    detailView: AccountSettingsDetailView,
-    title: string,
-    description: string,
-    busy: boolean,
-  ) {
+  function renderDetailHeader(title: string, description: string) {
     return (
-      <DialogHeader className="account-settings-detail-header">
-        <Button
-          aria-label="返回账户设置概览"
-          className="account-settings-back-button"
-          disabled={busy}
-          size="icon"
-          title="返回"
-          type="button"
-          variant="ghost"
-          onClick={() => returnToOverview(detailView)}
-        >
-          <ArrowLeft size={18} />
-        </Button>
-        <div className="account-settings-detail-heading">
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </div>
-      </DialogHeader>
+      <div className="account-settings-detail-header">
+        <h3>{title}</h3>
+        <p>{description}</p>
+      </div>
     )
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className={`account-settings-dialog is-${view}`}
+        className="account-settings-dialog"
+        showCloseButton={!accountMutationBusy}
         onCloseAutoFocus={(event) => {
           if (!returnFocusRef?.current) return
           event.preventDefault()
           returnFocusRef.current.focus()
         }}
       >
-        {view === 'overview' ? (
-          <>
-            <DialogHeader>
-              <DialogTitle>账户设置</DialogTitle>
-              <DialogDescription>
-                {user?.username ? `${user.username} · 当前登录账号` : '当前账户尚未登录'}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="account-settings-overview" aria-label="账户设置分类">
-              <Button
-                ref={profileOverviewButtonRef}
-                className="account-settings-overview-row"
-                type="button"
-                variant="ghost"
-                onClick={() => openDetail('profile')}
-              >
-                <span className="account-settings-overview-icon" aria-hidden="true">
-                  <UserCircle size={20} weight="duotone" />
-                </span>
-                <span className="account-settings-overview-copy">
-                  <strong>个人资料</strong>
-                  <small>昵称：{displayName}</small>
-                </span>
-                {lastSavedView === 'profile' ? (
-                  <span className="account-settings-overview-saved" aria-live="polite">
-                    已保存
-                  </span>
-                ) : null}
-                <CaretRight
-                  aria-hidden="true"
-                  className="account-settings-overview-caret"
-                  size={16}
-                  weight="bold"
-                />
-              </Button>
-              <Separator />
-              <Button
-                ref={notificationOverviewButtonRef}
-                className="account-settings-overview-row"
-                type="button"
-                variant="ghost"
-                onClick={() => openDetail('notifications')}
-              >
-                <span className="account-settings-overview-icon" aria-hidden="true">
-                  <Bell size={20} weight="duotone" />
-                </span>
-                <span className="account-settings-overview-copy">
-                  <strong>飞书通知</strong>
-                  <small>
-                    飞书{feishuLinked ? '已绑定' : '未绑定'} · 每日推送
-                    {subscriptionLoading
-                      ? '读取中'
-                      : subscriptionLoadError
-                        ? '暂不可用'
-                        : persistedSubscription.enabled
-                          ? '已开启'
-                          : '已关闭'}
-                  </small>
-                </span>
-                {lastSavedView === 'notifications' ? (
-                  <span className="account-settings-overview-saved" aria-live="polite">
-                    已保存
-                  </span>
-                ) : null}
-                <CaretRight
-                  aria-hidden="true"
-                  className="account-settings-overview-caret"
-                  size={16}
-                  weight="bold"
-                />
-              </Button>
-              <Separator />
-              <Button
-                ref={securityOverviewButtonRef}
-                className="account-settings-overview-row"
-                type="button"
-                variant="ghost"
-                onClick={() => openDetail('security')}
-              >
-                <span className="account-settings-overview-icon" aria-hidden="true">
-                  <LockKey size={20} weight="duotone" />
-                </span>
-                <span className="account-settings-overview-copy">
-                  <strong>登录安全</strong>
-                  <small>修改当前账户的登录密码</small>
-                </span>
-                {lastSavedView === 'security' ? (
-                  <span className="account-settings-overview-saved" aria-live="polite">
-                    已更新
-                  </span>
-                ) : null}
-                <CaretRight
-                  aria-hidden="true"
-                  className="account-settings-overview-caret"
-                  size={16}
-                  weight="bold"
-                />
-              </Button>
-            </div>
-          </>
-        ) : null}
+        <aside className="account-settings-sidebar">
+          <DialogHeader className="account-settings-sidebar-header">
+            <DialogTitle>账户设置</DialogTitle>
+            <DialogDescription>
+              {user?.username ? `${user.username} · 当前登录账号` : '当前账户尚未登录'}
+            </DialogDescription>
+          </DialogHeader>
+          <nav className="account-settings-nav" aria-label="账户设置分类">
+            <Button
+              aria-current={section === 'profile' ? 'page' : undefined}
+              className="account-settings-nav-item"
+              data-active={section === 'profile'}
+              disabled={accountMutationBusy}
+              type="button"
+              variant="ghost"
+              onClick={() => selectSection('profile')}
+            >
+              <UserCircle aria-hidden="true" size={18} weight="duotone" />
+              <span className="account-settings-nav-copy">
+                <strong>个人资料</strong>
+                <small>{displayName}</small>
+              </span>
+            </Button>
+            <Button
+              aria-current={section === 'notifications' ? 'page' : undefined}
+              className="account-settings-nav-item"
+              data-active={section === 'notifications'}
+              disabled={accountMutationBusy}
+              type="button"
+              variant="ghost"
+              onClick={() => selectSection('notifications')}
+            >
+              <Bell aria-hidden="true" size={18} weight="duotone" />
+              <span className="account-settings-nav-copy">
+                <strong>飞书通知</strong>
+                <small>{notificationSummary}</small>
+              </span>
+            </Button>
+            <Button
+              aria-current={section === 'security' ? 'page' : undefined}
+              className="account-settings-nav-item"
+              data-active={section === 'security'}
+              disabled={accountMutationBusy}
+              type="button"
+              variant="ghost"
+              onClick={() => selectSection('security')}
+            >
+              <LockKey aria-hidden="true" size={18} weight="duotone" />
+              <span className="account-settings-nav-copy">
+                <strong>登录安全</strong>
+                <small>修改登录密码</small>
+              </span>
+            </Button>
+          </nav>
+        </aside>
 
-        {view === 'profile' ? (
+        <section className="account-settings-panel">
+        {section === 'profile' ? (
           <>
             {renderDetailHeader(
-              'profile',
               '个人资料',
               user?.username ? `当前登录账号：${user.username}` : '维护当前账户的显示昵称。',
-              profileBusy,
             )}
             <form className="account-settings-detail-form" onSubmit={saveProfile}>
               <div className="account-settings-detail-body">
@@ -585,6 +493,7 @@ export function AccountSettingsDialog({
                   昵称
                   <Input
                     autoFocus
+                    ref={profileInputRef}
                     aria-describedby={profileError ? 'account-settings-profile-error' : undefined}
                     aria-invalid={Boolean(profileError)}
                     autoComplete="off"
@@ -600,12 +509,18 @@ export function AccountSettingsDialog({
                     onChange={(event) => {
                       setProfileDraft(event.target.value)
                       setProfileError('')
+                      setProfileSuccess('')
                     }}
                   />
                 </Label>
                 {profileError ? (
                   <p className="form-error" id="account-settings-profile-error" role="alert">
                     {profileError}
+                  </p>
+                ) : null}
+                {profileSuccess ? (
+                  <p className="form-success" role="status" aria-live="polite">
+                    {profileSuccess}
                   </p>
                 ) : null}
               </div>
@@ -622,14 +537,9 @@ export function AccountSettingsDialog({
           </>
         ) : null}
 
-        {view === 'notifications' ? (
+        {section === 'notifications' ? (
           <>
-            {renderDetailHeader(
-              'notifications',
-              '飞书通知',
-              '管理飞书绑定和每日待办推送。',
-              notificationMutationBusy,
-            )}
+            {renderDetailHeader('飞书通知', '管理飞书绑定和每日待办推送。')}
             <form
               className="account-settings-detail-form account-settings-notification-form"
               onSubmit={saveSubscription}
@@ -716,6 +626,7 @@ export function AccountSettingsDialog({
                               enabled: event.target.checked,
                             }))
                             setSubscriptionSaveError('')
+                            setSubscriptionSuccess('')
                           }}
                         />
                         <span aria-hidden="true" />
@@ -771,6 +682,7 @@ export function AccountSettingsDialog({
                                 localSendTime: event.target.value,
                               }))
                               setSubscriptionSaveError('')
+                              setSubscriptionSuccess('')
                             }}
                           />
                         </Label>
@@ -793,32 +705,41 @@ export function AccountSettingsDialog({
                         {subscriptionSaveError}
                       </p>
                     ) : null}
+                    {subscriptionSuccess ? (
+                      <p className="form-success" role="status" aria-live="polite">
+                        {subscriptionSuccess}
+                      </p>
+                    ) : null}
                     </>
                   ) : null}
                 </section>
               </div>
-              {!subscriptionLoading && !subscriptionLoadError ? (
-                <DialogFooter className="account-settings-detail-actions">
-                  <Button
-                    aria-busy={notificationMutationBusy}
-                    disabled={
-                      notificationMutationBusy ||
-                      !subscriptionChanged ||
-                      (subscriptionDraft.enabled && !feishuLinked)
-                    }
-                    type="submit"
-                  >
-                    {subscriptionSaving ? '保存中...' : '保存通知设置'}
-                  </Button>
-                </DialogFooter>
-              ) : null}
+              <DialogFooter className="account-settings-detail-actions">
+                <Button
+                  aria-busy={subscriptionLoading || notificationMutationBusy}
+                  disabled={
+                    subscriptionLoading ||
+                    Boolean(subscriptionLoadError) ||
+                    notificationMutationBusy ||
+                    !subscriptionChanged ||
+                    (subscriptionDraft.enabled && !feishuLinked)
+                  }
+                  type="submit"
+                >
+                  {subscriptionLoading
+                    ? '读取中...'
+                    : subscriptionSaving
+                      ? '保存中...'
+                      : '保存通知设置'}
+                </Button>
+              </DialogFooter>
             </form>
           </>
         ) : null}
 
-        {view === 'security' ? (
+        {section === 'security' ? (
           <>
-            {renderDetailHeader('security', '登录安全', '修改当前账户的登录密码。', passwordBusy)}
+            {renderDetailHeader('登录安全', '修改当前账户的登录密码。')}
             <form
               autoComplete="off"
               className="account-settings-detail-form"
@@ -837,6 +758,7 @@ export function AccountSettingsDialog({
                   旧密码
                   <Input
                     autoFocus
+                    ref={securityInputRef}
                     aria-describedby={passwordError ? 'account-settings-password-error' : undefined}
                     aria-invalid={Boolean(passwordError)}
                     autoComplete="new-password"
@@ -851,6 +773,7 @@ export function AccountSettingsDialog({
                     onChange={(event) => {
                       setCurrentPasswordDraft(event.target.value)
                       setPasswordError('')
+                      setPasswordSuccess('')
                     }}
                   />
                 </Label>
@@ -872,6 +795,7 @@ export function AccountSettingsDialog({
                     onChange={(event) => {
                       setNextPasswordDraft(event.target.value)
                       setPasswordError('')
+                      setPasswordSuccess('')
                     }}
                   />
                 </Label>
@@ -893,12 +817,18 @@ export function AccountSettingsDialog({
                     onChange={(event) => {
                       setConfirmPasswordDraft(event.target.value)
                       setPasswordError('')
+                      setPasswordSuccess('')
                     }}
                   />
                 </Label>
                 {passwordError ? (
                   <p className="form-error" id="account-settings-password-error" role="alert">
                     {passwordError}
+                  </p>
+                ) : null}
+                {passwordSuccess ? (
+                  <p className="form-success" role="status" aria-live="polite">
+                    {passwordSuccess}
                   </p>
                 ) : null}
               </div>
@@ -910,6 +840,7 @@ export function AccountSettingsDialog({
             </form>
           </>
         ) : null}
+        </section>
       </DialogContent>
     </Dialog>
   )

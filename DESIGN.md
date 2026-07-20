@@ -180,7 +180,7 @@ Sidebar rows are 32px high with a 6px radius, left-aligned icon and label, and a
 
 ### Account Settings
 
-Treat account settings as a compact status overview with progressive disclosure, not one long form. Group the overview into Personal Profile, Feishu Notifications, and Login Security; selecting a row replaces the dialog body with one focused editor. Use flat rows and dividers instead of nested cards or category tabs. Each editor owns its validation, loading, error, and save state; successful saves return to the overview and restore focus. On narrow screens, focused editors use a near-full-screen dialog with one scrolling content region.
+Treat account settings as a stable settings center, not a status overview or one long form. Opening the dialog shows Personal Profile immediately; a narrow category rail keeps Personal Profile, Feishu Notifications, and Login Security available while one focused editor occupies the main panel. Use tonal separation, flat rows, and dividers instead of nested cards. Each category owns its validation, loading, error, success, and save state, and successful saves stay in place. On narrow screens, move the category rail above the editor and keep one scrolling content region with stable actions.
 
 ### Veges AI
 
