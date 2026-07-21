@@ -45,7 +45,11 @@ historical product context; current code and these operational docs take precede
 - AI conversations are private to one user and have an immutable `general`, `project`, or
   `conversation-analysis` context. Changing or removing `@项目` starts a blank conversation;
   never rebind an existing conversation or combine history from different contexts. General
-  chat receives no implicit project or workspace facts.
+  chat receives no implicit project or workspace facts. Only an explicit current daily or
+  weekly `workspace-review` intent may load cross-project facts in a general conversation.
+  Persist every source project in `ai_turn_project_sources`; reauthorize those sources before
+  returning the turn or including it in later model history. Keep the source row after project
+  deletion so deleted or inaccessible facts cannot reappear through general chat history.
 - PostgreSQL is the canonical AI-history source. The browser submits only one new user turn,
   its client UUID, and optional text attachments; it must never submit assistant history.
   Keep turn creation idempotent, permit only one processing turn per conversation, and use
@@ -57,8 +61,8 @@ historical product context; current code and these operational docs take precede
   open while calling the external AI provider.
 - Keep AI turn transport on the shared `started`, `delta`, `progress`, `heartbeat`, `completed`,
   `failed`, and `cancelled` SSE contract. Ordinary chat and conversation analysis may stream
-  text deltas; project summaries and todo extraction may expose only fixed progress phases until
-  the canonical result is committed. A dropped browser connection must not cancel canonical
+  text deltas; project summaries, workspace reviews, and todo extraction may expose only fixed
+  progress phases until the canonical result is committed. A dropped browser connection must not cancel canonical
   execution, while an explicit stop must still use the cancel route. Recheck project access and
   the active lease before every project-bound delta or completion. Treat PostgreSQL, not a
   terminal stream frame or partial text, as the final turn and artifact source of truth.
@@ -92,6 +96,12 @@ historical product context; current code and these operational docs take precede
 - Dedicated project-summary generation requires a selected `@` project ID and current
   daily or weekly intent. Do not broaden a missing project context to the whole workspace,
   and do not map historical date wording onto the current daily or weekly endpoint.
+- Explicit current-day or current-week workspace review runs only without `@项目` and without
+  attachments. Load the authorized project catalog, the user's own period journals, scoped todo
+  activity, current actionable todos, and current risks on the server. Owner projects may expose
+  all project todo facts; member projects may expose only the user's related activity and assigned
+  todos. Keep bounded detail samples labeled as samples rather than reporting partial totals as
+  exhaustive.
 - Conversation analysis must clear visible project context because that agent does not
   receive project facts. Selecting a non-null `@` project must atomically restore the
   project-aware agent before a message can be sent.

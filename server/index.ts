@@ -26,7 +26,15 @@ import {
   buildAiPeriodSummaryRequest,
   getAiSummaryPeriod,
 } from './ai-period-summary.ts'
-import type { AiTodoActivityFact } from './ai-period-summary.ts'
+import {
+  hasAiWorkspaceReviewAccess,
+  loadAiWorkspaceReviewRequest,
+  toAiTodoActivityFacts,
+  writeAiWorkspaceReviewProjectSources,
+} from './ai-workspace-review-store.ts'
+import type {
+  AiPeriodActivityRow,
+} from './ai-workspace-review-store.ts'
 import {
   AiTodoProposalValidationError,
   buildAiTodoProposalRequest,
@@ -1397,6 +1405,46 @@ async function buildSelectedProjectAiContext(userId: number, projectId: number) 
   ].join('\n\n'), aiMaxContextChars)
 }
 
+async function assertAiWorkspaceReviewAccess(userId: number, projectIds: readonly number[]) {
+  if (!await hasAiWorkspaceReviewAccess(userId, projectIds)) {
+    throw new AiConversationStoreError(
+      'AI_PROJECT_ACCESS_LOST',
+      'Workspace project access changed during generation',
+      404,
+    )
+  }
+}
+
+async function createAiWorkspaceReviewResponse(params: {
+  messages: ChatMessage[]
+  period: 'daily' | 'weekly'
+  signal?: AbortSignal
+  userId: number
+}) {
+  const request = await loadAiWorkspaceReviewRequest(
+    params.userId,
+    params.period,
+    aiMaxContextChars,
+  )
+  await assertAiWorkspaceReviewAccess(params.userId, request.projectIds)
+  try {
+    const message = await requestAiChatCompletion(readAiProviderConfig(), {
+      messages: params.messages,
+      signal: params.signal,
+      systemPrompt: request.systemPrompt,
+      timeoutMs: aiStructuredTurnTimeoutMs,
+      untrustedContext: request.untrustedContext,
+    })
+    await assertAiWorkspaceReviewAccess(params.userId, request.projectIds)
+    return { message, projectIds: request.projectIds, status: 200 as const }
+  } catch (error) {
+    if (error instanceof AiProviderError) {
+      return { code: error.code, error: error.message, status: error.status }
+    }
+    throw error
+  }
+}
+
 async function generateAiPeriodSummary(params: {
   projectId: number
   signal?: AbortSignal
@@ -1407,21 +1455,7 @@ async function generateAiPeriodSummary(params: {
   if (!access) return { error: 'Project not found', status: 404 as const }
 
   const period = getAiSummaryPeriod(params.type)
-  const result = await query<{
-    actor_display_name: string | null
-    actor_email: string | null
-    actor_user_id: string | null
-    assignee_display_name: string | null
-    assignee_email: string | null
-    assignee_user_id: string | null
-    due_date: Date
-    event_type: TodoActivityEventType
-    occurred_at: Date
-    priority: Priority
-    project_name: string
-    title: string
-    todo_id: string | null
-  }>(
+  const result = await query<AiPeriodActivityRow>(
     `
     select event.todo_id,
            event.actor_user_id,
@@ -1452,29 +1486,7 @@ async function generateAiPeriodSummary(params: {
     `,
     [params.projectId, period.start, period.endExclusive, access.role, params.userId],
   )
-  const facts: AiTodoActivityFact[] = result.rows
-    .filter((event) => event.todo_id)
-    .map((event) => ({
-      actorName: event.actor_user_id
-        ? displayNameFromUser({
-          email: event.actor_email ?? '',
-          display_name: event.actor_display_name ?? '',
-        })
-        : undefined,
-      assigneeName: event.assignee_user_id
-        ? displayNameFromUser({
-          email: event.assignee_email ?? '',
-          display_name: event.assignee_display_name ?? '',
-        })
-        : undefined,
-      dueDate: formatDate(event.due_date),
-      kind: event.event_type,
-      occurredAt: event.occurred_at,
-      priority: event.priority,
-      projectName: decryptText(event.project_name),
-      title: decryptText(event.title),
-      todoId: Number(event.todo_id),
-    }))
+  const facts = toAiTodoActivityFacts(result.rows)
 
   try {
     const request = buildAiPeriodSummaryRequest(period, facts)
@@ -1850,6 +1862,69 @@ async function executeAiConversationTurn(
       }
     }
 
+    if (execution.intentKind === 'workspace-review') {
+      if (
+        classifiedIntent.kind !== 'workspace-review' ||
+        execution.context.contextKind !== 'general' ||
+        execution.projectId !== null ||
+        execution.attachments.length > 0
+      ) {
+        throw new AiConversationStoreError(
+          'AI_CONTEXT_INTENT_MISMATCH',
+          'Workspace review requires a general conversation and no attachments',
+          409,
+        )
+      }
+      observer.onProgress?.('generating')
+      const generated = await createAiWorkspaceReviewResponse({
+        messages: [
+          ...execution.history,
+          { content: execution.modelContent, role: 'user' },
+        ],
+        period: classifiedIntent.period,
+        signal: controller.signal,
+        userId,
+      })
+      if ('error' in generated) {
+        throw new AiConversationStoreError(
+          String(generated.code ?? 'AI_WORKSPACE_REVIEW_FAILED'),
+          String(generated.error ?? 'AI workspace review failed'),
+          Number(generated.status ?? 502),
+        )
+      }
+      observer.onProgress?.('saving')
+      await assertAiWorkspaceReviewAccess(userId, generated.projectIds)
+      const completed = await completeAiTurn<null>(
+        userId,
+        execution,
+        generated.message,
+        async (client, turnId) => {
+          const retainedAccess = await writeAiWorkspaceReviewProjectSources(
+            client,
+            userId,
+            turnId,
+            generated.projectIds,
+          )
+          if (!retainedAccess) {
+            throw new AiConversationStoreError(
+              'AI_PROJECT_ACCESS_LOST',
+              'Workspace project access changed during generation',
+              404,
+            )
+          }
+          return null
+        },
+      )
+      if (!completed.completed || !completed.conversation || !completed.turn) {
+        throw new AiConversationStoreError('AI_TURN_CANCELLED', 'AI turn was cancelled', 409)
+      }
+      return {
+        conversation: completed.conversation,
+        outcome: completed.turn.outcome,
+        turn: completed.turn,
+      }
+    }
+
     if (execution.intentKind === 'todo-extraction') {
       if (classifiedIntent.kind !== 'todo-extraction') {
         throw new AiConversationStoreError(
@@ -1959,7 +2034,8 @@ async function executeAiConversationTurn(
 }
 
 function aiTurnStreamMode(execution: AiTurnExecution) {
-  return execution.intentKind === 'chat' || execution.intentKind === 'conversation-analysis'
+  return execution.intentKind === 'chat' ||
+    execution.intentKind === 'conversation-analysis'
     ? 'text'
     : 'progress'
 }
@@ -7280,11 +7356,13 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
       })
       return
     }
-    const classified = classifyAiInput(classificationContent)
     const context = createAiConversationContext(
       request.body.contextKind,
       request.body.projectId,
     )
+    const classified = classifyAiInput(classificationContent, {
+      hasProjectContext: context.contextKind === 'project',
+    })
     const intentKind = classified.kind
     if (intentKind === 'conversation-analysis' && context.contextKind !== 'conversation-analysis') {
       response.status(409).json({
@@ -7297,6 +7375,16 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
       response.status(409).json({
         code: 'AI_PROJECT_REQUIRED',
         error: 'Select a project before generating a project summary',
+      })
+      return
+    }
+    if (
+      intentKind === 'workspace-review' &&
+      (context.contextKind !== 'general' || attachments.length > 0)
+    ) {
+      response.status(409).json({
+        code: 'AI_CONTEXT_INTENT_MISMATCH',
+        error: 'Workspace review requires a general conversation without attachments',
       })
       return
     }

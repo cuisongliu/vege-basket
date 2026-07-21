@@ -16,6 +16,7 @@ import {
   encryptAiTurnContent,
   isAiTurnRetryable,
   normalizeAiConversationTitle,
+  parseAiTurnIntentKind,
   serializeAiConversation,
   serializeAiTurn,
   validateAiTurnAttachments,
@@ -66,6 +67,21 @@ test('schema permanently records deleted conversation UUIDs outside the conversa
   assert.match(tombstoneTable, /conversation_id uuid primary key/u)
   assert.match(tombstoneTable, /user_id bigint not null references users\(id\) on delete cascade/u)
   assert.doesNotMatch(tombstoneTable, /references ai_conversations/u)
+})
+
+test('accepts workspace review as a durable AI turn intent', () => {
+  assert.equal(parseAiTurnIntentKind('workspace-review'), 'workspace-review')
+  assert.match(
+    schemaSql,
+    /ai_turns_intent_kind_check[\s\S]*?'workspace-review'/u,
+  )
+  const sourceTable = schemaSql.match(
+    /create table if not exists ai_turn_project_sources[\s\S]*?\n\);/u,
+  )?.[0] ?? ''
+  assert.match(sourceTable, /turn_id uuid not null references ai_turns\(id\) on delete cascade/u)
+  assert.match(sourceTable, /project_id bigint not null/u)
+  assert.doesNotMatch(sourceTable, /project_id bigint[^\n]*references projects/u)
+  assert.match(schemaSql, /position\('workspace-review' in intent_constraint_definition\) = 0/u)
 })
 
 test('normalizes manual titles and derives a bounded first-turn title', () => {

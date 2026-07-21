@@ -64,15 +64,26 @@ applies the schema and encrypts supported legacy plaintext fields. Both are muta
 operations and require explicit approval, a current backup or snapshot, the intended
 `DATABASE_URL`, and the complete encryption key ring.
 
-AI conversation changes require an authorized disposable PostgreSQL database before any
-runtime claim. Apply `schemaSql` twice, then verify the conversation/turn/attachment checks
-and indexes, encrypted `veges:enc:` values, two-user isolation, project-access loss and
-rejoin, project deletion cascade, idempotent turn replay, one-processing-turn enforcement,
-expired-lease recovery, cancel-before-create claims, cancel/retry races, and conversation
-deletion with saved-summary and created-todo preservation. Also verify that a deleted
-conversation UUID cannot be recreated by a delayed request and that a cancellation claim cannot
-move to another conversation. Do not use production for this validation. No such database test
-is implied by `npm test` or `npm run build`.
+AI conversation changes require an authorized disposable PostgreSQL database before any runtime
+claim. Apply `schemaSql` twice, then verify the conversation/turn/attachment checks and indexes,
+encrypted `veges:enc:` values, two-user isolation, project-access loss and rejoin, project
+deletion cascade, idempotent turn replay, one-processing-turn enforcement, expired-lease
+recovery, cancel-before-create claims, cancel/retry races, and conversation deletion with
+saved-summary and created-todo preservation. Also verify that a deleted conversation UUID cannot
+be recreated by a delayed request and that a cancellation claim cannot move to another
+conversation.
+
+For workspace reviews, create an owner project and an active-member project with distinct
+journals, todo events, open todos, and risks. Confirm the owner sees project-wide facts, while a
+member receives only their own journals and actor/assignee-related todo facts. Complete a review
+and verify `ai_turn_project_sources` contains every source project. Then remove one membership and
+confirm turn pages, direct reads, reconcile, idempotent replay, and later model history all hide
+the derived turn. Restore all source access and confirm it is readable again. Delete one source
+project and confirm the lineage row remains while the turn stays hidden; deleting the conversation
+must remove its lineage rows without deleting saved summaries or created todos. Exercise a
+membership revocation during generation and confirm the assistant content and lineage are not
+committed. Do not use production for this validation. No such database test is implied by
+`npm test` or `npm run build`.
 
 Before an encryption-key change:
 
@@ -98,6 +109,10 @@ operator should:
    project read, and any changed integration. For an AI change, verify ordinary text arrives
    incrementally, structured turns expose progress without partial JSON, and a deliberately
    interrupted connection reconciles the canonical turn without leaving the composer locked.
+   Send the empty-chat prompt `帮我梳理本周进展，并给出下一步行动建议。` without `@项目` and
+   verify the result cites only backend-visible facts; repeat with `@项目` and verify it does not
+   broaden beyond that project. Revoke one source-project membership and confirm the earlier
+   workspace-review turn disappears from history.
    For Feishu OAuth, re-check the custom application's availability scope is limited to
    the intended company users; the server treats successful OAuth as internal identity.
 6. Re-read the live application image digest and the CronJob template image. Do not infer
@@ -159,14 +174,15 @@ encrypted record, and the workflow that triggered rollback.
   for `Content-Type: text/event-stream`, `Cache-Control: no-transform`, and
   `X-Accel-Buffering: no`, then disable buffering in every ingress or reverse-proxy hop. The
   application sends heartbeats every 10 seconds; their absence usually means the stream is being
-  buffered or terminated before reaching the browser. Structured summary and todo extraction
-  intentionally emit named progress instead of partial JSON.
+  buffered or terminated before reaching the browser. Project summaries, workspace reviews, and
+  todo extraction intentionally emit named progress instead of partial JSON.
 - The UI says `正在确认回复结果`: the transport ended before a terminal frame, so the browser is
   reading the canonical turn from PostgreSQL. Do not cancel or modify the row manually. A known
   `failed` or `cancelled` terminal event releases the composer immediately; only an unknown
   transport outcome remains in reconciliation.
 - An AI turn remains `processing`: the normal lease is 120 seconds. Ordinary chat or analysis
-  requests time out after 45 seconds; structured summary or todo extraction uses 90 seconds.
+  requests time out after 45 seconds; project summaries, workspace reviews, and todo extraction
+  use 90 seconds.
   Replaying the same turn
   while its lease is active returns the canonical processing state. The browser polls the
   authenticated reconcile route; after expiry it marks the turn failed so the latest turn can

@@ -236,7 +236,7 @@ create table if not exists ai_turns (
   conversation_id uuid not null references ai_conversations(id) on delete cascade,
   turn_no integer not null check (turn_no > 0),
   intent_kind text not null
-    check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis')),
+    check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis', 'workspace-review')),
   intent_payload text,
   status text not null
     check (status in ('processing', 'completed', 'failed', 'cancelled')),
@@ -291,6 +291,12 @@ create table if not exists ai_turn_attachments (
   unique (turn_id, ordinal)
 );
 
+create table if not exists ai_turn_project_sources (
+  turn_id uuid not null references ai_turns(id) on delete cascade,
+  project_id bigint not null,
+  primary key (turn_id, project_id)
+);
+
 create table if not exists ai_todo_proposal_batches (
   id bigserial primary key,
   user_id bigint not null references users(id) on delete cascade,
@@ -307,6 +313,26 @@ alter table ai_todo_proposal_batches
 
 alter table ai_turns
   add column if not exists intent_payload text;
+
+do $$
+declare
+  intent_constraint_definition text;
+begin
+  select pg_get_constraintdef(oid)
+  into intent_constraint_definition
+  from pg_constraint
+  where conname = 'ai_turns_intent_kind_check'
+    and conrelid = 'ai_turns'::regclass;
+
+  if intent_constraint_definition is null
+     or position('workspace-review' in intent_constraint_definition) = 0 then
+    alter table ai_turns
+      drop constraint if exists ai_turns_intent_kind_check;
+    alter table ai_turns
+      add constraint ai_turns_intent_kind_check
+      check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis', 'workspace-review'));
+  end if;
+end $$;
 
 do $$
 begin
@@ -620,6 +646,8 @@ create index if not exists idx_ai_turn_cancellations_user_created
   on ai_turn_cancellations(user_id, created_at);
 create index if not exists idx_ai_turns_conversation_order
   on ai_turns(conversation_id, turn_no desc);
+create index if not exists idx_ai_turn_project_sources_project
+  on ai_turn_project_sources(project_id, turn_id);
 create unique index if not exists idx_ai_turns_one_processing
   on ai_turns(conversation_id)
   where status = 'processing';

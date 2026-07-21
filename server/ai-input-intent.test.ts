@@ -102,7 +102,7 @@ test('allows explicit commands to include output questions', () => {
 test('routes the empty-chat example prompts through their intended capabilities', () => {
   assert.deepEqual(
     classifyAiInput('帮我梳理本周进展，并给出下一步行动建议。'),
-    { kind: 'chat' },
+    { kind: 'workspace-review', period: 'weekly' },
   )
   assert.deepEqual(
     classifyAiInput('生成这个项目的周报'),
@@ -137,4 +137,18 @@ test('routes the empty-chat example prompts through their intended capabilities'
       kind: 'todo-extraction',
     },
   )
+})
+
+test('routes only explicit current workspace reviews without project context', () => {
+  assert.deepEqual(
+    classifyAiInput('帮我梳理今天的工作进展'),
+    { kind: 'workspace-review', period: 'daily' },
+  )
+  assert.deepEqual(
+    classifyAiInput('帮我梳理本周进展', { hasProjectContext: true }),
+    { kind: 'chat' },
+  )
+  assert.deepEqual(classifyAiInput('帮我梳理上周进展'), { kind: 'chat' })
+  assert.deepEqual(classifyAiInput('总结本周进展需要什么信息？'), { kind: 'chat' })
+  assert.deepEqual(classifyAiInput('本周进展怎么写？'), { kind: 'chat' })
 })

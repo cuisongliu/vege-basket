@@ -5,6 +5,11 @@ export type AiInputIntent =
   | { kind: 'conversation-analysis' }
   | { kind: 'project-summary'; period: AiSummaryPeriodType }
   | { content: string; kind: 'todo-extraction' }
+  | { kind: 'workspace-review'; period: AiSummaryPeriodType }
+
+type AiInputClassificationOptions = {
+  hasProjectContext?: boolean
+}
 
 export function buildAiClassificationContent(
   content: string,
@@ -23,6 +28,8 @@ const conversationCommandPattern =
   /^(?:(?:请|麻烦)(?:帮我|你)?|帮我|帮忙)?\s*(?:(?:分析|复盘|梳理|总结).{0,10}(?:对话|聊天(?:记录)?|会议记录)|(?:把|对)?.{0,10}(?:对话|聊天(?:记录)?|会议记录).{0,10}(?:分析|复盘|梳理|总结))/u
 const summaryCommandPattern =
   /^(?:(?:请|麻烦)(?:帮我|你)?|帮我|帮忙)?\s*(?:(?:总结|复盘|生成).{0,10}(?:项目(?:日报|周报|日总结|周总结)?|日报|周报|日总结|周总结)|(?:给|把)?.{0,10}(?:项目(?:日报|周报|日总结|周总结)?|日报|周报|日总结|周总结).{0,10}(?:总结|复盘|生成))/u
+const workspaceReviewCommandPattern =
+  /^(?:(?:请|麻烦)(?:帮我|你)?|帮我|帮忙)?\s*(?:(?:梳理|总结|复盘|回顾).{0,16}(?:本周|这周|本星期|这星期|今天|今日).{0,16}(?:进展|工作|事项|动态|做了什么)|(?:本周|这周|本星期|这星期|今天|今日).{0,16}(?:进展|工作|事项|动态).{0,16}(?:梳理|总结|复盘|回顾))/u
 const historicalSummaryPattern =
   /(?:昨天|前天|上周|上星期|上个月|去年|过去|此前|历史|截至|\d{4}[年/-]\d{1,2})/u
 const capabilityQuestionRemainderPattern =
@@ -55,7 +62,10 @@ function asksAboutCapability(commandLine: string, matchedCommand: string) {
   return capabilityQuestionRemainderPattern.test(commandLine.slice(matchedCommand.length))
 }
 
-export function classifyAiInput(content: string): AiInputIntent {
+export function classifyAiInput(
+  content: string,
+  options: AiInputClassificationOptions = {},
+): AiInputIntent {
   const normalized = content.trim()
   if (!normalized) return { kind: 'chat' }
   const commandLine = normalized.split(/\r?\n/u).find((line) => line.trim())?.trim() ?? ''
@@ -83,6 +93,16 @@ export function classifyAiInput(content: string): AiInputIntent {
     !historicalSummaryPattern.test(commandLine)
   ) {
     return { kind: 'project-summary', period: summaryPeriod(commandLine) }
+  }
+
+  const workspaceReviewCommand = commandLine.match(workspaceReviewCommandPattern)?.[0]
+  if (
+    workspaceReviewCommand &&
+    !options.hasProjectContext &&
+    !asksAboutCapability(commandLine, workspaceReviewCommand) &&
+    !historicalSummaryPattern.test(commandLine)
+  ) {
+    return { kind: 'workspace-review', period: summaryPeriod(commandLine) }
   }
 
   return { kind: 'chat' }

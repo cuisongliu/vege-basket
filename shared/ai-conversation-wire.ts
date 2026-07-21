@@ -18,6 +18,7 @@ export type AiTurnIntentKind =
   | 'project-summary'
   | 'todo-extraction'
   | 'conversation-analysis'
+  | 'workspace-review'
 
 export type AiTurnAttachment = {
   id: number
@@ -82,7 +83,8 @@ function isIntentKind(value: unknown): value is AiTurnIntentKind {
   return value === 'chat' ||
     value === 'project-summary' ||
     value === 'todo-extraction' ||
-    value === 'conversation-analysis'
+    value === 'conversation-analysis' ||
+    value === 'workspace-review'
 }
 
 function isAiTurnOutcome(value: unknown): value is AiTurnOutcome {

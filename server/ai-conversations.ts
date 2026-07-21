@@ -190,7 +190,8 @@ export function parseAiTurnIntentKind(value: unknown): AiTurnIntentKind {
     value === 'chat' ||
     value === 'project-summary' ||
     value === 'todo-extraction' ||
-    value === 'conversation-analysis'
+    value === 'conversation-analysis' ||
+    value === 'workspace-review'
   ) {
     return value
   }

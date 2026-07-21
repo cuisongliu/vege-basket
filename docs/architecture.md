@@ -43,6 +43,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/ai-provider.ts`, `server/ai-period-summary.ts`,
   `server/ai-todo-proposals.ts`: shared AI configuration, provider network boundary,
   period facts, and strict Markdown proposal parsing.
+- `server/ai-workspace-review.ts`, `server/ai-workspace-review-store.ts`: explicit
+  workspace-review facts, bounded formatting, authorization-scoped database reads,
+  source-project lineage, and history reauthorization.
 - `server/ai-todo-confirmation.ts`: the typed PostgreSQL insert contract used when
   confirmed proposal candidates become todos. Reused user-ID placeholders are cast at
   every SQL occurrence so PostgreSQL cannot infer conflicting parameter types.
@@ -83,6 +86,14 @@ Each conversation has an immutable `general`, `project`, or `conversation-analys
 context. General chat receives no implicit workspace facts; project context is selected
 explicitly by ID and is reauthorized on every list, read, send, retry, and completion path.
 Lost project access hides history without rewriting it, while project deletion cascades it.
+
+An explicit current daily or weekly `workspace-review` intent is the only cross-project
+exception inside a general conversation. The server loads the authorized project catalog,
+the user's own period journals, owner/member-scoped todo activity and actionable backlog,
+and current risks. Detail sets are bounded and labeled as samples. The model exposes fixed
+progress phases rather than partial project-derived text. Completion locks every source
+project in numeric order, rechecks owner or active-member access, and records each project
+in `ai_turn_project_sources` in the same transaction as the canonical assistant content.
 
 The browser sends only one user turn with client-generated conversation/turn UUIDs. The
 server serializes the first-turn claim with a transaction-scoped advisory lock, stores the
@@ -152,7 +163,9 @@ The schema is normalized around these groups:
   `summaries`, `ai_todo_proposal_batches`, `ai_todo_proposals`.
 - Personal AI history: `ai_conversations`, `ai_turns`, `ai_turn_attachments`, permanent deleted
   UUID records in `ai_conversation_tombstones`, and bounded pre-creation cancellation claims in
-  `ai_turn_cancellations`. Summary and todo-proposal outcomes link back through `source_turn_id`.
+  `ai_turn_cancellations`. `ai_turn_project_sources` retains workspace-review source project IDs
+  without a project foreign key so project deletion continues to make the derived turn
+  inaccessible. Summary and todo-proposal outcomes link back through `source_turn_id`.
 - Notifications: `notification_states`, `notification_deliveries`,
   `notification_subscriptions`, `notification_digest_runs`.
 - Package delivery: `project_package_events`, `project_package_groups`,
@@ -167,6 +180,9 @@ late turn request cannot race past the tombstone and recreate deleted history.
 Already-created todos remain independent. Unique indexes protect active invite
 links, membership identity, generated todo notes, one processing AI turn per conversation,
 one artifact link per source turn, and one auto-generated operation per package group.
+Workspace-review turns are filtered from turn pages, detail/reconcile responses, and later
+model history whenever any retained source project is deleted or no longer accessible; the
+turn becomes readable again only after access to every retained source is restored.
 
 ## Encryption And Integrity
 
@@ -202,6 +218,10 @@ Atomicity rules:
   work runs outside that transaction. Completion locks the conversation and turn, rechecks
   project access and lease identity, and returns the canonical turn snapshot from the same
   transaction that commits assistant content plus any summary/proposal artifact.
+- Completing a workspace review acquires every source project's advisory and row locks in
+  numeric order, rechecks ownership or active membership, records source lineage, and commits
+  the assistant response together. Provider work runs before this transaction and emits no
+  partial project-derived text.
 - Disconnecting Feishu disables the user's daily digest subscription in the same
   transaction that clears the bound identity.
 - Concurrency safety must be enforced by database constraints plus conflict-safe SQL,

@@ -12,6 +12,7 @@
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
+| AI workspace-review facts and source lineage | `server/ai-workspace-review.ts`, `server/ai-workspace-review-store.ts`, `server/ai-conversation-store.ts` |
 | Todo proposal review defaults and confirmation insert | `src/todo-proposal-defaults.ts`, `server/ai-todo-confirmation.ts` |
 | AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts`, `shared/ai-input-intent.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
@@ -119,8 +120,9 @@ must remain bound to the authorized project ID.
 - Todo activity event: `created`, `assigned`, `confirmed`, `rejected`, `completed`, `reopened`.
 - Todo proposal batch: `pending`, `confirmed`, `discarded`; proposal item: `pending`, `accepted`, `rejected`.
 - AI conversation context: `general`, `project`, `conversation-analysis`; AI turn intent:
-  `chat`, `project-summary`, `todo-extraction`, `conversation-analysis`; AI turn status:
-  `processing`, `completed`, `failed`, `cancelled`.
+  `chat`, `project-summary`, `workspace-review`, `todo-extraction`,
+  `conversation-analysis`; AI turn status: `processing`, `completed`, `failed`,
+  `cancelled`.
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
 - Package event type: `init`, `upgrade`.
 - Package event status: `draft`, `delivering`, `delivered`.
@@ -150,19 +152,33 @@ summaries, processed proposal audit batches, or already-created todos. The delet
 reserved by a server tombstone, so delayed requests receive `404` instead of recreating it.
 
 The unified turn endpoint records ordinary replies and routes explicit project summary,
-Markdown todo extraction, and conversation-analysis intent through the same timeline. Turn
-creation and retry accept `text/event-stream` and emit ordered `started`, `delta`, `progress`,
-`heartbeat`, `completed`, `failed`, or `cancelled` events with a positive `sequence`. The
-`started` event declares `text` or `progress` mode. Text mode is used for chat and conversation
-analysis; structured summary and todo extraction emit only `preparing`, `generating`,
-`validating`, or `saving` progress until a canonical terminal result. Heartbeats are sent every
-10 seconds. A non-SSE JSON response remains accepted by the browser only after the same runtime
-turn-result validation.
+workspace review, Markdown todo extraction, and conversation-analysis intent through the same
+timeline. Turn creation and retry accept `text/event-stream` and emit ordered `started`, `delta`,
+`progress`, `heartbeat`, `completed`, `failed`, or `cancelled` events with a positive `sequence`.
+The `started` event declares `text` or `progress` mode. Text mode is used for chat and
+conversation analysis; project summaries, workspace reviews, and todo extraction emit only
+`preparing`, `generating`, `validating`, or `saving` progress until a canonical terminal result.
+Heartbeats are sent every 10 seconds. A non-SSE JSON response remains accepted by the browser
+only after the same runtime turn-result validation.
 
-Ordinary model requests time out after 45 seconds, structured summary or todo extraction after
-90 seconds, and a processing lease lasts 120 seconds. `finish_reason: length`, a stream that ends
-without a valid terminal marker, or an otherwise truncated provider response fails with
-`AI_RESPONSE_INCOMPLETE`; partial content is never committed as a completed turn.
+An explicit current-day or current-week progress-review request in a general conversation is
+classified as `workspace-review`. It accepts no attachment and no project binding. The backend
+loads all projects the caller owns or actively belongs to, the caller's own period journals,
+authorized todo activity, visible open todos, and current risks. Project owners receive the
+project-wide todo and risk scope; members receive only their own journals plus todo facts where
+they are actor or assignee. Fact lists are bounded to 200 displayed projects, 300 journals, 500
+todo events, 500 open todos, and 300 risks; the true authorized project count is retained and
+bounded lists are labeled as samples. The generated response is completed as assistant text and
+does not create a summary artifact. Ordinary `chat` never receives this implicit workspace
+context. With a selected project, the same natural wording stays in that project conversation
+instead of broadening to workspace scope; historical or capability questions remain ordinary
+chat.
+
+Ordinary model requests time out after 45 seconds, structured project summary, workspace review,
+or todo extraction after 90 seconds, and a processing lease lasts 120 seconds.
+`finish_reason: length`, a stream that ends without a valid terminal marker, or an otherwise
+truncated provider response fails with `AI_RESPONSE_INCOMPLETE`; partial content is never
+committed as a completed turn.
 First responses and idempotent replays use the same stable summary or proposal-batch reference;
 the browser refreshes the workspace or fetches the batch to open the artifact. Confirmed and
 discarded proposal batches reopen read-only, and confirmed reads expose accepted candidates
@@ -173,6 +189,16 @@ current user input to the provider.
 
 Project-bound AI writes and project deletion share `ai-project:<projectId>` advisory lock
 keys; multi-project proposal confirmation acquires IDs in ascending order.
+
+Each completed workspace review records every source project in `ai_turn_project_sources` in the
+same transaction as its assistant content. Completion locks source projects in numeric order and
+rechecks ownership or active membership before committing. Source rows deliberately retain the
+numeric project ID without a project foreign key, so deleting a project preserves the lineage
+needed to deny future reads. Turn pagination, direct turn reads, reconcile, idempotent replay, and
+later model history all hide a workspace-review turn while any source project is deleted or no
+longer accessible. Restoring active access to every retained source makes the turn readable
+again. Deleting the conversation cascades its source rows; deleting the conversation does not
+remove independent summaries or already-created todos.
 
 `POST .../reconcile` returns the canonical conversation and requested turn, and atomically marks
 an expired processing lease as `failed` with `AI_REQUEST_STALE`; an active or terminal turn is
@@ -186,8 +212,9 @@ compatibility responses for an already-open old SPA. Both return
 `AI_CLIENT_UPGRADE_REQUIRED` with a refresh instruction and do not call the provider or
 create data.
 
-Daily and weekly AI summaries are generated from authorized period facts and saved
-immediately as summary documents. Markdown ingestion accepts `.md` content only; AI may
+Project-bound daily and weekly AI summaries are generated from authorized period facts and saved
+immediately as summary documents. Workspace reviews remain conversation text and are not saved
+as summary documents. Markdown ingestion accepts `.md` content only; AI may
 infer project, module, assignee, due date, priority, title, and detail, but project and due
 date must be resolved before selected proposals can be confirmed in one transaction. When
 an editable pending candidate has no inferred due date, the browser initializes its review

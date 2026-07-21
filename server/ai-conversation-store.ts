@@ -30,6 +30,7 @@ import {
   classifyAiInput,
   type AiInputIntent,
 } from '../shared/ai-input-intent.ts'
+import { buildAiWorkspaceTurnSourceAccessPredicate } from './ai-workspace-review.ts'
 
 const aiTurnLeaseMs = 120_000
 const modelHistoryCompletedTurns = 3
@@ -396,7 +397,7 @@ function turnDto(
   return { ...serialized, errorCode: row.errorCode, outcome }
 }
 
-async function getAiTurnRow(client: Queryable, turnId: string) {
+async function getAiTurnRow(client: Queryable, turnId: string, userId: number) {
   const result = await client.query<AiTurnRow & AiTurnArtifactRow>(
     `
     select t.id,
@@ -420,8 +421,9 @@ async function getAiTurnRow(client: Queryable, turnId: string) {
     left join summaries s on s.source_turn_id = t.id
     left join ai_todo_proposal_batches b on b.source_turn_id = t.id
     where t.id = $1
+      and ${buildAiWorkspaceTurnSourceAccessPredicate('t', '$2')}
     `,
-    [turnId],
+    [turnId, userId],
   )
   return result.rows[0] ?? null
 }
@@ -442,6 +444,8 @@ export async function getAiConversationTurns(
         return 'and t.turn_no < $2'
       })()
     : ''
+  params.push(userId)
+  const sourceAccessParameter = `$${params.length}`
   params.push(limit + 1)
   const result = await pool.query<AiTurnRow & AiTurnArtifactRow>(
     `
@@ -467,6 +471,7 @@ export async function getAiConversationTurns(
     left join ai_todo_proposal_batches b on b.source_turn_id = t.id
     where t.conversation_id = $1
       ${beforeWhere}
+      and ${buildAiWorkspaceTurnSourceAccessPredicate('t', sourceAccessParameter)}
     order by t.turn_no desc
     limit $${params.length}
     `,
@@ -490,9 +495,13 @@ function readAiTurnIntent(
   intentKind: AiTurnIntentKind,
   userContent: string,
   attachments: readonly AiTurnAttachment[],
+  hasProjectContext = false,
 ): AiInputIntent {
   if (!value) {
-    const fallback = classifyAiInput(buildAiClassificationContent(userContent, attachments))
+    const fallback = classifyAiInput(
+      buildAiClassificationContent(userContent, attachments),
+      { hasProjectContext },
+    )
     if (fallback.kind === intentKind) return fallback
     throw new AiConversationStoreError('AI_TURN_INTENT_INVALID', 'AI turn intent is invalid', 500)
   }
@@ -501,6 +510,10 @@ function readAiTurnIntent(
     const parsed = JSON.parse(decryptText(value)) as Record<string, unknown>
     if (parsed.kind !== intentKind) throw new Error('intent kind mismatch')
     if (intentKind === 'project-summary') {
+      if (parsed.period !== 'daily' && parsed.period !== 'weekly') throw new Error('invalid period')
+      return { kind: intentKind, period: parsed.period }
+    }
+    if (intentKind === 'workspace-review') {
       if (parsed.period !== 'daily' && parsed.period !== 'weekly') throw new Error('invalid period')
       return { kind: intentKind, period: parsed.period }
     }
@@ -579,10 +592,11 @@ async function loadTurnExecution(
     where conversation_id = $1
       and turn_no < $2
       and status = 'completed'
+      and ${buildAiWorkspaceTurnSourceAccessPredicate('ai_turns', '$3')}
     order by turn_no desc
-    limit $3
+    limit $4
     `,
-    [conversationId, turn.turnNo, modelHistoryCompletedTurns],
+    [conversationId, turn.turnNo, userId, modelHistoryCompletedTurns],
   )
   const priorRows = priorResult.rows.reverse()
   const priorAttachments = await loadAttachmentRows(pool, priorRows.map((row) => row.id))
@@ -616,6 +630,7 @@ async function loadTurnExecution(
     turn.intentKind,
     userContent,
     attachments,
+    context.contextKind === 'project',
   )
   return {
     attachments,
@@ -887,7 +902,7 @@ export async function startAiTurn(
   }
 
   const conversation = await getAccessibleConversationRow(pool, input.conversationId, input.userId)
-  const turn = await getAiTurnRow(pool, input.turnId)
+  const turn = await getAiTurnRow(pool, input.turnId, input.userId)
   if (!conversation || !turn) {
     throw new AiConversationStoreError('AI_TURN_NOT_FOUND', 'AI turn not found', 404)
   }
@@ -1165,7 +1180,7 @@ export async function reconcileAiTurn(userId: number, conversationId: string, tu
       `,
       [turnId, conversationId],
     )
-    const turn = await getAiTurnRow(client, turnId)
+    const turn = await getAiTurnRow(client, turnId, userId)
     if (!turn || turn.conversationId !== conversationId) {
       throw new AiConversationStoreError('AI_TURN_NOT_FOUND', 'AI turn not found', 404)
     }
@@ -1288,7 +1303,7 @@ export async function completeAiTurn<T>(
     if (!updatedConversation) {
       throw new AiConversationStoreError('AI_CONVERSATION_NOT_FOUND', 'Conversation not found', 404)
     }
-    const completedTurn = await getAiTurnRow(client, execution.turnId)
+    const completedTurn = await getAiTurnRow(client, execution.turnId, userId)
     if (!completedTurn) {
       throw new AiConversationStoreError('AI_TURN_NOT_FOUND', 'AI turn not found', 404)
     }
@@ -1385,7 +1400,7 @@ export async function deleteAiConversation(userId: number, conversationId: strin
 export async function getAiTurnDetail(userId: number, conversationId: string, turnId: string) {
   const conversation = await getAccessibleConversationRow(pool, conversationId, userId)
   if (!conversation) throw new AiConversationStoreError('AI_CONVERSATION_NOT_FOUND', 'Conversation not found', 404)
-  const turn = await getAiTurnRow(pool, turnId)
+  const turn = await getAiTurnRow(pool, turnId, userId)
   if (!turn || turn.conversationId !== conversationId) {
     throw new AiConversationStoreError('AI_TURN_NOT_FOUND', 'AI turn not found', 404)
   }

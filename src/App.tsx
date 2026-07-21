@@ -290,6 +290,9 @@ function aiTurnProgressTitle(turn: AiTurn, phase: AiTurnStreamPhase) {
   if (turn.intentKind === 'conversation-analysis') {
     return phase === 'saving' ? '正在保存分析结果' : '正在分析对话'
   }
+  if (turn.intentKind === 'workspace-review') {
+    return phase === 'saving' ? '正在保存工作区复盘' : '正在整理工作区进展'
+  }
   return phase === 'saving' ? '正在保存回复' : '正在回复'
 }
 
@@ -301,6 +304,7 @@ function aiTurnFailureDetail(errorCode: string | null) {
   }
   if (errorCode === 'AI_TODO_NONE_FOUND') return '没有识别到可执行的待办，可以补充更明确的内容后重试。'
   if (errorCode === 'AI_REQUEST_STALE') return '回复等待时间过长，已停止本次生成。'
+  if (errorCode === 'AI_PROJECT_ACCESS_LOST') return '项目权限在生成期间发生变化，请刷新后重试。'
   return '模型没有完成这次回复，请重试这条消息。'
 }
 
@@ -3031,7 +3035,10 @@ function App() {
     const conversationId = existingConversationId ?? crypto.randomUUID()
     const turnId = crypto.randomUUID()
     const now = new Date().toISOString()
-    const classified = classifyAiInput(buildAiClassificationContent(content, attachments))
+    const classified = classifyAiInput(
+      buildAiClassificationContent(content, attachments),
+      { hasProjectContext: targetContext.contextType === 'project' },
+    )
     const optimisticTurn: AiTurn = {
       assistantContent: null,
       attachments: attachments.map((attachment, index) => ({
@@ -3075,7 +3082,8 @@ function App() {
     setAiBusy(true)
     setAiError('')
     setAiTurnsError('')
-    const streamMode = classified.kind === 'chat' || classified.kind === 'conversation-analysis'
+    const streamMode = classified.kind === 'chat' ||
+      classified.kind === 'conversation-analysis'
       ? 'text'
       : 'progress'
     setAiTurnLiveStates((current) => ({
@@ -3146,7 +3154,8 @@ function App() {
     const conversationId = currentAiConversationId(aiHistory.selection)
     if (!conversationId || aiBusy || aiTurnsLoading) return false
     const retryingTurn = aiTurns.find((turn) => turn.id === turnId)
-    const streamMode = retryingTurn?.intentKind === 'chat' || retryingTurn?.intentKind === 'conversation-analysis'
+    const streamMode = retryingTurn?.intentKind === 'chat' ||
+      retryingTurn?.intentKind === 'conversation-analysis'
       ? 'text'
       : 'progress'
     const requestId = aiRequestIdRef.current + 1
@@ -7470,7 +7479,10 @@ function VegesAiView({
     if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
 
     const modelContent = buildAiMessageContent(draftContent, attachments)
-    const intent = classifyAiInput(buildAiClassificationContent(draftContent, attachments))
+    const intent = classifyAiInput(
+      buildAiClassificationContent(draftContent, attachments),
+      { hasProjectContext: aiHistory.selection.context.contextType === 'project' },
+    )
     setGenerationError('')
     setAttachmentError('')
 
@@ -7489,6 +7501,10 @@ function VegesAiView({
       setGenerationError('生成项目总结时不能同时添加附件。')
       return
     }
+    if (intent.kind === 'workspace-review' && attachments.length > 0) {
+      setGenerationError('梳理工作区进展时不能同时添加附件。')
+      return
+    }
 
     const maxMessageLength = aiStatus?.maxMessageLength ?? 2_000
     if (modelContent.length > maxMessageLength) {
@@ -7503,7 +7519,7 @@ function VegesAiView({
       content: draftContent,
       contextKind: intent.kind === 'conversation-analysis'
         ? 'conversation-analysis'
-        : intent.kind === 'todo-extraction' &&
+        : (intent.kind === 'todo-extraction' || intent.kind === 'workspace-review') &&
             aiHistory.selection.context.contextType === 'conversation-analysis'
           ? 'general'
           : undefined,

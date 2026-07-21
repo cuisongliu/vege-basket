@@ -17,6 +17,9 @@ Users can resume personal history across refreshes, start a project-bound conver
 `@项目`, or work without project facts in a general conversation. Summaries, Markdown todo
 proposals, and conversation analysis stay in the same timeline; AI-created todos still require
 review and confirmation, while generated summaries are saved as independent documents.
+An explicit current-day or current-week workspace review can aggregate authorized projects,
+the user's own journals, todo activity, actionable backlog, and current risks directly from the
+server. Ordinary chat remains unscoped and never receives workspace facts implicitly.
 
 ## Brand Personality
 
