@@ -33,6 +33,7 @@ import {
   parseAiTodoProposalResponse,
 } from './ai-todo-proposals.ts'
 import type { AiTodoProposal, AiTodoProposalCatalog } from './ai-todo-proposals.ts'
+import { buildConfirmedTodoInsertQuery } from './ai-todo-confirmation.ts'
 import { shouldRetirePackageEventNotification } from './notification-policy.ts'
 import { createPackageItemFailureDiagnostic } from './package-item-diagnostics.ts'
 import {
@@ -7662,33 +7663,19 @@ app.post('/api/ai/todo-proposals/:batchId/confirm', asyncHandler(async (request,
       const projectId = proposal.projectId
       const dueDate = proposal.dueDate
       if (!projectId || !dueDate) throw new Error('Confirmed todo proposal is incomplete')
+      const insertQuery = buildConfirmedTodoInsertQuery({
+        assigneeUserId: proposal.assigneeUserId,
+        createdByUserId: userId,
+        detail: proposal.detail ? encryptText(proposal.detail) : '',
+        dueDate,
+        moduleId: proposal.moduleId,
+        priority: proposal.priority,
+        projectId,
+        title: encryptText(proposal.title),
+      })
       const createdTodo = await client.query<{ id: string }>(
-        `
-        insert into todos (
-          project_id,
-          title,
-          detail,
-          due_date,
-          priority,
-          project_module_id,
-          created_by_user_id,
-          assignee_user_id,
-          assigned_by_user_id,
-          assigned_at
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, case when $8::bigint is null then null else $7 end, case when $8::bigint is null then null else now() end)
-        returning id
-        `,
-        [
-          projectId,
-          encryptText(proposal.title),
-          proposal.detail ? encryptText(proposal.detail) : '',
-          dueDate,
-          proposal.priority,
-          proposal.moduleId,
-          userId,
-          proposal.assigneeUserId,
-        ],
+        insertQuery.text,
+        insertQuery.values,
       )
       const todoId = Number(createdTodo.rows[0].id)
       await insertTodoActivityEvent(client, {

@@ -21,6 +21,10 @@ import type {
   ProjectMembership,
   TodoProposal,
 } from '@/types'
+import {
+  defaultTodoProposalDueDate,
+  type TodoProposalBatchReviewStatus,
+} from '@/todo-proposal-defaults'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -43,7 +47,6 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 
 type EditableTodoProposal = TodoProposal & { clientId: string }
-type TodoProposalBatchStatus = 'confirmed' | 'discarded' | 'pending'
 
 const priorityOptions: Array<{ label: string; value: Priority }> = [
   { label: '高', value: 'high' },
@@ -76,7 +79,7 @@ export type TodoProposalWorkflowHandle = {
     batchId: number,
     proposals: TodoProposal[],
     fileName?: string,
-    status?: TodoProposalBatchStatus,
+    status?: TodoProposalBatchReviewStatus,
   ) => void
   reset: () => void
 }
@@ -101,7 +104,7 @@ export const TodoProposalWorkflow = forwardRef<
 }, ref) {
   const [fileName, setFileName] = useState('')
   const [batchId, setBatchId] = useState<number | null>(null)
-  const [batchStatus, setBatchStatus] = useState<TodoProposalBatchStatus>('pending')
+  const [batchStatus, setBatchStatus] = useState<TodoProposalBatchReviewStatus>('pending')
   const [proposals, setProposals] = useState<EditableTodoProposal[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [reviewOpen, setReviewOpen] = useState(false)
@@ -153,15 +156,17 @@ export const TodoProposalWorkflow = forwardRef<
     nextBatchId: number,
     nextProposals: TodoProposal[],
     requestedFileName = 'AI 对话输入.md',
-    status: TodoProposalBatchStatus = 'pending',
+    status: TodoProposalBatchReviewStatus = 'pending',
   ) {
     confirmationRequestIdRef.current += 1
     setConfirming(false)
     setError('')
     setFileName(requestedFileName)
+    const reviewOpenedAt = new Date()
     const editable = nextProposals.map((proposal, index) => ({
       ...proposal,
       clientId: `${nextBatchId}-${index}`,
+      dueDate: defaultTodoProposalDueDate(proposal.dueDate, status, reviewOpenedAt),
     }))
     setBatchId(nextBatchId)
     setBatchStatus(status)

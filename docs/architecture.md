@@ -33,6 +33,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `src/ai-conversation-state.ts`, `src/components/ai-conversation-history-panel.tsx`:
   client-only history navigation, immutable-context selection, pagination merge, and
   responsive history UI. PostgreSQL remains the conversation source of truth.
+- `src/todo-proposal-defaults.ts`: pending proposal review defaults for browser display.
+  A missing due date becomes the current `Asia/Shanghai` calendar date only while the
+  batch remains editable.
 - `src/api.ts`, `src/types.ts`: browser API adapter, SSE recovery, and public client-side
   contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
@@ -40,6 +43,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/ai-provider.ts`, `server/ai-period-summary.ts`,
   `server/ai-todo-proposals.ts`: shared AI configuration, provider network boundary,
   period facts, and strict Markdown proposal parsing.
+- `server/ai-todo-confirmation.ts`: the typed PostgreSQL insert contract used when
+  confirmed proposal candidates become todos. Reused user-ID placeholders are cast at
+  every SQL occurrence so PostgreSQL cannot infer conflicting parameter types.
 - `server/ai-conversations.ts`, `server/ai-conversation-store.ts`: conversation domain
   validation, encrypted persistence, authorization, canonical model history, turn leases,
   idempotency, retry/cancel transitions, and artifact links.

@@ -12,6 +12,7 @@
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
+| Todo proposal review defaults and confirmation insert | `src/todo-proposal-defaults.ts`, `server/ai-todo-confirmation.ts` |
 | AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts`, `shared/ai-input-intent.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
@@ -188,7 +189,10 @@ create data.
 Daily and weekly AI summaries are generated from authorized period facts and saved
 immediately as summary documents. Markdown ingestion accepts `.md` content only; AI may
 infer project, module, assignee, due date, priority, title, and detail, but project and due
-date must be resolved before selected proposals can be confirmed in one transaction.
+date must be resolved before selected proposals can be confirmed in one transaction. When
+an editable pending candidate has no inferred due date, the browser initializes its review
+field to the current `Asia/Shanghai` calendar date. An inferred date is preserved, and
+confirmed or discarded history never receives a synthetic date.
 
 The daily digest subscription is Feishu-only, defaults to disabled at `10:00`
 `Asia/Shanghai`, and sends previous-day completion/reopen activity plus the current

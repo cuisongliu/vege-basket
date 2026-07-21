@@ -19,6 +19,9 @@ historical product context; current code and these operational docs take precede
   database uniqueness and foreign keys preserve integrity under concurrency.
 - Multi-table mutations must use one `PoolClient` transaction. Validate the complete
   request before the first write and roll back every partial failure.
+- When one PostgreSQL placeholder is reused across `CASE`, `coalesce`, or differently
+  typed columns, cast every SQL occurrence explicitly. JavaScript parameter values do
+  not resolve parse-time ambiguity between types such as `text` and `bigint`.
 - Keep client contracts in `src/api.ts` and `src/types.ts` synchronized with server
   response shapes.
 - Keep document editors on the existing Markdown string contract. When registering
