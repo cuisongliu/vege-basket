@@ -192,11 +192,12 @@ encrypted record, and the workflow that triggered rollback.
   partial text. Retry after checking provider token limits and upstream stream stability.
 - AI retry returns `409`: only the latest failed or cancelled turn is retryable, and a
   conversation cannot run two processing turns. Refresh canonical history before retrying.
-- AI reports that its base URL is not public: inspect the system DNS result. Hostnames
-  mapped by a local proxy to `198.18.0.0/15` are rechecked through public DNS-over-HTTPS;
-  if that verification fails, restore access to `https://cloudflare-dns.com` or exclude
-  the provider hostname from Fake-IP mode. Literal and ordinary private addresses are
-  intentionally rejected.
+- AI shows `AI 服务地址暂时无法解析` or records `AI_BASE_URL_UNRESOLVED`: inspect the
+  system DNS result. Hostnames mapped by a local proxy to `198.18.0.0/15` are rechecked
+  through public DNS-over-HTTPS; if that verification fails, restore access to
+  `https://cloudflare-dns.com` or exclude the provider hostname from Fake-IP mode. A
+  transient public-DNS failure is retryable after name resolution recovers. Literal and
+  ordinary private addresses are intentionally rejected.
 - Password registration returns 403 while AI is enabled: use a current project invite or
   sign in through Feishu OAuth; existing password accounts can still log in normally.
 - Daily digest is not sent: verify the user subscription is enabled, the user has a bound
