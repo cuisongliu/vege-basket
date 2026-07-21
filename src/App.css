@@ -10287,8 +10287,8 @@ textarea:focus {
 }
 
 .veges-ai-stage .agent-message.user .agent-message-content {
-  background: var(--brand);
-  color: var(--brand-foreground);
+  background: color-mix(in srgb, var(--brand) 10%, var(--surface));
+  color: var(--strong);
 }
 
 .veges-ai-stage .agent-message-attachments {
