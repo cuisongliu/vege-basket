@@ -95,7 +95,9 @@ operator should:
 4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
    deployment environment; confirm real credential values are absent from the image and Git.
 5. Deploy to a test environment first, then verify health, sign-in, one authorized
-   project read, and any changed integration.
+   project read, and any changed integration. For an AI change, verify ordinary text arrives
+   incrementally, structured turns expose progress without partial JSON, and a deliberately
+   interrupted connection reconciles the canonical turn without leaving the composer locked.
    For Feishu OAuth, re-check the custom application's availability scope is limited to
    the intended company users; the server treats successful OAuth as internal identity.
 6. Re-read the live application image digest and the CronJob template image. Do not infer
@@ -153,10 +155,25 @@ encrypted record, and the workflow that triggered rollback.
 - AI history is empty after sign-in: verify the conversation belongs to the current user.
   Project conversations are intentionally hidden while project access is inactive; restoring
   active membership makes retained history visible again.
-- An AI turn remains `processing`: the normal lease is 60 seconds. Replaying the same turn
+- AI stays on one preparation label with no incremental text or heartbeat: inspect the response
+  for `Content-Type: text/event-stream`, `Cache-Control: no-transform`, and
+  `X-Accel-Buffering: no`, then disable buffering in every ingress or reverse-proxy hop. The
+  application sends heartbeats every 10 seconds; their absence usually means the stream is being
+  buffered or terminated before reaching the browser. Structured summary and todo extraction
+  intentionally emit named progress instead of partial JSON.
+- The UI says `正在确认回复结果`: the transport ended before a terminal frame, so the browser is
+  reading the canonical turn from PostgreSQL. Do not cancel or modify the row manually. A known
+  `failed` or `cancelled` terminal event releases the composer immediately; only an unknown
+  transport outcome remains in reconciliation.
+- An AI turn remains `processing`: the normal lease is 120 seconds. Ordinary chat or analysis
+  requests time out after 45 seconds; structured summary or todo extraction uses 90 seconds.
+  Replaying the same turn
   while its lease is active returns the canonical processing state. The browser polls the
   authenticated reconcile route; after expiry it marks the turn failed so the latest turn can
   be retried. Check replica restarts and database clock drift before modifying rows manually.
+- AI shows `模型连接提前结束`: the provider ended without a valid terminal marker or returned
+  `finish_reason: length`. The server records `AI_RESPONSE_INCOMPLETE` and does not commit the
+  partial text. Retry after checking provider token limits and upstream stream stability.
 - AI retry returns `409`: only the latest failed or cancelled turn is retryable, and a
   conversation cannot run two processing turns. Refresh canonical history before retrying.
 - AI reports that its base URL is not public: inspect the system DNS result. Hostnames

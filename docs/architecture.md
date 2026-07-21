@@ -10,7 +10,7 @@ single-user, non-collaborative first phase.
 
 ```mermaid
 flowchart LR
-  browser["React client"] -->|"Bearer session + JSON"| api["Express API"]
+  browser["React client"] -->|"Bearer session + JSON / SSE"| api["Express API"]
   api --> db["PostgreSQL"]
   api -->|"HTTPS SDK"| oss["Alibaba OSS"]
   api -->|"HTTPS fetch"| ai["AI provider"]
@@ -33,7 +33,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `src/ai-conversation-state.ts`, `src/components/ai-conversation-history-panel.tsx`:
   client-only history navigation, immutable-context selection, pagination merge, and
   responsive history UI. PostgreSQL remains the conversation source of truth.
-- `src/api.ts`, `src/types.ts`: browser API adapter and public client-side contracts.
+- `src/api.ts`, `src/types.ts`: browser API adapter, SSE recovery, and public client-side
+  contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
   validation, Feishu/AI orchestration, and static-file serving.
 - `server/ai-provider.ts`, `server/ai-period-summary.ts`,
@@ -42,6 +43,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/ai-conversations.ts`, `server/ai-conversation-store.ts`: conversation domain
   validation, encrypted persistence, authorization, canonical model history, turn leases,
   idempotency, retry/cancel transitions, and artifact links.
+- `server/ai-turn-stream.ts`, `shared/ai-conversation-wire.ts`,
+  `shared/server-sent-events.ts`: bounded response backpressure, canonical turn DTO guards,
+  and the server/browser AI stream protocol.
 - `shared/ai-input-intent.ts`: one natural-language intent classifier shared by the browser
   and server without importing browser code into the production server image.
 - `server/todo-digest.ts`, `server/todo-digest-worker.ts`: local-time scheduling,
@@ -89,6 +93,17 @@ immutable conversation owner for its turn UUID and makes every delayed replay ex
 provider call. Retry assigns a new lease, and the authenticated reconcile route turns an expired
 processing lease into a retryable failure. A duplicate turn UUID with the same payload returns
 the canonical turn without consuming another provider request.
+
+Turn creation and retry use a POST response stream with ordered `started`, `delta`, `progress`,
+`heartbeat`, `completed`, `failed`, and `cancelled` events. Ordinary chat and conversation
+analysis emit text deltas. Project-summary and todo-extraction turns expose only the fixed
+`preparing`, `generating`, `validating`, and `saving` phases, so partial provider JSON never
+reaches the browser. A heartbeat is sent every 10 seconds; stalled response backpressure is
+abandoned after 5 seconds. Closing the browser connection stops transport only and does not
+cancel provider work or canonical completion. Explicit stop uses the cancel route. The server
+rechecks the active lease and project access before each project-bound delta and before the final
+write. Provider text is provisional until `completeAiTurn` atomically saves the final turn and
+artifact; the browser reconciles PostgreSQL after an unconfirmed stream end.
 
 Project-bound turn creation/completion, proposal confirmation, and project deletion also
 share a project advisory lock. Multi-project confirmation acquires those locks in numeric

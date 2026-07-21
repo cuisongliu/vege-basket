@@ -1,6 +1,7 @@
 import { lookup } from 'node:dns/promises'
 import { isIP, type LookupFunction } from 'node:net'
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici'
+import { ServerSentEventDecoder } from '../shared/server-sent-events.ts'
 
 export type AiChatMessage = {
   content: string
@@ -17,6 +18,7 @@ export type AiProviderConfig = {
 
 export type AiCompletionRequest = {
   messages: AiChatMessage[]
+  onDelta?: (delta: string) => Promise<void> | void
   responseFormat?: 'json_object'
   signal?: AbortSignal
   systemPrompt: string
@@ -66,6 +68,16 @@ export class AiProviderError extends Error {
     this.name = 'AiProviderError'
     this.code = code
     this.status = status
+  }
+}
+
+class AiCompletionObserverError extends Error {
+  readonly observerCause: unknown
+
+  constructor(observerCause: unknown) {
+    super('AI completion observer failed')
+    this.name = 'AiCompletionObserverError'
+    this.observerCause = observerCause
   }
 }
 
@@ -366,6 +378,77 @@ function createPinnedDispatcher(addresses: readonly AiResolvedNetworkAddress[]) 
   })
 }
 
+async function readStreamingCompletion(
+  response: Response,
+  onDelta: (delta: string) => Promise<void> | void,
+) {
+  if (!response.body) {
+    throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned no response stream', 502)
+  }
+  const decoder = new ServerSentEventDecoder()
+  let content = ''
+  let terminal: 'complete' | 'incomplete' | 'invalid' | null = null
+
+  const consume = async (events: ReturnType<ServerSentEventDecoder['push']>) => {
+    let append = ''
+    for (const event of events) {
+      if (terminal) continue
+      if (event.data.trim() === '[DONE]') {
+        terminal = 'complete'
+        continue
+      }
+      let payload: {
+        choices?: Array<{
+          delta?: { content?: unknown }
+          finish_reason?: unknown
+        }>
+      }
+      try {
+        payload = JSON.parse(event.data) as typeof payload
+      } catch {
+        throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned an invalid response stream', 502)
+      }
+      for (const choice of payload.choices ?? []) {
+        const delta = choice.delta?.content
+        if (typeof delta === 'string' && delta) {
+          content += delta
+          append += delta
+        }
+        if (choice.finish_reason === 'stop') terminal = 'complete'
+        else if (choice.finish_reason === 'length') terminal = 'incomplete'
+        else if (choice.finish_reason != null) terminal = 'invalid'
+        if (terminal) break
+      }
+    }
+    if (append) {
+      try {
+        await onDelta(append)
+      } catch (error) {
+        throw new AiCompletionObserverError(error)
+      }
+    }
+  }
+
+  try {
+    for await (const chunk of response.body) await consume(decoder.push(chunk))
+    await consume(decoder.finish())
+  } catch (error) {
+    if (error instanceof AiProviderError || error instanceof AiCompletionObserverError) throw error
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned an invalid response stream', 502)
+  }
+  if (!terminal || terminal === 'incomplete') {
+    throw new AiProviderError('AI_RESPONSE_INCOMPLETE', 'AI response stream ended early', 502)
+  }
+  if (terminal === 'invalid') {
+    throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned an unsupported response', 502)
+  }
+  if (!content.trim()) {
+    throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned no valid content', 502)
+  }
+  return content.trim()
+}
+
 export async function requestAiChatCompletion(
   config: AiProviderConfig,
   request: AiCompletionRequest,
@@ -389,6 +472,7 @@ export async function requestAiChatCompletion(
         messages: requestMessages(config, request),
         model: config.model,
         ...(request.responseFormat ? { response_format: { type: request.responseFormat } } : {}),
+        ...(request.onDelta ? { stream: true } : {}),
         temperature: request.temperature ?? 0.3,
       }),
       headers: {
@@ -406,15 +490,38 @@ export async function requestAiChatCompletion(
       throw new AiProviderError('AI_REQUEST_FAILED', 'AI request failed', 502)
     }
 
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: unknown } }>
+    if (
+      request.onDelta &&
+      response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')
+    ) {
+      return await readStreamingCompletion(response, request.onDelta)
     }
-    const content = data.choices?.[0]?.message?.content
+
+    const data = await response.json() as {
+      choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown } }>
+    }
+    const choice = data.choices?.[0]
+    if (choice?.finish_reason === 'length') {
+      throw new AiProviderError('AI_RESPONSE_INCOMPLETE', 'AI response ended early', 502)
+    }
+    if (choice?.finish_reason != null && choice.finish_reason !== 'stop') {
+      throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned an unsupported response', 502)
+    }
+    const content = choice?.message?.content
     if (typeof content !== 'string' || !content.trim()) {
       throw new AiProviderError('AI_RESPONSE_INVALID', 'AI returned no valid content', 502)
     }
-    return content.trim()
+    const trimmed = content.trim()
+    if (request.onDelta) {
+      try {
+        await request.onDelta(trimmed)
+      } catch (error) {
+        throw new AiCompletionObserverError(error)
+      }
+    }
+    return trimmed
   } catch (error) {
+    if (error instanceof AiCompletionObserverError) throw error.observerCause
     if (error instanceof AiProviderError) throw error
     if (request.signal?.aborted) {
       throw new AiProviderError('AI_REQUEST_CANCELLED', 'AI request cancelled', 499)

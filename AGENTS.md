@@ -52,6 +52,13 @@ historical product context; current code and these operational docs take precede
   provider. Serialize claim lookup and creation with the per-user cancellation advisory lock,
   and never rebind a turn UUID claim to another conversation. Do not hold a database transaction
   open while calling the external AI provider.
+- Keep AI turn transport on the shared `started`, `delta`, `progress`, `heartbeat`, `completed`,
+  `failed`, and `cancelled` SSE contract. Ordinary chat and conversation analysis may stream
+  text deltas; project summaries and todo extraction may expose only fixed progress phases until
+  the canonical result is committed. A dropped browser connection must not cancel canonical
+  execution, while an explicit stop must still use the cancel route. Recheck project access and
+  the active lease before every project-bound delta or completion. Treat PostgreSQL, not a
+  terminal stream frame or partial text, as the final turn and artifact source of truth.
 - Recheck project access when listing, reading, sending, retrying, and completing a project
   conversation. Lost access hides the conversation; project deletion removes it. Deleting a
   conversation must preserve saved summaries and already-created todos, while a linked pending
@@ -69,6 +76,10 @@ historical product context; current code and these operational docs take precede
   store its project ID separately from display text, and keep capability routing internal.
   Proposal review and result artifacts may open on demand instead of remaining beside the
   conversation.
+- Keep processing, stream-reconciliation, failed, and cancelled feedback inside the related
+  assistant message. A known terminal state must release the composer immediately; any follow-up
+  canonical fetch is best-effort. Do not add a second page-level error banner for the same turn,
+  and do not visually dim the user's source message when the assistant turn fails.
 - AI composer attachments are browser-read text, not separately uploaded objects. Accept
   at most four supported text files, 64 KiB each and 20,000 combined characters; keep the
   original name and content encrypted with the source turn while returning only safe name/size

@@ -1,23 +1,26 @@
 import { decryptText, encryptText } from './crypto.ts'
+import type {
+  AiConversation as AiConversationWireDto,
+  AiConversationContextKind as AiConversationContextKindWire,
+  AiTurn as AiTurnWireDto,
+  AiTurnAttachment as AiTurnAttachmentWireDto,
+  AiTurnIntentKind as AiTurnIntentKindWire,
+  AiTurnStatus as AiTurnStatusWire,
+} from '../shared/ai-conversation-wire.ts'
 
 export const AI_CONVERSATION_TITLE_MAX_CHARACTERS = 80
 export const AI_TURN_ATTACHMENT_MAX_BYTES = 64 * 1024
 export const AI_TURN_ATTACHMENT_MAX_CHARACTERS = 20_000
 export const AI_TURN_ATTACHMENT_MAX_COUNT = 4
 
-export type AiConversationContextKind = 'general' | 'project' | 'conversation-analysis'
+export type AiConversationContextKind = AiConversationContextKindWire
 export type AiConversationContext =
   | { contextKind: 'general'; projectId: null }
   | { contextKind: 'project'; projectId: number }
   | { contextKind: 'conversation-analysis'; projectId: null }
 
-export type AiTurnIntentKind =
-  | 'chat'
-  | 'project-summary'
-  | 'todo-extraction'
-  | 'conversation-analysis'
-
-export type AiTurnStatus = 'processing' | 'completed' | 'failed' | 'cancelled'
+export type AiTurnIntentKind = AiTurnIntentKindWire
+export type AiTurnStatus = AiTurnStatusWire
 
 export type AiTurnAttachment = {
   content: string
@@ -59,15 +62,7 @@ export type AiConversationSerializationRecord = {
   updatedAt: Date | string
 }
 
-export type AiConversationApiDto = {
-  contextKind: AiConversationContextKind
-  createdAt: string
-  id: string
-  lastTurnAt: string
-  projectId: number | null
-  title: string
-  updatedAt: string
-}
+export type AiConversationApiDto = Omit<AiConversationWireDto, 'projectName'>
 
 export type AiTurnAttachmentSerializationRecord = {
   id: number
@@ -77,13 +72,7 @@ export type AiTurnAttachmentSerializationRecord = {
   sizeBytes: number
 }
 
-export type AiTurnAttachmentApiDto = {
-  id: number
-  mediaType: string
-  name: string
-  ordinal: number
-  size: number
-}
+export type AiTurnAttachmentApiDto = AiTurnAttachmentWireDto
 
 export type AiTurnSerializationRecord = {
   assistantContent: string | null
@@ -98,19 +87,7 @@ export type AiTurnSerializationRecord = {
   userContent: string
 }
 
-export type AiTurnApiDto = {
-  assistantContent: string | null
-  attachments: AiTurnAttachmentApiDto[]
-  attemptCount: number
-  completedAt: string | null
-  createdAt: string
-  id: string
-  intentKind: AiTurnIntentKind
-  status: AiTurnStatus
-  turnNo: number
-  updatedAt: string
-  userContent: string
-}
+export type AiTurnApiDto = Omit<AiTurnWireDto, 'errorCode' | 'outcome'>
 
 export class AiConversationValidationError extends Error {
   readonly status: 400 | 413 | 415

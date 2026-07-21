@@ -48,6 +48,7 @@ import {
   SignOut,
   SidebarSimple,
   Sparkle,
+  SpinnerGap,
   Sun,
   Target,
   Tray,
@@ -120,6 +121,7 @@ import {
   fetchCurrentUser,
   fetchNotifications,
   ApiError,
+  AiTurnStreamTerminalError,
   formatApiErrorDiagnostic,
   getAuthToken,
   getProjectInviteLink,
@@ -158,6 +160,8 @@ import {
   deleteAiConversation,
   updateCurrentUser,
   type AiStatus,
+  type AiTurnStreamHandlers,
+  type AiTurnStreamPhase,
   type AuthUser,
   type WorkspaceData,
 } from './api'
@@ -249,6 +253,16 @@ type DisplayAiChatMessage = {
   outcome?: AiTurnOutcome
   turnId: string
   turnStatus: AiTurn['status']
+  statusDetail?: string
+  statusKind?: 'cancelled' | 'failed' | 'processing' | 'reconciling'
+  statusTitle?: string
+}
+type AiTurnLiveState = {
+  connection: 'connected' | 'reconciling'
+  content: string
+  error?: string
+  mode: 'progress' | 'text'
+  phase: AiTurnStreamPhase
 }
 type ThemeMode = 'dark' | 'light'
 type AiMobilePane = 'workspace' | 'history' | 'artifacts'
@@ -264,7 +278,36 @@ type AiMessageRoute = {
   contextKind?: AiConversationContextKind
 }
 
-function displayMessagesFromAiTurn(turn: AiTurn): DisplayAiChatMessage[] {
+function aiTurnProgressTitle(turn: AiTurn, phase: AiTurnStreamPhase) {
+  if (turn.intentKind === 'todo-extraction') {
+    if (phase === 'validating') return '正在校验待办候选'
+    if (phase === 'saving') return '正在保存待办候选'
+    return phase === 'preparing' ? '正在读取内容' : '正在提取待办'
+  }
+  if (turn.intentKind === 'project-summary') {
+    return phase === 'saving' ? '正在保存项目总结' : '正在生成项目总结'
+  }
+  if (turn.intentKind === 'conversation-analysis') {
+    return phase === 'saving' ? '正在保存分析结果' : '正在分析对话'
+  }
+  return phase === 'saving' ? '正在保存回复' : '正在回复'
+}
+
+function aiTurnFailureDetail(errorCode: string | null) {
+  if (errorCode === 'AI_REQUEST_TIMEOUT') return '模型响应超时，请重试这条消息。'
+  if (errorCode === 'AI_RESPONSE_INCOMPLETE') return '模型连接提前结束，请重试这条消息。'
+  if (errorCode === 'AI_RESPONSE_INVALID' || errorCode === 'AI_TODO_RESPONSE_INVALID') {
+    return '模型返回的内容无法读取，请重试这条消息。'
+  }
+  if (errorCode === 'AI_TODO_NONE_FOUND') return '没有识别到可执行的待办，可以补充更明确的内容后重试。'
+  if (errorCode === 'AI_REQUEST_STALE') return '回复等待时间过长，已停止本次生成。'
+  return '模型没有完成这次回复，请重试这条消息。'
+}
+
+function displayMessagesFromAiTurn(
+  turn: AiTurn,
+  liveState?: AiTurnLiveState,
+): DisplayAiChatMessage[] {
   const attachments = turn.attachments.map(({ id, name, size }) => ({ id, name, size }))
   const messages: DisplayAiChatMessage[] = [{
     attachments,
@@ -275,22 +318,42 @@ function displayMessagesFromAiTurn(turn: AiTurn): DisplayAiChatMessage[] {
     turnId: turn.id,
     turnStatus: turn.status,
   }]
-  const statusContent = turn.status === 'processing'
-    ? '正在整理上下文...'
-    : turn.status === 'failed'
-      ? '这次回复没有生成完成。'
-      : turn.status === 'cancelled'
-        ? '回复已停止。'
-        : turn.assistantContent
-  if (statusContent) {
+  const statusKind = turn.status === 'processing'
+    ? liveState?.connection === 'reconciling' ? 'reconciling' : 'processing'
+    : turn.status === 'failed' || turn.status === 'cancelled' ? turn.status : undefined
+  const statusTitle = statusKind === 'reconciling'
+    ? '正在确认回复结果'
+    : statusKind === 'processing'
+      ? aiTurnProgressTitle(turn, liveState?.phase ?? 'preparing')
+      : statusKind === 'failed'
+        ? '回复失败'
+        : statusKind === 'cancelled'
+          ? '回复已停止'
+          : undefined
+  const statusDetail = statusKind === 'reconciling'
+    ? '连接已中断，正在从服务端恢复这条回复。'
+    : statusKind === 'failed'
+      ? liveState?.error || aiTurnFailureDetail(turn.errorCode)
+      : statusKind === 'cancelled'
+        ? '你可以重试这条消息。'
+        : undefined
+  const assistantContent = turn.status === 'completed'
+    ? turn.assistantContent
+    : turn.status === 'processing' && liveState?.mode === 'text'
+      ? liveState.content
+      : ''
+  if (assistantContent || statusTitle) {
     messages.push({
-      content: statusContent,
+      content: assistantContent || '',
       createdAt: turn.completedAt ?? turn.updatedAt,
       id: `${turn.id}:assistant`,
       outcome: turn.outcome,
       role: 'assistant',
       turnId: turn.id,
       turnStatus: turn.status,
+      statusDetail,
+      statusKind,
+      statusTitle,
     })
   }
   return messages
@@ -1206,6 +1269,7 @@ function App() {
     createAiConversationHistoryState,
   )
   const [aiTurns, setAiTurns] = useState<AiTurn[]>([])
+  const [aiTurnLiveStates, setAiTurnLiveStates] = useState<Record<string, AiTurnLiveState>>({})
   const [aiTurnsLoading, setAiTurnsLoading] = useState(false)
   const [aiTurnsError, setAiTurnsError] = useState('')
   const [aiNextBeforeTurn, setAiNextBeforeTurn] = useState<number | null>(null)
@@ -1236,7 +1300,10 @@ function App() {
   aiSelectionRef.current = aiHistory.selection
   const aiProjectId = aiHistory.selection.context.projectId
   const selectedAiConversationId = currentAiConversationId(aiHistory.selection)
-  const aiMessages = useMemo(() => aiTurns.flatMap(displayMessagesFromAiTurn), [aiTurns])
+  const aiMessages = useMemo(
+    () => aiTurns.flatMap((turn) => displayMessagesFromAiTurn(turn, aiTurnLiveStates[turn.id])),
+    [aiTurnLiveStates, aiTurns],
+  )
 
   const replaceAiConversationTurns = useCallback((
     result: Awaited<ReturnType<typeof fetchAiConversationTurns>>,
@@ -1249,6 +1316,15 @@ function App() {
     setAiTurns((current) => mode === 'merge'
       ? mergeAiTurns(current, result.turns)
       : result.turns)
+    setAiTurnLiveStates((current) => {
+      const terminalIds = new Set(
+        result.turns.filter((turn) => turn.status !== 'processing').map((turn) => turn.id),
+      )
+      if (terminalIds.size === 0) return current
+      return Object.fromEntries(
+        Object.entries(current).filter(([turnId]) => !terminalIds.has(turnId)),
+      )
+    })
     if (mode === 'replace') setAiNextBeforeTurn(result.nextBeforeTurn)
     setAiTurnsError('')
     const processing = canonicalProcessingAiTurn(result.turns)
@@ -1388,6 +1464,7 @@ function App() {
         const latest = conversations[0]
         if (!latest) {
           setAiTurns([])
+          setAiTurnLiveStates({})
           setAiNextBeforeTurn(null)
           setAiTurnsError('')
           dispatchAiHistory({
@@ -1487,6 +1564,7 @@ function App() {
           setAiTurns((current) => mergeAiTurns(current, [result.turn]))
           setAiTurnsError('')
           if (result.turn.status !== 'processing') {
+            clearAiTurnLiveState(result.turn.id)
             if (activeAiTurnRef.current?.turnId === result.turn.id) {
               activeAiTurnRef.current = null
             }
@@ -1500,22 +1578,17 @@ function App() {
           if (
             error instanceof ApiError &&
             error.status === 404 &&
-            activeTurn?.localRequestId === null &&
-            !activeTurn.awaitingCanonical &&
-            !activeTurn.stopRequested
+            activeTurn?.localRequestId === null
           ) {
-            setAiTurns((current) => current.filter((turn) => turn.id !== processing.id))
-            if (activeTurn.turnId === processing.id) activeAiTurnRef.current = null
-            setAiDraft((current) => current || processing.userContent)
-            setAiBusy(false)
-            setAiTurnsError('')
+            hideUnavailableAiConversation(conversationId)
             return
           }
           if (activeTurn?.localRequestId === null) {
-            setAiTurnsError(
-              error instanceof Error && error.message
-                ? error.message
-                : '无法刷新正在生成的回复。',
+            markAiTurnReconciling(
+              processing.id,
+              processing.intentKind === 'chat' || processing.intentKind === 'conversation-analysis'
+                ? 'text'
+                : 'progress',
             )
           }
           setAiReconcileAttempt((current) => current + 1)
@@ -1625,6 +1698,7 @@ function App() {
       context: GENERAL_AI_CONVERSATION_CONTEXT,
     })
     setAiTurns([])
+    setAiTurnLiveStates({})
     setAiTurnsLoading(false)
     setAiNextBeforeTurn(null)
     setAiTurnsError('当前项目已不可访问，已开始新的普通对话。')
@@ -1855,6 +1929,7 @@ function App() {
     setNotifications(emptyNotifications)
     dispatchAiHistory({ type: 'session/reset' })
     setAiTurns([])
+    setAiTurnLiveStates({})
     setAiTurnsLoading(false)
     setAiTurnsError('')
     setAiNextBeforeTurn(null)
@@ -2533,6 +2608,7 @@ function App() {
       if (result.pending) {
         activeAiTurnRef.current = null
         setAiTurns((current) => current.filter((turn) => turn.id !== active.turnId))
+        clearAiTurnLiveState(active.turnId)
         if (active.userContent) setAiDraft((current) => current || active.userContent || '')
         setAiBusy(false)
         setAiTurnsError('')
@@ -2546,15 +2622,16 @@ function App() {
       if (result.turn.status !== 'processing') {
         activeAiTurnRef.current = null
         setAiBusy(false)
+        clearAiTurnLiveState(active.turnId)
       }
-    } catch (error) {
+    } catch {
       if (aiRequestIdRef.current !== requestId) return
       try {
         const restored = await fetchAiConversationTurns(active.conversationId)
         if (aiRequestIdRef.current !== requestId) return
         const canonicalTurn = restored.turns.find((turn) => turn.id === active.turnId)
         if (!canonicalTurn) {
-          setAiError('停止状态尚未确认，请再次停止或等待状态刷新。')
+          markAiTurnReconciling(active.turnId, 'text')
           return
         }
         aiRequestIdRef.current += 1
@@ -2565,11 +2642,7 @@ function App() {
         if (aiRequestIdRef.current !== requestId) return
       }
       if (activeAiTurnRef.current) {
-        setAiError(
-          error instanceof Error && error.message
-            ? error.message
-            : '停止回复尚未确认，请重试或等待状态刷新。',
-        )
+        markAiTurnReconciling(active.turnId, 'text')
       }
     }
   }
@@ -2729,10 +2802,212 @@ function App() {
     if (deletedCurrent) {
       aiTurnsRequestIdRef.current += 1
       setAiTurns([])
+      setAiTurnLiveStates({})
       setAiNextBeforeTurn(null)
       setAiTurnsError('')
       setAiDraft('')
       setAiError('')
+    }
+  }
+
+  function clearAiTurnLiveState(turnId: string) {
+    setAiTurnLiveStates((current) => {
+      if (!current[turnId]) return current
+      const next = { ...current }
+      delete next[turnId]
+      return next
+    })
+  }
+
+  function hideUnavailableAiConversation(conversationId: string) {
+    dispatchAiHistory({ type: 'conversation/deleted', conversationId })
+    const selected = currentAiConversationId(aiSelectionRef.current) === conversationId
+    const active = activeAiTurnRef.current?.conversationId === conversationId
+    if (!selected && !active) return
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiError('')
+    if (active) activeAiTurnRef.current = null
+    setAiBusy(false)
+  }
+
+  function markAiTurnReconciling(turnId: string, fallbackMode: AiTurnLiveState['mode']) {
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'reconciling',
+        content: current[turnId]?.content ?? '',
+        mode: current[turnId]?.mode ?? fallbackMode,
+        phase: current[turnId]?.phase ?? 'preparing',
+      },
+    }))
+  }
+
+  function aiTurnStreamHandlers(
+    turnId: string,
+    requestId: number,
+    fallbackMode: AiTurnLiveState['mode'],
+  ): AiTurnStreamHandlers {
+    const update = (patch: Partial<AiTurnLiveState>) => {
+      if (aiRequestIdRef.current !== requestId) return
+      setAiTurnLiveStates((current) => {
+        const existing = current[turnId] ?? {
+          connection: 'connected',
+          content: '',
+          mode: fallbackMode,
+          phase: 'preparing',
+        }
+        return {
+          ...current,
+          [turnId]: {
+            ...existing,
+            ...patch,
+          },
+        }
+      })
+    }
+    return {
+      onDelta: (append) => {
+        if (aiRequestIdRef.current !== requestId) return
+        setAiTurnLiveStates((current) => ({
+          ...current,
+          [turnId]: {
+            connection: 'connected',
+            content: `${current[turnId]?.content ?? ''}${append}`,
+            mode: 'text',
+            phase: 'generating',
+          },
+        }))
+      },
+      onHeartbeat: () => update({ connection: 'connected' }),
+      onProgress: (phase) => update({ connection: 'connected', phase }),
+      onStarted: ({ conversation, mode, turn }) => {
+        if (aiRequestIdRef.current !== requestId) return
+        if (conversation) {
+          dispatchAiHistory({
+            type: 'conversation/upserted',
+            conversation: toAiConversationListItem(conversation),
+          })
+        }
+        if (turn) setAiTurns((current) => mergeAiTurns(current, [turn]))
+        update({ connection: 'connected', mode })
+      },
+    }
+  }
+
+  async function recoverAiTurnRequest(params: {
+    conversationId: string
+    error: unknown
+    failureMessage: string
+    missingTurnPolicy: 'always-remove' | 'preserve-while-unknown'
+    requestId: number
+    restoreDraft?: string
+    restoreDraftOnConversationMissing?: boolean
+    streamMode: AiTurnLiveState['mode']
+    turnId: string
+  }): Promise<AiTurnRunResponse | false> {
+    const {
+      conversationId,
+      error,
+      failureMessage,
+      missingTurnPolicy,
+      requestId,
+      restoreDraft,
+      restoreDraftOnConversationMissing = false,
+      streamMode,
+      turnId,
+    } = params
+    if (aiRequestIdRef.current !== requestId) return false
+
+    const terminalError = error instanceof AiTurnStreamTerminalError ? error : null
+    const transportStateUnknown = !terminalError && isAiTurnCanonicalStateUnknown(
+      error instanceof ApiError ? error.status : null,
+    )
+    if (transportStateUnknown) {
+      if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = {
+          ...activeAiTurnRef.current,
+          awaitingCanonical: true,
+          localRequestId: null,
+        }
+      }
+      markAiTurnReconciling(turnId, streamMode)
+    } else {
+      if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+      setAiBusy(false)
+      setAiTurns((current) => current.map((turn) => turn.id === turnId
+        ? {
+            ...turn,
+            errorCode: terminalError?.code ?? 'AI_REQUEST_FAILED',
+            status: terminalError?.event === 'cancelled' ? 'cancelled' : 'failed',
+            updatedAt: new Date().toISOString(),
+          }
+        : turn))
+      setAiTurnLiveStates((current) => ({
+        ...current,
+        [turnId]: {
+          connection: 'connected',
+          content: '',
+          error: terminalError
+            ? undefined
+            : error instanceof Error && error.message
+            ? error.message
+            : failureMessage,
+          mode: streamMode,
+          phase: 'preparing',
+        },
+      }))
+    }
+
+    try {
+      const restored = await fetchAiConversationTurns(conversationId)
+      if (aiRequestIdRef.current !== requestId) return false
+      const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
+      if (canonicalTurn) {
+        replaceAiConversationTurns(restored, 'merge')
+      } else if (
+        missingTurnPolicy === 'always-remove' ||
+        !transportStateUnknown
+      ) {
+        dispatchAiHistory({
+          type: 'conversation/upserted',
+          conversation: toAiConversationListItem(restored.conversation),
+        })
+        setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
+        clearAiTurnLiveState(turnId)
+        if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+        setAiBusy(false)
+        if (restoreDraft) setAiDraft((current) => current || restoreDraft)
+      }
+      if (canonicalTurn?.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        setAiBusy(true)
+        markAiTurnReconciling(turnId, streamMode)
+        return false
+      }
+      if (!canonicalTurn) return false
+
+      if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+      setAiBusy(false)
+      clearAiTurnLiveState(turnId)
+      setAiError('')
+      if (canonicalTurn.status !== 'completed') return false
+      await applyAiRunOutcome(canonicalTurn.outcome)
+      return {
+        conversation: restored.conversation,
+        outcome: canonicalTurn.outcome,
+        turn: canonicalTurn,
+      }
+    } catch (restoreError) {
+      if (restoreError instanceof ApiError && restoreError.status === 404) {
+        if (restoreDraftOnConversationMissing && restoreDraft) {
+          setAiDraft((current) => current || restoreDraft)
+        }
+        hideUnavailableAiConversation(conversationId)
+      }
+      return false
     }
   }
 
@@ -2800,6 +3075,18 @@ function App() {
     setAiBusy(true)
     setAiError('')
     setAiTurnsError('')
+    const streamMode = classified.kind === 'chat' || classified.kind === 'conversation-analysis'
+      ? 'text'
+      : 'progress'
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'connected',
+        content: '',
+        mode: streamMode,
+        phase: 'preparing',
+      },
+    }))
     try {
       const result = await sendAiConversationTurn({
         attachments: attachments.map(({ content: attachmentContent, name, size }) => ({
@@ -2813,7 +3100,7 @@ function App() {
         conversationId,
         projectId,
         turnId,
-      })
+      }, aiTurnStreamHandlers(turnId, requestId, streamMode))
       if (aiRequestIdRef.current !== requestId) return false
       if (result.conversation) {
         dispatchAiHistory({
@@ -2824,87 +3111,26 @@ function App() {
       setAiTurns((current) => mergeAiTurns(current, [result.turn]))
       if (result.turn.status === 'processing') {
         activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        markAiTurnReconciling(turnId, streamMode)
       } else if (activeAiTurnRef.current?.turnId === turnId) {
         activeAiTurnRef.current = null
         setAiBusy(false)
+        clearAiTurnLiveState(turnId)
       }
       await applyAiRunOutcome(result.outcome)
       return result
     } catch (error) {
-      if (aiRequestIdRef.current !== requestId) return false
-      const transportStateUnknown = isAiTurnCanonicalStateUnknown(
-        error instanceof ApiError ? error.status : null,
-      )
-      if (transportStateUnknown) {
-        if (activeAiTurnRef.current?.turnId === turnId) {
-          activeAiTurnRef.current = {
-            ...activeAiTurnRef.current,
-            awaitingCanonical: true,
-            localRequestId: null,
-          }
-        }
-      } else {
-        setAiTurns((current) => current.map((turn) =>
-          turn.id === turnId
-            ? {
-              ...turn,
-              errorCode: 'AI_REQUEST_FAILED',
-              status: 'failed',
-              updatedAt: new Date().toISOString(),
-            }
-            : turn,
-        ))
-      }
-      setAiError(
-        transportStateUnknown
-          ? '发送状态尚未确认，请停止回复或等待状态刷新。'
-          : error instanceof Error && error.message
-          ? error.message
-          : 'AI 暂时没有响应，可以重试这条消息。',
-      )
-      try {
-        const restored = await fetchAiConversationTurns(conversationId)
-        if (aiRequestIdRef.current === requestId) {
-          const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
-          if (canonicalTurn) {
-            replaceAiConversationTurns(restored, 'merge')
-          } else if (!transportStateUnknown) {
-            dispatchAiHistory({
-              type: 'conversation/upserted',
-              conversation: toAiConversationListItem(restored.conversation),
-            })
-            setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
-            if (activeAiTurnRef.current?.turnId === turnId) {
-              activeAiTurnRef.current = null
-              setAiBusy(false)
-            }
-          }
-          if (canonicalTurn?.status === 'processing') {
-            activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
-          }
-          if (canonicalTurn?.status === 'completed') {
-            setAiError('')
-            await applyAiRunOutcome(canonicalTurn.outcome)
-          }
-          if (!canonicalTurn) {
-            if (!transportStateUnknown) setAiDraft(content)
-          }
-        }
-      } catch {
-        if (
-          !transportStateUnknown &&
-          !existingConversationId &&
-          aiRequestIdRef.current === requestId
-        ) {
-          setAiTurns([])
-          setAiDraft(content)
-        }
-        if (!transportStateUnknown && activeAiTurnRef.current?.turnId === turnId) {
-          activeAiTurnRef.current = null
-          setAiBusy(false)
-        }
-      }
-      return false
+      return recoverAiTurnRequest({
+        conversationId,
+        error,
+        failureMessage: 'AI 暂时没有响应，可以重试这条消息。',
+        missingTurnPolicy: 'preserve-while-unknown',
+        requestId,
+        restoreDraft: content,
+        restoreDraftOnConversationMissing: !existingConversationId,
+        streamMode,
+        turnId,
+      })
     } finally {
       if (
         aiRequestIdRef.current === requestId &&
@@ -2919,6 +3145,10 @@ function App() {
   async function retryAiTurn(turnId: string): Promise<AiTurnRunResponse | false> {
     const conversationId = currentAiConversationId(aiHistory.selection)
     if (!conversationId || aiBusy || aiTurnsLoading) return false
+    const retryingTurn = aiTurns.find((turn) => turn.id === turnId)
+    const streamMode = retryingTurn?.intentKind === 'chat' || retryingTurn?.intentKind === 'conversation-analysis'
+      ? 'text'
+      : 'progress'
     const requestId = aiRequestIdRef.current + 1
     aiRequestIdRef.current = requestId
     activeAiTurnRef.current = { conversationId, localRequestId: requestId, turnId }
@@ -2934,8 +3164,21 @@ function App() {
     ))
     setAiBusy(true)
     setAiError('')
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'connected',
+        content: '',
+        mode: streamMode,
+        phase: 'preparing',
+      },
+    }))
     try {
-      const result = await retryAiConversationTurn(conversationId, turnId)
+      const result = await retryAiConversationTurn(
+        conversationId,
+        turnId,
+        aiTurnStreamHandlers(turnId, requestId, streamMode),
+      )
       if (aiRequestIdRef.current !== requestId) return false
       dispatchAiHistory({
         type: 'conversation/upserted',
@@ -2944,57 +3187,24 @@ function App() {
       setAiTurns((current) => mergeAiTurns(current, [result.turn]))
       if (result.turn.status === 'processing') {
         activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        markAiTurnReconciling(turnId, streamMode)
       } else if (activeAiTurnRef.current?.turnId === turnId) {
         activeAiTurnRef.current = null
         setAiBusy(false)
+        clearAiTurnLiveState(turnId)
       }
       await applyAiRunOutcome(result.outcome)
       return result
     } catch (error) {
-      if (aiRequestIdRef.current !== requestId) return false
-      let recoveredCompletedTurn = false
-      try {
-        const restored = await fetchAiConversationTurns(conversationId)
-        if (aiRequestIdRef.current === requestId) {
-          const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
-          if (canonicalTurn) {
-            replaceAiConversationTurns(restored, 'merge')
-          } else {
-            dispatchAiHistory({
-              type: 'conversation/upserted',
-              conversation: toAiConversationListItem(restored.conversation),
-            })
-            setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
-            if (activeAiTurnRef.current?.turnId === turnId) {
-              activeAiTurnRef.current = null
-              setAiBusy(false)
-            }
-          }
-          if (canonicalTurn?.status === 'processing') {
-            activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
-          }
-          if (canonicalTurn?.status === 'completed') {
-            setAiError('')
-            await applyAiRunOutcome(canonicalTurn.outcome)
-            recoveredCompletedTurn = true
-          }
-        }
-      } catch (restoreError) {
-        if (restoreError instanceof ApiError && restoreError.status === 404) {
-          setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
-          if (activeAiTurnRef.current?.turnId === turnId) {
-            activeAiTurnRef.current = null
-            setAiBusy(false)
-          }
-        }
-      }
-      if (recoveredCompletedTurn) return false
-      setAiError(
-        error instanceof Error && error.message
-          ? error.message
-          : '重试失败，请稍后再试。',
-      )
-      return false
+      return recoverAiTurnRequest({
+        conversationId,
+        error,
+        failureMessage: '重试失败，请稍后再试。',
+        missingTurnPolicy: 'always-remove',
+        requestId,
+        streamMode,
+        turnId,
+      })
     } finally {
       if (
         aiRequestIdRef.current === requestId &&
@@ -3018,6 +3228,7 @@ function App() {
       context: aiHistory.selection.context,
     })
     setAiTurns([])
+    setAiTurnLiveStates({})
     setAiNextBeforeTurn(null)
     setAiTurnsError('')
     setAiDraft('')
@@ -3039,6 +3250,7 @@ function App() {
       context: aiConversationContext(projectId == null ? 'general' : 'project', projectId, projects),
     })
     setAiTurns([])
+    setAiTurnLiveStates({})
     setAiNextBeforeTurn(null)
     setAiTurnsError('')
     setAiError('')
@@ -7470,7 +7682,7 @@ function VegesAiView({
         <section aria-label="Veges AI 对话" className="veges-ai-stage">
               <div
                 aria-busy={aiBusy}
-                aria-live={showPromptExamples ? 'off' : 'polite'}
+                aria-live="polite"
                 aria-relevant="additions text"
                 className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
                 role="log"
@@ -7512,12 +7724,39 @@ function VegesAiView({
                 ) : null}
                 {aiMessages.map((message) => (
                   <article
+                    aria-busy={message.turnStatus === 'processing'}
                     className={`agent-message ${message.role} is-${message.turnStatus}`}
                     key={message.id}
                   >
-                    <div className="agent-message-content">
-                      <MarkdownPreview content={message.content} compact />
-                    </div>
+                    {message.content ? (
+                      <div
+                        aria-live={message.turnStatus === 'processing' ? 'off' : undefined}
+                        className="agent-message-content"
+                      >
+                        <MarkdownPreview content={message.content} compact />
+                      </div>
+                    ) : null}
+                    {message.statusTitle && message.statusKind ? (
+                      <div
+                        aria-atomic="true"
+                        className={`agent-message-state is-${message.statusKind}`}
+                        role={message.statusKind === 'failed' ? 'alert' : 'status'}
+                      >
+                        {message.statusKind === 'processing' ? (
+                          <SpinnerGap aria-hidden className="agent-message-state-spinner" size={17} />
+                        ) : message.statusKind === 'reconciling' ? (
+                          <ClockCounterClockwise aria-hidden size={17} />
+                        ) : message.statusKind === 'failed' ? (
+                          <WarningCircle aria-hidden size={17} weight="fill" />
+                        ) : (
+                          <X aria-hidden size={17} />
+                        )}
+                        <span>
+                          <strong>{message.statusTitle}</strong>
+                          {message.statusDetail ? <small>{message.statusDetail}</small> : null}
+                        </span>
+                      </div>
+                    ) : null}
                     {message.attachments?.length ? (
                       <div className="agent-message-attachments" aria-label="消息附件">
                         {message.attachments.map((attachment) => (
@@ -7611,9 +7850,15 @@ function VegesAiView({
                   </article>
                 ))}
               </div>
-              {aiTurnsError || aiError || generationError || attachmentError ? (
+              {aiTurnsError || aiError ? (
+                <div className="veges-ai-inline-notice" role="alert">
+                  <WarningCircle aria-hidden size={16} weight="fill" />
+                  <span>{aiTurnsError || aiError}</span>
+                </div>
+              ) : null}
+              {generationError || attachmentError ? (
                 <p className="form-error" role="alert">
-                  {aiTurnsError || aiError || generationError || attachmentError}
+                  {generationError || attachmentError}
                 </p>
               ) : null}
               <div className="ai-todo-workflow-status">

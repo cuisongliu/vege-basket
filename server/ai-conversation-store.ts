@@ -31,7 +31,7 @@ import {
   type AiInputIntent,
 } from '../shared/ai-input-intent.ts'
 
-const aiTurnLeaseMs = 60_000
+const aiTurnLeaseMs = 120_000
 const modelHistoryCompletedTurns = 3
 
 type Queryable = Pick<PoolClient, 'query'>

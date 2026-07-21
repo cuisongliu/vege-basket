@@ -75,6 +75,11 @@ import {
   classifyAiInput,
 } from '../shared/ai-input-intent.ts'
 import {
+  serializeAiTurnStreamEvent,
+  type AiTurnStreamEventInput,
+  type AiTurnStreamPhase,
+} from '../shared/server-sent-events.ts'
+import {
   AiConversationValidationError,
   buildAiTurnModelContent,
   createAiConversationContext,
@@ -96,8 +101,10 @@ import {
   startAiTurn,
   type StartAiTurnInput,
   type AiTurnExecution,
+  type StartedAiTurn,
 } from './ai-conversation-store.ts'
 import { AiTurnControllerRegistry } from './ai-turn-controller-registry.ts'
+import { waitForAiTurnStreamDrain } from './ai-turn-stream.ts'
 import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
@@ -210,6 +217,7 @@ const aiMaxMessageLength = Number.isSafeInteger(configuredAiMaxMessageLength) &&
   ? configuredAiMaxMessageLength
   : 2_000
 const aiMaxContextChars = Number(process.env.AI_MAX_CONTEXT_CHARS ?? 12_000)
+const aiStructuredTurnTimeoutMs = 90_000
 const activeAiTurnControllers = new AiTurnControllerRegistry()
 const todoImageUploadMaxBytes = Number(process.env.TODO_IMAGE_UPLOAD_MAX_BYTES ?? 10 * 1024 * 1024)
 const todoImageObjectPrefix = String(process.env.TODO_IMAGE_OBJECT_PREFIX ?? 'todo-images')
@@ -1472,12 +1480,13 @@ async function generateAiPeriodSummary(params: {
     const content = await requestAiChatCompletion(readAiProviderConfig(), {
       ...request,
       signal: params.signal,
+      timeoutMs: aiStructuredTurnTimeoutMs,
     })
     const title = `${formatDate(new Date())} ${params.type === 'daily' ? '日总结' : '周总结'}`
     return { content, period: period.label, title }
   } catch (error) {
     if (error instanceof AiProviderError) {
-      return { error: error.message, status: error.status }
+      return { code: error.code, error: error.message, status: error.status }
     }
     throw error
   }
@@ -1517,6 +1526,7 @@ async function createAiAgentResponse(
   timeoutMs = 45_000,
   projectId?: number | null,
   signal?: AbortSignal,
+  onDelta?: (delta: string) => Promise<void>,
 ) {
   const scopedProjectId = Number.isFinite(projectId) ? Number(projectId) : null
   const projectContext = agentType === 'project-summary' && scopedProjectId
@@ -1528,6 +1538,7 @@ async function createAiAgentResponse(
   try {
     const message = await requestAiChatCompletion(readAiProviderConfig(), {
       messages,
+      onDelta,
       signal,
       systemPrompt: aiAgentPrompts[agentType],
       timeoutMs,
@@ -1536,7 +1547,7 @@ async function createAiAgentResponse(
     return { message, status: 200 as const }
   } catch (error) {
     if (error instanceof AiProviderError) {
-      return { error: error.message, status: error.status }
+      return { code: error.code, error: error.message, status: error.status }
     }
     throw error
   }
@@ -1657,7 +1668,11 @@ async function generateAiTodoProposalCandidates(
       413,
     )
   }
-  const aiContent = await requestAiChatCompletion(aiConfig, { ...aiRequest, signal })
+  const aiContent = await requestAiChatCompletion(aiConfig, {
+    ...aiRequest,
+    signal,
+    timeoutMs: aiStructuredTurnTimeoutMs,
+  })
   const proposals = parseAiTodoProposalResponse(aiContent, {
     catalog,
     maxProposals: 20,
@@ -1739,10 +1754,20 @@ type AiTurnRunOutcome =
   | { summaryId: number; type: 'summary' }
   | { batchId: number; status: 'pending'; type: 'todo-proposals' }
 
-async function executeAiConversationTurn(userId: number, execution: AiTurnExecution) {
+type AiTurnExecutionObserver = {
+  onDelta?: (delta: string) => Promise<void>
+  onProgress?: (phase: AiTurnStreamPhase) => void
+}
+
+async function executeAiConversationTurn(
+  userId: number,
+  execution: AiTurnExecution,
+  observer: AiTurnExecutionObserver = {},
+) {
   const controller = new AbortController()
   activeAiTurnControllers.register(execution.turnId, execution.leaseToken, controller)
   try {
+    observer.onProgress?.('preparing')
     await assertAiTurnExecutionActive(userId, execution)
     const classifiedIntent = execution.intent
     if (
@@ -1770,6 +1795,7 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
           409,
         )
       }
+      observer.onProgress?.('generating')
       const generated = await generateAiPeriodSummary({
         projectId: execution.projectId,
         signal: controller.signal,
@@ -1778,11 +1804,12 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
       })
       if ('error' in generated) {
         throw new AiConversationStoreError(
-          'AI_SUMMARY_FAILED',
+          String(generated.code ?? 'AI_SUMMARY_FAILED'),
           String(generated.error ?? 'AI summary failed'),
           Number(generated.status ?? 502),
         )
       }
+      observer.onProgress?.('saving')
       const completed = await completeAiTurn<AiTurnRunOutcome>(
         userId,
         execution,
@@ -1830,16 +1857,19 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
           409,
         )
       }
+      observer.onProgress?.('generating')
       const proposals = await generateAiTodoProposalCandidates(
         userId,
         classifiedIntent.content,
         execution.context,
         controller.signal,
       )
+      observer.onProgress?.('validating')
       const assistantContent = `已提取 ${proposals.length} 条待办候选，请审核后再创建。`
       const fileName = execution.attachments.length === 1
         ? execution.attachments[0].name
         : 'veges-ai-input.md'
+      observer.onProgress?.('saving')
       const completed = await completeAiTurn<AiTurnRunOutcome>(
         userId,
         execution,
@@ -1884,6 +1914,7 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
       : execution.context.contextKind === 'project'
         ? 'project-summary'
         : 'general'
+    observer.onProgress?.('generating')
     const response = await createAiAgentResponse(
       userId,
       agentType,
@@ -1894,14 +1925,16 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
       45_000,
       execution.projectId,
       controller.signal,
+      observer.onDelta,
     )
     if ('error' in response) {
       throw new AiConversationStoreError(
-        'AI_REQUEST_FAILED',
+        String(response.code ?? 'AI_REQUEST_FAILED'),
         String(response.error ?? 'AI request failed'),
         Number(response.status ?? 502),
       )
     }
+    observer.onProgress?.('saving')
     const completed = await completeAiTurn<never>(
       userId,
       execution,
@@ -1916,13 +1949,148 @@ async function executeAiConversationTurn(userId: number, execution: AiTurnExecut
       turn: completed.turn,
     }
   } catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error
-      ? String(error.code)
-      : 'AI_REQUEST_FAILED'
+    const code = aiTurnErrorCode(error)
     await failAiTurn(execution.turnId, execution.leaseToken, code)
     throw error
   } finally {
     activeAiTurnControllers.release(execution.turnId, execution.leaseToken, controller)
+  }
+}
+
+function aiTurnStreamMode(execution: AiTurnExecution) {
+  return execution.intentKind === 'chat' || execution.intentKind === 'conversation-analysis'
+    ? 'text'
+    : 'progress'
+}
+
+function aiTurnErrorCode(error: unknown) {
+  if (error instanceof AiTodoProposalValidationError) return 'AI_TODO_RESPONSE_INVALID'
+  return error && typeof error === 'object' && 'code' in error
+    ? String(error.code)
+    : 'AI_REQUEST_FAILED'
+}
+
+function aiTurnErrorPayload(error: unknown) {
+  if (
+    error instanceof AiConversationValidationError ||
+    error instanceof AiConversationStoreError ||
+    error instanceof AiProviderError ||
+    error instanceof AiTodoProposalValidationError
+  ) {
+    return {
+      code: aiTurnErrorCode(error),
+      message: error.message,
+    }
+  }
+  return { code: 'AI_REQUEST_FAILED', message: 'AI request failed' }
+}
+
+function openAiTurnEventStream(response: express.Response, execution: AiTurnExecution) {
+  response.status(200)
+  response.set({
+    'Cache-Control': 'no-cache, no-store, no-transform',
+    Connection: 'keep-alive',
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'X-Accel-Buffering': 'no',
+  })
+  response.flushHeaders()
+
+  let open = true
+  let sequence = 0
+  let writeQueue = Promise.resolve(true)
+  const writeEvent = async (event: AiTurnStreamEventInput) => {
+    if (!open || response.destroyed || response.writableEnded) return false
+    try {
+      sequence += 1
+      const ready = response.write(serializeAiTurnStreamEvent({ ...event, sequence }))
+      if (!ready) {
+        const drained = await waitForAiTurnStreamDrain(response)
+        if (!drained) {
+          open = false
+          if (!response.destroyed) response.destroy()
+        }
+      }
+      return true
+    } catch {
+      open = false
+      return false
+    }
+  }
+  const send = (event: AiTurnStreamEventInput) => {
+    const next = writeQueue.then(() => writeEvent(event))
+    writeQueue = next.catch(() => false)
+    return next
+  }
+  response.once('close', () => {
+    open = false
+  })
+  const heartbeat = setInterval(() => {
+    void send({ turnId: execution.turnId, type: 'heartbeat' })
+  }, 10_000)
+  heartbeat.unref()
+
+  return {
+    async close() {
+      clearInterval(heartbeat)
+      await writeQueue
+      if (!response.destroyed && !response.writableEnded) response.end()
+      open = false
+    },
+    send,
+  }
+}
+
+async function canonicalAiTurnRunResponse(userId: number, execution: AiTurnExecution) {
+  const page = await getAiConversationTurns(userId, execution.conversationId)
+  const turn = page.turns.find((candidate) => candidate.id === execution.turnId)
+  return turn
+    ? { conversation: page.conversation, outcome: turn.outcome, turn }
+    : null
+}
+
+async function streamAiConversationTurn(
+  userId: number,
+  response: express.Response,
+  execution: AiTurnExecution,
+  started?: Pick<StartedAiTurn, 'conversation' | 'turn'>,
+) {
+  const stream = openAiTurnEventStream(response, execution)
+  await stream.send({
+    conversation: started?.conversation,
+    mode: aiTurnStreamMode(execution),
+    turn: started?.turn,
+    turnId: execution.turnId,
+    type: 'started',
+  })
+  try {
+    const result = await executeAiConversationTurn(userId, execution, {
+      onDelta: aiTurnStreamMode(execution) === 'text'
+        ? async (append) => {
+            if (execution.projectId) await assertAiTurnExecutionActive(userId, execution)
+            await stream.send({ append, turnId: execution.turnId, type: 'delta' })
+          }
+        : undefined,
+      onProgress: (phase) => {
+        void stream.send({ phase, turnId: execution.turnId, type: 'progress' })
+      },
+    })
+    await stream.send({ result, type: 'completed' })
+  } catch (error) {
+    let result = null
+    try {
+      result = await canonicalAiTurnRunResponse(userId, execution)
+    } catch {
+      // The stream error remains useful even if access was revoked or reconciliation failed.
+    }
+    const event = result?.turn.status === 'cancelled' ? 'cancelled' : 'failed'
+    await stream.send({
+      error: aiTurnErrorPayload(error),
+      result,
+      turnId: execution.turnId,
+      type: event,
+    })
+  } finally {
+    await stream.close()
   }
 }
 
@@ -7160,6 +7328,10 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
       })
       return
     }
+    if (request.get('accept')?.includes('text/event-stream')) {
+      await streamAiConversationTurn(userId, response, started.execution, started)
+      return
+    }
     const result = await executeAiConversationTurn(userId, started.execution)
     response.status(201).json({
       conversation: result.conversation,
@@ -7184,6 +7356,10 @@ app.post('/api/ai/conversations/:conversationId/turns/:turnId/retry', asyncHandl
       String(request.params.conversationId),
       String(request.params.turnId),
     )
+    if (request.get('accept')?.includes('text/event-stream')) {
+      await streamAiConversationTurn(userId, response, execution)
+      return
+    }
     const result = await executeAiConversationTurn(userId, execution)
     response.json({
       conversation: result.conversation,

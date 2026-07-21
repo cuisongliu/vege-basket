@@ -5,14 +5,14 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API contracts | `src/api.ts`, `src/types.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
 | HTTP routes and authorization | `server/index.ts` |
 | Database schema | `server/schema.ts` |
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
-| AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `shared/ai-input-intent.ts` |
+| AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts`, `shared/ai-input-intent.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
@@ -149,7 +149,19 @@ summaries, processed proposal audit batches, or already-created todos. The delet
 reserved by a server tombstone, so delayed requests receive `404` instead of recreating it.
 
 The unified turn endpoint records ordinary replies and routes explicit project summary,
-Markdown todo extraction, and conversation-analysis intent through the same timeline.
+Markdown todo extraction, and conversation-analysis intent through the same timeline. Turn
+creation and retry accept `text/event-stream` and emit ordered `started`, `delta`, `progress`,
+`heartbeat`, `completed`, `failed`, or `cancelled` events with a positive `sequence`. The
+`started` event declares `text` or `progress` mode. Text mode is used for chat and conversation
+analysis; structured summary and todo extraction emit only `preparing`, `generating`,
+`validating`, or `saving` progress until a canonical terminal result. Heartbeats are sent every
+10 seconds. A non-SSE JSON response remains accepted by the browser only after the same runtime
+turn-result validation.
+
+Ordinary model requests time out after 45 seconds, structured summary or todo extraction after
+90 seconds, and a processing lease lasts 120 seconds. `finish_reason: length`, a stream that ends
+without a valid terminal marker, or an otherwise truncated provider response fails with
+`AI_RESPONSE_INCOMPLETE`; partial content is never committed as a completed turn.
 First responses and idempotent replays use the same stable summary or proposal-batch reference;
 the browser refreshes the workspace or fetches the batch to open the artifact. Confirmed and
 discarded proposal batches reopen read-only, and confirmed reads expose accepted candidates

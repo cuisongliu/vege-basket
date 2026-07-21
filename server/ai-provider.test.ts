@@ -210,6 +210,189 @@ test('posts a bounded request with redirect disabled and untrusted-content instr
   assert.match(body.messages.at(-1)?.content ?? '', /\.\.\.$/u)
 })
 
+test('streams chat completion deltas and returns the complete response', async () => {
+  const deltas: string[] = []
+  let requestBody: { stream?: boolean } = {}
+  const responseContent = await requestAiChatCompletion(
+    {
+      apiKey: 'provider-key',
+      baseUrl: 'https://ai.example.com',
+      maxContextChars: 100,
+      maxMessageLength: 100,
+      model: 'provider-model',
+    },
+    {
+      messages: [{ content: 'hello', role: 'user' }],
+      onDelta: (delta) => {
+        deltas.push(delta)
+      },
+      systemPrompt: 'answer',
+    },
+    {
+      fetch: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body)) as { stream?: boolean }
+        const source = [
+          'data: {"choices":[{"delta":{"content":"你"},"finish_reason":null}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"好"},"finish_reason":null}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]
+        return new Response(new ReadableStream({
+          start(controller) {
+            for (const event of source) controller.enqueue(new TextEncoder().encode(event))
+            controller.close()
+          },
+        }), {
+          headers: { 'Content-Type': 'TeXt/EvEnT-StReAm; charset=utf-8' },
+          status: 200,
+        })
+      },
+      lookup: publicLookup,
+    },
+  )
+
+  assert.equal(requestBody.stream, true)
+  assert.deepEqual(deltas, ['你', '好'])
+  assert.equal(responseContent, '你好')
+})
+
+test('ignores provider data after the first streaming terminal event', async () => {
+  const deltas: string[] = []
+  const responseContent = await requestAiChatCompletion(
+    {
+      apiKey: 'provider-key',
+      baseUrl: 'https://ai.example.com',
+      maxContextChars: 100,
+      maxMessageLength: 100,
+      model: 'provider-model',
+    },
+    {
+      messages: [{ content: 'hello', role: 'user' }],
+      onDelta: (delta) => {
+        deltas.push(delta)
+      },
+      systemPrompt: 'answer',
+    },
+    {
+      fetch: async () => new Response([
+        'data: {"choices":[{"delta":{"content":"kept"},"finish_reason":null}]}\n\n',
+        'data: [DONE]\n\n',
+        'data: {"choices":[{"delta":{"content":"ignored"},"finish_reason":"stop"}]}\n\n',
+      ].join(''), {
+        headers: { 'Content-Type': 'text/event-stream' },
+        status: 200,
+      }),
+      lookup: publicLookup,
+    },
+  )
+
+  assert.deepEqual(deltas, ['kept'])
+  assert.equal(responseContent, 'kept')
+})
+
+test('rejects streaming and JSON completions stopped by the length limit', async () => {
+  const config = {
+    apiKey: 'provider-key',
+    baseUrl: 'https://ai.example.com',
+    maxContextChars: 100,
+    maxMessageLength: 100,
+    model: 'provider-model',
+  }
+  await assert.rejects(
+    requestAiChatCompletion(config, {
+      messages: [{ content: 'hello', role: 'user' }],
+      onDelta: () => undefined,
+      systemPrompt: 'answer',
+    }, {
+      fetch: async () => new Response(
+        'data: {"choices":[{"delta":{"content":"truncated"},"finish_reason":"length"}]}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' }, status: 200 },
+      ),
+      lookup: publicLookup,
+    }),
+    (error: unknown) =>
+      error instanceof AiProviderError && error.code === 'AI_RESPONSE_INCOMPLETE',
+  )
+  await assert.rejects(
+    requestAiChatCompletion(config, {
+      messages: [{ content: 'hello', role: 'user' }],
+      systemPrompt: 'answer',
+    }, {
+      fetch: async () => new Response(JSON.stringify({
+        choices: [{ finish_reason: 'length', message: { content: 'truncated' } }],
+      }), { status: 200 }),
+      lookup: publicLookup,
+    }),
+    (error: unknown) =>
+      error instanceof AiProviderError && error.code === 'AI_RESPONSE_INCOMPLETE',
+  )
+})
+
+test('awaits a JSON fallback observer and preserves observer failures', async () => {
+  let observerFinished = false
+  const config = {
+    apiKey: 'provider-key',
+    baseUrl: 'https://ai.example.com',
+    maxContextChars: 100,
+    maxMessageLength: 100,
+    model: 'provider-model',
+  }
+  const fetch = async () => new Response(JSON.stringify({
+    choices: [{ finish_reason: 'stop', message: { content: 'fallback' } }],
+  }), { status: 200 })
+
+  const response = await requestAiChatCompletion(config, {
+    messages: [{ content: 'hello', role: 'user' }],
+    onDelta: async () => {
+      await Promise.resolve()
+      observerFinished = true
+    },
+    systemPrompt: 'answer',
+  }, { fetch, lookup: publicLookup })
+  assert.equal(response, 'fallback')
+  assert.equal(observerFinished, true)
+
+  const observerError = new Error('observer failed')
+  await assert.rejects(
+    requestAiChatCompletion(config, {
+      messages: [{ content: 'hello', role: 'user' }],
+      onDelta: async () => {
+        throw observerError
+      },
+      systemPrompt: 'answer',
+    }, { fetch, lookup: publicLookup }),
+    (error: unknown) => error === observerError,
+  )
+})
+
+test('rejects a streaming completion that ends without a terminal event', async () => {
+  await assert.rejects(
+    requestAiChatCompletion(
+      {
+        apiKey: 'provider-key',
+        baseUrl: 'https://ai.example.com',
+        maxContextChars: 100,
+        maxMessageLength: 100,
+        model: 'provider-model',
+      },
+      {
+        messages: [{ content: 'hello', role: 'user' }],
+        onDelta: () => undefined,
+        systemPrompt: 'answer',
+      },
+      {
+        fetch: async () => new Response(
+          'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' }, status: 200 },
+        ),
+        lookup: publicLookup,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof AiProviderError && error.code === 'AI_RESPONSE_INCOMPLETE',
+  )
+})
+
 test('maps upstream failures without returning the response body', async () => {
   await assert.rejects(
     requestAiChatCompletion(
@@ -269,5 +452,73 @@ test('maps caller cancellation separately from provider timeout', async () => {
       error instanceof AiProviderError &&
       error.code === 'AI_REQUEST_CANCELLED' &&
       error.status === 499,
+  )
+})
+
+test('maps an elapsed provider timeout while reading the response', async () => {
+  await assert.rejects(
+    requestAiChatCompletion(
+      {
+        apiKey: 'provider-key',
+        baseUrl: 'https://ai.example.com',
+        maxContextChars: 100,
+        maxMessageLength: 100,
+        model: 'provider-model',
+      },
+      {
+        messages: [{ content: 'hello', role: 'user' }],
+        systemPrompt: 'answer',
+        timeoutMs: 5,
+      },
+      {
+        fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+          const rejectTimedOut = () => reject(new DOMException('aborted', 'AbortError'))
+          if (init?.signal?.aborted) rejectTimedOut()
+          else init?.signal?.addEventListener('abort', rejectTimedOut, { once: true })
+        }),
+        lookup: publicLookup,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof AiProviderError &&
+      error.code === 'AI_REQUEST_TIMEOUT' &&
+      error.status === 504,
+  )
+})
+
+test('maps an elapsed timeout while consuming a streaming response', async () => {
+  await assert.rejects(
+    requestAiChatCompletion(
+      {
+        apiKey: 'provider-key',
+        baseUrl: 'https://ai.example.com',
+        maxContextChars: 100,
+        maxMessageLength: 100,
+        model: 'provider-model',
+      },
+      {
+        messages: [{ content: 'hello', role: 'user' }],
+        onDelta: () => undefined,
+        systemPrompt: 'answer',
+        timeoutMs: 5,
+      },
+      {
+        fetch: async (_input, init) => new Response(new ReadableStream({
+          start(controller) {
+            const fail = () => controller.error(new DOMException('aborted', 'AbortError'))
+            if (init?.signal?.aborted) fail()
+            else init?.signal?.addEventListener('abort', fail, { once: true })
+          },
+        }), {
+          headers: { 'Content-Type': 'text/event-stream' },
+          status: 200,
+        }),
+        lookup: publicLookup,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof AiProviderError &&
+      error.code === 'AI_REQUEST_TIMEOUT' &&
+      error.status === 504,
   )
 })

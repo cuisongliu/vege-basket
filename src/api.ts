@@ -28,7 +28,14 @@ import type {
   NotificationSubscription,
 } from './types'
 import { ApiError } from './api-error'
+import {
+  decodeAiTurnStreamEvent,
+  ServerSentEventDecoder,
+  type AiTurnStreamPhase,
+} from '../shared/server-sent-events'
+import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
+export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
 export type WorkspaceData = {
   inbox: InboxItem[]
@@ -71,6 +78,29 @@ export type AiStatus = {
   model: string
 }
 
+export type AiTurnStreamHandlers = {
+  onDelta?: (append: string) => void
+  onHeartbeat?: () => void
+  onProgress?: (phase: AiTurnStreamPhase) => void
+  onStarted?: (event: {
+    conversation?: AiTurnRunResponse['conversation']
+    mode: 'progress' | 'text'
+    turn?: AiTurnRunResponse['turn']
+  }) => void
+}
+
+export class AiTurnStreamTerminalError extends Error {
+  readonly code: string
+  readonly event: 'cancelled' | 'failed'
+
+  constructor(event: 'cancelled' | 'failed', code: string, message: string) {
+    super(message)
+    this.name = 'AiTurnStreamTerminalError'
+    this.code = code
+    this.event = event
+  }
+}
+
 export type TodoImageUploadResponse = {
   imageUrl: string
   objectKey: string
@@ -83,8 +113,14 @@ function apiErrorMessage(body: unknown, fallback: string) {
 }
 
 const tokenStorageKey = 'veges.authToken'
-let authToken =
-  typeof window === 'undefined' ? '' : localStorage.getItem(tokenStorageKey) ?? ''
+const browserStorage = (globalThis as {
+  localStorage?: {
+    getItem: (key: string) => string | null
+    removeItem: (key: string) => void
+    setItem: (key: string, value: string) => void
+  }
+}).localStorage
+let authToken = browserStorage?.getItem(tokenStorageKey) ?? ''
 
 export function getAuthToken() {
   return authToken
@@ -92,12 +128,12 @@ export function getAuthToken() {
 
 export function setAuthToken(token: string) {
   authToken = token
-  localStorage.setItem(tokenStorageKey, token)
+  browserStorage?.setItem(tokenStorageKey, token)
 }
 
 export function clearAuthToken() {
   authToken = ''
-  localStorage.removeItem(tokenStorageKey)
+  browserStorage?.removeItem(tokenStorageKey)
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
@@ -129,6 +165,98 @@ async function request<T>(path: string, options: RequestInit = {}) {
   }
 
   return response.json() as Promise<T>
+}
+
+async function throwApiResponseError(response: Response, path: string, method: string): Promise<never> {
+  const fallbackMessage = `Request failed: ${response.status}`
+  const responseText = await response.text()
+  let responseBody: unknown = responseText
+  try {
+    responseBody = responseText ? JSON.parse(responseText) : ''
+  } catch {
+    // Keep non-JSON response text for diagnostics.
+  }
+  throw new ApiError(apiErrorMessage(responseBody, fallbackMessage), {
+    method,
+    path,
+    responseBody,
+    status: response.status,
+    statusText: response.statusText,
+  })
+}
+
+async function requestAiTurnStream(
+  path: string,
+  options: RequestInit,
+  handlers: AiTurnStreamHandlers,
+) {
+  const method = String(options.method ?? 'POST').toUpperCase()
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...options.headers,
+    },
+  })
+  if (!response.ok) await throwApiResponseError(response, path, method)
+  if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+    return parseAiTurnRunResponse(await response.json())
+  }
+  if (!response.body) throw new Error('AI response stream is unavailable')
+
+  const decoder = new ServerSentEventDecoder()
+  const reader = response.body.getReader()
+  let lastSequence = 0
+  let result: AiTurnRunResponse | null = null
+  let terminalError: AiTurnStreamTerminalError | null = null
+
+  const consume = (events: ReturnType<ServerSentEventDecoder['push']>) => {
+    for (const frame of events) {
+      const event = decodeAiTurnStreamEvent(frame)
+      if (event.sequence <= lastSequence) {
+        throw new Error('AI response stream events arrived out of order')
+      }
+      lastSequence = event.sequence
+
+      if (event.type === 'started') {
+        handlers.onStarted?.({
+          conversation: event.conversation,
+          mode: event.mode,
+          turn: event.turn,
+        })
+      } else if (event.type === 'delta') {
+        handlers.onDelta?.(event.append)
+      } else if (event.type === 'progress') {
+        handlers.onProgress?.(event.phase)
+      } else if (event.type === 'heartbeat') {
+        handlers.onHeartbeat?.()
+      } else if (event.type === 'completed') {
+        result = event.result
+      } else if (event.type === 'failed' || event.type === 'cancelled') {
+        if (event.result) {
+          result = event.result
+        } else {
+          terminalError = new AiTurnStreamTerminalError(
+            event.type,
+            event.error.code,
+            event.error.message,
+          )
+        }
+      }
+    }
+  }
+
+  while (true) {
+    const chunk = await reader.read()
+    if (chunk.done) break
+    consume(decoder.push(chunk.value))
+  }
+  consume(decoder.finish())
+  if (result) return result
+  if (terminalError) throw terminalError
+  throw new Error('AI response stream ended before the turn was confirmed')
 }
 
 export function fetchWorkspace() {
@@ -520,8 +648,8 @@ export function sendAiConversationTurn(payload: {
   conversationId: string
   projectId: number | null
   turnId: string
-}) {
-  return request<AiTurnRunResponse>(
+}, handlers: AiTurnStreamHandlers = {}) {
+  return requestAiTurnStream(
     `/api/ai/conversations/${encodeURIComponent(payload.conversationId)}/turns`,
     {
       method: 'POST',
@@ -533,13 +661,19 @@ export function sendAiConversationTurn(payload: {
         turnId: payload.turnId,
       }),
     },
+    handlers,
   )
 }
 
-export function retryAiConversationTurn(conversationId: string, turnId: string) {
-  return request<AiTurnRunResponse>(
+export function retryAiConversationTurn(
+  conversationId: string,
+  turnId: string,
+  handlers: AiTurnStreamHandlers = {},
+) {
+  return requestAiTurnStream(
     `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
     { method: 'POST' },
+    handlers,
   )
 }
 

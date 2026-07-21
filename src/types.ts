@@ -138,55 +138,20 @@ export type Summary = {
 
 export type SummaryPeriodType = 'daily' | 'weekly'
 
-export type AiConversationContextKind = 'general' | 'project' | 'conversation-analysis'
-
-export type AiConversation = {
-  contextKind: AiConversationContextKind
-  createdAt: string
-  id: string
-  lastTurnAt: string
-  projectId: number | null
-  projectName: string | null
-  title: string
-  updatedAt: string
-}
-
-export type AiTurnStatus = 'processing' | 'completed' | 'failed' | 'cancelled'
-
-export type AiTurnIntentKind =
-  | 'chat'
-  | 'project-summary'
-  | 'todo-extraction'
-  | 'conversation-analysis'
-
-export type AiTurnAttachment = {
-  id: number
-  mediaType: string
-  name: string
-  ordinal: number
-  size: number
-}
-
-export type AiTurnOutcome =
-  | { summaryId: number; type: 'summary' }
-  | { batchId: number; status: string; type: 'todo-proposals' }
-  | null
-
-export type AiTurn = {
-  assistantContent: string | null
-  attachments: AiTurnAttachment[]
-  attemptCount: number
-  completedAt: string | null
-  createdAt: string
-  errorCode: string | null
-  id: string
-  intentKind: AiTurnIntentKind
-  outcome: AiTurnOutcome
-  status: AiTurnStatus
-  turnNo: number
-  updatedAt: string
-  userContent: string
-}
+export type {
+  AiConversation,
+  AiConversationContextKind,
+  AiTurn,
+  AiTurnAttachment,
+  AiTurnIntentKind,
+  AiTurnOutcome,
+  AiTurnStatus,
+} from '../shared/ai-conversation-wire'
+import type {
+  AiConversation,
+  AiTurn,
+  AiTurnOutcome,
+} from '../shared/ai-conversation-wire'
 
 export type AiConversationPage = {
   conversations: AiConversation[]
@@ -202,11 +167,7 @@ export type AiTurnPage = {
 export type AiTurnRunOutcome =
   Exclude<AiTurnOutcome, null>
 
-export type AiTurnRunResponse = {
-  conversation: AiConversation
-  outcome: AiTurnRunOutcome | AiTurnOutcome
-  turn: AiTurn
-}
+export type { AiTurnRunResponse } from '../shared/ai-conversation-wire'
 
 export type TodoActivityEvent = {
   id: number

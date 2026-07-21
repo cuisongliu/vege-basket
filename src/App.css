@@ -10215,6 +10215,77 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.veges-ai-stage .agent-message-state {
+  min-width: min(300px, 100%);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  border: 1px solid color-mix(in oklch, var(--brand) 22%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--brand) 5%, var(--surface));
+  color: var(--brand);
+  padding: 9px 10px;
+}
+
+.veges-ai-stage .agent-message-content + .agent-message-state {
+  margin-top: 6px;
+}
+
+.veges-ai-stage .agent-message-state > svg {
+  margin-top: 1px;
+}
+
+.veges-ai-stage .agent-message-state > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.veges-ai-stage .agent-message-state strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.veges-ai-stage .agent-message-state small {
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.veges-ai-stage .agent-message-state.is-reconciling,
+.veges-ai-stage .agent-message-state.is-cancelled {
+  border-color: var(--line);
+  background: color-mix(in oklch, var(--muted) 72%, var(--surface));
+  color: var(--muted-text);
+}
+
+.veges-ai-stage .agent-message-state.is-failed {
+  border-color: color-mix(in oklch, var(--destructive) 34%, var(--line));
+  background: color-mix(in oklch, var(--destructive) 6%, var(--surface));
+  color: var(--destructive);
+}
+
+.agent-message-state-spinner {
+  animation: veges-ai-status-spin 900ms linear infinite;
+}
+
+@keyframes veges-ai-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-message-state-spinner {
+    animation: none;
+  }
+}
+
 .veges-ai-stage .agent-message.user .agent-message-content {
   background: var(--brand);
   color: var(--brand-foreground);
@@ -10292,10 +10363,33 @@ textarea:focus {
   font-size: 11px;
 }
 
-.veges-ai-stage .agent-message.is-failed .agent-message-content,
-.veges-ai-stage .agent-message.is-cancelled .agent-message-content {
+.veges-ai-stage .agent-message.assistant.is-failed .agent-message-content,
+.veges-ai-stage .agent-message.assistant.is-cancelled .agent-message-content {
   border: 1px solid color-mix(in oklch, var(--destructive) 28%, var(--line));
   background: color-mix(in oklch, var(--destructive) 5%, var(--surface));
+}
+
+.veges-ai-inline-notice {
+  width: min(100%, 760px);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  border-top: 1px solid color-mix(in oklch, var(--destructive) 24%, var(--line));
+  color: var(--destructive);
+  padding: 8px 2px 0;
+  font-size: 11px;
+  justify-self: center;
+  line-height: 1.55;
+}
+
+.veges-ai-inline-notice > svg {
+  margin-top: 1px;
+}
+
+.veges-ai-inline-notice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .veges-ai-stage .ai-load-earlier {
