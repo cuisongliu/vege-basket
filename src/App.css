@@ -10442,16 +10442,16 @@ textarea:focus {
 .veges-ai-stage .agent-composer {
   position: relative;
   width: min(100%, 760px);
-  min-height: 116px;
+  min-height: 100px;
   justify-self: center;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 7px;
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
-  padding: 10px;
+  padding: 6px 8px;
   box-shadow: 0 2px 8px hsl(160 18% 8% / 0.045);
 }
 
@@ -10541,7 +10541,7 @@ textarea:focus {
 }
 
 .ai-composer-toolbar {
-  min-height: 34px;
+  min-height: 30px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10557,8 +10557,8 @@ textarea:focus {
 .veges-ai-stage .ai-attachment-trigger,
 .veges-ai-stage .ai-project-trigger,
 .veges-ai-stage .agent-send-button {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border-radius: 6px;
 }
 
@@ -10955,9 +10955,9 @@ textarea:focus {
   }
 
   .veges-ai-stage .agent-composer {
-    min-height: 108px;
-    gap: 6px;
-    padding: 9px;
+    min-height: 96px;
+    gap: 4px;
+    padding: 6px 8px;
   }
 
   .veges-ai-stage .agent-composer textarea {
