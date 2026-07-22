@@ -7508,21 +7508,6 @@ textarea:focus {
   letter-spacing: 0;
 }
 
-.agent-summary-button {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--muted);
-  color: var(--strong);
-}
-
-.agent-summary-button:hover {
-  border-color: var(--brand);
-  background: var(--brand);
-  color: var(--brand-foreground);
-}
-
 .agent-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
@@ -8862,7 +8847,6 @@ textarea:focus {
 :root:not(.dark) .member-item,
 :root:not(.dark) .summary-doc-item:hover,
 :root:not(.dark) .agent-message-content,
-:root:not(.dark) .agent-summary-button,
 :root:not(.dark) .agent-send-button:disabled {
   background: var(--surface);
 }
@@ -10356,7 +10340,7 @@ textarea:focus {
   gap: 2px;
 }
 
-.veges-ai-stage .agent-message-actions > button:not(.agent-summary-button) {
+.veges-ai-stage .agent-message-actions > button {
   min-height: 28px;
   padding: 0 7px;
   color: var(--muted-text);
@@ -10396,13 +10380,6 @@ textarea:focus {
   justify-self: center;
   color: var(--muted-text);
   font-size: 11px;
-}
-
-.veges-ai-stage .agent-summary-button {
-  width: 28px;
-  height: 28px;
-  border-radius: 5px;
-  background: transparent;
 }
 
 .ai-todo-workflow-status {

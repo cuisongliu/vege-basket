@@ -52,6 +52,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/ai-conversations.ts`, `server/ai-conversation-store.ts`: conversation domain
   validation, encrypted persistence, authorization, canonical model history, turn leases,
   idempotency, retry/cancel transitions, and artifact links.
+- `server/ai-turn-document.ts`: canonical completed project-chat turn conversion,
+  in-transaction project reauthorization, and one-source-turn/one-document idempotency.
 - `server/ai-turn-stream.ts`, `shared/ai-conversation-wire.ts`,
   `shared/server-sent-events.ts`: bounded response backpressure, canonical turn DTO guards,
   and the server/browser AI stream protocol.
@@ -134,6 +136,16 @@ safe name, media type, size, and ordering metadata, and their SQL path does not 
 attachment content. The selected project ID remains a
 separate field and is never parsed from attachment text. Pending browser file reads are
 invalidated when project or conversation context changes.
+
+Ordinary replies remain in canonical conversation history by default. Converting a completed
+project-chat reply into a durable document submits only its conversation and turn UUIDs. The
+server acquires the project advisory lock, rechecks active project access, reads and decrypts
+the canonical completed `chat` turn, and inserts one encrypted `reply` summary linked by
+`source_turn_id`. Reply documents remain visible only to their creating user, even when that user
+is a project member, and never serialize back into history as generated-summary outcomes. The
+partial unique index makes retries and concurrent requests return the same document. Generated
+project daily and weekly summaries keep their automatic document behavior; workspace reviews and
+todo extraction do not become documents implicitly.
 
 External entry points have separate trust boundaries:
 
@@ -218,6 +230,9 @@ Atomicity rules:
   work runs outside that transaction. Completion locks the conversation and turn, rechecks
   project access and lease identity, and returns the canonical turn snapshot from the same
   transaction that commits assistant content plus any summary/proposal artifact.
+- Converting a completed project-chat turn into a document takes the project advisory lock,
+  rechecks conversation and project access in the transaction, and inserts or returns the
+  single summary row selected by the unique `source_turn_id` index.
 - Completing a workspace review acquires every source project's advisory and row locks in
   numeric order, rechecks ownership or active membership, records source lineage, and commits
   the assistant response together. Provider work runs before this transaction and emits no

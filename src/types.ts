@@ -129,7 +129,8 @@ export type InboxItem = {
 export type Summary = {
   id: number
   projectId?: number
-  type: SummaryPeriodType | 'monthly'
+  sourceTurnId?: string
+  type: SummaryPeriodType | 'monthly' | 'reply'
   title: string
   period: string
   content: string

@@ -113,13 +113,17 @@ import {
   type StartedAiTurn,
 } from './ai-conversation-store.ts'
 import { AiTurnControllerRegistry } from './ai-turn-controller-registry.ts'
+import {
+  AiTurnDocumentError,
+  createAiTurnDocument,
+} from './ai-turn-document.ts'
 import { waitForAiTurnStreamDrain } from './ai-turn-stream.ts'
 import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
 type TodoConfirmationStatus = 'confirmed' | 'rejected'
-type SummaryType = 'daily' | 'weekly' | 'monthly'
+type SummaryType = 'daily' | 'weekly' | 'monthly' | 'reply'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
@@ -531,7 +535,7 @@ function extractCoreSummaryFromAnalysis(value: string) {
 
 function buildFeishuInformationSummary(analysis: string) {
   const summary = stripMarkdownForSummary(extractCoreSummaryFromAnalysis(analysis))
-  if (!summary) return '飞书对话分析已完成，完整报告已保存到 Veges AI 的 AI 产物。'
+  if (!summary) return '飞书对话分析已完成，完整报告已保存到 Veges AI 的 AI 文档。'
   return summary.length > 200 ? `${summary.slice(0, 197)}...` : summary
 }
 
@@ -2175,6 +2179,7 @@ function sendAiConversationError(response: express.Response, error: unknown) {
   if (
     error instanceof AiConversationValidationError ||
     error instanceof AiConversationStoreError ||
+    error instanceof AiTurnDocumentError ||
     error instanceof AiProviderError
   ) {
     response.status(error.status).json({
@@ -2259,7 +2264,7 @@ async function analyzeAndSaveFeishuConversation(messageId: string, messageType: 
     [
       '> AI 分析中...',
       '',
-      '正在分析飞书转发的群聊内容，完成后这里会更新为不超过 200 字的信息摘要；完整报告会保存到 Veges AI 的 AI 产物。',
+      '正在分析飞书转发的群聊内容，完成后这里会更新为不超过 200 字的信息摘要；完整报告会保存到 Veges AI 的 AI 文档。',
     ].join('\n'),
   )
   console.log('Feishu analysis pending draft saved', { contentLength: conversationText.length, draftId, title, userId })
@@ -2945,6 +2950,7 @@ async function getWorkspace(userId: number) {
     query<{
       id: string
       project_id: string | null
+      source_turn_id: string | null
       type: SummaryType
       title: string
       period: string
@@ -2952,10 +2958,13 @@ async function getWorkspace(userId: number) {
       created_at: Date
     }>(
       `
-      select id, project_id, type, title, period, content, created_at
+      select id, project_id, source_turn_id, type, title, period, content, created_at
       from summaries
       where user_id = $1
-         or project_id in (select id from projects where user_id = $1)
+         or (
+           type <> 'reply'
+           and project_id in (select id from projects where user_id = $1)
+         )
       order by created_at desc, id desc
       `,
       [userId],
@@ -3194,6 +3203,7 @@ async function getWorkspace(userId: number) {
     summaries: summariesResult.rows.map((summary) => ({
       id: Number(summary.id),
       projectId: summary.project_id ? Number(summary.project_id) : undefined,
+      sourceTurnId: summary.source_turn_id ?? undefined,
       type: summary.type,
       title: decryptText(summary.title),
       period: decryptText(summary.period),
@@ -7249,7 +7259,7 @@ app.post('/api/integrations/feishu/conversation-analysis', asyncHandler(async (r
   response.status(201).json({
     ok: true,
     title,
-    savedTo: '草稿箱待归档内容 + Veges AI 的 AI 产物',
+    savedTo: '草稿箱待归档内容 + Veges AI 的 AI 文档',
   })
 }))
 
@@ -7314,6 +7324,27 @@ app.get('/api/ai/conversations/:conversationId/turns', asyncHandler(async (reque
       beforeTurn: Number(request.query.beforeTurn) || undefined,
       limit: Number(request.query.limit) || undefined,
     }))
+  } catch (error) {
+    if (!sendAiConversationError(response, error)) throw error
+  }
+}))
+
+app.post('/api/ai/conversations/:conversationId/turns/:turnId/document', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  try {
+    const result = await createAiTurnDocument(
+      {
+        conversationId: String(request.params.conversationId),
+        turnId: String(request.params.turnId),
+        userId,
+      },
+      { database: pool, decryptText, encryptText },
+    )
+    response.status(result.created ? 201 : 200).json({
+      ...result,
+      workspace: await getWorkspace(userId),
+    })
   } catch (error) {
     if (!sendAiConversationError(response, error)) throw error
   }
@@ -7890,28 +7921,11 @@ app.post('/api/summaries', asyncHandler(async (request, response) => {
     return
   }
 
-  const providedContent = String(request.body.content ?? '').trim()
-  if (providedContent) {
-    const title = String(
-      request.body.title ?? `${formatDate(new Date())} AI 生成总结`,
-    )
-      .trim()
-      .slice(0, 80)
-    await query(
-      `
-      insert into summaries (user_id, project_id, type, title, period, content)
-      values ($1, $2, $3, $4, $5, $6)
-      `,
-      [
-        userId,
-        projectId,
-        type,
-        encryptText(title || `${formatDate(new Date())} AI 生成总结`),
-        encryptText('AI 对话生成'),
-        encryptText(providedContent),
-      ],
-    )
-    response.status(201).json(await getWorkspace(userId))
+  if (request.body.content !== undefined) {
+    response.status(409).json({
+      code: 'AI_DOCUMENT_SOURCE_REQUIRED',
+      error: 'Save AI replies from their canonical conversation turn',
+    })
     return
   }
 

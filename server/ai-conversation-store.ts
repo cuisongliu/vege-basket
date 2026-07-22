@@ -3,6 +3,7 @@ import type { PoolClient, QueryResultRow } from 'pg'
 
 import {
   assertAiConversationContextMatches,
+  buildAiSummaryOutcome,
   buildAiTurnModelContent,
   createAiConversationContext,
   deriveAiConversationTitle,
@@ -385,15 +386,17 @@ function turnDto(
     ordinal: Number(attachment.ordinal),
     sizeBytes: Number(attachment.sizeBytes),
   })))
-  const outcome = row.summaryId
-    ? { summaryId: Number(row.summaryId), type: 'summary' as const }
-    : row.proposalBatchId
+  const summaryOutcome = buildAiSummaryOutcome(
+    row.intentKind,
+    row.summaryId ? Number(row.summaryId) : null,
+  )
+  const outcome = summaryOutcome ?? (row.proposalBatchId
       ? {
           batchId: Number(row.proposalBatchId),
           status: row.proposalStatus ?? 'pending',
           type: 'todo-proposals' as const,
         }
-      : null
+      : null)
   return { ...serialized, errorCode: row.errorCode, outcome }
 }
 
@@ -418,7 +421,7 @@ async function getAiTurnRow(client: Queryable, turnId: string, userId: number) {
            b.id as "proposalBatchId",
            b.status as "proposalStatus"
     from ai_turns t
-    left join summaries s on s.source_turn_id = t.id
+    left join summaries s on s.source_turn_id = t.id and s.type <> 'reply'
     left join ai_todo_proposal_batches b on b.source_turn_id = t.id
     where t.id = $1
       and ${buildAiWorkspaceTurnSourceAccessPredicate('t', '$2')}
@@ -467,7 +470,7 @@ export async function getAiConversationTurns(
            b.id as "proposalBatchId",
            b.status as "proposalStatus"
     from ai_turns t
-    left join summaries s on s.source_turn_id = t.id
+    left join summaries s on s.source_turn_id = t.id and s.type <> 'reply'
     left join ai_todo_proposal_batches b on b.source_turn_id = t.id
     where t.conversation_id = $1
       ${beforeWhere}

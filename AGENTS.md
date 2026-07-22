@@ -59,6 +59,11 @@ historical product context; current code and these operational docs take precede
   provider. Serialize claim lookup and creation with the per-user cancellation advisory lock,
   and never rebind a turn UUID claim to another conversation. Do not hold a database transaction
   open while calling the external AI provider.
+- Ordinary AI replies remain conversation history by default. Converting a completed project-chat
+  reply to a document must submit only its conversation and turn IDs; read canonical content and
+  recheck project access on the server in the insert transaction. Link the encrypted `reply`
+  summary through `source_turn_id`, keep it visible only to its creating user, never serialize it
+  as a generated-summary turn outcome, and preserve the unique one-turn/one-document invariant.
 - Keep AI turn transport on the shared `started`, `delta`, `progress`, `heartbeat`, `completed`,
   `failed`, and `cancelled` SSE contract. Ordinary chat and conversation analysis may stream
   text deltas; project summaries, workspace reviews, and todo extraction may expose only fixed

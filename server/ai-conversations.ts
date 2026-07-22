@@ -89,6 +89,19 @@ export type AiTurnSerializationRecord = {
 
 export type AiTurnApiDto = Omit<AiTurnWireDto, 'errorCode' | 'outcome'>
 
+export function buildAiSummaryOutcome(
+  intentKind: AiTurnIntentKind,
+  summaryId: number | null,
+) {
+  if (
+    intentKind !== 'project-summary' ||
+    summaryId === null ||
+    !Number.isSafeInteger(summaryId) ||
+    summaryId <= 0
+  ) return null
+  return { summaryId, type: 'summary' as const }
+}
+
 export class AiConversationValidationError extends Error {
   readonly status: 400 | 413 | 415
 

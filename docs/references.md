@@ -15,6 +15,7 @@
 | AI workspace-review facts and source lineage | `server/ai-workspace-review.ts`, `server/ai-workspace-review-store.ts`, `server/ai-conversation-store.ts` |
 | Todo proposal review defaults and confirmation insert | `src/todo-proposal-defaults.ts`, `server/ai-todo-confirmation.ts` |
 | AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts`, `shared/ai-input-intent.ts` |
+| AI reply document conversion | `server/ai-turn-document.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
@@ -105,7 +106,7 @@ families are:
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
-| AI | `GET /api/ai/status`, `GET /api/ai/conversations`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
+| AI | `GET /api/ai/status`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
@@ -150,6 +151,20 @@ an active member of that project. Rename accepts 1-80 characters. Deleting a con
 permanent for its chat history and linked pending proposal batches, but does not delete saved
 summaries, processed proposal audit batches, or already-created todos. The deleted UUID remains
 reserved by a server tombstone, so delayed requests receive `404` instead of recreating it.
+
+`POST /api/ai/conversations/:conversationId/turns/:turnId/document` converts one completed
+ordinary reply in a project conversation into a durable document. The request has no content or
+project body: the server resolves the user-owned conversation, rechecks owner or active-member
+project access in the write transaction, and reads the canonical completed `chat` turn. The
+response is `201` with `{ created: true, summaryId, workspace }` for the first insert and `200`
+with the same `summaryId` plus `{ created: false, workspace }` for a retry. The existing partial
+unique index on `summaries.source_turn_id` enforces one document per source turn under concurrent
+requests. General conversations, incomplete/failed turns, structured intents, and blank replies
+are rejected. Reply documents are returned only through their creator's workspace view; unlike a
+generated project summary, their canonical history turn keeps `outcome: null` and the browser
+resolves `打开文档` through `sourceTurnId`. The legacy `POST /api/summaries` route rejects a
+client-provided `content` field with `AI_DOCUMENT_SOURCE_REQUIRED`; it remains available for
+server-generated summary periods.
 
 The unified turn endpoint records ordinary replies and routes explicit project summary,
 workspace review, Markdown todo extraction, and conversation-analysis intent through the same

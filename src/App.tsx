@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -101,8 +102,8 @@ import {
   createFeishuOAuthUrl,
   createProject,
   createRiskFromJournal,
+  createAiTurnDocument,
   createSummary,
-  createSummaryFromContent,
   createTodo,
   createTodoNote,
   exportProjectPackageTimeline,
@@ -2571,21 +2572,6 @@ function App() {
     return (await fetchPackageMarketReleaseVersions(payload)).versions
   }
 
-  async function generateSummaryFromAiMessage(message: DisplayAiChatMessage) {
-    const content = message.content.trim()
-    const projectId = aiProjectId
-    if (!content || !projectId) return
-
-    await runMutation(() =>
-      createSummaryFromContent({
-        content,
-        projectId,
-        title: `${message.createdAt.slice(0, 10)} AI 生成总结`,
-        type: 'weekly',
-      }),
-    )
-  }
-
   async function stopActiveAiTurn() {
     const active = activeAiTurnRef.current
     if (!active) return
@@ -3719,7 +3705,6 @@ ${packageTimelineText}`
             memberships={memberships}
             mobilePane={aiMobilePane}
             onAiDraftChange={setAiDraft}
-            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
             onDeleteConversation={deleteAiConversationHistory}
             onExportWorkspace={() => exportMarkdown()}
             onLoadEarlierTurns={loadEarlierAiTurns}
@@ -7085,7 +7070,6 @@ function VegesAiView({
   memberships,
   mobilePane,
   onAiDraftChange,
-  onCreateSummaryFromAiMessage,
   onDeleteConversation,
   onExportWorkspace,
   onLoadEarlierTurns,
@@ -7117,7 +7101,6 @@ function VegesAiView({
   memberships: ProjectMembership[]
   mobilePane: AiMobilePane
   onAiDraftChange: (value: string) => void
-  onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
   onDeleteConversation: (conversationId: string) => Promise<void>
   onExportWorkspace: () => void
   onLoadEarlierTurns: () => Promise<void>
@@ -7147,12 +7130,14 @@ function VegesAiView({
   const [aiStatusLoading, setAiStatusLoading] = useState(true)
   const [aiStatusError, setAiStatusError] = useState('')
   const [generationError, setGenerationError] = useState('')
+  const [documentSavingTurnIds, setDocumentSavingTurnIds] = useState<Set<string>>(() => new Set())
   const [todoWorkflowBusy, setTodoWorkflowBusy] = useState(false)
   const [attachments, setAttachments] = useState<AiTextAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentReading, setAttachmentReading] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const attachmentReadRequestIdRef = useRef(0)
+  const documentRequestGenerationRef = useRef(0)
   const todoOutcomeRequestIdRef = useRef(0)
   const artifactsRef = useRef<HTMLDivElement>(null)
   const artifactsTriggerRef = useRef<HTMLButtonElement>(null)
@@ -7163,6 +7148,14 @@ function VegesAiView({
   const todoWorkflowRef = useRef<TodoProposalWorkflowHandle>(null)
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
+  const documentIdBySourceTurn = useMemo(
+    () => new Map(
+      summaries.flatMap((summary) =>
+        summary.sourceTurnId ? [[summary.sourceTurnId, summary.id] as const] : [],
+      ),
+    ),
+    [summaries],
+  )
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null
   const selectedDocumentProject = selectedSummary
     ? projects.find((project) => project.id === selectedSummary.projectId)
@@ -7178,18 +7171,31 @@ function VegesAiView({
   }, [projectQuery, projects])
   const aiConfigured = Boolean(aiStatus?.configured)
   const workspaceBusy =
-    aiBusy || aiTurnsLoading || attachmentReading || todoWorkflowBusy
+    aiBusy || aiTurnsLoading || attachmentReading || documentSavingTurnIds.size > 0 || todoWorkflowBusy
   const artifactsOpen = mobilePane === 'artifacts'
   const historyOpen = mobilePane === 'history'
   const auxiliaryOpen = artifactsOpen || historyOpen
   const documentFullscreen = isSummaryFullscreen && artifactsOpen
   const currentConversationId = currentAiConversationId(aiHistory.selection)
+  const currentConversationIdRef = useRef(currentConversationId)
+  const sessionGenerationRef = useRef(sessionGeneration)
   const currentConversation = aiHistory.conversations.find(
     (conversation) => conversation.id === currentConversationId,
   ) ?? null
   const currentConversationTitle = currentConversation?.title ?? (
     selectedProject ? `新对话 · ${selectedProject.name}` : '新对话'
   )
+
+  useLayoutEffect(() => {
+    if (
+      currentConversationIdRef.current !== currentConversationId ||
+      sessionGenerationRef.current !== sessionGeneration
+    ) {
+      documentRequestGenerationRef.current += 1
+    }
+    currentConversationIdRef.current = currentConversationId
+    sessionGenerationRef.current = sessionGeneration
+  }, [currentConversationId, sessionGeneration])
 
   const loadAiStatus = useCallback(async () => {
     setAiStatusLoading(true)
@@ -7278,6 +7284,39 @@ function VegesAiView({
     window.requestAnimationFrame(() => artifactsRef.current?.focus())
   }
 
+  async function convertReplyToDocument(message: DisplayAiChatMessage) {
+    if (!currentConversationId || documentSavingTurnIds.has(message.turnId)) return
+    const conversationId = currentConversationId
+    const requestGeneration = documentRequestGenerationRef.current
+    const requestSessionGeneration = sessionGeneration
+    const isCurrentRequest = () =>
+      documentRequestGenerationRef.current === requestGeneration &&
+      currentConversationIdRef.current === conversationId &&
+      sessionGenerationRef.current === requestSessionGeneration
+    setGenerationError('')
+    setDocumentSavingTurnIds((current) => new Set(current).add(message.turnId))
+    try {
+      const result = await createAiTurnDocument(conversationId, message.turnId)
+      onWorkspace(result.workspace, requestSessionGeneration)
+      if (!isCurrentRequest()) return
+      setSelectedSummaryId(result.summaryId)
+      openArtifacts()
+    } catch (error) {
+      if (!isCurrentRequest()) return
+      setGenerationError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法将这条回复转为文档。',
+      )
+    } finally {
+      setDocumentSavingTurnIds((current) => {
+        const next = new Set(current)
+        next.delete(message.turnId)
+        return next
+      })
+    }
+  }
+
   function closeArtifacts() {
     setIsSummaryFullscreen(false)
     onMobilePaneChange('workspace')
@@ -7360,6 +7399,7 @@ function VegesAiView({
     const shouldRestoreDraft = Boolean(projectMention) || selectedProjectId == null
     const isChangingProject = selectedProjectId != null && selectedProjectId !== projectId
     attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     onSelectedProjectIdChange(projectId)
@@ -7375,6 +7415,7 @@ function VegesAiView({
 
   function removeProjectContext() {
     attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     onSelectedProjectIdChange(null)
@@ -7528,6 +7569,7 @@ function VegesAiView({
 
   function resetConversation() {
     attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     setGenerationError('')
@@ -7540,6 +7582,7 @@ function VegesAiView({
 
   async function selectConversationHistory(conversation: AiConversationListItem) {
     attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
     setAttachmentReading(false)
     setAttachments([])
@@ -7552,6 +7595,7 @@ function VegesAiView({
   async function deleteConversationHistory(conversationId: string) {
     if (conversationId === currentConversationId) {
       attachmentReadRequestIdRef.current += 1
+      documentRequestGenerationRef.current += 1
       todoOutcomeRequestIdRef.current += 1
       setAttachmentReading(false)
       setAttachments([])
@@ -7645,16 +7689,17 @@ function VegesAiView({
             </Button>
             <Button
               ref={artifactsTriggerRef}
-              aria-label={`AI 产物 ${summaries.length}`}
+              aria-label={`AI 文档 ${summaries.length}`}
+              aria-controls="veges-ai-documents"
               aria-expanded={artifactsOpen}
               className="ai-artifacts-trigger"
-              title="打开 AI 产物"
+              title="打开 AI 文档"
               type="button"
               variant="ghost"
               onClick={openArtifacts}
             >
               <SidebarSimple size={17} />
-              <span>AI 产物</span>
+              <span>AI 文档</span>
               <small>{summaries.length}</small>
             </Button>
           </div>
@@ -7836,17 +7881,37 @@ function VegesAiView({
                               打开 AI 文档
                             </Button>
                           ) : null}
-                          {selectedProjectId && message.turnStatus === 'completed' && !message.outcome ? (
+                          {selectedProjectId && message.turnStatus === 'completed' && !message.outcome &&
+                          documentIdBySourceTurn.has(message.turnId) ? (
                             <Button
-                              aria-label="保存为 AI 文档"
-                              className="agent-summary-button"
-                              size="icon"
-                              title="保存为 AI 文档"
+                              size="sm"
                               type="button"
                               variant="ghost"
-                              onClick={() => onCreateSummaryFromAiMessage(message)}
+                              onClick={() => {
+                                const summaryId = documentIdBySourceTurn.get(message.turnId)
+                                if (summaryId) {
+                                  setSelectedSummaryId(summaryId)
+                                  openArtifacts()
+                                }
+                              }}
                             >
-                              <FileText size={14} weight="bold" />
+                              <FileText aria-hidden size={14} />
+                              打开文档
+                            </Button>
+                          ) : selectedProjectId && message.turnStatus === 'completed' && !message.outcome ? (
+                            <Button
+                              disabled={workspaceBusy}
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void convertReplyToDocument(message)}
+                            >
+                              {documentSavingTurnIds.has(message.turnId) ? (
+                                <SpinnerGap aria-hidden className="agent-message-state-spinner" size={14} />
+                              ) : (
+                                <FileText aria-hidden size={14} />
+                              )}
+                              {documentSavingTurnIds.has(message.turnId) ? '保存中' : '转为文档'}
                             </Button>
                           ) : null}
                         </div>
@@ -8073,8 +8138,10 @@ function VegesAiView({
       {artifactsOpen ? (
         <Card
           ref={artifactsRef}
-          aria-label={selectedSummary ? 'AI 文档' : 'AI 产物'}
+          aria-label="AI 文档"
           className={`panel summary-list veges-ai-artifacts${documentFullscreen ? ' is-fullscreen' : ''}`}
+          id="veges-ai-documents"
+          role="region"
           tabIndex={-1}
         >
           {selectedSummary ? (
@@ -8091,7 +8158,7 @@ function VegesAiView({
               onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
             />
           ) : (
-            <AiArtifactList
+            <AiDocumentList
               onClose={closeArtifacts}
               onExport={onExportWorkspace}
               projects={projects}
@@ -8108,7 +8175,7 @@ function VegesAiView({
   )
 }
 
-function AiArtifactList({
+function AiDocumentList({
   onClose,
   onExport,
   onSelect,
@@ -8126,7 +8193,7 @@ function AiArtifactList({
       <header className="veges-ai-artifacts-header">
         <div>
           <FileText size={17} weight="duotone" />
-          <h3>AI 产物</h3>
+          <h3>AI 文档</h3>
           <span>{summaries.length}</span>
         </div>
         <div className="veges-ai-artifacts-actions">
@@ -8142,7 +8209,7 @@ function AiArtifactList({
             <DownloadSimple size={16} />
           </Button>
           <Button
-            aria-label="关闭 AI 产物"
+            aria-label="关闭 AI 文档"
             size="icon"
             title="关闭"
             type="button"
@@ -8157,13 +8224,18 @@ function AiArtifactList({
         {summaries.length === 0 ? (
           <div className="veges-ai-artifacts-empty">
             <FileText size={22} />
-            <strong>还没有 AI 产物</strong>
-            <span>生成总结或保存 AI 回复后，文档会出现在这里。</span>
+            <strong>还没有 AI 文档</strong>
+            <span>生成项目总结或将项目回复转为文档后，会显示在这里。</span>
           </div>
         ) : (
           summaries.map((summary) => {
             const project = projects.find((item) => item.id === summary.projectId)
             const ownerName = project?.name ?? (summary.period === '飞书对话分析' ? '飞书对话分析' : 'Veges AI')
+            const documentLabel = summary.type === 'reply'
+              ? '对话文档'
+              : summary.period === 'AI 对话生成'
+                ? '历史对话文档'
+                : summary.period
             return (
               <button
                 className="summary-doc-item"
@@ -8174,7 +8246,7 @@ function AiArtifactList({
                 <span className="summary-doc-item-icon" aria-hidden><FileText size={15} /></span>
                 <span className="summary-doc-item-copy">
                   <strong>{summary.title}</strong>
-                  <small>{ownerName} · {summary.period}</small>
+                  <small>{ownerName} · {documentLabel}</small>
                 </span>
                 <time>{summary.createdAt}</time>
               </button>
@@ -8222,7 +8294,7 @@ function SummaryDocumentDetail({
               {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
             </Button>
             <Button
-              aria-label="关闭 AI 产物"
+              aria-label="关闭 AI 文档"
               size="icon"
               title="关闭"
               type="button"

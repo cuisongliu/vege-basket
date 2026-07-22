@@ -7,6 +7,7 @@ import {
   AiConversationValidationError,
   assertAiConversationContextMatches,
   assertAiTurnStatusTransition,
+  buildAiSummaryOutcome,
   buildAiTurnModelContent,
   canTransitionAiTurnStatus,
   createAiConversationContext,
@@ -48,6 +49,16 @@ test('models immutable general, project, and conversation-analysis contexts', ()
     () => createAiConversationContext('general', 17),
     /general context cannot have a projectId/,
   )
+})
+
+test('exposes only generated project summaries as turn outcomes', () => {
+  assert.deepEqual(buildAiSummaryOutcome('project-summary', 19), {
+    summaryId: 19,
+    type: 'summary',
+  })
+  assert.equal(buildAiSummaryOutcome('chat', 19), null)
+  assert.equal(buildAiSummaryOutcome('workspace-review', 19), null)
+  assert.equal(buildAiSummaryOutcome('project-summary', null), null)
 })
 
 test('schema records cancel-before-create claims without conversation foreign keys', () => {

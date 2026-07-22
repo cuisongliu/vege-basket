@@ -45,6 +45,12 @@ export type WorkspaceData = {
   todos: Todo[]
 }
 
+export type AiTurnDocumentResponse = {
+  created: boolean
+  summaryId: number
+  workspace: WorkspaceData
+}
+
 export type NotificationResponse = {
   notifications: NotificationCenterData
 }
@@ -574,16 +580,13 @@ export function createSummary(projectId: number, type: SummaryPeriodType) {
   })
 }
 
-export function createSummaryFromContent(payload: {
-  content: string
-  projectId: number
-  title?: string
-  type?: Summary['type']
-}) {
-  return request<WorkspaceData>('/api/summaries', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
+export function createAiTurnDocument(conversationId: string, turnId: string) {
+  return request<AiTurnDocumentResponse>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/document`,
+    {
+      method: 'POST',
+    },
+  )
 }
 
 export function fetchTodoActivity(projectId: number) {
