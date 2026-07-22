@@ -19,7 +19,7 @@ import {
   type AiTurnAttachment,
   type AiTurnIntentKind,
 } from './ai-conversations.ts'
-import { decryptText, encryptText } from './crypto.ts'
+import { decryptText, encryptText, verifyKeyedDigest } from './crypto.ts'
 import { pool } from './db.ts'
 import type { AiChatMessage } from './ai-provider.ts'
 import {
@@ -28,10 +28,10 @@ import {
 } from './ai-conversation-cursor.ts'
 import {
   buildAiClassificationContent,
-  classifyAiInput,
   type AiInputIntent,
 } from '../shared/ai-input-intent.ts'
 import { buildAiWorkspaceTurnSourceAccessPredicate } from './ai-workspace-review.ts'
+import { consumeAiIntentClassification } from './ai-intent-routing-store.ts'
 
 const aiTurnLeaseMs = 120_000
 const modelHistoryCompletedTurns = 3
@@ -116,7 +116,6 @@ export type StartAiTurnInput = {
   attachments: readonly AiTurnAttachment[]
   context: AiConversationContext
   conversationId: string
-  intent: AiInputIntent
   turnId: string
   userContent: string
   userId: number
@@ -498,15 +497,18 @@ function readAiTurnIntent(
   intentKind: AiTurnIntentKind,
   userContent: string,
   attachments: readonly AiTurnAttachment[],
-  hasProjectContext = false,
 ): AiInputIntent {
   if (!value) {
-    const fallback = classifyAiInput(
-      buildAiClassificationContent(userContent, attachments),
-      { hasProjectContext },
-    )
-    if (fallback.kind === intentKind) return fallback
-    throw new AiConversationStoreError('AI_TURN_INTENT_INVALID', 'AI turn intent is invalid', 500)
+    if (intentKind === 'todo-extraction') {
+      const content = buildAiClassificationContent(userContent, attachments).trim()
+      if (!content) throw new AiConversationStoreError('AI_TURN_INTENT_INVALID', 'AI turn intent is invalid', 500)
+      return { content, kind: intentKind }
+    }
+    if (intentKind === 'project-summary' || intentKind === 'workspace-review') {
+      const period = /(?:日报|日总结|今日|今天)/u.test(userContent) ? 'daily' : 'weekly'
+      return { kind: intentKind, period }
+    }
+    return { kind: intentKind }
   }
 
   try {
@@ -633,7 +635,6 @@ async function loadTurnExecution(
     turn.intentKind,
     userContent,
     attachments,
-    context.contextKind === 'project',
   )
   return {
     attachments,
@@ -792,6 +793,14 @@ export async function startAiTurn(
       await assertSameTurnPayload(client, existingTurn, input)
       duplicate = true
     } else {
+      const classified = await consumeAiIntentClassification(client, {
+        attachments: input.attachments,
+        requestedContext: input.context,
+        turnId: input.turnId,
+        userContent: input.userContent,
+        userId: input.userId,
+      }, { decryptText, digestMatches: verifyKeyedDigest })
+      const classifiedIntent = classified.intent
       if (!conversation) {
         if (
           input.context.projectId &&
@@ -859,8 +868,8 @@ export async function startAiTurn(
           input.turnId,
           input.conversationId,
           turnNo,
-          input.intent.kind,
-          encryptText(JSON.stringify(input.intent)),
+          classifiedIntent.kind,
+          encryptText(JSON.stringify(classifiedIntent)),
           encryptAiTurnContent(input.userContent),
           leaseToken,
           aiTurnLeaseMs,

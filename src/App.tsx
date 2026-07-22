@@ -153,6 +153,7 @@ import {
   updateTodoNote,
   uploadTodoImage,
   setAuthToken,
+  classifyAiConversationTurnIntent,
   sendAiConversationTurn,
   retryAiConversationTurn,
   cancelAiConversationTurn,
@@ -225,7 +226,11 @@ import {
   removeTodoNotifications,
   startNotificationRefreshSchedule,
 } from './notifications'
-import { buildAiClassificationContent, classifyAiInput } from './ai-input-intent'
+import {
+  buildAiClassificationContent,
+  deriveAiIntentTargetContext,
+  type AiIntentClassification,
+} from './ai-input-intent'
 import { aiTurnFailureDetail } from './ai-turn-error'
 import {
   AI_ATTACHMENT_MAX_BYTES,
@@ -278,6 +283,8 @@ type AiMessageRoute = {
   attachments?: AiTextAttachment[]
   content?: string
   contextKind?: AiConversationContextKind
+  intent: AiIntentClassification
+  turnId: string
 }
 
 function aiTurnProgressTitle(turn: AiTurn, phase: AiTurnStreamPhase) {
@@ -2991,7 +2998,7 @@ function App() {
   }
 
   async function sendAgentMessage(
-    route: AiMessageRoute = {},
+    route: AiMessageRoute,
   ): Promise<AiTurnRunResponse | false> {
     const content = (route.content ?? aiDraft).trim()
     const attachments = route.attachments ?? []
@@ -3008,12 +3015,8 @@ function App() {
       ? null
       : currentAiConversationId(aiHistory.selection)
     const conversationId = existingConversationId ?? crypto.randomUUID()
-    const turnId = crypto.randomUUID()
+    const turnId = route.turnId
     const now = new Date().toISOString()
-    const classified = classifyAiInput(
-      buildAiClassificationContent(content, attachments),
-      { hasProjectContext: targetContext.contextType === 'project' },
-    )
     const optimisticTurn: AiTurn = {
       assistantContent: null,
       attachments: attachments.map((attachment, index) => ({
@@ -3028,7 +3031,7 @@ function App() {
       createdAt: now,
       errorCode: null,
       id: turnId,
-      intentKind: classified.kind,
+      intentKind: route.intent.kind,
       outcome: null,
       status: 'processing',
       turnNo: nextAiTurnNumber(aiTurns),
@@ -3057,8 +3060,8 @@ function App() {
     setAiBusy(true)
     setAiError('')
     setAiTurnsError('')
-    const streamMode = classified.kind === 'chat' ||
-      classified.kind === 'conversation-analysis'
+    const streamMode = route.intent.kind === 'chat' ||
+      route.intent.kind === 'conversation-analysis'
       ? 'text'
       : 'progress'
     setAiTurnLiveStates((current) => ({
@@ -7111,7 +7114,7 @@ function VegesAiView({
   onRetryHistory: () => Promise<void>
   onRetryTurn: (turnId: string) => Promise<AiTurnRunResponse | false>
   onSelectConversation: (conversation: AiConversationListItem) => Promise<void>
-  onSendAgentMessage: (route?: AiMessageRoute) => Promise<AiTurnRunResponse | false>
+  onSendAgentMessage: (route: AiMessageRoute) => Promise<AiTurnRunResponse | false>
   onSelectedProjectIdChange: (projectId: number | null) => Promise<void>
   onStopAiTurn: () => Promise<void>
   onWorkspace: (workspace: WorkspaceData, sessionGeneration: number) => void
@@ -7135,8 +7138,11 @@ function VegesAiView({
   const [attachments, setAttachments] = useState<AiTextAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentReading, setAttachmentReading] = useState(false)
+  const [intentClassifying, setIntentClassifying] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const attachmentReadRequestIdRef = useRef(0)
+  const intentClassificationAbortControllerRef = useRef<AbortController | null>(null)
+  const intentClassificationRequestIdRef = useRef(0)
   const documentRequestGenerationRef = useRef(0)
   const todoOutcomeRequestIdRef = useRef(0)
   const artifactsRef = useRef<HTMLDivElement>(null)
@@ -7171,7 +7177,12 @@ function VegesAiView({
   }, [projectQuery, projects])
   const aiConfigured = Boolean(aiStatus?.configured)
   const workspaceBusy =
-    aiBusy || aiTurnsLoading || attachmentReading || documentSavingTurnIds.size > 0 || todoWorkflowBusy
+    aiBusy ||
+    aiTurnsLoading ||
+    attachmentReading ||
+    intentClassifying ||
+    documentSavingTurnIds.size > 0 ||
+    todoWorkflowBusy
   const artifactsOpen = mobilePane === 'artifacts'
   const historyOpen = mobilePane === 'history'
   const auxiliaryOpen = artifactsOpen || historyOpen
@@ -7220,6 +7231,9 @@ function VegesAiView({
 
   useEffect(() => () => {
     attachmentReadRequestIdRef.current += 1
+    intentClassificationRequestIdRef.current += 1
+    intentClassificationAbortControllerRef.current?.abort()
+    intentClassificationAbortControllerRef.current = null
     todoOutcomeRequestIdRef.current += 1
   }, [])
 
@@ -7391,6 +7405,13 @@ function VegesAiView({
     setProjectPickerOpen(true)
   }
 
+  function cancelIntentClassification() {
+    intentClassificationRequestIdRef.current += 1
+    intentClassificationAbortControllerRef.current?.abort()
+    intentClassificationAbortControllerRef.current = null
+    setIntentClassifying(false)
+  }
+
   function selectProjectContext(projectId: number) {
     let nextDraft = aiDraft
     if (projectMention) {
@@ -7398,6 +7419,7 @@ function VegesAiView({
     }
     const shouldRestoreDraft = Boolean(projectMention) || selectedProjectId == null
     const isChangingProject = selectedProjectId != null && selectedProjectId !== projectId
+    cancelIntentClassification()
     attachmentReadRequestIdRef.current += 1
     documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
@@ -7414,6 +7436,7 @@ function VegesAiView({
   }
 
   function removeProjectContext() {
+    cancelIntentClassification()
     attachmentReadRequestIdRef.current += 1
     documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
@@ -7509,32 +7532,9 @@ function VegesAiView({
     if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
 
     const modelContent = buildAiMessageContent(draftContent, attachments)
-    const intent = classifyAiInput(
-      buildAiClassificationContent(draftContent, attachments),
-      { hasProjectContext: aiHistory.selection.context.contextType === 'project' },
-    )
+    const sourceContent = buildAiClassificationContent(draftContent, attachments)
     setGenerationError('')
     setAttachmentError('')
-
-    if (intent.kind === 'todo-extraction') {
-      if (intent.content.length > AI_ATTACHMENT_MAX_CHARACTERS) {
-        setAttachmentError('待办提取内容最多 20,000 字符，请减少附件或输入内容。')
-        return
-      }
-    }
-
-    if (intent.kind === 'project-summary' && !selectedProjectId) {
-      setGenerationError('请先用 @ 选择一个项目，再生成项目总结。')
-      return
-    }
-    if (intent.kind === 'project-summary' && attachments.length > 0) {
-      setGenerationError('生成项目总结时不能同时添加附件。')
-      return
-    }
-    if (intent.kind === 'workspace-review' && attachments.length > 0) {
-      setGenerationError('梳理工作区进展时不能同时添加附件。')
-      return
-    }
 
     const maxMessageLength = aiStatus?.maxMessageLength ?? 2_000
     if (modelContent.length > maxMessageLength) {
@@ -7544,30 +7544,100 @@ function VegesAiView({
       return
     }
 
-    const result = await onSendAgentMessage({
-      attachments,
-      content: draftContent,
-      contextKind: intent.kind === 'conversation-analysis'
-        ? 'conversation-analysis'
-        : (intent.kind === 'todo-extraction' || intent.kind === 'workspace-review') &&
-            aiHistory.selection.context.contextType === 'conversation-analysis'
-          ? 'general'
-          : undefined,
-    })
-    if (!result) return
+    const sourceContext = aiHistory.selection.context
+    const turnId = crypto.randomUUID()
+    const classificationRequestId = intentClassificationRequestIdRef.current + 1
+    intentClassificationRequestIdRef.current = classificationRequestId
+    const classificationController = new AbortController()
+    intentClassificationAbortControllerRef.current = classificationController
+    setIntentClassifying(true)
+    try {
+      const { intent } = await classifyAiConversationTurnIntent({
+        attachments: attachments.map(({ content, name, size }) => ({
+          content,
+          mediaType: 'text/plain',
+          name,
+          size,
+        })),
+        content: draftContent,
+        contextKind: sourceContext.contextType,
+        projectId: sourceContext.contextType === 'project' ? sourceContext.projectId : null,
+        turnId,
+      }, classificationController.signal)
+      if (intentClassificationRequestIdRef.current !== classificationRequestId) return
 
-    setAttachments([])
-    if (result.outcome?.type === 'todo-proposals') {
-      await openTodoProposalOutcome(result.outcome.batchId)
-    }
-    if (result.outcome?.type === 'summary') {
-      setSelectedSummaryId(result.outcome.summaryId)
-      setIsSummaryFullscreen(false)
-      openArtifacts()
+      const classificationSourceContext = sourceContext.contextType === 'project'
+        ? { contextKind: 'project' as const, projectId: sourceContext.projectId as number }
+        : { contextKind: sourceContext.contextType, projectId: null }
+      const targetContext = deriveAiIntentTargetContext(intent, classificationSourceContext)
+      if (!targetContext.ok) {
+        setGenerationError(
+          targetContext.reason === 'project-required'
+            ? '请先用 @ 选择一个项目，再生成项目总结。'
+            : '工作区复盘不能绑定单个项目，请先移除 @ 项目。',
+        )
+        return
+      }
+
+      if (intent.kind === 'todo-extraction' && sourceContent.length > AI_ATTACHMENT_MAX_CHARACTERS) {
+        setAttachmentError('待办提取内容最多 20,000 字符，请减少附件或输入内容。')
+        return
+      }
+      if (intent.kind === 'project-summary' && attachments.length > 0) {
+        setGenerationError('生成项目总结时不能同时添加附件。')
+        return
+      }
+      if (intent.kind === 'workspace-review' && attachments.length > 0) {
+        setGenerationError('梳理工作区进展时不能同时添加附件。')
+        return
+      }
+
+      setIntentClassifying(false)
+      const result = await onSendAgentMessage({
+        attachments,
+        content: draftContent,
+        contextKind: targetContext.context.contextKind,
+        intent,
+        turnId,
+      })
+      if (!result) return
+
+      setAttachments([])
+      if (result.outcome?.type === 'todo-proposals') {
+        await openTodoProposalOutcome(result.outcome.batchId)
+      }
+      if (result.outcome?.type === 'summary') {
+        setSelectedSummaryId(result.outcome.summaryId)
+        setIsSummaryFullscreen(false)
+        openArtifacts()
+      }
+    } catch (error) {
+      if (intentClassificationRequestIdRef.current !== classificationRequestId) return
+      const errorCode = error instanceof ApiError &&
+        error.responseBody &&
+        typeof error.responseBody === 'object' &&
+        'code' in error.responseBody
+        ? String(error.responseBody.code)
+        : ''
+      setGenerationError(
+        errorCode === 'AI_PROJECT_REQUIRED'
+          ? '请先用 @ 选择一个项目，再生成项目总结。'
+          : error instanceof ApiError && error.status === 429
+          ? 'AI 请求过于频繁，请稍后再试。'
+          : 'AI 暂时无法理解这条请求，请重试。',
+      )
+    } finally {
+      if (intentClassificationRequestIdRef.current === classificationRequestId) {
+        if (intentClassificationAbortControllerRef.current === classificationController) {
+          intentClassificationAbortControllerRef.current = null
+        }
+        setIntentClassifying(false)
+      }
     }
   }
 
   function resetConversation() {
+    cancelIntentClassification()
     attachmentReadRequestIdRef.current += 1
     documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
@@ -7581,6 +7651,11 @@ function VegesAiView({
   }
 
   async function selectConversationHistory(conversation: AiConversationListItem) {
+    if (conversation.id === currentConversationId) {
+      if (historyOpen) closeHistory()
+      return
+    }
+    cancelIntentClassification()
     attachmentReadRequestIdRef.current += 1
     documentRequestGenerationRef.current += 1
     todoOutcomeRequestIdRef.current += 1
@@ -7594,6 +7669,7 @@ function VegesAiView({
 
   async function deleteConversationHistory(conversationId: string) {
     if (conversationId === currentConversationId) {
+      cancelIntentClassification()
       attachmentReadRequestIdRef.current += 1
       documentRequestGenerationRef.current += 1
       todoOutcomeRequestIdRef.current += 1
@@ -7731,12 +7807,15 @@ function VegesAiView({
 
         <section aria-label="Veges AI 对话" className="veges-ai-stage">
               <div
-                aria-busy={aiBusy}
+                aria-busy={aiBusy || intentClassifying}
                 aria-live="polite"
                 aria-relevant="additions text"
                 className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
                 role="log"
               >
+                {intentClassifying ? (
+                  <span className="sr-only" role="status">正在理解请求</span>
+                ) : null}
                 {aiNextBeforeTurn != null ? (
                   <Button
                     className="ai-load-earlier"
@@ -7973,7 +8052,7 @@ function VegesAiView({
                 <Textarea
                   ref={composerRef}
                   aria-label="Veges AI 消息"
-                  disabled={aiTurnsLoading || todoWorkflowBusy}
+                  disabled={aiTurnsLoading || intentClassifying || todoWorkflowBusy}
                   placeholder="输入消息，或粘贴需要处理的内容"
                   rows={2}
                   value={aiDraft}
@@ -8086,11 +8165,11 @@ function VegesAiView({
                     </Button>
                   </div>
                   <Button
-                    aria-label={aiBusy ? '停止回复' : '发送消息'}
-                    className={`agent-send-button${aiBusy ? ' is-stop' : ''}`}
+                    aria-label={intentClassifying ? '正在理解请求' : aiBusy ? '停止回复' : '发送消息'}
+                    className={`agent-send-button${aiBusy || intentClassifying ? ' is-stop' : ''}`}
                     disabled={
                       !aiConfigured || (
-                        !aiBusy && (
+                        !aiBusy && !intentClassifying && (
                           aiTurnsLoading ||
                           attachmentReading ||
                           todoWorkflowBusy ||
@@ -8099,14 +8178,15 @@ function VegesAiView({
                       )
                     }
                     size="icon"
-                    title={aiBusy ? '停止回复' : '发送消息'}
+                    title={intentClassifying ? '正在理解请求' : aiBusy ? '停止回复' : '发送消息'}
                     type="button"
                     onClick={() => {
-                      if (aiBusy) void onStopAiTurn()
+                      if (intentClassifying) cancelIntentClassification()
+                      else if (aiBusy) void onStopAiTurn()
                       else void sendComposerMessage()
                     }}
                   >
-                    {aiBusy
+                    {aiBusy || intentClassifying
                       ? <X size={17} weight="bold" />
                       : <PaperPlaneTilt size={17} weight="fill" />}
                   </Button>

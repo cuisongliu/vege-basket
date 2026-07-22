@@ -14,7 +14,8 @@
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
 | AI workspace-review facts and source lineage | `server/ai-workspace-review.ts`, `server/ai-workspace-review-store.ts`, `server/ai-conversation-store.ts` |
 | Todo proposal review defaults and confirmation insert | `src/todo-proposal-defaults.ts`, `server/ai-todo-confirmation.ts` |
-| AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts`, `shared/ai-input-intent.ts` |
+| AI semantic routing | `server/ai-intent-classifier.ts`, `server/ai-intent-routing-store.ts`, `shared/ai-input-intent.ts` |
+| AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts` |
 | AI reply document conversion | `server/ai-turn-document.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
@@ -106,7 +107,7 @@ families are:
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
-| AI | `GET /api/ai/status`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
+| AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
@@ -152,6 +153,32 @@ permanent for its chat history and linked pending proposal batches, but does not
 summaries, processed proposal audit batches, or already-created todos. The deleted UUID remains
 reserved by a server tombstone, so delayed requests receive `404` instead of recreating it.
 
+`POST /api/ai/intent-classifications` runs before the canonical turn request. It accepts the
+browser-generated turn UUID, exact message/attachments, and current explicit conversation context.
+The server claims a PostgreSQL receipt before calling the shared model, supplies no project or
+workspace facts, and accepts only strict `chat`, `conversation-analysis`, `project-summary`,
+`workspace-review`, or `todo-extraction` JSON with a daily/weekly period where required. The
+public response contains only `{ turnId, intent }`; todo source content remains server-canonical.
+The receipt binds the user, source context, and keyed full-input HMAC, so concurrent/replayed classify
+requests do not call the provider twice. The subsequent turn transaction consumes the receipt and
+rejects changed content, attachments, or context. Classifier failures are explicit and do not use
+regex routing or silently become ordinary chat. `AI_RATE_LIMIT` admission is consumed by the first
+classification claim for a new turn; canonical turn creation does not consume the same logical
+request a second time. The encrypted receipt stores only kind/period metadata; todo content is
+rehydrated from the validated turn input. Bounded lock-skipping cleanup removes terminal or
+abandoned receipts after seven days and runs at most once per minute per application replica.
+Classification HTTP traffic is additionally limited to 10 requests per
+user and 60 per application replica per minute, with at most two concurrent requests per user and
+10 per replica. Processing replays poll every 250 ms for at most nine seconds and use PostgreSQL's
+lease state using `clock_timestamp()` rather than the application wall clock or a frozen transaction
+timestamp. Cancelling or dropping the classification
+request aborts the provider call. An unconsumed completed classification must create its canonical
+turn within two minutes. Canonical turn and retry provider execution are separately limited to two
+concurrent requests per user and 10 per application replica. A new turn submitted without a
+classification receipt returns `409 AI_CLIENT_UPGRADE_REQUIRED`; an already-canonical duplicate
+turn remains idempotent. A consumed receipt is rejected when no canonical turn exists, preventing a
+deleted conversation turn from being recreated under another conversation.
+
 `POST /api/ai/conversations/:conversationId/turns/:turnId/document` converts one completed
 ordinary reply in a project conversation into a durable document. The request has no content or
 project body: the server resolves the user-owned conversation, rechecks owner or active-member
@@ -166,7 +193,7 @@ resolves `打开文档` through `sourceTurnId`. The legacy `POST /api/summaries`
 client-provided `content` field with `AI_DOCUMENT_SOURCE_REQUIRED`; it remains available for
 server-generated summary periods.
 
-The unified turn endpoint records ordinary replies and routes explicit project summary,
+The server semantic classifier routes ordinary replies and explicit project summary,
 workspace review, Markdown todo extraction, and conversation-analysis intent through the same
 timeline. Turn creation and retry accept `text/event-stream` and emit ordered `started`, `delta`,
 `progress`, `heartbeat`, `completed`, `failed`, or `cancelled` events with a positive `sequence`.

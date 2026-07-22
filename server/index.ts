@@ -13,6 +13,8 @@ import {
   decryptText,
   encryptJson,
   encryptText,
+  keyedDigest,
+  verifyKeyedDigest,
 } from './crypto.ts'
 import { pool, query } from './db.ts'
 import {
@@ -21,7 +23,11 @@ import {
   readAiProviderConfig,
   requestAiChatCompletion,
 } from './ai-provider.ts'
-import { createAiRateLimiter, readAiRateLimitConfig } from './ai-rate-limit.ts'
+import {
+  createAiConcurrencyLimiter,
+  createAiRateLimiter,
+  readAiRateLimitConfig,
+} from './ai-rate-limit.ts'
 import {
   buildAiPeriodSummaryRequest,
   getAiSummaryPeriod,
@@ -81,8 +87,21 @@ import type {
 import { schemaSql } from './schema.ts'
 import {
   buildAiClassificationContent,
-  classifyAiInput,
 } from '../shared/ai-input-intent.ts'
+import {
+  AiIntentClassifierError,
+  classifyAiIntentWithModel,
+} from './ai-intent-classifier.ts'
+import {
+  AiIntentRoutingStoreError,
+  claimAiIntentClassification,
+  completeAiIntentClassification,
+  failAiIntentClassification,
+  toAiInputIntentDto,
+  waitForAiIntentClassification,
+  type AiIntentClassificationInput,
+  type AiIntentClassificationReceipt,
+} from './ai-intent-routing-store.ts'
 import {
   serializeAiTurnStreamEvent,
   type AiTurnStreamEventInput,
@@ -237,6 +256,33 @@ const todoImageObjectPrefix = String(process.env.TODO_IMAGE_OBJECT_PREFIX ?? 'to
   .trim()
   .replace(/^\/+|\/+$/g, '') || 'todo-images'
 const aiRateLimiter = createAiRateLimiter(readAiRateLimitConfig())
+const aiIntentRequestRateLimiter = createAiRateLimiter({
+  globalLimit: 60,
+  perUserLimit: 10,
+  windowMs: 60_000,
+})
+const aiIntentConcurrencyLimiter = createAiConcurrencyLimiter({
+  globalLimit: 10,
+  perUserLimit: 2,
+})
+const aiTurnExecutionConcurrencyLimiter = createAiConcurrencyLimiter({
+  globalLimit: 10,
+  perUserLimit: 2,
+})
+let nextAiIntentReceiptCleanupAt = 0
+const aiIntentRoutingDependencies = {
+  database: pool,
+  decryptText,
+  digestMatches: verifyKeyedDigest,
+  digestText: keyedDigest,
+  encryptText,
+  shouldCleanup: () => {
+    const currentTime = Date.now()
+    if (currentTime < nextAiIntentReceiptCleanupAt) return false
+    nextAiIntentReceiptCleanupAt = currentTime + 60_000
+    return true
+  },
+}
 let feishuTenantAccessToken: FeishuTenantAccessToken | null = null
 const feishuUserNameCache = new Map<string, string>()
 const feishuUserLookupWarnings = new Set<string>()
@@ -541,6 +587,91 @@ function buildFeishuInformationSummary(analysis: string) {
 
 function checkAiRateLimit(userId: number) {
   return aiRateLimiter.allow(userId)
+}
+
+function completedAiIntentReceipt(receipt: AiIntentClassificationReceipt) {
+  if (receipt.status === 'completed' || receipt.status === 'consumed') return receipt
+  if (receipt.status === 'failed') {
+    const status = receipt.errorCode === 'AI_PROJECT_REQUIRED' ||
+      receipt.errorCode === 'AI_CONTEXT_INTENT_MISMATCH'
+      ? 409
+      : receipt.errorCode === 'AI_REQUEST_TIMEOUT'
+        ? 504
+        : receipt.errorCode === 'AI_NOT_CONFIGURED'
+          ? 503
+          : receipt.errorCode === 'AI_REQUEST_CANCELLED'
+            ? 499
+            : 502
+    throw new AiIntentRoutingStoreError(
+      receipt.errorCode,
+      'AI intent classification failed',
+      status,
+    )
+  }
+  throw new AiIntentRoutingStoreError(
+    'AI_INTENT_CLASSIFICATION_PENDING',
+    'AI intent classification is still processing',
+    504,
+  )
+}
+
+async function resolveAiIntentClassification(
+  input: AiIntentClassificationInput,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) {
+    throw new AiIntentRoutingStoreError('AI_REQUEST_CANCELLED', 'AI request cancelled', 499)
+  }
+  const claimed = await claimAiIntentClassification(
+    input,
+    () => checkAiRateLimit(input.userId),
+    aiIntentRoutingDependencies,
+  )
+  if (claimed.status !== 'claimed') {
+    if (claimed.status === 'processing') {
+      return completedAiIntentReceipt(
+        await waitForAiIntentClassification(input, aiIntentRoutingDependencies, { signal }),
+      )
+    }
+    return completedAiIntentReceipt(claimed)
+  }
+  const leaseToken = claimed.leaseToken
+
+  try {
+    const sourceContent = buildAiClassificationContent(
+      input.source.userContent,
+      input.source.attachments,
+    )
+    const intent = await classifyAiIntentWithModel(readAiProviderConfig(), {
+      content: sourceContent,
+      shanghaiDate: formatDate(new Date()),
+      signal,
+      sourceContextKind: input.source.context.contextKind,
+      sourceProjectId: input.source.context.projectId,
+    })
+    if (signal?.aborted) {
+      throw new AiIntentRoutingStoreError('AI_REQUEST_CANCELLED', 'AI request cancelled', 499)
+    }
+    const completed = await completeAiIntentClassification({
+      ...input,
+      intent,
+      leaseToken,
+      sourceContent,
+    }, aiIntentRoutingDependencies)
+    if (completed.completed) return completedAiIntentReceipt(completed.receipt)
+    return completedAiIntentReceipt(
+      await waitForAiIntentClassification(input, aiIntentRoutingDependencies, { signal }),
+    )
+  } catch (error) {
+    await failAiIntentClassification({
+      ...input,
+      errorCode: error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'AI_INTENT_CLASSIFICATION_FAILED',
+      leaseToken,
+    }, aiIntentRoutingDependencies).catch(() => undefined)
+    throw error
+  }
 }
 
 function parseBasicAuth(request: express.Request) {
@@ -2179,6 +2310,7 @@ function sendAiConversationError(response: express.Response, error: unknown) {
   if (
     error instanceof AiConversationValidationError ||
     error instanceof AiConversationStoreError ||
+    error instanceof AiIntentRoutingStoreError ||
     error instanceof AiTurnDocumentError ||
     error instanceof AiProviderError
   ) {
@@ -2186,6 +2318,10 @@ function sendAiConversationError(response: express.Response, error: unknown) {
       code: 'code' in error ? error.code : 'AI_INPUT_INVALID',
       error: error.message,
     })
+    return true
+  }
+  if (error instanceof AiIntentClassifierError) {
+    response.status(502).json({ code: error.code, error: error.message })
     return true
   }
   if (error instanceof AiTodoProposalValidationError) {
@@ -7316,6 +7452,63 @@ app.get('/api/ai/conversations', asyncHandler(async (request, response) => {
   }
 }))
 
+app.post('/api/ai/intent-classifications', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  if (!aiIntentRequestRateLimiter.allow(userId)) {
+    response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI rate limit exceeded' })
+    return
+  }
+  const releaseConcurrency = aiIntentConcurrencyLimiter.acquire(userId)
+  if (!releaseConcurrency) {
+    response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI rate limit exceeded' })
+    return
+  }
+  const controller = new AbortController()
+  const abortClassification = () => controller.abort()
+  request.once('aborted', abortClassification)
+  response.once('close', abortClassification)
+  try {
+    const attachments = validateAiTurnAttachments(request.body.attachments)
+    const content = String(request.body.content ?? '').trim()
+    if (!content && attachments.length === 0) {
+      response.status(400).json({ code: 'AI_MESSAGE_REQUIRED', error: 'Message or attachment is required' })
+      return
+    }
+    const modelContent = buildAiTurnModelContent(content, attachments)
+    if (modelContent.length > aiMaxMessageLength) {
+      response.status(413).json({
+        code: 'AI_MESSAGE_TOO_LARGE',
+        error: `AI message must not exceed ${aiMaxMessageLength} characters`,
+      })
+      return
+    }
+    const sourceContext = createAiConversationContext(
+      request.body.contextKind,
+      request.body.projectId,
+    )
+    const turnId = String(request.body.turnId ?? '')
+    const receipt = await resolveAiIntentClassification({
+      source: {
+        attachments,
+        context: sourceContext,
+        userContent: content,
+      },
+      turnId,
+      userId,
+    }, controller.signal)
+    if (controller.signal.aborted || response.destroyed) return
+    response.json({ intent: toAiInputIntentDto(receipt.intent), turnId })
+  } catch (error) {
+    if (controller.signal.aborted || response.destroyed) return
+    if (!sendAiConversationError(response, error)) throw error
+  } finally {
+    request.off('aborted', abortClassification)
+    response.off('close', abortClassification)
+    releaseConcurrency()
+  }
+}))
+
 app.get('/api/ai/conversations/:conversationId/turns', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -7371,6 +7564,7 @@ app.post('/api/ai/todo-proposals', asyncHandler(async (request, response) => {
 app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const turnExecutionSlot: { release: (() => void) | null } = { release: null }
   try {
     const attachments = validateAiTurnAttachments(request.body.attachments)
     const content = String(request.body.content ?? '').trim()
@@ -7378,7 +7572,6 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
       response.status(400).json({ code: 'AI_MESSAGE_REQUIRED', error: 'Message or attachment is required' })
       return
     }
-    const classificationContent = buildAiClassificationContent(content, attachments)
     const modelContent = buildAiTurnModelContent(content, attachments)
     if (modelContent.length > aiMaxMessageLength) {
       response.status(413).json({
@@ -7391,55 +7584,18 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
       request.body.contextKind,
       request.body.projectId,
     )
-    const classified = classifyAiInput(classificationContent, {
-      hasProjectContext: context.contextKind === 'project',
-    })
-    const intentKind = classified.kind
-    if (intentKind === 'conversation-analysis' && context.contextKind !== 'conversation-analysis') {
-      response.status(409).json({
-        code: 'AI_CONTEXT_INTENT_MISMATCH',
-        error: 'Conversation analysis must start a new conversation without project context',
-      })
-      return
-    }
-    if (intentKind === 'project-summary' && context.contextKind !== 'project') {
-      response.status(409).json({
-        code: 'AI_PROJECT_REQUIRED',
-        error: 'Select a project before generating a project summary',
-      })
-      return
-    }
-    if (
-      intentKind === 'workspace-review' &&
-      (context.contextKind !== 'general' || attachments.length > 0)
-    ) {
-      response.status(409).json({
-        code: 'AI_CONTEXT_INTENT_MISMATCH',
-        error: 'Workspace review requires a general conversation without attachments',
-      })
-      return
-    }
-    if (
-      context.contextKind === 'conversation-analysis' &&
-      intentKind !== 'conversation-analysis' &&
-      intentKind !== 'chat'
-    ) {
-      response.status(409).json({
-        code: 'AI_CONTEXT_INTENT_MISMATCH',
-        error: 'Select a project or start a general conversation for this request',
-      })
-      return
-    }
     const turnInput: StartAiTurnInput = {
       attachments,
       context,
       conversationId: String(request.params.conversationId),
-      intent: classified,
       turnId: String(request.body.turnId ?? ''),
       userContent: content,
       userId,
     }
-    const started = await startAiTurn(turnInput, () => checkAiRateLimit(userId))
+    const started = await startAiTurn(turnInput, () => {
+      turnExecutionSlot.release ??= aiTurnExecutionConcurrencyLimiter.acquire(userId)
+      return turnExecutionSlot.release !== null
+    })
     if (started.duplicate || !started.execution) {
       response.status(started.turn.status === 'processing' ? 202 : 200).json({
         conversation: started.conversation,
@@ -7460,14 +7616,22 @@ app.post('/api/ai/conversations/:conversationId/turns', asyncHandler(async (requ
     })
   } catch (error) {
     if (!sendAiConversationError(response, error)) throw error
+  } finally {
+    turnExecutionSlot.release?.()
   }
 }))
 
 app.post('/api/ai/conversations/:conversationId/turns/:turnId/retry', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  let releaseTurnExecution: (() => void) | null = null
   try {
     if (!checkAiRateLimit(userId)) {
+      response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI rate limit exceeded' })
+      return
+    }
+    releaseTurnExecution = aiTurnExecutionConcurrencyLimiter.acquire(userId)
+    if (!releaseTurnExecution) {
       response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI rate limit exceeded' })
       return
     }
@@ -7488,6 +7652,8 @@ app.post('/api/ai/conversations/:conversationId/turns/:turnId/retry', asyncHandl
     })
   } catch (error) {
     if (!sendAiConversationError(response, error)) throw error
+  } finally {
+    releaseTurnExecution?.()
   }
 }))
 

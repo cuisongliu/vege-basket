@@ -33,6 +33,10 @@ import {
   ServerSentEventDecoder,
   type AiTurnStreamPhase,
 } from '../shared/server-sent-events'
+import {
+  parseAiIntentClassification,
+  type AiIntentClassification,
+} from '../shared/ai-input-intent'
 import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
 export type { AiTurnStreamPhase } from '../shared/server-sent-events'
@@ -93,6 +97,11 @@ export type AiTurnStreamHandlers = {
     mode: 'progress' | 'text'
     turn?: AiTurnRunResponse['turn']
   }) => void
+}
+
+export type AiIntentClassificationResponse = {
+  intent: AiIntentClassification
+  turnId: string
 }
 
 export class AiTurnStreamTerminalError extends Error {
@@ -637,6 +646,40 @@ export function fetchAiConversationTurns(
   return request<AiTurnPage>(
     `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns${query}`,
   )
+}
+
+export async function classifyAiConversationTurnIntent(payload: {
+  attachments: Array<{
+    content: string
+    mediaType?: string
+    name: string
+    size: number
+  }>
+  content: string
+  contextKind: AiConversationContextKind
+  projectId: number | null
+  turnId: string
+}, signal?: AbortSignal) {
+  const response = await request<unknown>('/api/ai/intent-classifications', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    Array.isArray(response) ||
+    !('turnId' in response) ||
+    typeof response.turnId !== 'string' ||
+    response.turnId !== payload.turnId ||
+    !('intent' in response)
+  ) {
+    throw new Error('AI intent classification response is invalid')
+  }
+  return {
+    intent: parseAiIntentClassification(response.intent),
+    turnId: response.turnId,
+  } satisfies AiIntentClassificationResponse
 }
 
 export function sendAiConversationTurn(payload: {

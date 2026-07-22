@@ -231,6 +231,74 @@ create table if not exists ai_turn_cancellations (
   primary key (user_id, turn_id)
 );
 
+create table if not exists ai_intent_classifications (
+  user_id bigint not null references users(id) on delete cascade,
+  turn_id uuid not null,
+  input_digest text not null
+    check (input_digest ~ '^veges:mac:[^:]+:[A-Za-z0-9_-]{43}$'),
+  source_context_kind text not null
+    check (source_context_kind in ('general', 'project', 'conversation-analysis')),
+  source_project_id bigint,
+  status text not null
+    check (status in ('processing', 'completed', 'failed', 'consumed')),
+  intent_payload text,
+  error_code text,
+  attempt_count integer not null default 1 check (attempt_count > 0),
+  lease_token uuid,
+  lease_until timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  consumed_at timestamptz,
+  primary key (user_id, turn_id),
+  unique (turn_id),
+  check (
+    (source_context_kind = 'project' and source_project_id is not null and source_project_id > 0)
+    or (source_context_kind <> 'project' and source_project_id is null)
+  ),
+  check (
+    (
+      status = 'processing'
+      and intent_payload is null
+      and error_code is null
+      and lease_token is not null
+      and lease_until is not null
+      and completed_at is null
+      and consumed_at is null
+    )
+    or (
+      status = 'completed'
+      and intent_payload is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+      and consumed_at is null
+    )
+    or (
+      status = 'failed'
+      and intent_payload is null
+      and error_code is not null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is null
+      and consumed_at is null
+    )
+    or (
+      status = 'consumed'
+      and intent_payload is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+      and consumed_at is not null
+    )
+  )
+);
+
+create index if not exists ai_intent_classifications_cleanup_idx
+  on ai_intent_classifications(updated_at);
+
 create table if not exists ai_turns (
   id uuid primary key,
   conversation_id uuid not null references ai_conversations(id) on delete cascade,
@@ -644,6 +712,8 @@ create index if not exists idx_ai_conversations_project_user
   where project_id is not null;
 create index if not exists idx_ai_turn_cancellations_user_created
   on ai_turn_cancellations(user_id, created_at);
+create index if not exists idx_ai_intent_classifications_user_created
+  on ai_intent_classifications(user_id, created_at desc);
 create index if not exists idx_ai_turns_conversation_order
   on ai_turns(conversation_id, turn_no desc);
 create index if not exists idx_ai_turn_project_sources_project

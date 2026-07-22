@@ -50,9 +50,29 @@ historical product context; current code and these operational docs take precede
   Persist every source project in `ai_turn_project_sources`; reauthorize those sources before
   returning the turn or including it in later model history. Keep the source row after project
   deletion so deleted or inaccessible facts cannot reappear through general chat history.
-- PostgreSQL is the canonical AI-history source. The browser submits only one new user turn,
-  its client UUID, and optional text attachments; it must never submit assistant history.
-  Keep turn creation idempotent, permit only one processing turn per conversation, and use
+- PostgreSQL is the canonical AI-history source. Before creating a turn, classify its semantic
+  intent with the shared server AI provider using strict JSON and no project or workspace facts.
+  Ambiguous, negated, capability-discussion, and historical-period input must remain `chat`; do
+  not restore regex routing or silently downgrade a classifier failure. Bind the classification
+  to the user, turn UUID, exact content/attachments, and source context in
+  `ai_intent_classifications`. The first claim alone may call the classifier; replay returns the
+  stored encrypted result, and canonical turn creation consumes it in the same transaction that
+  writes the turn. Store only the bounded kind/period result in the receipt; hydrate todo source
+  content from the revalidated canonical input during consumption. Bind exact input with a keyed
+  digest that verifies through its stored retained-key ID, opportunistically delete terminal or
+  abandoned receipts after seven days, and keep classification HTTP rate/concurrency limits
+  separate from first-claim provider admission. An unconsumed completed classification expires
+  after two minutes so receipts cannot stockpile future provider work; bound canonical turn model
+  execution separately per user and application replica. A consumed receipt may be satisfied only
+  by the existing canonical turn lookup; it must never create a replacement turn after conversation
+  deletion. Use PostgreSQL `clock_timestamp()` for receipt lease and TTL decisions so transaction
+  lock waits cannot freeze liveness time. A dropped classification request must abort its provider
+  call. The browser may receive only the bounded DTO and cannot submit a trusted intent or todo
+  source. Derive target conversation context through the shared pure helper, while the server
+  remains responsible for authorization and HTTP error mapping.
+- The browser submits one new user turn, its client UUID, and optional text attachments after the
+  classification receipt is complete; it must never submit assistant history. Keep turn creation
+  idempotent, permit only one processing turn per conversation, and use
   lease-token checks so cancellation, retry, or a stale provider response cannot write twice.
   A cancel that arrives before turn creation must leave a bounded server-canonical
   `ai_turn_cancellations` claim so every delayed replay is rejected before it can call the

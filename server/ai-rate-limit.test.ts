@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAiRateLimiter, readAiRateLimitConfig } from './ai-rate-limit.ts'
+import {
+  createAiConcurrencyLimiter,
+  createAiRateLimiter,
+  readAiRateLimitConfig,
+} from './ai-rate-limit.ts'
 
 test('reads AI rate-limit defaults and valid overrides', () => {
   assert.deepEqual(readAiRateLimitConfig({}), {
@@ -38,4 +42,25 @@ test('enforces both per-user and instance-wide request windows', () => {
   currentTime += 1_001
   assert.equal(limiter.allow(1), true)
   assert.equal(limiter.allow(3), true)
+})
+
+test('bounds concurrent work per user and across the application instance', () => {
+  const limiter = createAiConcurrencyLimiter({ globalLimit: 3, perUserLimit: 2 })
+  const releaseFirst = limiter.acquire(1)
+  const releaseSecond = limiter.acquire(1)
+  const releaseThird = limiter.acquire(2)
+
+  assert.equal(typeof releaseFirst, 'function')
+  assert.equal(typeof releaseSecond, 'function')
+  assert.equal(typeof releaseThird, 'function')
+  assert.equal(limiter.acquire(1), null)
+  assert.equal(limiter.acquire(3), null)
+
+  releaseFirst?.()
+  releaseFirst?.()
+  const releaseFourth = limiter.acquire(3)
+  assert.equal(typeof releaseFourth, 'function')
+  releaseSecond?.()
+  releaseThird?.()
+  releaseFourth?.()
 })

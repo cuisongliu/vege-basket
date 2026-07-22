@@ -71,7 +71,9 @@ deletion cascade, idempotent turn replay, one-processing-turn enforcement, expir
 recovery, cancel-before-create claims, cancel/retry races, and conversation deletion with
 saved-summary and created-todo preservation. Also verify that a deleted conversation UUID cannot
 be recreated by a delayed request and that a cancellation claim cannot move to another
-conversation.
+conversation. For semantic routing, verify first-claim idempotency, exact-input keyed digest
+matching across retained-key rotation, 250 ms replay polling, two-minute completed receipt expiry,
+consumed receipt rejection after conversation deletion, and bounded lock-skipping cleanup.
 
 For workspace reviews, create an owner project and an active-member project with distinct
 journals, todo events, open todos, and risks. Confirm the owner sees project-wide facts, while a
@@ -120,14 +122,16 @@ operator should:
 7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
    record in an authorized test database before enabling a real user's subscription.
 
-The first AI conversation-history release replaces the stateless `/api/ai/chat` browser
-contract and the old `/api/ai/todo-proposals` extraction route. Keep one release of both
-compatibility responses: an already-open old SPA receives `AI_CLIENT_UPGRADE_REQUIRED` and
-a visible refresh instruction instead of an unexplained 404.
+AI conversation protocol releases replace the stateless `/api/ai/chat`, the old
+`/api/ai/todo-proposals` extraction route, and direct turn creation without a semantic
+classification receipt. Keep one release of compatibility handling: an already-open old SPA
+receives `AI_CLIENT_UPGRADE_REQUIRED` and a visible refresh instruction instead of an unexplained
+404, while an existing canonical turn can still be replayed idempotently.
 Do not serve old and new application images concurrently: use a controlled single-replica
-replacement or a short maintenance window, then confirm every ready Pod uses the same
-immutable image before accepting AI traffic. Database additions are forward compatible with
-the old image, but old browser code cannot continue a conversation until it refreshes.
+replacement or a short maintenance window. The application Deployment template uses
+`strategy.type: Recreate` for this protocol boundary. Confirm every ready Pod uses the same
+immutable image before accepting AI traffic. Database additions are forward compatible with the
+old image, but old browser code cannot continue a conversation until it refreshes.
 
 Useful preflight checks:
 

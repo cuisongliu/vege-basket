@@ -40,9 +40,11 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
   validation, Feishu/AI orchestration, and static-file serving.
-- `server/ai-provider.ts`, `server/ai-period-summary.ts`,
+- `server/ai-provider.ts`, `server/ai-intent-classifier.ts`,
+  `server/ai-intent-routing-store.ts`, `server/ai-period-summary.ts`,
   `server/ai-todo-proposals.ts`: shared AI configuration, provider network boundary,
-  period facts, and strict Markdown proposal parsing.
+  strict semantic intent JSON, idempotent routing receipts, period facts, and strict Markdown
+  proposal parsing.
 - `server/ai-workspace-review.ts`, `server/ai-workspace-review-store.ts`: explicit
   workspace-review facts, bounded formatting, authorization-scoped database reads,
   source-project lineage, and history reauthorization.
@@ -57,8 +59,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/ai-turn-stream.ts`, `shared/ai-conversation-wire.ts`,
   `shared/server-sent-events.ts`: bounded response backpressure, canonical turn DTO guards,
   and the server/browser AI stream protocol.
-- `shared/ai-input-intent.ts`: one natural-language intent classifier shared by the browser
-  and server without importing browser code into the production server image.
+- `shared/ai-input-intent.ts`: the strict public intent DTO and canonical source-content helpers;
+  semantic classification runs only on the server.
 - `server/todo-digest.ts`, `server/todo-digest-worker.ts`: local-time scheduling,
   deterministic digest formatting, run leases, retries, and Feishu delivery.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
@@ -97,8 +99,32 @@ progress phases rather than partial project-derived text. Completion locks every
 project in numeric order, rechecks owner or active-member access, and records each project
 in `ai_turn_project_sources` in the same transaction as the canonical assistant content.
 
-The browser sends only one user turn with client-generated conversation/turn UUIDs. The
-server serializes the first-turn claim with a transaction-scoped advisory lock, stores the
+Before creating a turn, the browser sends the proposed turn UUID, exact content/attachments, and
+current explicit context to the semantic-classification endpoint. The server first claims an
+`ai_intent_classifications` receipt under that turn UUID, then calls the shared model outside the
+transaction with no project or workspace facts and accepts only a strict kind/period JSON object.
+The receipt binds the user, keyed exact-input HMAC, and source context; concurrent or repeated claims
+return the encrypted canonical result instead of calling the model again. Invalid model output or
+provider failure is explicit and never falls back to regex routing. The browser uses only the
+bounded classification DTO to choose the immutable conversation context; it cannot submit a
+trusted intent. Canonical turn creation locks and consumes the receipt, recomputes the input
+digest using the key ID carried by the stored HMAC, verifies the shared deterministic context
+derivation, hydrates todo source content from the validated current input, and stores the encrypted
+intent in the same transaction as the user turn. Receipts contain only kind/period metadata and
+terminal or abandoned rows are removed after a seven-day retention window by bounded opportunistic
+cleanup scheduled at most once per minute per application replica with lock-skipping batch claims.
+Classification requests have separate per-user/application rate and concurrency limits;
+same-turn waiters poll PostgreSQL at a bounded interval and trust the database lease clock. Closing
+the classification HTTP request aborts its provider call. An unconsumed completed classification
+expires after two minutes, and canonical turn model execution has a separate per-user/application
+concurrency limit so valid receipts cannot be stockpiled into a later provider burst. Retry uses the
+canonical turn intent and never reclassifies. Canonical duplicate lookup occurs before receipt
+consumption; once consumed, a receipt cannot create another turn if its original conversation and
+turn were later deleted. Receipt lease and TTL SQL uses PostgreSQL `clock_timestamp()` so time keeps
+advancing while a transaction waits for an advisory or row lock.
+
+The browser then sends one user turn with client-generated conversation/turn UUIDs. The server
+serializes the first-turn claim with a transaction-scoped advisory lock, stores the
 encrypted structured intent and user turn before the provider call, builds model history
 from the latest three completed canonical turns, and never trusts client-submitted assistant
 history. The same advisory lock makes a concurrent replay wait for the canonical turn before
@@ -173,7 +199,8 @@ The schema is normalized around these groups:
 - Project knowledge: `journal_entries`, `todos`, `project_modules`,
   `todo_activity_events`, `todo_notes`, `todo_note_mentions`, `risks`, `draft_items`,
   `summaries`, `ai_todo_proposal_batches`, `ai_todo_proposals`.
-- Personal AI history: `ai_conversations`, `ai_turns`, `ai_turn_attachments`, permanent deleted
+- Personal AI history: `ai_conversations`, `ai_intent_classifications`, `ai_turns`,
+  `ai_turn_attachments`, permanent deleted
   UUID records in `ai_conversation_tombstones`, and bounded pre-creation cancellation claims in
   `ai_turn_cancellations`. `ai_turn_project_sources` retains workspace-review source project IDs
   without a project foreign key so project deletion continues to make the derived turn
@@ -224,6 +251,11 @@ Atomicity rules:
   referenced project/module/assignee rows. A project conversation cannot redirect candidates
   to another project. Selected todos and activity events commit together; incomplete or
   unauthorized candidates never partially save.
+- Semantic intent classification claims a per-turn receipt, commits before calling the model,
+  and completes only under the same active classification lease. Canonical turn creation locks
+  and consumes the completed receipt, rechecks its exact input digest and derived immutable
+  context, then continues with the classified intent. No database transaction remains open during
+  either model call.
 - Starting an AI turn takes a per-conversation advisory lock, creates or locks the
   conversation, validates the immutable context, allocates a monotonic turn number, stores
   encrypted intent/content/attachments, and installs the lease in one transaction. Provider

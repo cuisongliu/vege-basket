@@ -4,6 +4,11 @@ export type AiRateLimitConfig = {
   windowMs: number
 }
 
+export type AiConcurrencyLimitConfig = {
+  globalLimit: number
+  perUserLimit: number
+}
+
 const defaultGlobalLimit = 30
 const defaultPerUserLimit = 5
 const defaultWindowMs = 60_000
@@ -64,6 +69,37 @@ export function createAiRateLimiter(
       globalRequests.push(currentTime)
       userRequests.set(userId, recentUserRequests)
       return true
+    },
+  }
+}
+
+export function createAiConcurrencyLimiter(config: AiConcurrencyLimitConfig) {
+  if (
+    !Number.isSafeInteger(config.globalLimit) ||
+    config.globalLimit <= 0 ||
+    !Number.isSafeInteger(config.perUserLimit) ||
+    config.perUserLimit <= 0
+  ) {
+    throw new Error('AI concurrency limits must be positive integers')
+  }
+  const activeByUser = new Map<number, number>()
+  let activeGlobal = 0
+
+  return {
+    acquire(userId: number) {
+      const activeForUser = activeByUser.get(userId) ?? 0
+      if (activeForUser >= config.perUserLimit || activeGlobal >= config.globalLimit) return null
+      activeByUser.set(userId, activeForUser + 1)
+      activeGlobal += 1
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        activeGlobal -= 1
+        const remaining = (activeByUser.get(userId) ?? 1) - 1
+        if (remaining > 0) activeByUser.set(userId, remaining)
+        else activeByUser.delete(userId)
+      }
     },
   }
 }
