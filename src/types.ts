@@ -1,6 +1,6 @@
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
-export type TodoConfirmationStatus = 'confirmed' | 'rejected'
+export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 

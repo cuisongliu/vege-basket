@@ -98,6 +98,6 @@ git diff --check
 ## 部署边界
 
 - [Dockerfile](./Dockerfile) 构建前后端并以单个 Node.js 服务监听 `8787`；生产镜像默认发布为 `linux/amd64`。
-- [.sealos/template/index.yaml](./.sealos/template/index.yaml) 负责创建 PostgreSQL、应用工作负载、待办日报 CronJob、健康检查、Service 和 TLS Ingress。
+- [.sealos/template/index.yaml](./.sealos/template/index.yaml) 负责创建 PostgreSQL、应用工作负载、待办日报 CronJob、健康检查、Service 和 TLS Ingress。部署时必须通过 `VEGES_IMAGE` 提供由当前源码构建的不可变 `linux/amd64` 镜像标签或摘要；应用和日报 worker 共用这一输入。
 - AI、飞书和 OSS 等运行配置与其他服务配置一样，由部署输入直接传入容器环境变量；不要把真实值写入仓库或镜像。
 - 提交代码不会自动更新线上实例。部署仍需要构建并发布新镜像、更新模板镜像标签，再执行运行时健康检查。

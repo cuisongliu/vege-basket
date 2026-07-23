@@ -25,6 +25,11 @@ spec:
       type: string
       value: vege-basket-${{ random(8) }}
   inputs:
+    VEGES_IMAGE:
+      description: Immutable linux/amd64 image tag or digest built from the Veges revision being deployed.
+      type: string
+      default: ''
+      required: true
     APP_ENCRYPTION_ACTIVE_KEY_ID:
       description: Active encryption key id used by the server.
       type: string
@@ -277,7 +282,7 @@ metadata:
     app: ${{ defaults.app_name }}
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
   annotations:
-    originImageName: ghcr.io/felixqiu014-wq/vege-basket:20260715-121459
+    originImageName: ${{ inputs.VEGES_IMAGE }}
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
 spec:
@@ -337,7 +342,7 @@ spec:
               memory: 256Mi
       containers:
         - name: ${{ defaults.app_name }}
-          image: ghcr.io/felixqiu014-wq/vege-basket:20260715-121459
+          image: ${{ inputs.VEGES_IMAGE }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8787
@@ -476,7 +481,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: todo-digest-worker
-              image: ghcr.io/felixqiu014-wq/vege-basket:20260715-121459
+              image: ${{ inputs.VEGES_IMAGE }}
               imagePullPolicy: IfNotPresent
               command:
                 - node

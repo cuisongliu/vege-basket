@@ -103,8 +103,9 @@ operator should:
 
 1. Run the read-only verification commands.
 2. Build and publish an immutable amd64 tag.
-3. Set `originImageName`, the application container `image`, and the todo-digest CronJob
-   `image` in `.sealos/template/index.yaml` to the same verified tag.
+3. Pass the same verified immutable tag or digest through the Sealos template's required
+   `VEGES_IMAGE` input. The template reuses it for `originImageName`, the application
+   container, and the todo-digest CronJob.
 4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
    deployment environment; confirm real credential values are absent from the image and Git.
    The Sealos template derives `APP_PUBLIC_URL` from its TLS ingress host; custom deployments

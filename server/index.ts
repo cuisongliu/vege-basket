@@ -141,7 +141,7 @@ import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
-type TodoConfirmationStatus = 'confirmed' | 'rejected'
+type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected'
 type SummaryType = 'daily' | 'weekly' | 'monthly' | 'reply'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
@@ -172,6 +172,7 @@ type FeishuTenantAccessToken = {
 type FeishuOAuthState = {
   exp: number
   intent: 'bind' | 'signin'
+  invitePassword?: string
   inviteToken?: string
   redirectUri: string
   returnTo: string
@@ -786,6 +787,7 @@ function verifyFeishuOAuthState(value: unknown): FeishuOAuthState | null {
     return {
       exp: payload.exp,
       intent: payload.intent === 'bind' ? 'bind' : 'signin',
+      invitePassword: normalizeProjectInvitePassword(payload.invitePassword) || undefined,
       inviteToken: String(payload.inviteToken ?? '').trim().slice(0, 128) || undefined,
       redirectUri: String(payload.redirectUri ?? ''),
       returnTo: sanitizeReturnTo(payload.returnTo),
@@ -1043,11 +1045,13 @@ async function fetchFeishuOAuthUserInfo(accessToken: string) {
     code?: number
     data?: {
       email?: string
+      en_name?: string
       name?: string
       open_id?: string
       union_id?: string
     }
     email?: string
+    en_name?: string
     msg?: string
     name?: string
     open_id?: string
@@ -1057,9 +1061,15 @@ async function fetchFeishuOAuthUserInfo(accessToken: string) {
   if (!result.ok || data.code !== 0 || !openId.startsWith('ou_')) {
     throw new Error(data.msg ?? result.statusText)
   }
+  const displayName = sanitizeDisplayName(
+    data.data?.name ??
+      data.name ??
+      data.data?.en_name ??
+      data.en_name,
+  )
   return {
     email: normalizeUsername(data.data?.email ?? data.email),
-    name: sanitizeDisplayName(data.data?.name ?? data.name),
+    name: displayName,
     openId,
     unionId: String(data.data?.union_id ?? data.union_id ?? '').trim(),
   }
@@ -1073,20 +1083,30 @@ function getFeishuGeneratedUsername(openId: string) {
 async function findOrCreateFeishuOAuthUser(
   feishuUser: Awaited<ReturnType<typeof fetchFeishuOAuthUserInfo>>,
   inviteToken?: string,
+  invitePassword?: string,
 ) {
+  const displayName = feishuUser.name
   const byOpenId = await query<UserRow>(
     `
-    select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
-    from users
+    update users
+    set display_name = case
+          when $2 <> '' then $2
+          else display_name
+        end,
+        feishu_email = case
+          when $3 <> '' then $3
+          else feishu_email
+        end,
+        feishu_receive_id_type = 'open_id'
     where feishu_user_id = $1
-    limit 1
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
-    [feishuUser.openId],
+    [feishuUser.openId, displayName, feishuUser.email],
   )
   if (byOpenId.rows[0]) {
     const userId = Number(byOpenId.rows[0].id)
     await linkPendingMemberships(userId, byOpenId.rows[0].email)
-    await acceptProjectInviteToken(userId, inviteToken)
+    await acceptProjectInviteToken(userId, inviteToken, invitePassword)
     return byOpenId.rows[0]
   }
 
@@ -1096,33 +1116,37 @@ async function findOrCreateFeishuOAuthUser(
       update users
       set feishu_email = $1,
           feishu_user_id = $2,
-          feishu_receive_id_type = 'open_id'
+          feishu_receive_id_type = 'open_id',
+          display_name = case
+            when $3 <> '' then $3
+            else display_name
+          end
       where email = $1
       returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
       `,
-      [feishuUser.email, feishuUser.openId],
+      [feishuUser.email, feishuUser.openId, displayName],
     )
     if (byEmail.rows[0]) {
       const userId = Number(byEmail.rows[0].id)
       await linkPendingMemberships(userId, byEmail.rows[0].email)
-      await acceptProjectInviteToken(userId, inviteToken)
+      await acceptProjectInviteToken(userId, inviteToken, invitePassword)
       return byEmail.rows[0]
     }
   }
 
   const username = feishuUser.email || getFeishuGeneratedUsername(feishuUser.openId)
-  const displayName = feishuUser.name || feishuUser.email || '飞书用户'
+  const newDisplayName = displayName || feishuUser.email || '飞书用户'
   const created = await query<UserRow>(
     `
     insert into users (email, password_hash, display_name, feishu_email, feishu_user_id, feishu_receive_id_type)
     values ($1, $2, $3, $4, $5, 'open_id')
     returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
     `,
-    [username, '', displayName, feishuUser.email, feishuUser.openId],
+    [username, '', newDisplayName, feishuUser.email, feishuUser.openId],
   )
   const userId = Number(created.rows[0].id)
   await linkPendingMemberships(userId, username)
-  await acceptProjectInviteToken(userId, inviteToken)
+  await acceptProjectInviteToken(userId, inviteToken, invitePassword)
   return created.rows[0]
 }
 
@@ -2534,8 +2558,14 @@ function ensurePackageMarketExpireMinutes(value: unknown) {
   return normalizePackageMarketExpireMinutes(value)
 }
 
-async function linkPendingMemberships(userId: number, username: string) {
-  await query(
+type SqlExecutor = (text: string, params: unknown[]) => Promise<unknown>
+
+async function linkPendingMembershipsWithExecutor(
+  execute: SqlExecutor,
+  userId: number,
+  username: string,
+) {
+  await execute(
     `
     update project_memberships
     set invited_user_id = $1,
@@ -2548,129 +2578,170 @@ async function linkPendingMemberships(userId: number, username: string) {
   )
 }
 
+async function linkPendingMemberships(userId: number, username: string) {
+  await linkPendingMembershipsWithExecutor(
+    (text, params) => query(text, params),
+    userId,
+    username,
+  )
+}
+
 function createProjectInviteToken() {
   return crypto.randomBytes(24).toString('base64url')
 }
 
-async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
+const defaultProjectInviteExpiresInMinutes = 10
+const projectInviteExpiresInMinuteOptions = new Set([10, 30, 60, 240, 1440])
+const projectInvitePasswordMaxLength = 64
+
+function normalizeProjectInviteExpiresInMinutes(value: unknown) {
+  const minutes = Number(value)
+  if (!Number.isInteger(minutes)) return defaultProjectInviteExpiresInMinutes
+  if (!projectInviteExpiresInMinuteOptions.has(minutes)) return defaultProjectInviteExpiresInMinutes
+  return minutes
+}
+
+function normalizeProjectInvitePassword(value: unknown) {
+  return String(value ?? '').trim().slice(0, projectInvitePasswordMaxLength)
+}
+
+async function verifyProjectInvitePassword(passwordHash: string, rawPassword: unknown) {
+  if (!passwordHash) return true
+  const password = normalizeProjectInvitePassword(rawPassword)
+  if (!password) return false
+  try {
+    return await bcrypt.compare(password, passwordHash)
+  } catch {
+    return false
+  }
+}
+
+async function acceptProjectInviteTokenWithClient(
+  client: PoolClient,
+  userId: number,
+  rawToken: unknown,
+  rawPassword?: unknown,
+) {
   const token = String(rawToken ?? '').trim()
   if (!token) return false
 
+  const invite = await client.query<{
+    password_hash: string
+    project_id: string
+    owner_user_id: string
+  }>(
+    `
+    select l.password_hash,
+           l.project_id,
+           p.user_id as owner_user_id
+    from project_invite_links l
+    join projects p on p.id = l.project_id
+    where l.token = $1
+      and l.revoked_at is null
+      and l.expires_at > now()
+    limit 1
+    for update of l
+    `,
+    [token],
+  )
+  const inviteRow = invite.rows[0]
+  if (!inviteRow) return false
+  if (!(await verifyProjectInvitePassword(inviteRow.password_hash, rawPassword))) return false
+
+  const projectId = Number(inviteRow.project_id)
+  const ownerUserId = Number(inviteRow.owner_user_id)
+  if (ownerUserId === userId) return true
+
+  const existingAccess = await client.query<{ id: string }>(
+    `
+    select p.id
+    from projects p
+    left join project_memberships pm
+      on pm.project_id = p.id
+     and pm.status = 'active'
+     and pm.invited_user_id = $2
+    where p.id = $1
+      and (p.user_id = $2 or pm.id is not null)
+    limit 1
+    `,
+    [projectId, userId],
+  )
+  if (existingAccess.rows[0]) return true
+
+  const user = await client.query<UserRow>(
+    'select id, email, display_name from users where id = $1',
+    [userId],
+  )
+  const userRow = user.rows[0]
+  if (!userRow) return false
+
+  const username = normalizeUsername(userRow.email)
+  const emailLookup = blindIndex(username)
+  const existingMembership = await client.query<{ id: string }>(
+    `
+    select id
+    from project_memberships
+    where project_id = $1 and invited_email_lookup = $2
+    limit 1
+    `,
+    [projectId, emailLookup],
+  )
+
+  if (existingMembership.rows[0]) {
+    await client.query(
+      `
+      update project_memberships
+      set owner_user_id = $1,
+          invited_user_id = $2,
+          invited_email = $3,
+          invited_email_lookup = $4,
+          role = 'member',
+          status = 'active',
+          accepted_at = now(),
+          declined_at = null
+      where id = $5
+      `,
+      [
+        ownerUserId,
+        userId,
+        encryptText(username),
+        emailLookup,
+        Number(existingMembership.rows[0].id),
+      ],
+    )
+  } else {
+    await client.query(
+      `
+      insert into project_memberships (
+        project_id,
+        owner_user_id,
+        invited_user_id,
+        invited_email,
+        invited_email_lookup,
+        role,
+        status,
+        accepted_at
+      )
+      values ($1, $2, $3, $4, $5, 'member', 'active', now())
+      `,
+      [projectId, ownerUserId, userId, encryptText(username), emailLookup],
+    )
+  }
+  return true
+}
+
+async function acceptProjectInviteToken(userId: number, rawToken: unknown, rawPassword?: unknown) {
   const client = await pool.connect()
   try {
     await client.query('begin')
-    const invite = await client.query<{
-      project_id: string
-      owner_user_id: string
-    }>(
-      `
-      select l.project_id,
-             p.user_id as owner_user_id
-      from project_invite_links l
-      join projects p on p.id = l.project_id
-      where l.token = $1
-        and l.revoked_at is null
-      limit 1
-      for update of l
-      `,
-      [token],
+    const accepted = await acceptProjectInviteTokenWithClient(
+      client,
+      userId,
+      rawToken,
+      rawPassword,
     )
-    const inviteRow = invite.rows[0]
-    if (!inviteRow) {
-      await client.query('commit')
-      return false
-    }
-
-    const projectId = Number(inviteRow.project_id)
-    const ownerUserId = Number(inviteRow.owner_user_id)
-    if (ownerUserId === userId) {
-      await client.query('commit')
-      return true
-    }
-
-    const existingAccess = await client.query<{ id: string }>(
-      `
-      select p.id
-      from projects p
-      left join project_memberships pm
-        on pm.project_id = p.id
-       and pm.status = 'active'
-       and pm.invited_user_id = $2
-      where p.id = $1
-        and (p.user_id = $2 or pm.id is not null)
-      limit 1
-      `,
-      [projectId, userId],
-    )
-    if (existingAccess.rows[0]) {
-      await client.query('commit')
-      return true
-    }
-
-    const user = await client.query<UserRow>(
-      'select id, email, display_name from users where id = $1',
-      [userId],
-    )
-    const userRow = user.rows[0]
-    if (!userRow) {
-      await client.query('commit')
-      return false
-    }
-
-    const username = normalizeUsername(userRow.email)
-    const emailLookup = blindIndex(username)
-    const existingMembership = await client.query<{ id: string }>(
-      `
-      select id
-      from project_memberships
-      where project_id = $1 and invited_email_lookup = $2
-      limit 1
-      `,
-      [projectId, emailLookup],
-    )
-
-    if (existingMembership.rows[0]) {
-      await client.query(
-        `
-        update project_memberships
-        set owner_user_id = $1,
-            invited_user_id = $2,
-            invited_email = $3,
-            invited_email_lookup = $4,
-            role = 'member',
-            status = 'active',
-            accepted_at = now(),
-            declined_at = null
-        where id = $5
-        `,
-        [
-          ownerUserId,
-          userId,
-          encryptText(username),
-          emailLookup,
-          Number(existingMembership.rows[0].id),
-        ],
-      )
-    } else {
-      await client.query(
-        `
-        insert into project_memberships (
-          project_id,
-          owner_user_id,
-          invited_user_id,
-          invited_email,
-          invited_email_lookup,
-          role,
-          status,
-          accepted_at
-        )
-        values ($1, $2, $3, $4, $5, 'member', 'active', now())
-        `,
-        [projectId, ownerUserId, userId, encryptText(username), emailLookup],
-      )
-    }
     await client.query('commit')
-    return true
+    return accepted
   } catch (error) {
     await client.query('rollback')
     throw error
@@ -2679,20 +2750,63 @@ async function acceptProjectInviteToken(userId: number, rawToken: unknown) {
   }
 }
 
-async function isActiveProjectInviteToken(rawToken: unknown) {
-  const token = String(rawToken ?? '').trim()
-  if (!token) return false
-  const result = await query<{ id: string }>(
-    `
-    select id
-    from project_invite_links
-    where token = $1
-      and revoked_at is null
-    limit 1
-    `,
-    [token],
-  )
-  return Boolean(result.rows[0])
+type PasswordRegistrationResult =
+  | { registered: false; reason: 'existing_user' | 'invite_required' }
+  | { registered: true; user: UserRow; userId: number }
+
+async function registerPasswordUser(params: {
+  invitePassword: unknown
+  inviteToken: unknown
+  passwordHash: string
+  requireInvite: boolean
+  username: string
+}): Promise<PasswordRegistrationResult> {
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const existing = await client.query<{ id: string }>(
+      'select id from users where email = $1',
+      [params.username],
+    )
+    if (existing.rows.length > 0) {
+      await client.query('rollback')
+      return { reason: 'existing_user', registered: false }
+    }
+
+    const user = await client.query<UserRow>(
+      `
+      insert into users (email, password_hash, display_name)
+      values ($1, $2, $3)
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      `,
+      [params.username, params.passwordHash, params.username],
+    )
+    const userRow = user.rows[0]
+    const userId = Number(userRow.id)
+    await linkPendingMembershipsWithExecutor(
+      (text, queryParams) => client.query(text, queryParams),
+      userId,
+      params.username,
+    )
+    const inviteAccepted = await acceptProjectInviteTokenWithClient(
+      client,
+      userId,
+      params.inviteToken,
+      params.invitePassword,
+    )
+    if (params.requireInvite && !inviteAccepted) {
+      await client.query('rollback')
+      return { reason: 'invite_required', registered: false }
+    }
+
+    await client.query('commit')
+    return { registered: true, user: userRow, userId }
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
 }
 
 async function getProjectAccess(projectId: number, userId: number): Promise<ProjectAccess | null> {
@@ -3370,39 +3484,31 @@ app.post('/api/auth/register', asyncHandler(async (request, response) => {
     return
   }
 
-  if (isAiProviderConfigured() && !await isActiveProjectInviteToken(request.body.inviteToken)) {
+  const passwordHash = await bcrypt.hash(password, 12)
+  const registration = await registerPasswordUser({
+    invitePassword: request.body.invitePassword,
+    inviteToken: request.body.inviteToken,
+    passwordHash,
+    requireInvite: isAiProviderConfigured(),
+    username,
+  })
+  if (!registration.registered) {
+    if (registration.reason === 'existing_user') {
+      response.status(409).json({ error: 'Username already registered' })
+      return
+    }
     response.status(403).json({
       error: 'Password registration requires an active project invite while shared AI is enabled',
     })
     return
   }
 
-  const existing = await query<{ id: string }>(
-    'select id from users where email = $1',
-    [username],
-  )
-  if (existing.rows.length > 0) {
-    response.status(409).json({ error: 'Username already registered' })
-    return
-  }
-
-  const passwordHash = await bcrypt.hash(password, 12)
-  const user = await query<UserRow>(
-    `
-    insert into users (email, password_hash, display_name)
-    values ($1, $2, $3)
-    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
-    `,
-    [username, passwordHash, username],
-  )
-  const userId = Number(user.rows[0].id)
-  await linkPendingMemberships(userId, username)
-  await acceptProjectInviteToken(userId, request.body.inviteToken)
-  const token = await createSession(userId)
+  const token = await createSession(registration.userId)
   response.status(201).json({
+    isNewUser: true,
     token,
-    user: serializeUser(user.rows[0]),
-    workspace: await getWorkspace(userId),
+    user: serializeUser(registration.user),
+    workspace: await getWorkspace(registration.userId),
   })
 }))
 
@@ -3422,7 +3528,7 @@ app.post('/api/auth/login', asyncHandler(async (request, response) => {
 
   const userId = Number(row.id)
   await linkPendingMemberships(userId, row.email)
-  await acceptProjectInviteToken(userId, request.body.inviteToken)
+  await acceptProjectInviteToken(userId, request.body.inviteToken, request.body.invitePassword)
   const token = await createSession(userId)
   response.json({
     token,
@@ -3486,6 +3592,7 @@ app.post('/api/auth/feishu/oauth/url', asyncHandler(async (request, response) =>
   const state = signFeishuOAuthState({
     exp: Date.now() + 10 * 60 * 1_000,
     intent,
+    invitePassword: normalizeProjectInvitePassword(request.body?.invitePassword) || undefined,
     inviteToken: String(request.body?.inviteToken ?? '').trim().slice(0, 128) || undefined,
     redirectUri,
     returnTo: sanitizeReturnTo(request.body?.returnTo),
@@ -3525,18 +3632,25 @@ app.get('/api/auth/feishu/oauth/callback', asyncHandler(async (request, response
       await query(
         `
         update users
-        set feishu_email = $1,
+        set feishu_email = case
+              when $1 <> '' then $1
+              else feishu_email
+            end,
             feishu_user_id = $2,
-            feishu_receive_id_type = 'open_id'
+            feishu_receive_id_type = 'open_id',
+            display_name = case
+              when $4 <> '' then $4
+              else display_name
+            end
         where id = $3
         `,
-        [feishuUser.email, feishuUser.openId, state.userId],
+        [feishuUser.email, feishuUser.openId, state.userId, feishuUser.name],
       )
       response.redirect(buildFeishuOAuthRedirect(state.returnTo, 'success'))
       return
     }
 
-    const user = await findOrCreateFeishuOAuthUser(feishuUser, state.inviteToken)
+    const user = await findOrCreateFeishuOAuthUser(feishuUser, state.inviteToken, state.invitePassword)
     const token = await createSession(Number(user.id))
     response.redirect(buildFeishuOAuthSigninRedirect(state.returnTo, 'success', { token }))
   } catch (error) {
@@ -4289,7 +4403,7 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
     const operatorName = candidate.operatorName || '有人'
     if (target.targetType === 'chat') {
       return [
-        `【Veges 通知】${operatorName} 完成了待办，请前往验收`,
+        `【Veges 通知】${operatorName} 提交了待办验收，请前往查看`,
         '',
         '标题',
         candidate.todoTitle ?? '',
@@ -4304,7 +4418,7 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
     }
 
     return [
-      `【Veges 通知】${operatorName} 完成了待办，请前往验收`,
+      `【Veges 通知】${operatorName} 提交了待办验收，请前往查看`,
       '',
       '标题',
       candidate.todoTitle ?? '',
@@ -4580,7 +4694,7 @@ function buildFeishuInteractiveCard(
       )
       : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
     const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
-    const headerTitle = `${operatorName} 完成了待办，请前往验收`
+    const headerTitle = `${operatorName} 提交了待办验收，请前往查看`
     return {
       config: {
         wide_screen_mode: true,
@@ -5159,7 +5273,7 @@ function buildCompletedTodoCreatorFeishuCandidate(
   const todoTitle = decryptText(todo.title)
 
   return {
-    body: `${operatorName ? `${operatorName} 完成：` : ''}${projectName} · ${todoTitle}`,
+    body: `${operatorName ? `${operatorName} 提交验收：` : ''}${projectName} · ${todoTitle}`,
     dueDate: formatDate(todo.due_date),
     kind: 'todo_completed_creator',
     operatorName,
@@ -5169,7 +5283,7 @@ function buildCompletedTodoCreatorFeishuCandidate(
     recipientFeishuOpenId: reviewerFeishuOpenId,
     recipientName: reviewerName,
     sourceId: Number(todo.id),
-    title: '待办已完成',
+    title: '待办待验收',
     todoDetail: todo.detail ? decryptText(todo.detail) : '',
     todoPriority: todo.priority,
     todoTitle,
@@ -5201,10 +5315,9 @@ async function buildCompletedTodoCreatorFeishuCandidateByTodoId(params: {
     join projects p on p.id = t.project_id
     left join users creator on creator.id = coalesce(t.created_by_user_id, p.user_id)
     left join users operator_user on operator_user.id = $2
-    where t.id = $1
-      and t.done = true
-    limit 1
-    `,
+	    where t.id = $1
+	    limit 1
+	    `,
     [params.todoId, params.operatorUserId],
   )
   const todo = result.rows[0]
@@ -5566,11 +5679,75 @@ app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, 
   })
 }))
 
+app.get('/api/project-invite-links/:token', asyncHandler(async (request, response) => {
+  const token = String(request.params.token ?? '').trim()
+  if (!token) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+
+  const inviteLink = await query<{ password_hash: string }>(
+    `
+    select password_hash
+    from project_invite_links
+    where token = $1
+      and revoked_at is null
+      and expires_at > now()
+    limit 1
+    `,
+    [token],
+  )
+  const row = inviteLink.rows[0]
+  if (!row) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+
+  response.json({
+    passwordRequired: Boolean(row.password_hash),
+    valid: true,
+  })
+}))
+
+app.post('/api/project-invite-links/:token/verify', asyncHandler(async (request, response) => {
+  const token = String(request.params.token ?? '').trim()
+  if (!token) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+
+  const inviteLink = await query<{ password_hash: string }>(
+    `
+    select password_hash
+    from project_invite_links
+    where token = $1
+      and revoked_at is null
+      and expires_at > now()
+    limit 1
+    `,
+    [token],
+  )
+  const row = inviteLink.rows[0]
+  if (!row) {
+    response.status(404).json({ error: 'Project invite link not found' })
+    return
+  }
+  if (!(await verifyProjectInvitePassword(row.password_hash, request.body?.password))) {
+    response.status(401).json({ error: 'Invite password is incorrect' })
+    return
+  }
+
+  response.json({
+    passwordRequired: Boolean(row.password_hash),
+    valid: true,
+  })
+}))
+
 app.post('/api/project-invite-links/:token/accept', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
 
-  const accepted = await acceptProjectInviteToken(userId, request.params.token)
+  const accepted = await acceptProjectInviteToken(userId, request.params.token, request.body?.password)
   if (!accepted) {
     response.status(404).json({ error: 'Project invite link not found' })
     return
@@ -5998,10 +6175,23 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
     return
   }
 
-  const rotate = request.body?.rotate === true
+  const invitePassword = normalizeProjectInvitePassword(request.body?.password)
+  const passwordHash = invitePassword ? await bcrypt.hash(invitePassword, 12) : ''
+  const rotate = request.body?.rotate === true || Boolean(invitePassword)
+  const expiresInMinutes = normalizeProjectInviteExpiresInMinutes(request.body?.expiresInMinutes)
   const client = await pool.connect()
   try {
     await client.query('begin')
+    await client.query(
+      `
+      update project_invite_links
+      set revoked_at = now()
+      where project_id = $1
+        and revoked_at is null
+        and expires_at <= now()
+      `,
+      [projectId],
+    )
     if (rotate) {
       await client.query(
         `
@@ -6012,12 +6202,19 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
         [projectId],
       )
     } else {
-      const existingInviteLink = await client.query<{ token: string }>(
+      const existingInviteLink = await client.query<{
+        expires_at: Date
+        password_hash: string
+        token: string
+      }>(
         `
-        select token
+        select token,
+               password_hash,
+               expires_at
         from project_invite_links
         where project_id = $1
           and revoked_at is null
+          and expires_at > now()
         limit 1
         for update
         `,
@@ -6025,26 +6222,44 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
       )
       if (existingInviteLink.rows[0]) {
         await client.query('commit')
-        response.json({ token: existingInviteLink.rows[0].token })
+        response.json({
+          token: existingInviteLink.rows[0].token,
+          expiresAt: existingInviteLink.rows[0].expires_at.toISOString(),
+          expiresInMinutes,
+          passwordRequired: Boolean(existingInviteLink.rows[0].password_hash),
+        })
         return
       }
     }
 
-    const inviteLink = await client.query<{ token: string }>(
+    const inviteLink = await client.query<{
+      expires_at: Date
+      password_hash: string
+      token: string
+    }>(
       `
-      insert into project_invite_links (project_id, owner_user_id, token)
-      values ($1, $2, $3)
+      insert into project_invite_links (project_id, owner_user_id, token, password_hash, expires_at)
+      values ($1, $2, $3, $4, now() + ($5::integer * interval '1 minute'))
       on conflict do nothing
-      returning token
+      returning token,
+                password_hash,
+                expires_at
       `,
-      [projectId, userId, createProjectInviteToken()],
+      [projectId, userId, createProjectInviteToken(), passwordHash, expiresInMinutes],
     )
-    const concurrentInviteLink = inviteLink.rows[0] ?? (await client.query<{ token: string }>(
+    const concurrentInviteLink = inviteLink.rows[0] ?? (await client.query<{
+      expires_at: Date
+      password_hash: string
+      token: string
+    }>(
       `
-      select token
+      select token,
+             password_hash,
+             expires_at
       from project_invite_links
       where project_id = $1
         and revoked_at is null
+        and expires_at > now()
       limit 1
       `,
       [projectId],
@@ -6053,7 +6268,12 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
       throw new Error('Invite link creation conflict, please retry')
     }
     await client.query('commit')
-    response.status(201).json({ token: concurrentInviteLink.token })
+    response.status(201).json({
+      token: concurrentInviteLink.token,
+      expiresAt: concurrentInviteLink.expires_at.toISOString(),
+      expiresInMinutes,
+      passwordRequired: Boolean(concurrentInviteLink.password_hash),
+    })
   } catch (error) {
     await client.query('rollback')
     throw error
@@ -6410,6 +6630,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   if (
     isConfirmationStatusUpdate &&
     requestedConfirmationStatus !== 'confirmed' &&
+    requestedConfirmationStatus !== 'pending_review' &&
     requestedConfirmationStatus !== 'rejected'
   ) {
     response.status(400).json({ error: 'Invalid todo confirmation status' })
@@ -6428,8 +6649,9 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     isConfirmationStatusUpdate &&
     Object.keys(request.body).every((key) => key === 'confirmationStatus' || key === 'rejectionReason')
   const isCompletionUpdate = 'done' in request.body
+  const canCompleteTodo = createdByUserId === userId
   const canUpdateTodoCompletion =
-    canActOnTodo &&
+    canCompleteTodo &&
     typeof request.body.done === 'boolean' &&
     Object.keys(request.body).every((key) => key === 'done')
   if (isConfirmationStatusUpdate && !canRespondToAssignment) {
@@ -6437,7 +6659,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     return
   }
   if (isCompletionUpdate && !canUpdateTodoCompletion) {
-    response.status(403).json({ error: 'Only the project owner or assignee can update todo completion' })
+    response.status(403).json({ error: 'Only the todo creator can complete this todo' })
     return
   }
   if (!canManageTodo && !canUpdateTodoCompletion && !canRespondToAssignment) {
@@ -6531,7 +6753,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     }>(
       `
       update todos
-      set done = case when $7::text = 'rejected' then false else coalesce($1, done) end,
+      set done = case when $7::text in ('rejected', 'pending_review') then false else coalesce($1, done) end,
           title = coalesce($2, title),
           detail = case when $3::boolean then $4 else detail end,
           due_date = coalesce($5, due_date),
@@ -6663,7 +6885,10 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   ) {
     enqueueLatestAssignedTodoDelivery(todoId)
   }
-  if (existingTodo.rows[0].done === false && request.body.done === true) {
+  if (
+    requestedConfirmationStatus === 'pending_review' &&
+    existingTodo.rows[0].confirmation_status !== 'pending_review'
+  ) {
     enqueueCompletedTodoCreatorDelivery({
       operatorUserId: userId,
       todoId,

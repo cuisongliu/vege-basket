@@ -129,6 +129,7 @@ import {
   fetchNotifications,
   ApiError,
   AiTurnStreamTerminalError,
+  fetchProjectInviteLinkInfo,
   formatApiErrorDiagnostic,
   getAuthToken,
   getProjectInviteLink,
@@ -170,6 +171,7 @@ import {
   type AiStatus,
   type AiTurnStreamHandlers,
   type AiTurnStreamPhase,
+  verifyProjectInviteLink,
   type AuthUser,
   type WorkspaceData,
 } from './api'
@@ -738,6 +740,7 @@ function useAdaptivePageSize({
 }
 
 const today = getTodayStamp()
+const todoTitleMaxLength = 50
 
 const statusCopy: Record<ProjectStatus, string> = {
   active: '进行中',
@@ -750,6 +753,12 @@ const priorityCopy: Record<Priority, string> = {
   high: '高',
   medium: '中',
   low: '低',
+}
+
+const todoConfirmationCopy: Record<Todo['confirmationStatus'], string> = {
+  confirmed: '已确认',
+  pending_review: '待验收',
+  rejected: '已驳回',
 }
 
 function TodoConfirmSelect({
@@ -794,8 +803,9 @@ function TodoConfirmSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="confirmed">已确认</SelectItem>
-          <SelectItem value="rejected">已驳回</SelectItem>
+          <SelectItem value="confirmed">{todoConfirmationCopy.confirmed}</SelectItem>
+          <SelectItem value="pending_review">{todoConfirmationCopy.pending_review}</SelectItem>
+          <SelectItem value="rejected">{todoConfirmationCopy.rejected}</SelectItem>
         </SelectContent>
       </Select>
       <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
@@ -1248,8 +1258,17 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authError, setAuthError] = useState('')
+  const [displayNameOnboardingOpen, setDisplayNameOnboardingOpen] = useState(false)
+  const [displayNameOnboardingDraft, setDisplayNameOnboardingDraft] = useState('')
+  const [displayNameOnboardingError, setDisplayNameOnboardingError] = useState('')
+  const [displayNameOnboardingBusy, setDisplayNameOnboardingBusy] = useState(false)
   const [inviteToken, setInviteToken] = useState(getInviteTokenFromUrl)
   const [settledInviteToken, setSettledInviteToken] = useState('')
+  const [invitePasswordChecking, setInvitePasswordChecking] = useState(false)
+  const [invitePasswordDraft, setInvitePasswordDraft] = useState('')
+  const [invitePasswordError, setInvitePasswordError] = useState('')
+  const [invitePasswordRequired, setInvitePasswordRequired] = useState(false)
+  const [invitePasswordVerified, setInvitePasswordVerified] = useState(false)
   const [view, setView] = useState<View>('search')
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
@@ -1657,6 +1676,38 @@ function App() {
   }, [loggedIn, refreshNotifications])
 
   useEffect(() => {
+    setInvitePasswordDraft('')
+    setInvitePasswordError('')
+    setInvitePasswordRequired(false)
+    setInvitePasswordVerified(false)
+    if (!inviteToken) {
+      setInvitePasswordChecking(false)
+      return
+    }
+
+    let cancelled = false
+    setInvitePasswordChecking(true)
+    fetchProjectInviteLinkInfo(inviteToken)
+      .then((data) => {
+        if (cancelled) return
+        setInvitePasswordRequired(data.passwordRequired)
+        setInvitePasswordVerified(!data.passwordRequired)
+        setInvitePasswordError('')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setInvitePasswordError('项目邀请链接无效或已失效。')
+      })
+      .finally(() => {
+        if (!cancelled) setInvitePasswordChecking(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [inviteToken])
+
+  useEffect(() => {
     const url = new URL(window.location.href)
     const fragmentParams = new URLSearchParams(url.hash.startsWith('#') ? url.hash.slice(1) : '')
     const hasFeishuAuthFragment =
@@ -1714,6 +1765,10 @@ function App() {
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0]
   const selectedProjectDraftId = selectedProject?.id
+  const activeInvitePassword =
+    inviteToken && invitePasswordRequired && invitePasswordVerified
+      ? invitePasswordDraft.trim()
+      : undefined
 
   useEffect(() => {
     if (aiProjectId == null || projects.some((project) => project.id === aiProjectId)) return
@@ -1821,10 +1876,11 @@ function App() {
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded || !authUser || !inviteToken) return
+    if (invitePasswordRequired && !invitePasswordVerified) return
     if (acceptingInviteTokenRef.current === inviteToken) return
 
     acceptingInviteTokenRef.current = inviteToken
-    acceptProjectInviteLink(inviteToken)
+    acceptProjectInviteLink(inviteToken, { password: activeInvitePassword })
       .then(({ workspace }) => {
         applyWorkspace(workspace)
         setWorkspaceError('')
@@ -1838,7 +1894,16 @@ function App() {
       .finally(() => {
         acceptingInviteTokenRef.current = ''
       })
-  }, [applyWorkspace, authUser, inviteToken, loggedIn, workspaceLoaded])
+  }, [
+    activeInvitePassword,
+    applyWorkspace,
+    authUser,
+    invitePasswordRequired,
+    invitePasswordVerified,
+    inviteToken,
+    loggedIn,
+    workspaceLoaded,
+  ])
 
   useEffect(() => {
     if (
@@ -1931,16 +1996,56 @@ function App() {
       notifications.noteMentions.filter((item) => !item.dismissedAt).length,
     [notifications],
   )
+  async function submitInvitePassword() {
+    if (!inviteToken) return
+    const password = invitePasswordDraft.trim()
+    if (!password) {
+      setInvitePasswordError('请输入邀请密码。')
+      return
+    }
+
+    setInvitePasswordChecking(true)
+    setInvitePasswordError('')
+    try {
+      await verifyProjectInviteLink(inviteToken, { password })
+      setInvitePasswordRequired(true)
+      setInvitePasswordVerified(true)
+    } catch {
+      setInvitePasswordVerified(false)
+      setInvitePasswordError('邀请密码不正确，请检查后重试。')
+    } finally {
+      setInvitePasswordChecking(false)
+    }
+  }
 
   async function signIn(username: string, password: string, mode: 'login' | 'register') {
     setAuthError('')
+    if (inviteToken && invitePasswordRequired && !invitePasswordVerified) {
+      setAuthError('请先输入邀请密码。')
+      return
+    }
     try {
       const result =
         mode === 'register'
-          ? await registerAccount({ username, password, inviteToken: inviteToken || undefined })
-          : await loginAccount({ username, password, inviteToken: inviteToken || undefined })
+          ? await registerAccount({
+              username,
+              password,
+              inviteToken: inviteToken || undefined,
+              invitePassword: activeInvitePassword,
+            })
+          : await loginAccount({
+              username,
+              password,
+              inviteToken: inviteToken || undefined,
+              invitePassword: activeInvitePassword,
+            })
       setAuthToken(result.token)
       setAuthUser(result.user)
+      if (result.isNewUser) {
+        setDisplayNameOnboardingDraft('')
+        setDisplayNameOnboardingError('')
+        setDisplayNameOnboardingOpen(true)
+      }
       applyWorkspace(result.workspace)
       setLoggedIn(true)
       setWorkspaceLoaded(true)
@@ -1965,10 +2070,15 @@ function App() {
 
   async function signInWithFeishu() {
     setAuthError('')
+    if (inviteToken && invitePasswordRequired && !invitePasswordVerified) {
+      setAuthError('请先输入邀请密码。')
+      return
+    }
     try {
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
       const result = await createFeishuOAuthUrl({
         inviteToken: inviteToken || undefined,
+        invitePassword: activeInvitePassword,
         returnTo,
       })
       window.location.href = result.url
@@ -1993,6 +2103,9 @@ function App() {
     setLoggedIn(false)
     setAuthUser(null)
     setAuthError('')
+    setDisplayNameOnboardingOpen(false)
+    setDisplayNameOnboardingDraft('')
+    setDisplayNameOnboardingError('')
     setWorkspaceError('')
     setWorkspaceLoaded(false)
     setNotifications(emptyNotifications)
@@ -2023,6 +2136,34 @@ function App() {
     } catch (error) {
       setWorkspaceError('账户设置保存失败，请稍后再试。')
       throw error
+    }
+  }
+
+  async function saveOnboardingDisplayName() {
+    const nextDisplayName = displayNameOnboardingDraft.trim()
+    if (!nextDisplayName) {
+      setDisplayNameOnboardingError('请填写真实姓名。')
+      return
+    }
+    if (authUser && nextDisplayName === authUser.username) {
+      setDisplayNameOnboardingError('请填写真实姓名，不要继续使用登录用户名。')
+      return
+    }
+
+    setDisplayNameOnboardingBusy(true)
+    setDisplayNameOnboardingError('')
+    try {
+      const result = await updateCurrentUser({
+        displayName: nextDisplayName,
+      })
+      setAuthUser(result.user)
+      setDisplayNameOnboardingOpen(false)
+      setDisplayNameOnboardingDraft('')
+      setWorkspaceError('')
+    } catch {
+      setDisplayNameOnboardingError('昵称保存失败，请稍后再试。')
+    } finally {
+      setDisplayNameOnboardingBusy(false)
     }
   }
 
@@ -2216,12 +2357,35 @@ function App() {
     await runMutation(() => updateProjectFeishuSettings(projectId, payload))
   }
 
-  async function copyProjectInviteLink(projectId: number) {
-    const { token } = await getProjectInviteLink(projectId)
+  async function copyProjectInviteLink(
+    projectId: number,
+    payload: {
+      encryptedShare: boolean
+      expiresInMinutes: number
+      password?: string
+    },
+  ) {
+    const inviteLink = await getProjectInviteLink(projectId, {
+      expiresInMinutes: payload.expiresInMinutes,
+      password: payload.password,
+      rotate: true,
+    })
+    const { token } = inviteLink
     const inviteUrl = buildProjectInviteUrl(token)
     if (!navigator.clipboard) throw new Error('Clipboard is not available')
-    await navigator.clipboard.writeText(inviteUrl)
-    return inviteUrl
+    const project = projects.find((item) => item.id === projectId)
+    const inviterName = authUser?.displayName || authUser?.username || '项目成员'
+    const projectName = project?.name || 'Veges'
+    const shareText =
+      payload.encryptedShare && payload.password
+        ? `${inviterName} 邀请你加入 ${projectName} 项目，请点击此链接进入：${inviteUrl}，密码：${payload.password}`
+        : inviteUrl
+    await navigator.clipboard.writeText(shareText)
+    return {
+      ...inviteLink,
+      password: payload.password,
+      url: inviteUrl,
+    }
   }
 
   async function createModule(projectId: number, rawName: string): Promise<ProjectModule | null> {
@@ -2299,6 +2463,16 @@ function App() {
   async function toggleTodo(todoId: number) {
     const todo = todos.find((item) => item.id === todoId)
     if (!todo) return
+    const project = projects.find((item) => item.id === todo.projectId)
+    const isTodoCreator = authUser?.id != null && (todo.createdByUserId ?? project?.ownerUserId) === authUser.id
+    if (!isTodoCreator && !todo.done) {
+      const data = await runMutation(() => updateTodo(todoId, { confirmationStatus: 'pending_review' }))
+      if (data) {
+        setNotifications((current) => removeTodoNotifications(current, todoId))
+      }
+      return
+    }
+    if (!isTodoCreator) return
     const completed = !todo.done
     const data = await runMutation(() => updateTodo(todoId, { done: completed }))
     if (data && completed) {
@@ -3372,13 +3546,24 @@ ${packageTimelineText}`
 
   if (!loggedIn) {
     return (
-      <LoginScreen
-        error={authError}
-        hasProjectInvite={Boolean(inviteToken)}
-        onClearError={() => setAuthError('')}
-        onFeishuSignIn={signInWithFeishu}
-        onSignIn={signIn}
-      />
+        <LoginScreen
+          error={authError}
+          hasProjectInvite={Boolean(inviteToken)}
+          invitePasswordChecking={invitePasswordChecking}
+          invitePasswordDraft={invitePasswordDraft}
+          invitePasswordError={invitePasswordError}
+          invitePasswordRequired={invitePasswordRequired}
+          invitePasswordVerified={invitePasswordVerified}
+          onClearError={() => setAuthError('')}
+          onFeishuSignIn={signInWithFeishu}
+          onInvitePasswordChange={(value) => {
+            setInvitePasswordDraft(value)
+            setInvitePasswordError('')
+            setAuthError('')
+          }}
+          onVerifyInvitePassword={submitInvitePassword}
+          onSignIn={signIn}
+        />
     )
   }
 
@@ -3432,6 +3617,121 @@ ${packageTimelineText}`
           />
         </aside>
       )}
+
+      <Dialog
+        open={displayNameOnboardingOpen}
+        onOpenChange={(open) => {
+          if (open) setDisplayNameOnboardingOpen(true)
+        }}
+      >
+        <DialogContent className="display-name-onboarding-dialog" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>请设置真实姓名</DialogTitle>
+            <DialogDescription>
+              Veges 会把你的姓名展示在待办、交付事件和飞书通知里。为了协作时能准确识别，请先把昵称改成真实姓名。
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="new-project-dialog-form display-name-onboarding-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void saveOnboardingDisplayName()
+            }}
+          >
+            <Label>
+              真实姓名
+              <Input
+                autoFocus
+                maxLength={32}
+                placeholder="例如：张三"
+                required
+                value={displayNameOnboardingDraft}
+                onChange={(event) => {
+                  setDisplayNameOnboardingDraft(event.target.value)
+                  setDisplayNameOnboardingError('')
+                }}
+              />
+            </Label>
+            {displayNameOnboardingError ? (
+              <p className="form-error">{displayNameOnboardingError}</p>
+            ) : (
+              <p className="form-note">设置后也可以在左下角账户设置中修改。</p>
+            )}
+            <DialogFooter>
+              <Button
+                type="submit"
+                disabled={displayNameOnboardingBusy || !displayNameOnboardingDraft.trim()}
+              >
+                {displayNameOnboardingBusy ? '保存中...' : '保存并进入'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(loggedIn && inviteToken && invitePasswordRequired && !invitePasswordVerified)}
+        onOpenChange={(open) => {
+          if (open) return
+          setInviteToken('')
+          setInvitePasswordDraft('')
+          setInvitePasswordError('')
+          clearInviteTokenFromUrl()
+        }}
+      >
+        <DialogContent className="invite-password-dialog">
+          <DialogHeader>
+            <DialogTitle>输入邀请密码</DialogTitle>
+            <DialogDescription>
+              这个项目邀请链接开启了加密分享。请输入分享文本中的密码，验证通过后会自动加入项目。
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="new-project-dialog-form invite-password-dialog-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitInvitePassword()
+            }}
+          >
+            <Label>
+              邀请密码
+              <Input
+                autoFocus
+                autoComplete="one-time-code"
+                placeholder="输入分享文本中的密码"
+                type="password"
+                value={invitePasswordDraft}
+                onChange={(event) => {
+                  setInvitePasswordDraft(event.target.value)
+                  setInvitePasswordError('')
+                }}
+              />
+            </Label>
+            {invitePasswordError ? (
+              <p className="form-error">{invitePasswordError}</p>
+            ) : (
+              <p className="form-note">密码只用于本次邀请验证，不会保存在浏览器本地。</p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setInviteToken('')
+                  setInvitePasswordDraft('')
+                  setInvitePasswordError('')
+                  clearInviteTokenFromUrl()
+                }}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={invitePasswordChecking || !invitePasswordDraft.trim()}>
+                {invitePasswordChecking ? '验证中...' : '验证并加入'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <section className={view === 'project' ? 'workspace cockpit-workspace' : 'workspace'}>
         {!(view === 'project' && isProjectTodoDetailActive) ? (
@@ -3571,7 +3871,9 @@ ${packageTimelineText}`
                           memberships={memberships.filter(
                             (membership) => membership.projectId === selectedProject.id,
                           )}
-                          onCopyInviteLink={() => copyProjectInviteLink(selectedProject.id)}
+                          onCopyInviteLink={(payload) =>
+                            copyProjectInviteLink(selectedProject.id, payload)
+                          }
                           onSaveFeishuSettings={(payload) =>
                             saveProjectFeishuSettings(selectedProject.id, payload)
                           }
@@ -3821,17 +4123,31 @@ function WorkspaceBootScreen() {
 function LoginScreen({
   error,
   hasProjectInvite,
+  invitePasswordChecking,
+  invitePasswordDraft,
+  invitePasswordError,
+  invitePasswordRequired,
+  invitePasswordVerified,
   onClearError,
   onFeishuSignIn,
+  onInvitePasswordChange,
+  onVerifyInvitePassword,
   onSignIn,
 }: {
   error: string
   hasProjectInvite: boolean
+  invitePasswordChecking: boolean
+  invitePasswordDraft: string
+  invitePasswordError: string
+  invitePasswordRequired: boolean
+  invitePasswordVerified: boolean
   onClearError: () => void
   onFeishuSignIn: () => Promise<void>
+  onInvitePasswordChange: (value: string) => void
+  onVerifyInvitePassword: () => Promise<void>
   onSignIn: (username: string, password: string, mode: 'login' | 'register') => void
 }) {
-  const [mode, setMode] = useState<'login' | 'register'>(hasProjectInvite ? 'register' : 'login')
+  const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -3863,6 +4179,12 @@ function LoginScreen({
     }
   }
 
+  const shouldGateInvitePassword =
+    hasProjectInvite && invitePasswordRequired && !invitePasswordVerified
+  const shouldWaitInviteCheck =
+    hasProjectInvite && invitePasswordChecking && !invitePasswordRequired && !invitePasswordVerified
+  const shouldHideAuthForm = shouldGateInvitePassword || shouldWaitInviteCheck
+
   return (
     <main className="login-screen">
       <section className="login-panel">
@@ -3880,6 +4202,12 @@ function LoginScreen({
           className="login-form"
           onSubmit={(event) => {
             event.preventDefault()
+            if (shouldGateInvitePassword) {
+              if (!invitePasswordChecking && invitePasswordDraft.trim()) {
+                void onVerifyInvitePassword()
+              }
+              return
+            }
             if (mode === 'register' && password !== confirmPassword) {
               setFormError('两次输入的密码不一致。')
               return
@@ -3887,30 +4215,51 @@ function LoginScreen({
             onSignIn(username, password, mode)
           }}
         >
-          <div className="auth-mode-switch">
-            <Button
-              className={mode === 'login' ? 'auth-mode active' : 'auth-mode'}
-              type="button"
-              variant="ghost"
-              onClick={() => switchMode('login')}
-            >
-              登录
-            </Button>
-            <Button
-              className={mode === 'register' ? 'auth-mode active' : 'auth-mode'}
-              type="button"
-              variant="ghost"
-              onClick={() => switchMode('register')}
-            >
-              注册
-            </Button>
+          <div className="login-form-heading">
+            <strong>{mode === 'register' ? '注册账号' : '登录'}</strong>
+            <span>{mode === 'register' ? '设置用户名和密码后进入项目。' : '优先使用飞书，也可以用用户名和密码继续。'}</span>
           </div>
           {hasProjectInvite && (
             <div className="login-invite-note">
               <LinkSimple size={16} />
-              <span>检测到项目邀请链接，注册或登录后会自动加入项目。</span>
+              <span>
+                {shouldGateInvitePassword
+                  ? '检测到加密项目邀请链接，请先输入邀请密码。'
+                  : '检测到项目邀请链接，注册或登录后会自动加入项目。'}
+              </span>
             </div>
           )}
+          {shouldGateInvitePassword ? (
+            <div className="invite-password-gate">
+              <Label>
+                邀请密码
+                <Input
+                  autoComplete="one-time-code"
+                  autoFocus
+                  placeholder="输入分享文本中的密码"
+                  type="password"
+                  value={invitePasswordDraft}
+                  onChange={(event) => onInvitePasswordChange(event.target.value)}
+                />
+              </Label>
+              {invitePasswordError || error ? (
+                <p className="form-error">{invitePasswordError || error}</p>
+              ) : null}
+              <Button
+                className="solid-button wide"
+                type="button"
+                disabled={invitePasswordChecking || !invitePasswordDraft.trim()}
+                onClick={() => void onVerifyInvitePassword()}
+              >
+                {invitePasswordChecking ? '验证中...' : '验证邀请密码'}
+              </Button>
+            </div>
+          ) : null}
+          {shouldWaitInviteCheck ? (
+            <p className="form-note">正在检查邀请链接...</p>
+          ) : null}
+          {!shouldHideAuthForm && (
+            <>
           <Label>
             用户名
             <Input
@@ -3975,11 +4324,29 @@ function LoginScreen({
           </Button>
           <p className="form-note">
             {mode === 'register'
-              ? hasProjectInvite
-                ? '注册后会创建个人工作区并加入受邀项目，密码会加密保存。'
-                : '共享 AI 环境下，密码注册需要项目邀请；也可以使用公司飞书账号继续。'
-              : '使用你注册时设置的用户名和密码登录；也可以直接使用飞书账号登录或注册。'}
+              ? (
+                  <>
+                    已有账号？{' '}
+                    <button className="inline-text-button" type="button" onClick={() => switchMode('login')}>
+                      返回登录
+                    </button>
+                    。{hasProjectInvite
+                      ? '注册后会创建个人工作区并加入受邀项目，密码会加密保存。'
+                      : '共享 AI 环境下，密码注册需要项目邀请；也可以使用公司飞书账号继续。'}
+                  </>
+                )
+              : (
+                  <>
+                    使用你{' '}
+                    <button className="inline-text-button" type="button" onClick={() => switchMode('register')}>
+                      注册
+                    </button>
+                    {' '}时设置的用户名和密码登录；也可以直接使用飞书账号登录或注册。
+                  </>
+                )}
           </p>
+            </>
+          )}
         </form>
       </section>
     </main>
@@ -4866,6 +5233,25 @@ function ProjectDetail({
   )
 }
 
+function formatInviteDurationLabel(minutes: number) {
+  if (minutes >= 1440) return `${Math.round(minutes / 1440)} 天`
+  if (minutes >= 60) return `${Math.round(minutes / 60)} 小时`
+  return `${minutes} 分钟`
+}
+
+function generateInviteSharePassword(length = 8) {
+  const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+  const values = new Uint32Array(length)
+  if (window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(values)
+  } else {
+    values.forEach((_, index) => {
+      values[index] = Math.floor(Math.random() * alphabet.length)
+    })
+  }
+  return Array.from(values, (value) => alphabet[value % alphabet.length]).join('')
+}
+
 function ProjectMembersPanel({
   memberships,
   onCopyInviteLink,
@@ -4875,7 +5261,17 @@ function ProjectMembersPanel({
   project,
 }: {
   memberships: ProjectMembership[]
-  onCopyInviteLink: () => Promise<string>
+  onCopyInviteLink: (payload: {
+    encryptedShare: boolean
+    expiresInMinutes: number
+    password?: string
+  }) => Promise<{
+    expiresAt: string
+    expiresInMinutes: number
+    password?: string
+    token: string
+    url: string
+  }>
   onInvite: (username: string) => void
   onRemove: (membershipId: number) => void
   onSaveFeishuSettings: (payload: {
@@ -4888,6 +5284,8 @@ function ProjectMembersPanel({
   const [username, setUsername] = useState('')
   const [memberPage, setMemberPage] = useState(0)
   const [inviteLinkStatus, setInviteLinkStatus] = useState('')
+  const [inviteExpiresInMinutes, setInviteExpiresInMinutes] = useState(10)
+  const [encryptedInviteShare, setEncryptedInviteShare] = useState(false)
   const [isCopyingInviteLink, setIsCopyingInviteLink] = useState(false)
   const [feishuChatId, setFeishuChatId] = useState(project.feishuChatId ?? '')
   const [feishuChatEnabled, setFeishuChatEnabled] = useState(Boolean(project.feishuChatEnabled))
@@ -4920,8 +5318,17 @@ function ProjectMembersPanel({
     setIsCopyingInviteLink(true)
     setInviteLinkStatus('')
     try {
-      await onCopyInviteLink()
-      setInviteLinkStatus('已复制')
+      const password = encryptedInviteShare ? generateInviteSharePassword() : undefined
+      const inviteLink = await onCopyInviteLink({
+        encryptedShare: encryptedInviteShare,
+        expiresInMinutes: inviteExpiresInMinutes,
+        password,
+      })
+      setInviteLinkStatus(
+        encryptedInviteShare && inviteLink.password
+          ? `已复制加密分享文本，${formatInviteDurationLabel(inviteLink.expiresInMinutes)}内有效`
+          : `已复制，${formatInviteDurationLabel(inviteLink.expiresInMinutes)}内有效`,
+      )
     } catch {
       setInviteLinkStatus('复制失败，请稍后再试')
     } finally {
@@ -5017,20 +5424,53 @@ function ProjectMembersPanel({
         <section className="project-config-section">
           <div className="project-config-section-head">
             <strong>项目邀请链接</strong>
-            <p>复制给新成员，TA 注册或登录后会自动加入这个项目。</p>
+            <p>复制给新成员，TA 注册或登录后会自动加入这个项目。链接默认 10 分钟后失效。</p>
           </div>
           <div className="project-invite-link-actions">
-            <Button
-              className="solid-button"
-              type="button"
-              disabled={isCopyingInviteLink}
-              onClick={copyInviteLink}
-            >
-              <CopySimple size={15} />
-              {isCopyingInviteLink ? '复制中' : inviteLinkStatus === '已复制' ? '已复制' : '复制链接'}
-            </Button>
+            <label className="project-invite-expiry-field">
+              <span>有效时长</span>
+              <Select
+                value={String(inviteExpiresInMinutes)}
+                onValueChange={(value) => setInviteExpiresInMinutes(Number(value))}
+              >
+                <SelectTrigger aria-label="选择邀请链接有效时长">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[10, 30, 60, 240, 1440].map((minutes) => (
+                    <SelectItem key={minutes} value={String(minutes)}>
+                      {formatInviteDurationLabel(minutes)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <div className="project-invite-copy-group">
+              <label className="project-invite-encrypted-share">
+                <input
+                  type="checkbox"
+                  checked={encryptedInviteShare}
+                  onChange={(event) => {
+                    setEncryptedInviteShare(event.target.checked)
+                    setInviteLinkStatus('')
+                  }}
+                />
+                <span>加密分享</span>
+              </label>
+              <Button
+                className="solid-button"
+                type="button"
+                disabled={isCopyingInviteLink}
+                onClick={copyInviteLink}
+              >
+                <CopySimple size={15} />
+                {isCopyingInviteLink
+                  ? '复制中'
+                  : inviteLinkStatus.startsWith('已复制') ? '已复制' : '复制链接'}
+              </Button>
+            </div>
           </div>
-          {inviteLinkStatus && inviteLinkStatus !== '已复制' ? (
+          {inviteLinkStatus ? (
             <p className="project-invite-link-status">{inviteLinkStatus}</p>
           ) : null}
         </section>
@@ -5522,7 +5962,7 @@ function NotificationCenterView({
                         disabled={!currentUserId}
                         onClick={() => onToggleTodo(todo.id)}
                       >
-                        完成
+                        提交验收
                       </Button>
                     </div>
                   </article>
@@ -8817,6 +9257,7 @@ function TodoFilterBuilderDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="confirmed">已确认</SelectItem>
+            <SelectItem value="pending_review">待验收</SelectItem>
             <SelectItem value="rejected">已驳回</SelectItem>
           </SelectContent>
         </Select>
@@ -9202,9 +9643,10 @@ function TodoEditorDialog({
     isDetailMode && !editing && todo && onCreateTodoNote && onUpdateTodoNote,
   )
   const statusLabel = todo?.done ? '已完成' : '未完成'
-  const confirmLabel = todo?.confirmationStatus === 'rejected' ? '已驳回' : '已确认'
+  const confirmLabel = todo ? todoConfirmationCopy[todo.confirmationStatus] : '已确认'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
+  const titleCharacterCount = Array.from(title).length
 
   if (!open) {
     return null
@@ -9286,13 +9728,24 @@ function TodoEditorDialog({
           <>
             <Label>
               待办标题
-              <MentionInput
-                autoFocus
-                members={members}
-                placeholder="给这条待办起一个清晰的标题..."
-                value={title}
-                onChange={onTitleChange}
-              />
+              <div className="todo-title-input-wrap">
+                <MentionInput
+                  autoFocus
+                  members={members}
+                  maxLength={todoTitleMaxLength}
+                  placeholder="给这条待办起一个清晰的标题..."
+                  value={title}
+                  onChange={onTitleChange}
+                />
+                <span
+                  aria-live="polite"
+                  className={titleCharacterCount > todoTitleMaxLength
+                    ? 'todo-title-counter over-limit'
+                    : 'todo-title-counter'}
+                >
+                  {titleCharacterCount}/{todoTitleMaxLength}
+                </span>
+              </div>
             </Label>
             <div className="todo-editor-inline-grid">
               <Label className="todo-inline-field-half">
@@ -9500,8 +9953,9 @@ function TodoList({
     : todos.find((todo) => todo.id === initialTodoId) ?? null
   const [page, setPage] = useState(0)
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
-  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
-  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(defaultTodoFilterState.join)
+	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
+	  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
+	  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(defaultTodoFilterState.join)
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>(() =>
     defaultTodoFilterState.conditions,
   )
@@ -9585,7 +10039,7 @@ function TodoList({
         priorityCopy[todo.priority],
         todo.dueDate,
         todo.createdAt,
-        todo.confirmationStatus === 'confirmed' ? '已确认 confirmed' : '已驳回 rejected',
+        `${todoConfirmationCopy[todo.confirmationStatus]} ${todo.confirmationStatus}`,
         todo.done ? '已完成 完成 done' : '未完成 待办 open',
       ]
         .join(' ')
@@ -9639,8 +10093,21 @@ function TodoList({
     )
   }
 
+  function isTodoCreator(todo: Todo) {
+    const project = projectById.get(todo.projectId)
+    return currentUserId != null && (todo.createdByUserId ?? project?.ownerUserId) === currentUserId
+  }
+
+  function canSubmitTodoForReview(todo: Todo) {
+    return !todo.done && todo.confirmationStatus !== 'rejected' && canRespondToTodo(todo)
+  }
+
   function canToggleTodoDone(todo: Todo) {
-    return todo.confirmationStatus === 'confirmed' && canRespondToTodo(todo)
+    return isTodoCreator(todo) && todo.confirmationStatus !== 'rejected'
+  }
+
+  function canUseTodoCheckbox(todo: Todo) {
+    return canToggleTodoDone(todo) || canSubmitTodoForReview(todo)
   }
 
   useEffect(() => {
@@ -9659,8 +10126,13 @@ function TodoList({
   }, [editingTodoId, onDetailModeChange])
 
   function handleTodoCheckboxClick(todo: Todo) {
-    if (!canToggleTodoDone(todo)) return
-    onUpdateTodo(todo.id, { done: !todo.done })
+    if (canToggleTodoDone(todo)) {
+      onUpdateTodo(todo.id, { done: !todo.done })
+      return
+    }
+    if (canSubmitTodoForReview(todo)) {
+      setTodoPendingReviewTarget(todo)
+    }
   }
 
   function closeEditDialog() {
@@ -9811,6 +10283,41 @@ function TodoList({
           }}
         />
       </div>
+      <Dialog
+        open={Boolean(todoPendingReviewTarget)}
+        onOpenChange={(open) => {
+          if (!open) setTodoPendingReviewTarget(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>提交验收？</DialogTitle>
+            <DialogDescription>
+              非待办创建人不能完成任务，只能提交验收，是否确认提交？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => setTodoPendingReviewTarget(null)}
+            >
+              取消
+            </Button>
+            <Button
+              className="solid-button"
+              type="button"
+              onClick={() => {
+                if (!todoPendingReviewTarget) return
+                onUpdateTodo(todoPendingReviewTarget.id, { confirmationStatus: 'pending_review' })
+                setTodoPendingReviewTarget(null)
+              }}
+            >
+              确认提交
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {sortedTodos.length === 0 ? (
         <p className="empty-state">暂时没有待办。</p>
       ) : filteredTodos.length === 0 ? (
@@ -9821,8 +10328,10 @@ function TodoList({
             const project = projects.find((item) => item.id === todo.projectId)
             const rowCanManageTodo = canManageTodo(todo)
             const rowCanRespondToTodo = canRespondToTodo(todo)
-            const isCheckboxDisabled = !canToggleTodoDone(todo)
-            const checkboxLabel = todo.done ? '标记为未完成' : '标记为已完成'
+            const isCheckboxDisabled = !canUseTodoCheckbox(todo)
+            const checkboxLabel = canToggleTodoDone(todo)
+              ? (todo.done ? '标记为未完成' : '标记为已完成')
+              : '提交验收'
             const indicators = getTodoContentIndicators(todo)
             return (
               <article

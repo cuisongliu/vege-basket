@@ -93,6 +93,13 @@ Compatibility aliases remain accepted for `OSS_UI_MIDDLEWARE_ROOT`,
 `OSS_UI_DOWNLOAD_EXPIRE_SECONDS`, and `TRIAL_COMBO_PACKAGE_RULES_FILE`. New deployments
 should use the `PACKAGE_MARKET_*` names.
 
+## Deployment Inputs
+
+The Sealos template requires `VEGES_IMAGE` to be an immutable `linux/amd64` image tag or
+digest built from the revision being deployed. The Deployment annotation, application
+container, and todo-digest CronJob all consume this single value so the API and worker
+cannot silently run different source revisions.
+
 ## HTTP API Families
 
 Protected JSON endpoints use `Authorization: Bearer <session-token>`. The primary route
@@ -103,7 +110,7 @@ families are:
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
 | Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
-| Projects | `/api/projects`, journals, risks, modules, invitations, invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
+| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
@@ -119,7 +126,7 @@ must remain bound to the authorized project ID.
 
 - Project status: `active`, `paused`, `completed`, `archived`.
 - Todo priority: `high`, `medium`, `low`.
-- Todo confirmation: `confirmed`, `rejected`.
+- Todo confirmation: `confirmed`, `pending_review`, `rejected`.
 - Todo activity event: `created`, `assigned`, `confirmed`, `rejected`, `completed`, `reopened`.
 - Todo proposal batch: `pending`, `confirmed`, `discarded`; proposal item: `pending`, `accepted`, `rejected`.
 - AI conversation context: `general`, `project`, `conversation-analysis`; AI turn intent:
@@ -287,6 +294,12 @@ Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid in
 inaccessible resources, 409 for state conflicts, 413 for an oversized Markdown/AI
 context, 415 for unsupported image media, 429 for AI throttling, and 503 for an
 unconfigured dependency.
+
+Project invite links default to a 10 minute lifetime. Owners can request one of the
+supported durations when generating a link. Invite links may optionally require a share
+password; the server stores only a bcrypt hash and requires the password during login,
+registration, Feishu sign-in, or explicit invite acceptance. Expired, revoked, or
+password-mismatched tokens are rejected during invite acceptance.
 
 Package-item batch failures additionally return `code`, `requestId`, and `details`.
 `details.phase` is one of `validate_object_keys`, `persist_package_items`, or
