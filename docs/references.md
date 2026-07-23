@@ -266,9 +266,12 @@ confirmed or discarded history never receives a synthetic date.
 The daily digest subscription is Feishu-only, defaults to disabled at `10:00`
 `Asia/Shanghai`, and sends previous-day completion/reopen activity plus the current
 outstanding backlog at delivery time. Delivery uses a passive Feishu JSON 2.0 card with
-no callback actions. The run retains deterministic, readable text as its canonical
-content, then wraps that text as the card header and Markdown body for delivery so retries
-and older queued runs remain compatible. User-controlled item text is Markdown-escaped;
+no callback actions. The card separates the date into a subtitle, uses a two-column
+activity/backlog overview, renders category headings as distinct shaded bands, and keeps
+each todo's title and project metadata separate from its right-aligned due status. The run
+retains deterministic, readable text as its canonical content, then maps that text into
+card elements so retries and older queued runs remain compatible. User-controlled item
+text is Markdown-escaped;
 legacy plain-text bodies are rendered as Markdown literals when retried. Users may change
 the send time. Disconnecting Feishu disables the subscription.
 

@@ -272,13 +272,17 @@ function formatDigestItem(item: {
   let dueLabel = `原截止 ${formatMonthDay(item.dueDate)}`
   if (mode === 'overdue') {
     const overdueDays = Math.max(1, daysBetweenIsoDates(item.dueDate, deliveryLocalDate))
-    dueLabel = `截止 ${formatMonthDay(item.dueDate)} · 已逾期 ${overdueDays} 天`
+    dueLabel = `已逾期 ${overdueDays} 天 · 截止 ${formatMonthDay(item.dueDate)}`
   } else if (mode === 'outstanding') {
     dueLabel = item.dueDate === deliveryLocalDate
       ? '今日截止'
       : `截止 ${formatMonthDay(item.dueDate)}`
   }
-  return [`- **${title}**`, `  ${projectName} · ${priorityLabel(item.priority)} · ${dueLabel}`]
+  return [
+    `- **${title}**`,
+    `  ${projectName} · ${priorityLabel(item.priority)}`,
+    `  ${dueLabel}`,
+  ]
 }
 
 function appendSection(params: {
@@ -359,7 +363,295 @@ export function formatDailyTodoDigest(facts: DailyTodoDigestFacts) {
   return lines.join('\n')
 }
 
+type ParsedDigestItem = {
+  metadata: string
+  timing: string
+  title: string
+}
+
+type ParsedDigestSection = {
+  count: number
+  items: ParsedDigestItem[]
+  remainingText: string
+  title: string
+}
+
+type ParsedDigestContent = {
+  activitySummary: string
+  backlogSummary: string
+  dateLabel: string
+  sections: ParsedDigestSection[]
+}
+
+type FeishuCardElement = Record<string, unknown>
+
+function parseDigestSectionHeading(value: string) {
+  if (!(value.startsWith('**') && value.endsWith('**'))) return null
+  const content = value.slice(2, -2)
+  const separatorIndex = content.lastIndexOf(' · ')
+  if (separatorIndex <= 0) return null
+  const title = content.slice(0, separatorIndex)
+  const count = Number(content.slice(separatorIndex + 3))
+  if (!Number.isInteger(count) || count < 0) return null
+  return { count, title }
+}
+
+function parseDigestItemTitle(value: string) {
+  if (!(value.startsWith('- **') && value.endsWith('**'))) return null
+  const title = value.slice(4, -2)
+  return title || null
+}
+
+function parseStructuredDigestContent(content: string): ParsedDigestContent | null {
+  const titlePrefix = 'Veges 待办日报 · '
+  const lines = content.split('\n')
+  const rawTitle = lines[0]?.trim() ?? ''
+  if (!rawTitle.startsWith(titlePrefix)) return null
+  const dateLabel = rawTitle.slice(titlePrefix.length).trim()
+  if (!dateLabel) return null
+
+  let cursor = 1
+  const skipBlankLines = () => {
+    while (cursor < lines.length && !lines[cursor]?.trim()) cursor += 1
+  }
+  skipBlankLines()
+  const activitySummary = lines[cursor]?.trim() ?? ''
+  cursor += 1
+  skipBlankLines()
+  const backlogSummary = lines[cursor]?.trim() ?? ''
+  cursor += 1
+  if (!(activitySummary && backlogSummary)) return null
+
+  const sections: ParsedDigestSection[] = []
+  while (cursor < lines.length) {
+    skipBlankLines()
+    if (cursor >= lines.length) break
+    const heading = parseDigestSectionHeading(lines[cursor]?.trim() ?? '')
+    if (!heading) return null
+    cursor += 1
+    const section: ParsedDigestSection = {
+      ...heading,
+      items: [],
+      remainingText: '',
+    }
+
+    while (cursor < lines.length) {
+      skipBlankLines()
+      if (cursor >= lines.length) break
+      const currentLine = lines[cursor]?.trim() ?? ''
+      if (parseDigestSectionHeading(currentLine)) break
+      if (currentLine.startsWith('另有 ')) {
+        section.remainingText = currentLine
+        cursor += 1
+        continue
+      }
+
+      const title = parseDigestItemTitle(currentLine)
+      if (!title) return null
+      cursor += 1
+      const metadataLine = lines[cursor] ?? ''
+      if (!metadataLine.startsWith('  ')) return null
+      cursor += 1
+      let timing = ''
+      const timingLine = lines[cursor] ?? ''
+      if (timingLine.startsWith('  ')) {
+        timing = timingLine.trim()
+        cursor += 1
+      }
+      section.items.push({
+        metadata: metadataLine.trim(),
+        timing,
+        title,
+      })
+    }
+    sections.push(section)
+  }
+
+  return {
+    activitySummary,
+    backlogSummary,
+    dateLabel,
+    sections,
+  }
+}
+
+function digestMarkdownElement(params: {
+  content: string
+  margin?: string
+  textAlign?: 'left' | 'right'
+}): FeishuCardElement {
+  return {
+    content: params.content,
+    margin: params.margin ?? '0px 0px 0px 0px',
+    tag: 'markdown',
+    text_align: params.textAlign ?? 'left',
+    text_size: 'normal',
+  }
+}
+
+function digestColumn(elements: FeishuCardElement[], weight: number) {
+  return {
+    elements,
+    tag: 'column',
+    vertical_align: 'top',
+    weight,
+    width: 'weighted',
+  }
+}
+
+function digestColumnSet(
+  columns: Array<ReturnType<typeof digestColumn>>,
+  options: {
+    backgroundStyle?: 'default' | 'grey'
+    margin?: string
+  } = {},
+) {
+  return {
+    background_style: options.backgroundStyle ?? 'default',
+    columns,
+    flex_mode: 'stretch',
+    horizontal_spacing: '12px',
+    margin: options.margin ?? '0px',
+    tag: 'column_set',
+  }
+}
+
+function digestDivider(margin: string): FeishuCardElement {
+  return { margin, tag: 'hr' }
+}
+
+function stripDigestSummaryPrefix(value: string, prefix: string) {
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value
+}
+
+function digestSectionColor(title: string) {
+  if (title === '已逾期') return 'red'
+  if (title === '昨日完成') return 'green'
+  if (title === '昨日重开') return 'orange'
+  return 'blue'
+}
+
+function buildDigestTimingElements(item: ParsedDigestItem, sectionTitle: string) {
+  if (!item.timing) return []
+  if (sectionTitle === '已逾期') {
+    const separatorIndex = item.timing.indexOf(' · ')
+    const overdueLabel = separatorIndex >= 0
+      ? item.timing.slice(0, separatorIndex).replace(/^已/, '')
+      : item.timing.replace(/^已/, '')
+    const dueLabel = separatorIndex >= 0 ? item.timing.slice(separatorIndex + 3) : ''
+    const elements = [digestMarkdownElement({
+      content: `<text_tag color="red">${overdueLabel}</text_tag>`,
+      textAlign: 'right',
+    })]
+    if (dueLabel) {
+      elements.push(digestMarkdownElement({
+        content: `<font color="grey">${dueLabel}</font>`,
+        margin: '4px 0px 0px 0px',
+        textAlign: 'right',
+      }))
+    }
+    return elements
+  }
+  if (item.timing === '今日截止') {
+    return [digestMarkdownElement({
+      content: '<text_tag color="orange">今日截止</text_tag>',
+      textAlign: 'right',
+    })]
+  }
+  return [digestMarkdownElement({
+    content: `<font color="grey">${item.timing}</font>`,
+    textAlign: 'right',
+  })]
+}
+
+function buildStructuredFeishuDigestCard(parsed: ParsedDigestContent) {
+  const elements: FeishuCardElement[] = [digestColumnSet([
+    digestColumn([
+      digestMarkdownElement({ content: '<font color="grey">昨日动态</font>' }),
+      digestMarkdownElement({
+        content: stripDigestSummaryPrefix(parsed.activitySummary, '昨日'),
+        margin: '4px 0px 0px 0px',
+      }),
+    ], 1),
+    digestColumn([
+      digestMarkdownElement({ content: '<font color="grey">当前待办</font>' }),
+      digestMarkdownElement({
+        content: stripDigestSummaryPrefix(parsed.backlogSummary, '当前'),
+        margin: '4px 0px 0px 0px',
+      }),
+    ], 1),
+  ])]
+
+  parsed.sections.forEach((section) => {
+    const color = digestSectionColor(section.title)
+    elements.push(
+      digestColumnSet([
+        digestColumn([
+          digestMarkdownElement({ content: `**${section.title}**` }),
+        ], 3),
+        digestColumn([
+          digestMarkdownElement({
+            content: `<text_tag color="${color}">${section.count} 项</text_tag>`,
+            textAlign: 'right',
+          }),
+        ], 1),
+      ], {
+        backgroundStyle: 'grey',
+        margin: '14px 0px 0px 0px',
+      }),
+    )
+
+    section.items.forEach((item, index) => {
+      if (index > 0) elements.push(digestDivider('8px 0px 8px 0px'))
+      const timingElements = buildDigestTimingElements(item, section.title)
+      const columns = [digestColumn([
+        digestMarkdownElement({ content: `**${item.title}**` }),
+        digestMarkdownElement({
+          content: `<font color="grey">${item.metadata}</font>`,
+          margin: '4px 0px 0px 0px',
+        }),
+      ], timingElements.length > 0 ? 3 : 1)]
+      if (timingElements.length > 0) columns.push(digestColumn(timingElements, 2))
+      elements.push(digestColumnSet(columns, {
+        margin: index === 0 ? '10px 0px 0px 0px' : '0px',
+      }))
+    })
+
+    if (section.remainingText) {
+      elements.push(digestMarkdownElement({
+        content: `<font color="grey">${section.remainingText}</font>`,
+        margin: '10px 0px 0px 0px',
+      }))
+    }
+  })
+
+  return {
+    body: {
+      direction: 'vertical',
+      elements,
+      padding: '16px 16px 14px 16px',
+      vertical_spacing: '0px',
+    },
+    header: {
+      padding: '14px 16px 14px 16px',
+      subtitle: {
+        content: parsed.dateLabel,
+        tag: 'plain_text',
+      },
+      template: 'turquoise',
+      title: {
+        content: 'Veges 待办日报',
+        tag: 'plain_text',
+      },
+    },
+    schema: '2.0',
+  }
+}
+
 export function buildFeishuDigestCardContent(content: string) {
+  const parsed = parseStructuredDigestContent(content)
+  if (parsed) return JSON.stringify(buildStructuredFeishuDigestCard(parsed))
+
   const [rawTitle = '', ...rawBodyLines] = content.split('\n')
   const title = cleanDigestText(rawTitle, 'Veges 待办日报').slice(0, 80)
   const rawBody = rawBodyLines.join('\n').trim()

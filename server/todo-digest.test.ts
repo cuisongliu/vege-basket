@@ -124,22 +124,26 @@ test('formats a deterministic digest without AI', () => {
     '**昨日完成 · 1**',
     '',
     '- **Ship release**',
-    '  Alpha · 高优先级 · 原截止 7月15日',
+    '  Alpha · 高优先级',
+    '  原截止 7月15日',
     '',
     '**昨日重开 · 1**',
     '',
     '- **Review metrics**',
-    '  Beta · 中优先级 · 原截止 7月18日',
+    '  Beta · 中优先级',
+    '  原截止 7月18日',
     '',
     '**已逾期 · 1**',
     '',
     '- **Repair alert**',
-    '  Alpha · 高优先级 · 截止 7月14日 · 已逾期 2 天',
+    '  Alpha · 高优先级',
+    '  已逾期 2 天 · 截止 7月14日',
     '',
     '**待处理 · 1**',
     '',
     '- **Polish docs**',
-    '  Beta · 低优先级 · 截止 7月18日',
+    '  Beta · 低优先级',
+    '  截止 7月18日',
   ].join('\n'))
 })
 
@@ -187,7 +191,7 @@ test('limits digest sections and escapes user text for Lark Markdown', () => {
   assert.doesNotMatch(message, /Backlog 6/)
 })
 
-test('wraps readable digest content in a passive Feishu card', () => {
+test('builds a structured passive Feishu card for readable digest content', () => {
   const content = [
     'Veges 待办日报 · 7月16日',
     '',
@@ -195,9 +199,18 @@ test('wraps readable digest content in a passive Feishu card', () => {
     '当前没有待处理事项',
   ].join('\n')
   const card = JSON.parse(buildFeishuDigestCardContent(content)) as {
-    body: { elements: Array<{ content: string; tag: string }> }
+    body: {
+      elements: Array<{
+        columns?: Array<{ elements: Array<{ content: string; tag: string }> }>
+        tag: string
+      }>
+    }
     config?: unknown
-    header: { template: string; title: { content: string; tag: string } }
+    header: {
+      subtitle: { content: string; tag: string }
+      template: string
+      title: { content: string; tag: string }
+    }
     schema: string
   }
 
@@ -205,15 +218,102 @@ test('wraps readable digest content in a passive Feishu card', () => {
   assert.equal(card.config, undefined)
   assert.equal(card.header.template, 'turquoise')
   assert.deepEqual(card.header.title, {
-    content: 'Veges 待办日报 · 7月16日',
+    content: 'Veges 待办日报',
+    tag: 'plain_text',
+  })
+  assert.deepEqual(card.header.subtitle, {
+    content: '7月16日',
     tag: 'plain_text',
   })
   assert.equal(card.body.elements.length, 1)
-  assert.equal(card.body.elements[0]?.tag, 'markdown')
-  assert.equal(card.body.elements[0]?.content, [
+  assert.equal(card.body.elements[0]?.tag, 'column_set')
+  assert.equal(card.body.elements[0]?.columns?.length, 2)
+  assert.equal(card.body.elements[0]?.columns?.[0]?.elements[1]?.content, '无完成或重开')
+  assert.equal(card.body.elements[0]?.columns?.[1]?.elements[1]?.content, '没有待处理事项')
+})
+
+test('lays out digest items with stable metadata and status columns', () => {
+  const content = [
+    'Veges 待办日报 · 7月16日',
+    '',
     '昨日无完成或重开',
-    '当前没有待处理事项',
-  ].join('\n'))
+    '当前待处理 **1** 项 · 已逾期 **1** 项',
+    '',
+    '**已逾期 · 1**',
+    '',
+    '- **Repair alert**',
+    '  Alpha · 高优先级',
+    '  已逾期 2 天 · 截止 7月14日',
+  ].join('\n')
+  const card = JSON.parse(buildFeishuDigestCardContent(content)) as {
+    body: {
+      elements: Array<{
+        background_style?: string
+        columns?: Array<{ elements: Array<{ content: string; text_align: string }> }>
+        margin?: string
+        tag: string
+      }>
+    }
+  }
+
+  assert.deepEqual(card.body.elements.map((element) => element.tag), [
+    'column_set',
+    'column_set',
+    'column_set',
+  ])
+  const sectionHeader = card.body.elements[1]
+  assert.equal(sectionHeader?.columns?.[0]?.elements[0]?.content, '**已逾期**')
+  assert.equal(
+    sectionHeader?.columns?.[1]?.elements[0]?.content,
+    '<text_tag color="red">1 项</text_tag>',
+  )
+  assert.equal(sectionHeader?.background_style, 'grey')
+  assert.equal(sectionHeader?.margin, '14px 0px 0px 0px')
+  const itemRow = card.body.elements[2]
+  assert.equal(itemRow?.margin, '10px 0px 0px 0px')
+  assert.equal(itemRow?.columns?.[0]?.elements[0]?.content, '**Repair alert**')
+  assert.equal(
+    itemRow?.columns?.[0]?.elements[1]?.content,
+    '<font color="grey">Alpha · 高优先级</font>',
+  )
+  assert.equal(
+    itemRow?.columns?.[1]?.elements[0]?.content,
+    '<text_tag color="red">逾期 2 天</text_tag>',
+  )
+  assert.equal(itemRow?.columns?.[1]?.elements[0]?.text_align, 'right')
+  assert.equal(
+    itemRow?.columns?.[1]?.elements[1]?.content,
+    '<font color="grey">截止 7月14日</font>',
+  )
+})
+
+test('upgrades previous Markdown card content without merging item labels', () => {
+  const previousContent = [
+    'Veges 待办日报 · 7月16日',
+    '',
+    '昨日无完成或重开',
+    '当前待处理 **1** 项 · 已逾期 **1** 项',
+    '',
+    '**已逾期 · 1**',
+    '',
+    '- **Repair alert**',
+    '  Alpha · 高优先级 · 截止 7月14日 · 已逾期 2 天',
+  ].join('\n')
+  const card = JSON.parse(buildFeishuDigestCardContent(previousContent)) as {
+    body: {
+      elements: Array<{
+        columns?: Array<{ elements: Array<{ content: string }> }>
+      }>
+    }
+  }
+  const itemRow = card.body.elements[2]
+
+  assert.equal(itemRow?.columns?.length, 1)
+  assert.equal(itemRow?.columns?.[0]?.elements[0]?.content, '**Repair alert**')
+  assert.equal(
+    itemRow?.columns?.[0]?.elements[1]?.content,
+    '<font color="grey">Alpha · 高优先级 · 截止 7月14日 · 已逾期 2 天</font>',
+  )
 })
 
 test('keeps legacy plain-text digests usable for card retries', () => {
