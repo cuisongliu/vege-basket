@@ -33,6 +33,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { TimePicker } from '@/components/ui/time-picker'
 
 type AccountSettingsSection = 'profile' | 'notifications' | 'security'
 type MutationToken = {
@@ -663,29 +664,31 @@ export function AccountSettingsDialog({
                     <>
                     {subscriptionDraft.enabled ? (
                       <div className="account-settings-notification-time">
-                        <Label>
-                          推送时间
-                          <Input
+                        <div className="grid gap-2">
+                          <Label htmlFor="account-settings-digest-time">
+                            推送时间
+                          </Label>
+                          <TimePicker
                             aria-describedby={
                               subscriptionSaveError
                                 ? 'account-settings-subscription-error'
                                 : undefined
                             }
                             aria-invalid={Boolean(subscriptionSaveError)}
+                            aria-label="推送时间"
                             disabled={notificationMutationBusy || !feishuLinked}
-                            required
-                            type="time"
+                            id="account-settings-digest-time"
                             value={subscriptionDraft.localSendTime}
-                            onChange={(event) => {
+                            onValueChange={(localSendTime) => {
                               setSubscriptionDraft((current) => ({
                                 ...current,
-                                localSendTime: event.target.value,
+                                localSendTime,
                               }))
                               setSubscriptionSaveError('')
                               setSubscriptionSuccess('')
                             }}
                           />
-                        </Label>
+                        </div>
                         <span className="account-settings-notification-timezone">
                           {subscriptionDraft.timezone || 'Asia/Shanghai'}
                         </span>
