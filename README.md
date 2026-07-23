@@ -97,6 +97,7 @@ git diff --check
 
 ## 部署边界
 
+- 从主分支升级到 AI 对话历史与飞书日报版本时，部署负责人应先完成 [配置更新说明](./docs/configuration-update-main-to-ai-workflows.md)，尤其要准备实例级 AI 配置并保留现有数据库与完整加密 key ring。
 - [Dockerfile](./Dockerfile) 构建前后端并以单个 Node.js 服务监听 `8787`；生产镜像默认发布为 `linux/amd64`。
 - [.sealos/template/index.yaml](./.sealos/template/index.yaml) 负责创建 PostgreSQL、应用工作负载、待办日报 CronJob、健康检查、Service 和 TLS Ingress。部署时必须通过 `VEGES_IMAGE` 提供由当前源码构建的不可变 `linux/amd64` 镜像标签或摘要；应用和日报 worker 共用这一输入。
 - AI、飞书和 OSS 等运行配置与其他服务配置一样，由部署输入直接传入容器环境变量；不要把真实值写入仓库或镜像。

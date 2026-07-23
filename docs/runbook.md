@@ -154,11 +154,13 @@ Publishing an image or mutating a cluster requires explicit authorization.
 
 ## Rollback
 
-Application rollback means restoring the previous immutable amd64 image in both the
-application Deployment and todo-digest CronJob while retaining the current database and
-all encryption keys. Suspend the CronJob first when the incident involves duplicate or
-incorrect digest delivery. Because startup DDL has no down migration, an image rollback
-is safe only when the previous server can read the current schema.
+Application rollback retains the current database and complete encryption key ring. Suspend
+the todo-digest CronJob before changing images. When the target version contains the digest
+worker, restore the same immutable amd64 image to both the application Deployment and the
+CronJob. When rolling back to a version from before the digest worker existed, keep the
+CronJob suspended or remove it and restore only the application Deployment; an older image
+without `server/todo-digest-worker.ts` cannot run that job. Because startup DDL has no down
+migration, an image rollback is safe only when the previous server can read the current schema.
 
 If a release performed an incompatible data change, stop writes and restore the
 pre-release database snapshot together with the previous image. Never run ad hoc reverse
