@@ -121,6 +121,9 @@ operator should:
    deployment success from `.sealos/build/build-result.json` or `.sealos/state.json` alone.
 7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
    record in an authorized test database before enabling a real user's subscription.
+   Confirm the recipient receives a passive Feishu JSON 2.0 card titled with the
+   scheduled delivery date, previous-day activity is separate from the current backlog,
+   long sections stop after five items, and no card action or callback is present.
 
 AI conversation protocol releases replace the stateless `/api/ai/chat`, the old
 `/api/ai/todo-proposals` extraction route, and direct turn creation without a semantic

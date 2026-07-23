@@ -4,6 +4,7 @@ import type { QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool } from './db.ts'
 import {
+  buildFeishuDigestCardContent,
   dailyTodoDigestKind,
   digestMaxAttempts,
   formatDailyTodoDigest,
@@ -377,8 +378,8 @@ async function sendFeishuDigest(openId: string, content: string) {
       'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id',
       {
         body: JSON.stringify({
-          content: JSON.stringify({ text: content }),
-          msg_type: 'text',
+          content: buildFeishuDigestCardContent(content),
+          msg_type: 'interactive',
           receive_id: openId,
         }),
         headers: {

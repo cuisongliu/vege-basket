@@ -3,10 +3,11 @@ export const defaultDigestTimeZone = 'Asia/Shanghai'
 export const defaultDigestSendTime = '10:00'
 export const digestMaxAttempts = 3
 
-const digestListLimit = 10
+const digestListLimit = 5
 const digestRetryBaseDelayMs = 5 * 60 * 1_000
 const digestRetryMaxDelayMs = 60 * 60 * 1_000
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
+const legacyDigestTitlePattern = /^Veges 待办日报 \| \d{4}-\d{2}-\d{2}$/
 const sendTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/
 
 type LocalDateTime = {
@@ -233,10 +234,31 @@ function cleanDigestText(value: string, fallback: string) {
   return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned
 }
 
+function escapeLarkMarkdownLiteral(value: string) {
+  return value.replace(/([\\*_~`[\]()#+\-.!|{}>])/g, '\\$1')
+}
+
+function escapeLarkMarkdownText(value: string, fallback: string) {
+  return escapeLarkMarkdownLiteral(cleanDigestText(value, fallback))
+}
+
 function priorityLabel(priority: string) {
-  if (priority === 'high') return '高'
-  if (priority === 'low') return '低'
-  return '中'
+  if (priority === 'high') return '高优先级'
+  if (priority === 'low') return '低优先级'
+  return '中优先级'
+}
+
+function formatMonthDay(value: string) {
+  const parts = parseIsoDate(value)
+  return `${parts.month}月${parts.day}日`
+}
+
+function daysBetweenIsoDates(start: string, end: string) {
+  const startParts = parseIsoDate(start)
+  const endParts = parseIsoDate(end)
+  const startTime = Date.UTC(startParts.year, startParts.month - 1, startParts.day)
+  const endTime = Date.UTC(endParts.year, endParts.month - 1, endParts.day)
+  return Math.round((endTime - startTime) / (24 * 60 * 60 * 1_000))
 }
 
 function formatDigestItem(item: {
@@ -244,14 +266,24 @@ function formatDigestItem(item: {
   priority: string
   projectName: string
   title: string
-}) {
-  const projectName = cleanDigestText(item.projectName, '未命名项目')
-  const title = cleanDigestText(item.title, '未命名待办')
-  return `- [${priorityLabel(item.priority)}] ${projectName} / ${title}（截止 ${item.dueDate}）`
+}, mode: 'activity' | 'outstanding' | 'overdue', deliveryLocalDate: string) {
+  const projectName = escapeLarkMarkdownText(item.projectName, '未命名项目')
+  const title = escapeLarkMarkdownText(item.title, '未命名待办')
+  let dueLabel = `原截止 ${formatMonthDay(item.dueDate)}`
+  if (mode === 'overdue') {
+    const overdueDays = Math.max(1, daysBetweenIsoDates(item.dueDate, deliveryLocalDate))
+    dueLabel = `截止 ${formatMonthDay(item.dueDate)} · 已逾期 ${overdueDays} 天`
+  } else if (mode === 'outstanding') {
+    dueLabel = item.dueDate === deliveryLocalDate
+      ? '今日截止'
+      : `截止 ${formatMonthDay(item.dueDate)}`
+  }
+  return [`- **${title}**`, `  ${projectName} · ${priorityLabel(item.priority)} · ${dueLabel}`]
 }
 
 function appendSection(params: {
   count: number
+  deliveryLocalDate: string
   items: Array<{
     dueDate: string
     priority: string
@@ -259,48 +291,103 @@ function appendSection(params: {
     title: string
   }>
   lines: string[]
+  mode: 'activity' | 'outstanding' | 'overdue'
   title: string
 }) {
   if (params.count === 0) return
-  params.lines.push('', `${params.title}（${params.count}）`)
+  params.lines.push('', `**${params.title} · ${params.count}**`, '')
   const displayed = params.items.slice(0, digestListLimit)
-  params.lines.push(...displayed.map(formatDigestItem))
+  displayed.forEach((item, index) => {
+    if (index > 0) params.lines.push('')
+    params.lines.push(...formatDigestItem(item, params.mode, params.deliveryLocalDate))
+  })
   if (params.count > displayed.length) {
-    params.lines.push(`- 另有 ${params.count - displayed.length} 项未展开`)
+    params.lines.push('', `另有 ${params.count - displayed.length} 项未展开`)
   }
 }
 
 export function formatDailyTodoDigest(facts: DailyTodoDigestFacts) {
   parseIsoDate(facts.digestLocalDate)
+  const deliveryLocalDate = shiftIsoDate(facts.digestLocalDate, 1)
   const completed = facts.activities.filter((item) => item.eventType === 'completed')
   const reopened = facts.activities.filter((item) => item.eventType === 'reopened')
   const overdue = facts.outstandingItems.filter((item) =>
     isTodoOverdue(item.dueDate, facts.digestLocalDate))
   const outstanding = facts.outstandingItems.filter((item) =>
     !isTodoOverdue(item.dueDate, facts.digestLocalDate))
-  const lines = [
-    `Veges 待办日报 | ${facts.digestLocalDate}`,
-    '',
-    `完成 ${facts.completedCount} 项 · 重开 ${facts.reopenedCount} 项 · 当前未完成 ${facts.outstandingCount} 项 · 逾期 ${facts.overdueCount} 项`,
-  ]
+  const activitySummary = facts.completedCount === 0 && facts.reopenedCount === 0
+    ? '昨日无完成或重开'
+    : `昨日完成 **${facts.completedCount}** 项 · 重开 **${facts.reopenedCount}** 项`
+  const backlogSummary = facts.outstandingCount === 0
+    ? '当前没有待处理事项'
+    : `当前待处理 **${facts.outstandingCount}** 项 · 已逾期 **${facts.overdueCount}** 项`
+  const lines = [`Veges 待办日报 · ${formatMonthDay(deliveryLocalDate)}`, '', activitySummary, backlogSummary]
 
-  appendSection({ count: facts.completedCount, items: completed, lines, title: '昨日完成' })
-  appendSection({ count: facts.reopenedCount, items: reopened, lines, title: '昨日重开' })
-  appendSection({ count: facts.overdueCount, items: overdue, lines, title: '当前逾期' })
+  appendSection({
+    count: facts.completedCount,
+    deliveryLocalDate,
+    items: completed,
+    lines,
+    mode: 'activity',
+    title: '昨日完成',
+  })
+  appendSection({
+    count: facts.reopenedCount,
+    deliveryLocalDate,
+    items: reopened,
+    lines,
+    mode: 'activity',
+    title: '昨日重开',
+  })
+  appendSection({
+    count: facts.overdueCount,
+    deliveryLocalDate,
+    items: overdue,
+    lines,
+    mode: 'overdue',
+    title: '已逾期',
+  })
   appendSection({
     count: Math.max(0, facts.outstandingCount - facts.overdueCount),
+    deliveryLocalDate,
     items: outstanding,
     lines,
-    title: '其他未完成',
+    mode: 'outstanding',
+    title: '待处理',
   })
 
-  if (
-    facts.completedCount === 0 &&
-    facts.reopenedCount === 0 &&
-    facts.outstandingCount === 0
-  ) {
-    lines.push('', '昨日没有待办变更，当前也没有未完成待办。')
-  }
-
   return lines.join('\n')
+}
+
+export function buildFeishuDigestCardContent(content: string) {
+  const [rawTitle = '', ...rawBodyLines] = content.split('\n')
+  const title = cleanDigestText(rawTitle, 'Veges 待办日报').slice(0, 80)
+  const rawBody = rawBodyLines.join('\n').trim()
+  const body = rawBody
+    ? legacyDigestTitlePattern.test(rawTitle.trim())
+      ? escapeLarkMarkdownLiteral(rawBody)
+      : rawBody
+    : '暂无日报内容。'
+  return JSON.stringify({
+    body: {
+      direction: 'vertical',
+      elements: [{
+        content: body,
+        margin: '0px 0px 0px 0px',
+        tag: 'markdown',
+        text_align: 'left',
+        text_size: 'normal_v2',
+      }],
+      padding: '12px 12px 12px 12px',
+    },
+    header: {
+      padding: '12px 12px 12px 12px',
+      template: 'turquoise',
+      title: {
+        content: title,
+        tag: 'plain_text',
+      },
+    },
+    schema: '2.0',
+  })
 }

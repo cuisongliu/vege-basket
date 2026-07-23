@@ -134,6 +134,10 @@ historical product context; current code and these operational docs take precede
   rules/templates; todo images use their dedicated prefix and HMAC signature.
 - Feishu event challenges and events require the verification token. Conversation
   analysis requires configured Basic authentication.
+- Keep daily digest run content as encrypted, deterministic, readable text. Feishu
+  delivery may wrap it in a passive JSON 2.0 card, but must not add callbacks or actions.
+  Escape current user-controlled item text for Lark Markdown, and render legacy
+  `Veges 待办日报 | YYYY-MM-DD` bodies as Markdown literals before retrying them.
 - Concurrency invariants belong in PostgreSQL unique indexes plus conflict-safe SQL, not
   select-before-insert checks alone.
 - Todo completion and reopen transitions must lock the todo row inside the same

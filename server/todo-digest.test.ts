@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  buildFeishuDigestCardContent,
   defaultDigestSendTime,
   defaultDigestTimeZone,
   formatDailyTodoDigest,
@@ -114,11 +115,129 @@ test('formats a deterministic digest without AI', () => {
     reopenedCount: 1,
   })
 
-  assert.match(message, /Veges 待办日报 \| 2026-07-15/)
-  assert.match(message, /完成 1 项 · 重开 1 项 · 当前未完成 2 项 · 逾期 1 项/)
-  assert.match(message, /\[高\] Alpha \/ Ship release（截止 2026-07-15）/)
-  assert.match(message, /当前逾期（1）/)
-  assert.match(message, /其他未完成（1）/)
+  assert.equal(message, [
+    'Veges 待办日报 · 7月16日',
+    '',
+    '昨日完成 **1** 项 · 重开 **1** 项',
+    '当前待处理 **2** 项 · 已逾期 **1** 项',
+    '',
+    '**昨日完成 · 1**',
+    '',
+    '- **Ship release**',
+    '  Alpha · 高优先级 · 原截止 7月15日',
+    '',
+    '**昨日重开 · 1**',
+    '',
+    '- **Review metrics**',
+    '  Beta · 中优先级 · 原截止 7月18日',
+    '',
+    '**已逾期 · 1**',
+    '',
+    '- **Repair alert**',
+    '  Alpha · 高优先级 · 截止 7月14日 · 已逾期 2 天',
+    '',
+    '**待处理 · 1**',
+    '',
+    '- **Polish docs**',
+    '  Beta · 低优先级 · 截止 7月18日',
+  ].join('\n'))
+})
+
+test('compresses an empty digest to the useful status lines', () => {
+  const message = formatDailyTodoDigest({
+    activities: [],
+    completedCount: 0,
+    digestLocalDate: '2026-07-15',
+    outstandingCount: 0,
+    outstandingItems: [],
+    overdueCount: 0,
+    reopenedCount: 0,
+  })
+
+  assert.equal(message, [
+    'Veges 待办日报 · 7月16日',
+    '',
+    '昨日无完成或重开',
+    '当前没有待处理事项',
+  ].join('\n'))
+})
+
+test('limits digest sections and escapes user text for Lark Markdown', () => {
+  const outstandingItems = Array.from({ length: 6 }, (_, index) => ({
+    dueDate: `2026-07-${String(9 + index).padStart(2, '0')}`,
+    priority: index === 0 ? 'high' : 'medium',
+    projectName: index === 0 ? 'Alpha_[ops]' : 'Alpha',
+    title: index === 0 ? 'Fix *alert* [link](url) <at>' : `Backlog ${index + 1}`,
+    todoId: index + 1,
+  }))
+  const message = formatDailyTodoDigest({
+    activities: [],
+    completedCount: 0,
+    digestLocalDate: '2026-07-15',
+    outstandingCount: 6,
+    outstandingItems,
+    overdueCount: 6,
+    reopenedCount: 0,
+  })
+
+  assert.ok(message.includes('Fix \\*alert\\* \\[link\\]\\(url\\) ＜at＞'))
+  assert.ok(message.includes('Alpha\\_\\[ops\\]'))
+  assert.match(message, /已逾期 7 天/)
+  assert.match(message, /另有 1 项未展开/)
+  assert.doesNotMatch(message, /Backlog 6/)
+})
+
+test('wraps readable digest content in a passive Feishu card', () => {
+  const content = [
+    'Veges 待办日报 · 7月16日',
+    '',
+    '昨日无完成或重开',
+    '当前没有待处理事项',
+  ].join('\n')
+  const card = JSON.parse(buildFeishuDigestCardContent(content)) as {
+    body: { elements: Array<{ content: string; tag: string }> }
+    config?: unknown
+    header: { template: string; title: { content: string; tag: string } }
+    schema: string
+  }
+
+  assert.equal(card.schema, '2.0')
+  assert.equal(card.config, undefined)
+  assert.equal(card.header.template, 'turquoise')
+  assert.deepEqual(card.header.title, {
+    content: 'Veges 待办日报 · 7月16日',
+    tag: 'plain_text',
+  })
+  assert.equal(card.body.elements.length, 1)
+  assert.equal(card.body.elements[0]?.tag, 'markdown')
+  assert.equal(card.body.elements[0]?.content, [
+    '昨日无完成或重开',
+    '当前没有待处理事项',
+  ].join('\n'))
+})
+
+test('keeps legacy plain-text digests usable for card retries', () => {
+  const legacyContent = [
+    'Veges 待办日报 | 2026-07-15',
+    '',
+    '完成 0 项 · 重开 0 项 · 当前未完成 1 项 · 逾期 1 项',
+    '',
+    '- [中] Alpha / Fix *alert* [click](https://attacker.example)',
+  ].join('\n')
+  const card = JSON.parse(buildFeishuDigestCardContent(legacyContent)) as {
+    body: { elements: Array<{ content: string }> }
+    header: { title: { content: string } }
+  }
+
+  assert.equal(card.header.title.content, 'Veges 待办日报 | 2026-07-15')
+  assert.equal(
+    card.body.elements[0]?.content,
+    [
+      '完成 0 项 · 重开 0 项 · 当前未完成 1 项 · 逾期 1 项',
+      '',
+      '\\- \\[中\\] Alpha / Fix \\*alert\\* \\[click\\]\\(https://attacker\\.example\\)',
+    ].join('\n'),
+  )
 })
 
 test('calculates overdue state and bounded exponential retry delays', () => {

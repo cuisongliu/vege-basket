@@ -265,8 +265,12 @@ confirmed or discarded history never receives a synthetic date.
 
 The daily digest subscription is Feishu-only, defaults to disabled at `10:00`
 `Asia/Shanghai`, and sends previous-day completion/reopen activity plus the current
-outstanding backlog at delivery time. Users may change the send time. Disconnecting
-Feishu disables the subscription.
+outstanding backlog at delivery time. Delivery uses a passive Feishu JSON 2.0 card with
+no callback actions. The run retains deterministic, readable text as its canonical
+content, then wraps that text as the card header and Markdown body for delivery so retries
+and older queued runs remain compatible. User-controlled item text is Markdown-escaped;
+legacy plain-text bodies are rendered as Markdown literals when retried. Users may change
+the send time. Disconnecting Feishu disables the subscription.
 
 Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid input,
 401 for missing or invalid authentication, 403 for insufficient role, 404 for absent or
