@@ -9,6 +9,7 @@ import {
   isTodoOverdue,
   isValidDigestSendTime,
   isValidDigestTimeZone,
+  normalizePublicAppUrl,
   resolveDailyDigestSchedule,
   shouldSeedDailyDigestRun,
 } from './todo-digest.ts'
@@ -126,24 +127,28 @@ test('formats a deterministic digest without AI', () => {
     '- **Ship release**',
     '  Alpha · 高优先级',
     '  原截止 7月15日',
+    '  待办 #1',
     '',
     '**昨日重开 · 1**',
     '',
     '- **Review metrics**',
     '  Beta · 中优先级',
     '  原截止 7月18日',
+    '  待办 #2',
     '',
     '**已逾期 · 1**',
     '',
     '- **Repair alert**',
     '  Alpha · 高优先级',
     '  已逾期 2 天 · 截止 7月14日',
+    '  待办 #3',
     '',
     '**待处理 · 1**',
     '',
     '- **Polish docs**',
     '  Beta · 低优先级',
     '  截止 7月18日',
+    '  待办 #4',
   ].join('\n'))
 })
 
@@ -285,6 +290,84 @@ test('lays out digest items with stable metadata and status columns', () => {
     itemRow?.columns?.[1]?.elements[1]?.content,
     '<font color="grey">截止 7月14日</font>',
   )
+})
+
+test('links only canonical todo IDs through a validated public app URL', () => {
+  const content = formatDailyTodoDigest({
+    activities: [],
+    completedCount: 0,
+    digestLocalDate: '2026-07-15',
+    outstandingCount: 1,
+    outstandingItems: [{
+      dueDate: '2026-07-16',
+      priority: 'high',
+      projectName: 'Alpha',
+      title: 'Review [unsafe](https://attacker.example)',
+      todoId: 42,
+    }],
+    overdueCount: 0,
+    reopenedCount: 0,
+  })
+  const card = JSON.parse(buildFeishuDigestCardContent(
+    content,
+    'https://veges.example',
+    'production',
+  )) as {
+    body: {
+      elements: Array<{
+        columns?: Array<{ elements: Array<{ content: string }> }>
+      }>
+    }
+  }
+  const itemTitle = card.body.elements[2]?.columns?.[0]?.elements[0]?.content
+
+  assert.equal(
+    itemTitle,
+    '[Review \\[unsafe\\]\\(https://attacker\\.example\\)](https://veges.example/?todo=42)',
+  )
+  assert.equal(itemTitle?.match(/\]\(https:/g)?.length, 1)
+})
+
+test('falls back to plain titles when public app URL is absent or unsafe', () => {
+  const content = [
+    'Veges 待办日报 · 7月16日',
+    '',
+    '昨日无完成或重开',
+    '当前待处理 **1** 项 · 已逾期 **0** 项',
+    '',
+    '**待处理 · 1**',
+    '',
+    '- **Review release**',
+    '  Alpha · 高优先级',
+    '  今日截止',
+    '  待办 #42',
+  ].join('\n')
+  const getTitle = (publicAppUrl?: string, nodeEnv = 'production') => {
+    const card = JSON.parse(buildFeishuDigestCardContent(content, publicAppUrl, nodeEnv)) as {
+      body: {
+        elements: Array<{
+          columns?: Array<{ elements: Array<{ content: string }> }>
+        }>
+      }
+    }
+    return card.body.elements[2]?.columns?.[0]?.elements[0]?.content
+  }
+
+  assert.equal(getTitle(), '**Review release**')
+  assert.equal(getTitle('http://veges.example'), '**Review release**')
+  assert.equal(getTitle('https://user:pass@veges.example'), '**Review release**')
+  assert.equal(getTitle('https://veges.example/path'), '**Review release**')
+  assert.equal(getTitle('https://veges.example?next=https://attacker.example'), '**Review release**')
+  assert.equal(getTitle('http://localhost:5173', 'development'), '[Review release](http://localhost:5173/?todo=42)')
+})
+
+test('normalizes only trusted public application origins', () => {
+  assert.equal(normalizePublicAppUrl('https://veges.example/', 'production'), 'https://veges.example')
+  assert.equal(normalizePublicAppUrl('http://localhost:5173', 'development'), 'http://localhost:5173')
+  assert.equal(normalizePublicAppUrl('http://127.0.0.1:5173', 'test'), 'http://127.0.0.1:5173')
+  assert.equal(normalizePublicAppUrl('http://localhost:5173', 'production'), null)
+  assert.equal(normalizePublicAppUrl('http://veges.example', 'development'), null)
+  assert.equal(normalizePublicAppUrl(' https://veges.example', 'production'), null)
 })
 
 test('upgrades previous Markdown card content without merging item labels', () => {

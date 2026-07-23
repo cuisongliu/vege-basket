@@ -18,6 +18,12 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  parseTodoDeepLink,
+  removeTodoDeepLink,
+  resolveTodoDeepLinkTarget,
+  shouldDeferTodoDeepLinkForInvite,
+} from '@/todo-deep-link'
+import {
   Archive,
   AddressBook,
   At,
@@ -469,6 +475,20 @@ function clearInviteTokenFromUrl() {
   const url = new URL(window.location.href)
   url.searchParams.delete('invite')
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+function getTodoDeepLinkIdFromUrl() {
+  if (typeof window === 'undefined') return null
+  return parseTodoDeepLink(window.location.search).todoId
+}
+
+function clearTodoDeepLinkFromUrl() {
+  if (typeof window === 'undefined') return
+  window.history.replaceState({}, '', removeTodoDeepLink({
+    hash: window.location.hash,
+    pathname: window.location.pathname,
+    search: window.location.search,
+  }))
 }
 
 const todoNotesReadStoragePrefix = 'veges.todoNotesReadAt.v1'
@@ -1229,6 +1249,7 @@ function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authError, setAuthError] = useState('')
   const [inviteToken, setInviteToken] = useState(getInviteTokenFromUrl)
+  const [settledInviteToken, setSettledInviteToken] = useState('')
   const [view, setView] = useState<View>('search')
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
@@ -1238,6 +1259,7 @@ function App() {
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
   const [selectedProjectId, setSelectedProjectId] = useState(1)
+  const [pendingTodoDeepLinkId, setPendingTodoDeepLinkId] = useState(getTodoDeepLinkIdFromUrl)
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
@@ -1355,6 +1377,12 @@ function App() {
       // Ignore storage failures so theme switching still works for the session.
     }
   }, [themeMode])
+
+  useEffect(() => {
+    if (parseTodoDeepLink(window.location.search).status === 'invalid') {
+      clearTodoDeepLinkFromUrl()
+    }
+  }, [])
 
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
@@ -1804,12 +1832,52 @@ function App() {
         clearInviteTokenFromUrl()
       })
       .catch(() => {
+        setSettledInviteToken(inviteToken)
         setWorkspaceError('项目邀请链接无效或已失效。')
       })
       .finally(() => {
         acceptingInviteTokenRef.current = ''
       })
   }, [applyWorkspace, authUser, inviteToken, loggedIn, workspaceLoaded])
+
+  useEffect(() => {
+    if (
+      !loggedIn ||
+      !workspaceLoaded ||
+      !authUser ||
+      shouldDeferTodoDeepLinkForInvite(inviteToken, settledInviteToken) ||
+      pendingTodoDeepLinkId == null
+    ) return
+
+    const todo = resolveTodoDeepLinkTarget({
+      projectIds: projects.map((project) => project.id),
+      todoId: pendingTodoDeepLinkId,
+      todos,
+    })
+    setPendingTodoDeepLinkId(null)
+    clearTodoDeepLinkFromUrl()
+    if (!todo) {
+      setWorkspaceError('待办不存在或你无权访问')
+      return
+    }
+
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(todo.id)
+    setRequestedPackageEventId(null)
+    setSelectedProjectId(todo.projectId)
+    setJournalDraft('')
+    setProjectDetailTab('journal')
+    setView('project')
+  }, [
+    authUser,
+    inviteToken,
+    loggedIn,
+    pendingTodoDeepLinkId,
+    projects,
+    settledInviteToken,
+    todos,
+    workspaceLoaded,
+  ])
 
   const toggleThemeMode = useCallback(() => {
     setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))

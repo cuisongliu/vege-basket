@@ -38,6 +38,7 @@ Core and AI controls:
 | Variable | Default / behavior |
 | --- | --- |
 | `PORT` | `8787`. |
+| `APP_PUBLIC_URL` | Public application origin used for Feishu todo links. Production requires HTTPS; local development permits HTTP only for loopback hosts. Query strings, fragments, credentials, and non-root paths are rejected. |
 | `AI_API_BASE` | Shared OpenAI-compatible HTTPS public base URL; `198.18.0.0/15` proxy Fake-IP answers require successful public DNS-over-HTTPS verification. |
 | `AI_API_KEY` | Shared provider key; required to enable AI and never returned to the browser. |
 | `AI_MODEL` | Shared provider model name; required to enable AI. |
@@ -266,14 +267,20 @@ confirmed or discarded history never receives a synthetic date.
 The daily digest subscription is Feishu-only, defaults to disabled at `10:00`
 `Asia/Shanghai`, and sends previous-day completion/reopen activity plus the current
 outstanding backlog at delivery time. Delivery uses a passive Feishu JSON 2.0 card with
-no callback actions. The card separates the date into a subtitle, uses a two-column
+no callback actions or buttons. New canonical digest text retains each positive todo ID;
+when `APP_PUBLIC_URL` is valid, the card converts the escaped title into a server-generated
+same-site `?todo=<id>` link. Missing or invalid configuration leaves titles as plain text.
+The browser preserves that query through password or Feishu sign-in, resolves the ID only
+against the authenticated workspace, opens the exact todo when authorized, and then removes
+only the `todo` query parameter. The card separates the date into a subtitle, uses a two-column
 activity/backlog overview, renders category headings as distinct shaded bands, and keeps
 each todo's title and project metadata separate from its right-aligned due status. The run
 retains deterministic, readable text as its canonical content, then maps that text into
 card elements so retries and older queued runs remain compatible. User-controlled item
 text is Markdown-escaped;
-legacy plain-text bodies are rendered as Markdown literals when retried. Users may change
-the send time. Disconnecting Feishu disables the subscription.
+legacy plain-text bodies are rendered as Markdown literals when retried. Older queued runs
+without a todo ID remain readable but cannot gain a link. Users may change the send time.
+Disconnecting Feishu disables the subscription.
 
 Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid input,
 401 for missing or invalid authentication, 403 for insufficient role, 404 for absent or

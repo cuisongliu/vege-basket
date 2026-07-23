@@ -266,6 +266,7 @@ function formatDigestItem(item: {
   priority: string
   projectName: string
   title: string
+  todoId: number | null
 }, mode: 'activity' | 'outstanding' | 'overdue', deliveryLocalDate: string) {
   const projectName = escapeLarkMarkdownText(item.projectName, '未命名项目')
   const title = escapeLarkMarkdownText(item.title, '未命名待办')
@@ -278,11 +279,15 @@ function formatDigestItem(item: {
       ? '今日截止'
       : `截止 ${formatMonthDay(item.dueDate)}`
   }
-  return [
+  const lines = [
     `- **${title}**`,
     `  ${projectName} · ${priorityLabel(item.priority)}`,
     `  ${dueLabel}`,
   ]
+  if (Number.isSafeInteger(item.todoId) && Number(item.todoId) > 0) {
+    lines.push(`  待办 #${item.todoId}`)
+  }
+  return lines
 }
 
 function appendSection(params: {
@@ -293,6 +298,7 @@ function appendSection(params: {
     priority: string
     projectName: string
     title: string
+    todoId: number | null
   }>
   lines: string[]
   mode: 'activity' | 'outstanding' | 'overdue'
@@ -367,6 +373,7 @@ type ParsedDigestItem = {
   metadata: string
   timing: string
   title: string
+  todoId: number | null
 }
 
 type ParsedDigestSection = {
@@ -400,6 +407,13 @@ function parseDigestItemTitle(value: string) {
   if (!(value.startsWith('- **') && value.endsWith('**'))) return null
   const title = value.slice(4, -2)
   return title || null
+}
+
+function parseDigestTodoId(value: string) {
+  const match = /^待办 #([1-9]\d*)$/.exec(value)
+  if (!match) return null
+  const todoId = Number(match[1])
+  return Number.isSafeInteger(todoId) ? todoId : null
 }
 
 function parseStructuredDigestContent(content: string): ParsedDigestContent | null {
@@ -454,14 +468,18 @@ function parseStructuredDigestContent(content: string): ParsedDigestContent | nu
       cursor += 1
       let timing = ''
       const timingLine = lines[cursor] ?? ''
-      if (timingLine.startsWith('  ')) {
+      if (timingLine.startsWith('  ') && parseDigestTodoId(timingLine.trim()) == null) {
         timing = timingLine.trim()
         cursor += 1
       }
+      const todoIdLine = lines[cursor] ?? ''
+      const todoId = todoIdLine.startsWith('  ') ? parseDigestTodoId(todoIdLine.trim()) : null
+      if (todoId != null) cursor += 1
       section.items.push({
         metadata: metadataLine.trim(),
         timing,
         title,
+        todoId,
       })
     }
     sections.push(section)
@@ -564,7 +582,37 @@ function buildDigestTimingElements(item: ParsedDigestItem, sectionTitle: string)
   })]
 }
 
-function buildStructuredFeishuDigestCard(parsed: ParsedDigestContent) {
+export function normalizePublicAppUrl(value: unknown, nodeEnv = process.env.NODE_ENV) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) return null
+  try {
+    const url = new URL(value)
+    const isLoopback = url.hostname === 'localhost' ||
+      url.hostname === '127.0.0.1' ||
+      url.hostname === '[::1]'
+    const allowedProtocol = url.protocol === 'https:' ||
+      (nodeEnv !== 'production' && url.protocol === 'http:' && isLoopback)
+    if (
+      !allowedProtocol ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    ) return null
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+function buildDigestTodoUrl(publicAppUrl: string | null, todoId: number | null) {
+  if (!publicAppUrl || !Number.isSafeInteger(todoId) || Number(todoId) <= 0) return null
+  const url = new URL(publicAppUrl)
+  url.searchParams.set('todo', String(todoId))
+  return url.toString()
+}
+
+function buildStructuredFeishuDigestCard(parsed: ParsedDigestContent, publicAppUrl: string | null) {
   const elements: FeishuCardElement[] = [digestColumnSet([
     digestColumn([
       digestMarkdownElement({ content: '<font color="grey">昨日动态</font>' }),
@@ -604,8 +652,10 @@ function buildStructuredFeishuDigestCard(parsed: ParsedDigestContent) {
     section.items.forEach((item, index) => {
       if (index > 0) elements.push(digestDivider('8px 0px 8px 0px'))
       const timingElements = buildDigestTimingElements(item, section.title)
+      const todoUrl = buildDigestTodoUrl(publicAppUrl, item.todoId)
+      const title = todoUrl ? `[${item.title}](${todoUrl})` : `**${item.title}**`
       const columns = [digestColumn([
-        digestMarkdownElement({ content: `**${item.title}**` }),
+        digestMarkdownElement({ content: title }),
         digestMarkdownElement({
           content: `<font color="grey">${item.metadata}</font>`,
           margin: '4px 0px 0px 0px',
@@ -648,9 +698,18 @@ function buildStructuredFeishuDigestCard(parsed: ParsedDigestContent) {
   }
 }
 
-export function buildFeishuDigestCardContent(content: string) {
+export function buildFeishuDigestCardContent(
+  content: string,
+  publicAppUrl?: string,
+  nodeEnv = process.env.NODE_ENV,
+) {
   const parsed = parseStructuredDigestContent(content)
-  if (parsed) return JSON.stringify(buildStructuredFeishuDigestCard(parsed))
+  if (parsed) {
+    return JSON.stringify(buildStructuredFeishuDigestCard(
+      parsed,
+      normalizePublicAppUrl(publicAppUrl, nodeEnv),
+    ))
+  }
 
   const [rawTitle = '', ...rawBodyLines] = content.split('\n')
   const title = cleanDigestText(rawTitle, 'Veges 待办日报').slice(0, 80)

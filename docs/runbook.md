@@ -107,6 +107,8 @@ operator should:
    `image` in `.sealos/template/index.yaml` to the same verified tag.
 4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
    deployment environment; confirm real credential values are absent from the image and Git.
+   The Sealos template derives `APP_PUBLIC_URL` from its TLS ingress host; custom deployments
+   must set it to the application's exact HTTPS root origin.
 5. Deploy to a test environment first, then verify health, sign-in, one authorized
    project read, and any changed integration. For an AI change, verify ordinary text arrives
    incrementally, structured turns expose progress without partial JSON, and a deliberately
@@ -123,7 +125,11 @@ operator should:
    record in an authorized test database before enabling a real user's subscription.
    Confirm the recipient receives a passive Feishu JSON 2.0 card titled with the
    scheduled delivery date, previous-day activity is separate from the current backlog,
-   long sections stop after five items, and no card action or callback is present.
+   long sections stop after five items, each new todo title opens the exact authorized
+   todo through the configured `APP_PUBLIC_URL`, and no card button or callback is present.
+   Repeat while signed out to verify the link survives login. An inaccessible ID must show
+   `待办不存在或你无权访问` without revealing todo data. Temporarily omit `APP_PUBLIC_URL`
+   and confirm delivery still builds a valid card with plain titles.
 
 AI conversation protocol releases replace the stateless `/api/ai/chat`, the old
 `/api/ai/todo-proposals` extraction route, and direct turn creation without a semantic
@@ -210,6 +216,9 @@ encrypted record, and the workflow that triggered rollback.
 - Daily digest is not sent: verify the user subscription is enabled, the user has a bound
   Feishu `open_id`, `FEISHU_DELIVERY_ENABLED` is not `false`, the CronJob uses the current
   image, and the latest digest run is not `failed` or `skipped`.
+- Daily digest titles are not clickable: verify `APP_PUBLIC_URL` is an HTTPS root origin in
+  production and is injected into the digest CronJob. HTTP is accepted only for localhost
+  or loopback local development; invalid values intentionally fall back to plain titles.
 - Feishu callback returns 401: verify the callback token matches
   `FEISHU_VERIFICATION_TOKEN`; challenge payloads are authenticated too.
 - Unexpected users can complete Feishu OAuth: narrow the company custom application's

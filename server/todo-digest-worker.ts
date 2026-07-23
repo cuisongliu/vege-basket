@@ -9,6 +9,7 @@ import {
   digestMaxAttempts,
   formatDailyTodoDigest,
   getDigestRetryDelayMs,
+  normalizePublicAppUrl,
   resolveDailyDigestSchedule,
   shouldSeedDailyDigestRun,
   type DailyTodoDigestFacts,
@@ -67,6 +68,16 @@ type FeishuToken = {
 }
 
 let feishuToken: FeishuToken | null = null
+let publicAppUrlWarningShown = false
+
+function getDigestPublicAppUrl() {
+  const publicAppUrl = normalizePublicAppUrl(process.env.APP_PUBLIC_URL)
+  if (!publicAppUrl && !publicAppUrlWarningShown) {
+    publicAppUrlWarningShown = true
+    console.warn('APP_PUBLIC_URL is missing or invalid; Feishu digest todo titles will not be linked')
+  }
+  return publicAppUrl ?? undefined
+}
 
 function safeErrorMessage(error: unknown) {
   return (error instanceof Error ? error.message : 'Unknown todo digest worker error').slice(0, 500)
@@ -378,7 +389,7 @@ async function sendFeishuDigest(openId: string, content: string) {
       'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id',
       {
         body: JSON.stringify({
-          content: buildFeishuDigestCardContent(content),
+          content: buildFeishuDigestCardContent(content, getDigestPublicAppUrl()),
           msg_type: 'interactive',
           receive_id: openId,
         }),

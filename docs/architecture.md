@@ -36,6 +36,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `src/todo-proposal-defaults.ts`: pending proposal review defaults for browser display.
   A missing due date becomes the current `Asia/Shanghai` calendar date only while the
   batch remains editable.
+- `src/todo-deep-link.ts`: one-shot parsing and removal of the numeric `todo` navigation
+  query. The authenticated workspace remains responsible for resolving accessible todos.
 - `src/api.ts`, `src/types.ts`: browser API adapter, SSE recovery, and public client-side
   contracts.
 - `server/index.ts`: HTTP boundary, authentication, project authorization, request
@@ -62,7 +64,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `shared/ai-input-intent.ts`: the strict public intent DTO and canonical source-content helpers;
   semantic classification runs only on the server.
 - `server/todo-digest.ts`, `server/todo-digest-worker.ts`: local-time scheduling,
-  deterministic digest formatting, run leases, retries, and Feishu delivery.
+  deterministic digest formatting, trusted application links, run leases, retries, and
+  Feishu delivery.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
   multi-table writes, encrypted timeline fields, and Markdown export.
 - `server/package-market.ts`: OSS configuration, package rules, object-key allowlisting,

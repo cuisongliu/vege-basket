@@ -61,6 +61,7 @@ npm run dev
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 连接地址，必填。 |
 | `APP_ENCRYPTION_ACTIVE_KEY_ID`、`APP_ENCRYPTION_KEYS` | 敏感字段加密与密钥轮换，必填。 |
+| `APP_PUBLIC_URL` | 浏览器访问 Veges 的公开根地址；本地默认 `http://localhost:5173`，用于飞书日报待办链接。 |
 | `AI_API_BASE`、`AI_API_KEY`、`AI_MODEL` | 整个实例共用的 OpenAI 兼容模型配置，直接由服务端环境变量注入。 |
 | `AI_RATE_*`、`AI_GLOBAL_RATE_LIMIT`、`AI_MAX_*` | 单用户/实例级 AI 请求频率、输入长度和上下文上限。 |
 | `FEISHU_*` | 飞书 OAuth、事件回调和通知投递；启用事件回调前必须配置 `FEISHU_VERIFICATION_TOKEN`。 |

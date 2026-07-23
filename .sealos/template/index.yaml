@@ -346,6 +346,8 @@ spec:
               value: production
             - name: PORT
               value: '8787'
+            - name: APP_PUBLIC_URL
+              value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
             - name: PG_HOST
               valueFrom:
                 secretKeyRef:
@@ -482,6 +484,8 @@ spec:
               env:
                 - name: NODE_ENV
                   value: production
+                - name: APP_PUBLIC_URL
+                  value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
                 - name: PG_HOST
                   valueFrom:
                     secretKeyRef:
