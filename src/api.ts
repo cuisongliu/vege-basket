@@ -1,5 +1,9 @@
 import type {
   InboxItem,
+  AiConversationContextKind,
+  AiConversationPage,
+  AiTurnPage,
+  AiTurnRunResponse,
   JournalVisibility,
   PackageMarketChannel,
   PackageMarketDetail,
@@ -16,11 +20,26 @@ import type {
   ProjectMembership,
   ProjectStatus,
   Summary,
+  SummaryPeriodType,
   Todo,
+  TodoActivityEvent,
   TodoNote,
+  TodoProposal,
+  NotificationSubscription,
 } from './types'
 import { ApiError } from './api-error'
+import {
+  decodeAiTurnStreamEvent,
+  ServerSentEventDecoder,
+  type AiTurnStreamPhase,
+} from '../shared/server-sent-events'
+import {
+  parseAiIntentClassification,
+  type AiIntentClassification,
+} from '../shared/ai-input-intent'
+import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
+export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
 export type WorkspaceData = {
   inbox: InboxItem[]
@@ -28,6 +47,12 @@ export type WorkspaceData = {
   projects: Project[]
   summaries: Summary[]
   todos: Todo[]
+}
+
+export type AiTurnDocumentResponse = {
+  created: boolean
+  summaryId: number
+  workspace: WorkspaceData
 }
 
 export type NotificationResponse = {
@@ -61,17 +86,38 @@ export type ProjectInviteLinkResponse = {
   token: string
 }
 
-export type AiChatMessage = {
-  role: 'user' | 'assistant'
-  content: string
+export type AiStatus = {
+  configured: boolean
+  maxMessageLength: number
+  model: string
 }
 
-export type AiAgentType = 'project-summary' | 'conversation-analysis'
+export type AiTurnStreamHandlers = {
+  onDelta?: (append: string) => void
+  onHeartbeat?: () => void
+  onProgress?: (phase: AiTurnStreamPhase) => void
+  onStarted?: (event: {
+    conversation?: AiTurnRunResponse['conversation']
+    mode: 'progress' | 'text'
+    turn?: AiTurnRunResponse['turn']
+  }) => void
+}
 
-export type AiSettings = {
-  baseUrl: string
-  hasApiKey: boolean
-  model: string
+export type AiIntentClassificationResponse = {
+  intent: AiIntentClassification
+  turnId: string
+}
+
+export class AiTurnStreamTerminalError extends Error {
+  readonly code: string
+  readonly event: 'cancelled' | 'failed'
+
+  constructor(event: 'cancelled' | 'failed', code: string, message: string) {
+    super(message)
+    this.name = 'AiTurnStreamTerminalError'
+    this.code = code
+    this.event = event
+  }
 }
 
 export type TodoImageUploadResponse = {
@@ -86,8 +132,14 @@ function apiErrorMessage(body: unknown, fallback: string) {
 }
 
 const tokenStorageKey = 'veges.authToken'
-let authToken =
-  typeof window === 'undefined' ? '' : localStorage.getItem(tokenStorageKey) ?? ''
+const browserStorage = (globalThis as {
+  localStorage?: {
+    getItem: (key: string) => string | null
+    removeItem: (key: string) => void
+    setItem: (key: string, value: string) => void
+  }
+}).localStorage
+let authToken = browserStorage?.getItem(tokenStorageKey) ?? ''
 
 export function getAuthToken() {
   return authToken
@@ -95,12 +147,12 @@ export function getAuthToken() {
 
 export function setAuthToken(token: string) {
   authToken = token
-  localStorage.setItem(tokenStorageKey, token)
+  browserStorage?.setItem(tokenStorageKey, token)
 }
 
 export function clearAuthToken() {
   authToken = ''
-  localStorage.removeItem(tokenStorageKey)
+  browserStorage?.removeItem(tokenStorageKey)
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
@@ -132,6 +184,98 @@ async function request<T>(path: string, options: RequestInit = {}) {
   }
 
   return response.json() as Promise<T>
+}
+
+async function throwApiResponseError(response: Response, path: string, method: string): Promise<never> {
+  const fallbackMessage = `Request failed: ${response.status}`
+  const responseText = await response.text()
+  let responseBody: unknown = responseText
+  try {
+    responseBody = responseText ? JSON.parse(responseText) : ''
+  } catch {
+    // Keep non-JSON response text for diagnostics.
+  }
+  throw new ApiError(apiErrorMessage(responseBody, fallbackMessage), {
+    method,
+    path,
+    responseBody,
+    status: response.status,
+    statusText: response.statusText,
+  })
+}
+
+async function requestAiTurnStream(
+  path: string,
+  options: RequestInit,
+  handlers: AiTurnStreamHandlers,
+) {
+  const method = String(options.method ?? 'POST').toUpperCase()
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...options.headers,
+    },
+  })
+  if (!response.ok) await throwApiResponseError(response, path, method)
+  if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+    return parseAiTurnRunResponse(await response.json())
+  }
+  if (!response.body) throw new Error('AI response stream is unavailable')
+
+  const decoder = new ServerSentEventDecoder()
+  const reader = response.body.getReader()
+  let lastSequence = 0
+  let result: AiTurnRunResponse | null = null
+  let terminalError: AiTurnStreamTerminalError | null = null
+
+  const consume = (events: ReturnType<ServerSentEventDecoder['push']>) => {
+    for (const frame of events) {
+      const event = decodeAiTurnStreamEvent(frame)
+      if (event.sequence <= lastSequence) {
+        throw new Error('AI response stream events arrived out of order')
+      }
+      lastSequence = event.sequence
+
+      if (event.type === 'started') {
+        handlers.onStarted?.({
+          conversation: event.conversation,
+          mode: event.mode,
+          turn: event.turn,
+        })
+      } else if (event.type === 'delta') {
+        handlers.onDelta?.(event.append)
+      } else if (event.type === 'progress') {
+        handlers.onProgress?.(event.phase)
+      } else if (event.type === 'heartbeat') {
+        handlers.onHeartbeat?.()
+      } else if (event.type === 'completed') {
+        result = event.result
+      } else if (event.type === 'failed' || event.type === 'cancelled') {
+        if (event.result) {
+          result = event.result
+        } else {
+          terminalError = new AiTurnStreamTerminalError(
+            event.type,
+            event.error.code,
+            event.error.message,
+          )
+        }
+      }
+    }
+  }
+
+  while (true) {
+    const chunk = await reader.read()
+    if (chunk.done) break
+    consume(decoder.push(chunk.value))
+  }
+  consume(decoder.finish())
+  if (result) return result
+  if (terminalError) throw terminalError
+  throw new Error('AI response stream ended before the turn was confirmed')
 }
 
 export function fetchWorkspace() {
@@ -206,19 +350,8 @@ export function updateCurrentPassword(payload: {
   })
 }
 
-export function fetchAiSettings() {
-  return request<{ settings: AiSettings }>('/api/ai/settings')
-}
-
-export function updateAiSettings(payload: {
-  apiKey?: string
-  baseUrl: string
-  model: string
-}) {
-  return request<{ settings: AiSettings }>('/api/ai/settings', {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
+export function fetchAiStatus() {
+  return request<AiStatus>('/api/ai/status')
 }
 
 export function createProject(payload: { name: string; tags: string[] }) {
@@ -488,34 +621,184 @@ export function removeTodo(todoId: number) {
   })
 }
 
-export function createSummary(projectId: number, type: Summary['type']) {
-  return request<WorkspaceData>('/api/summaries', {
+export function createSummary(projectId: number, type: SummaryPeriodType) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/summaries`, {
     method: 'POST',
-    body: JSON.stringify({ projectId, type }),
+    body: JSON.stringify({ type }),
   })
 }
 
-export function createSummaryFromContent(payload: {
-  content: string
-  projectId: number
-  title?: string
-  type?: Summary['type']
+export function createAiTurnDocument(conversationId: string, turnId: string) {
+  return request<AiTurnDocumentResponse>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/document`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function fetchTodoActivity(projectId: number) {
+  return request<{ events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
+}
+
+export function fetchNotificationSubscription() {
+  return request<{ subscription: NotificationSubscription }>('/api/notification-subscription')
+}
+
+export function updateNotificationSubscription(payload: {
+  enabled: boolean
+  localSendTime: string
 }) {
-  return request<WorkspaceData>('/api/summaries', {
-    method: 'POST',
+  return request<{ subscription: NotificationSubscription }>('/api/notification-subscription', {
+    method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export function sendAiChat(
-  messages: AiChatMessage[],
-  agentType: AiAgentType,
-  projectId?: number,
-) {
-  return request<{ message: string }>('/api/ai/chat', {
+export function fetchTodoProposalBatch(batchId: number) {
+  return request<{ batchId: number; proposals: TodoProposal[]; status: string }>(
+    `/api/ai/todo-proposals/${encodeURIComponent(batchId)}`,
+  )
+}
+
+export function confirmTodoProposals(batchId: number, proposals: TodoProposal[]) {
+  return request<WorkspaceData>(`/api/ai/todo-proposals/${encodeURIComponent(batchId)}/confirm`, {
     method: 'POST',
-    body: JSON.stringify({ agentType, messages, projectId }),
+    body: JSON.stringify({ proposals }),
   })
+}
+
+export function fetchAiConversations(cursor?: string) {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  return request<AiConversationPage>(`/api/ai/conversations${query}`)
+}
+
+export function fetchAiConversationTurns(
+  conversationId: string,
+  beforeTurn?: number,
+  limit?: number,
+) {
+  const search = new URLSearchParams()
+  if (beforeTurn) search.set('beforeTurn', String(beforeTurn))
+  if (limit) search.set('limit', String(limit))
+  const query = search.size > 0 ? `?${search.toString()}` : ''
+  return request<AiTurnPage>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns${query}`,
+  )
+}
+
+export async function classifyAiConversationTurnIntent(payload: {
+  attachments: Array<{
+    content: string
+    mediaType?: string
+    name: string
+    size: number
+  }>
+  content: string
+  contextKind: AiConversationContextKind
+  projectId: number | null
+  turnId: string
+}, signal?: AbortSignal) {
+  const response = await request<unknown>('/api/ai/intent-classifications', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    Array.isArray(response) ||
+    !('turnId' in response) ||
+    typeof response.turnId !== 'string' ||
+    response.turnId !== payload.turnId ||
+    !('intent' in response)
+  ) {
+    throw new Error('AI intent classification response is invalid')
+  }
+  return {
+    intent: parseAiIntentClassification(response.intent),
+    turnId: response.turnId,
+  } satisfies AiIntentClassificationResponse
+}
+
+export function sendAiConversationTurn(payload: {
+  attachments: Array<{
+    content: string
+    mediaType?: string
+    name: string
+    size: number
+  }>
+  content: string
+  contextKind: AiConversationContextKind
+  conversationId: string
+  projectId: number | null
+  turnId: string
+}, handlers: AiTurnStreamHandlers = {}) {
+  return requestAiTurnStream(
+    `/api/ai/conversations/${encodeURIComponent(payload.conversationId)}/turns`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        attachments: payload.attachments,
+        content: payload.content,
+        contextKind: payload.contextKind,
+        projectId: payload.projectId,
+        turnId: payload.turnId,
+      }),
+    },
+    handlers,
+  )
+}
+
+export function retryAiConversationTurn(
+  conversationId: string,
+  turnId: string,
+  handlers: AiTurnStreamHandlers = {},
+) {
+  return requestAiTurnStream(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
+    { method: 'POST' },
+    handlers,
+  )
+}
+
+export function cancelAiConversationTurn(conversationId: string, turnId: string) {
+  return request<
+    | { cancelled: true; pending: true }
+    | {
+      cancelled: boolean
+      conversation: AiConversationPage['conversations'][number]
+      pending: false
+      turn: AiTurnRunResponse['turn']
+    }
+  >(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+    { method: 'POST' },
+  )
+}
+
+export function reconcileAiConversationTurn(conversationId: string, turnId: string) {
+  return request<{
+    conversation: AiConversationPage['conversations'][number]
+    turn: AiTurnRunResponse['turn']
+  }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/reconcile`,
+    { method: 'POST' },
+  )
+}
+
+export function renameAiConversation(conversationId: string, title: string) {
+  return request<{ conversation: AiConversationPage['conversations'][number] }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'PATCH', body: JSON.stringify({ title }) },
+  )
+}
+
+export function deleteAiConversation(conversationId: string) {
+  return request<{ ok: true }>(
+    `/api/ai/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'DELETE' },
+  )
 }
 
 export function fetchProjectPackageTimeline(projectId: number) {

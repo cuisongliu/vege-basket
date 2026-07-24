@@ -6,6 +6,8 @@
 - PostgreSQL for any API runtime. Use a disposable development database locally.
 - Alibaba OSS credentials only when testing package-market or todo-image workflows.
 - Encryption keys generated and stored outside Git.
+- A company-owned Feishu custom application whose availability scope is restricted to
+  intended internal users before using OAuth as the shared-AI account bootstrap path.
 
 Use `.env.example` as a shape reference. Never commit `.env`, access keys, session
 tokens, database URLs with credentials, or encryption material.
@@ -31,6 +33,10 @@ npx eslint server/index.ts server/package-market.ts server/project-package-timel
 Do not use `npm run dev:api`, `npm run db:init`, or `npm run db:encrypt-existing` as a
 read-only check. Importing the running API validates encryption config and applies
 `server/schema.ts` to `DATABASE_URL`.
+
+`npm run worker:todo-digest` is also not a read-only check. It creates and updates digest
+runs and may send personal Feishu messages. Run it only with an authorized database,
+configured Feishu application, and explicit permission to deliver messages.
 
 ## Local Runtime
 
@@ -58,6 +64,29 @@ applies the schema and encrypts supported legacy plaintext fields. Both are muta
 operations and require explicit approval, a current backup or snapshot, the intended
 `DATABASE_URL`, and the complete encryption key ring.
 
+AI conversation changes require an authorized disposable PostgreSQL database before any runtime
+claim. Apply `schemaSql` twice, then verify the conversation/turn/attachment checks and indexes,
+encrypted `veges:enc:` values, two-user isolation, project-access loss and rejoin, project
+deletion cascade, idempotent turn replay, one-processing-turn enforcement, expired-lease
+recovery, cancel-before-create claims, cancel/retry races, and conversation deletion with
+saved-summary and created-todo preservation. Also verify that a deleted conversation UUID cannot
+be recreated by a delayed request and that a cancellation claim cannot move to another
+conversation. For semantic routing, verify first-claim idempotency, exact-input keyed digest
+matching across retained-key rotation, 250 ms replay polling, two-minute completed receipt expiry,
+consumed receipt rejection after conversation deletion, and bounded lock-skipping cleanup.
+
+For workspace reviews, create an owner project and an active-member project with distinct
+journals, todo events, open todos, and risks. Confirm the owner sees project-wide facts, while a
+member receives only their own journals and actor/assignee-related todo facts. Complete a review
+and verify `ai_turn_project_sources` contains every source project. Then remove one membership and
+confirm turn pages, direct reads, reconcile, idempotent replay, and later model history all hide
+the derived turn. Restore all source access and confirm it is readable again. Delete one source
+project and confirm the lineage row remains while the turn stays hidden; deleting the conversation
+must remove its lineage rows without deleting saved summaries or created todos. Exercise a
+membership revocation during generation and confirm the assistant content and lineage are not
+committed. Do not use production for this validation. No such database test is implied by
+`npm test` or `npm run build`.
+
 Before an encryption-key change:
 
 1. Back up the database and the current key ring separately.
@@ -74,13 +103,45 @@ operator should:
 
 1. Run the read-only verification commands.
 2. Build and publish an immutable amd64 tag.
-3. Set both `originImageName` and the application container `image` in
-   `.sealos/template/index.yaml` to the same verified tag.
-4. Confirm secrets are injected by the platform and are absent from the image and Git.
+3. Pass the same verified immutable tag or digest through the Sealos template's required
+   `VEGES_IMAGE` input. The template reuses it for `originImageName`, the application
+   container, and the todo-digest CronJob.
+4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
+   deployment environment; confirm real credential values are absent from the image and Git.
+   The Sealos template derives `APP_PUBLIC_URL` from its TLS ingress host; custom deployments
+   must set it to the application's exact HTTPS root origin.
 5. Deploy to a test environment first, then verify health, sign-in, one authorized
-   project read, and any changed integration.
-6. Re-read the live workload image digest; do not infer deployment success from
-   `.sealos/build/build-result.json` or `.sealos/state.json` alone.
+   project read, and any changed integration. For an AI change, verify ordinary text arrives
+   incrementally, structured turns expose progress without partial JSON, and a deliberately
+   interrupted connection reconciles the canonical turn without leaving the composer locked.
+   Send the empty-chat prompt `帮我梳理本周进展，并给出下一步行动建议。` without `@项目` and
+   verify the result cites only backend-visible facts; repeat with `@项目` and verify it does not
+   broaden beyond that project. Revoke one source-project membership and confirm the earlier
+   workspace-review turn disappears from history.
+   For Feishu OAuth, re-check the custom application's availability scope is limited to
+   the intended company users; the server treats successful OAuth as internal identity.
+6. Re-read the live application image digest and the CronJob template image. Do not infer
+   deployment success from `.sealos/build/build-result.json` or `.sealos/state.json` alone.
+7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
+   record in an authorized test database before enabling a real user's subscription.
+   Confirm the recipient receives a passive Feishu JSON 2.0 card titled with the
+   scheduled delivery date, previous-day activity is separate from the current backlog,
+   long sections stop after five items, each new todo title opens the exact authorized
+   todo through the configured `APP_PUBLIC_URL`, and no card button or callback is present.
+   Repeat while signed out to verify the link survives login. An inaccessible ID must show
+   `待办不存在或你无权访问` without revealing todo data. Temporarily omit `APP_PUBLIC_URL`
+   and confirm delivery still builds a valid card with plain titles.
+
+AI conversation protocol releases replace the stateless `/api/ai/chat`, the old
+`/api/ai/todo-proposals` extraction route, and direct turn creation without a semantic
+classification receipt. Keep one release of compatibility handling: an already-open old SPA
+receives `AI_CLIENT_UPGRADE_REQUIRED` and a visible refresh instruction instead of an unexplained
+404, while an existing canonical turn can still be replayed idempotently.
+Do not serve old and new application images concurrently: use a controlled single-replica
+replacement or a short maintenance window. The application Deployment template uses
+`strategy.type: Recreate` for this protocol boundary. Confirm every ready Pod uses the same
+immutable image before accepting AI traffic. Database additions are forward compatible with the
+old image, but old browser code cannot continue a conversation until it refreshes.
 
 Useful preflight checks:
 
@@ -93,9 +154,13 @@ Publishing an image or mutating a cluster requires explicit authorization.
 
 ## Rollback
 
-Application rollback means restoring the previous immutable amd64 image while retaining
-the current database and all encryption keys. Because startup DDL has no down migration,
-an image rollback is safe only when the previous server can read the current schema.
+Application rollback retains the current database and complete encryption key ring. Suspend
+the todo-digest CronJob before changing images. When the target version contains the digest
+worker, restore the same immutable amd64 image to both the application Deployment and the
+CronJob. When rolling back to a version from before the digest worker existed, keep the
+CronJob suspended or remove it and restore only the application Deployment; an older image
+without `server/todo-digest-worker.ts` cannot run that job. Because startup DDL has no down
+migration, an image rollback is safe only when the previous server can read the current schema.
 
 If a release performed an incompatible data change, stop writes and restore the
 pre-release database snapshot together with the previous image. Never run ad hoc reverse
@@ -112,7 +177,53 @@ encrypted record, and the workflow that triggered rollback.
   configured rules file, and allowed object-key roots.
 - Todo image upload fails: verify OSS config, upload size/type, and the URL-signing secret
   or its documented fallback.
-- AI returns 503: configure per-user settings through `/api/ai/settings`; deployment-level
-  `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are not consumed by the current server.
+- AI returns 503: verify `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are all present in the
+  application environment. The URL must be HTTPS and resolve only to public addresses.
+- Veges AI rejects a text attachment message as too long: split the input or reduce the
+  attachments. The composer enforces both its attachment limits and the effective
+  `AI_MAX_MESSAGE_LENGTH` returned by `GET /api/ai/status`; raising the provider limit
+  requires a deliberate deployment configuration change.
+- AI history is empty after sign-in: verify the conversation belongs to the current user.
+  Project conversations are intentionally hidden while project access is inactive; restoring
+  active membership makes retained history visible again.
+- AI stays on one preparation label with no incremental text or heartbeat: inspect the response
+  for `Content-Type: text/event-stream`, `Cache-Control: no-transform`, and
+  `X-Accel-Buffering: no`, then disable buffering in every ingress or reverse-proxy hop. The
+  application sends heartbeats every 10 seconds; their absence usually means the stream is being
+  buffered or terminated before reaching the browser. Project summaries, workspace reviews, and
+  todo extraction intentionally emit named progress instead of partial JSON.
+- The UI says `正在确认回复结果`: the transport ended before a terminal frame, so the browser is
+  reading the canonical turn from PostgreSQL. Do not cancel or modify the row manually. A known
+  `failed` or `cancelled` terminal event releases the composer immediately; only an unknown
+  transport outcome remains in reconciliation.
+- An AI turn remains `processing`: the normal lease is 120 seconds. Ordinary chat or analysis
+  requests time out after 45 seconds; project summaries, workspace reviews, and todo extraction
+  use 90 seconds.
+  Replaying the same turn
+  while its lease is active returns the canonical processing state. The browser polls the
+  authenticated reconcile route; after expiry it marks the turn failed so the latest turn can
+  be retried. Check replica restarts and database clock drift before modifying rows manually.
+- AI shows `模型连接提前结束`: the provider ended without a valid terminal marker or returned
+  `finish_reason: length`. The server records `AI_RESPONSE_INCOMPLETE` and does not commit the
+  partial text. Retry after checking provider token limits and upstream stream stability.
+- AI retry returns `409`: only the latest failed or cancelled turn is retryable, and a
+  conversation cannot run two processing turns. Refresh canonical history before retrying.
+- AI shows `AI 服务地址暂时无法解析` or records `AI_BASE_URL_UNRESOLVED`: inspect the
+  system DNS result. Hostnames mapped by a local proxy to `198.18.0.0/15` are rechecked
+  through public DNS-over-HTTPS; if that verification fails, restore access to
+  `https://cloudflare-dns.com` or exclude the provider hostname from Fake-IP mode. A
+  transient public-DNS failure is retryable after name resolution recovers. Literal and
+  ordinary private addresses are intentionally rejected.
+- Password registration returns 403 while AI is enabled: use a current project invite or
+  sign in through Feishu OAuth; existing password accounts can still log in normally.
+- Daily digest is not sent: verify the user subscription is enabled, the user has a bound
+  Feishu `open_id`, `FEISHU_DELIVERY_ENABLED` is not `false`, the CronJob uses the current
+  image, and the latest digest run is not `failed` or `skipped`.
+- Daily digest titles are not clickable: verify `APP_PUBLIC_URL` is an HTTPS root origin in
+  production and is injected into the digest CronJob. HTTP is accepted only for localhost
+  or loopback local development; invalid values intentionally fall back to plain titles.
 - Feishu callback returns 401: verify the callback token matches
   `FEISHU_VERIFICATION_TOKEN`; challenge payloads are authenticated too.
+- Unexpected users can complete Feishu OAuth: narrow the company custom application's
+  availability scope before re-enabling sign-in; Veges does not maintain a second tenant
+  or email-domain allowlist.

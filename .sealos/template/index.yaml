@@ -25,6 +25,11 @@ spec:
       type: string
       value: vege-basket-${{ random(8) }}
   inputs:
+    VEGES_IMAGE:
+      description: Immutable linux/amd64 image tag or digest built from the Veges revision being deployed.
+      type: string
+      default: ''
+      required: true
     APP_ENCRYPTION_ACTIVE_KEY_ID:
       description: Active encryption key id used by the server.
       type: string
@@ -50,6 +55,11 @@ spec:
       type: string
       default: ''
       required: false
+    AI_GLOBAL_RATE_LIMIT:
+      description: Maximum shared AI requests accepted by one application replica per rate window.
+      type: string
+      default: '30'
+      required: false
     FEISHU_WEBHOOK_USER_EMAIL:
       description: Username that receives Feishu conversation analysis drafts.
       type: string
@@ -74,6 +84,11 @@ spec:
       description: Optional Feishu application secret.
       type: string
       default: ''
+      required: false
+    FEISHU_DELIVERY_ENABLED:
+      description: Set to false to stop all outbound Feishu notification delivery.
+      type: string
+      default: 'true'
       required: false
     FEISHU_VERIFICATION_TOKEN:
       description: Required Feishu webhook verification token used before accepting challenge or event payloads.
@@ -267,12 +282,14 @@ metadata:
     app: ${{ defaults.app_name }}
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
   annotations:
-    originImageName: ghcr.io/felixqiu014-wq/vege-basket:20260715-121459
+    originImageName: ${{ inputs.VEGES_IMAGE }}
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
 spec:
   revisionHistoryLimit: 1
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ${{ defaults.app_name }}
@@ -325,7 +342,7 @@ spec:
               memory: 256Mi
       containers:
         - name: ${{ defaults.app_name }}
-          image: ghcr.io/felixqiu014-wq/vege-basket:20260715-121459
+          image: ${{ inputs.VEGES_IMAGE }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8787
@@ -334,6 +351,8 @@ spec:
               value: production
             - name: PORT
               value: '8787'
+            - name: APP_PUBLIC_URL
+              value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
             - name: PG_HOST
               valueFrom:
                 secretKeyRef:
@@ -368,6 +387,8 @@ spec:
               value: ${{ inputs.AI_MODEL }}
             - name: AI_RATE_LIMIT
               value: '5'
+            - name: AI_GLOBAL_RATE_LIMIT
+              value: ${{ inputs.AI_GLOBAL_RATE_LIMIT }}
             - name: AI_RATE_WINDOW_MS
               value: '60000'
             - name: AI_MAX_MESSAGE_LENGTH
@@ -384,6 +405,8 @@ spec:
               value: ${{ inputs.FEISHU_APP_ID }}
             - name: FEISHU_APP_SECRET
               value: ${{ inputs.FEISHU_APP_SECRET }}
+            - name: FEISHU_DELIVERY_ENABLED
+              value: ${{ inputs.FEISHU_DELIVERY_ENABLED }}
             - name: FEISHU_VERIFICATION_TOKEN
               value: ${{ inputs.FEISHU_VERIFICATION_TOKEN }}
             - name: FEISHU_ENCRYPT_KEY
@@ -425,6 +448,88 @@ spec:
             limits:
               cpu: 200m
               memory: 256Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ${{ defaults.app_name }}-todo-digest
+  labels:
+    app: ${{ defaults.app_name }}
+    app.kubernetes.io/component: todo-digest-worker
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  schedule: '*/5 * * * *'
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 240
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: ${{ defaults.app_name }}
+            app.kubernetes.io/component: todo-digest-worker
+        spec:
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ${{ defaults.app_name }}
+          restartPolicy: Never
+          containers:
+            - name: todo-digest-worker
+              image: ${{ inputs.VEGES_IMAGE }}
+              imagePullPolicy: IfNotPresent
+              command:
+                - node
+                - server/todo-digest-worker.ts
+              env:
+                - name: NODE_ENV
+                  value: production
+                - name: APP_PUBLIC_URL
+                  value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+                - name: PG_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${{ defaults.app_name }}-pg-conn-credential
+                      key: host
+                - name: PG_PORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${{ defaults.app_name }}-pg-conn-credential
+                      key: port
+                - name: PG_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${{ defaults.app_name }}-pg-conn-credential
+                      key: username
+                - name: PG_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${{ defaults.app_name }}-pg-conn-credential
+                      key: password
+                - name: DATABASE_URL
+                  value: postgresql://$(PG_USER):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/vegebasket
+                - name: APP_ENCRYPTION_ACTIVE_KEY_ID
+                  value: ${{ inputs.APP_ENCRYPTION_ACTIVE_KEY_ID }}
+                - name: APP_ENCRYPTION_KEYS
+                  value: ${{ inputs.APP_ENCRYPTION_KEYS }}
+                - name: FEISHU_APP_ID
+                  value: ${{ inputs.FEISHU_APP_ID }}
+                - name: FEISHU_APP_SECRET
+                  value: ${{ inputs.FEISHU_APP_SECRET }}
+                - name: FEISHU_DELIVERY_ENABLED
+                  value: ${{ inputs.FEISHU_DELIVERY_ENABLED }}
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 25Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
 ---
 apiVersion: v1
 kind: Service

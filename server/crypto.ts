@@ -11,6 +11,7 @@ type EncryptionEnvelope = {
 
 const encryptedPrefix = 'veges:enc:'
 const blindIndexPrefix = 'veges:idx:'
+const keyedDigestPrefix = 'veges:mac:'
 let cachedKeys: Map<string, Buffer> | null = null
 
 function parseKeys() {
@@ -114,4 +115,29 @@ export function blindIndex(value: string) {
   const { key, keyId } = getActiveKey()
   const digest = crypto.createHmac('sha256', key).update(normalized).digest('base64url')
   return `${blindIndexPrefix}${keyId}:${digest}`
+}
+
+export function keyedDigest(value: string, requestedKeyId?: string) {
+  const active = getActiveKey()
+  const keyId = requestedKeyId ?? active.keyId
+  const key = requestedKeyId ? getKey(requestedKeyId) : active.key
+  const digest = crypto.createHmac('sha256', key).update(value, 'utf8').digest('base64url')
+  return `${keyedDigestPrefix}${keyId}:${digest}`
+}
+
+export function verifyKeyedDigest(value: string, expected: string) {
+  if (!expected.startsWith(keyedDigestPrefix)) return false
+  const separator = expected.indexOf(':', keyedDigestPrefix.length)
+  if (separator <= keyedDigestPrefix.length || separator === expected.length - 1) return false
+  const keyId = expected.slice(keyedDigestPrefix.length, separator)
+  let actual: string
+  try {
+    actual = keyedDigest(value, keyId)
+  } catch {
+    return false
+  }
+  const actualBuffer = Buffer.from(actual)
+  const expectedBuffer = Buffer.from(expected)
+  return actualBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(actualBuffer, expectedBuffer)
 }

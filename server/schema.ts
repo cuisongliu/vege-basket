@@ -17,13 +17,7 @@ set feishu_email = feishu_user_id
 where feishu_email = ''
   and feishu_user_id like '%@%';
 
-create table if not exists ai_settings (
-  user_id bigint primary key references users(id) on delete cascade,
-  base_url text not null default '',
-  api_key text not null default '',
-  model text not null default '',
-  updated_at timestamptz not null default now()
-);
+drop table if exists ai_settings;
 
 create table if not exists sessions (
   token text primary key,
@@ -162,7 +156,9 @@ alter table todos
 alter table todos
   add column if not exists assignee_user_id bigint references users(id) on delete set null,
   add column if not exists assigned_by_user_id bigint references users(id) on delete set null,
-  add column if not exists assigned_at timestamptz;
+  add column if not exists assigned_at timestamptz,
+  add column if not exists completed_at timestamptz,
+  add column if not exists completed_by_user_id bigint references users(id) on delete set null;
 
 alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
@@ -186,6 +182,20 @@ from projects
 where todos.project_id = projects.id
   and todos.created_by_user_id is null;
 
+create table if not exists todo_activity_events (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  todo_id bigint references todos(id) on delete set null,
+  actor_user_id bigint references users(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  event_type text not null
+    check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected')),
+  title text not null,
+  due_date date not null,
+  priority text not null default 'medium',
+  occurred_at timestamptz not null default now()
+);
+
 create table if not exists risks (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
@@ -203,6 +213,254 @@ create table if not exists draft_items (
   suggested_project_id bigint references projects(id) on delete set null,
   processed boolean not null default false,
   created_at timestamptz not null default now()
+);
+
+create table if not exists ai_conversations (
+  id uuid primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  project_id bigint references projects(id) on delete cascade,
+  context_kind text not null
+    check (context_kind in ('general', 'project', 'conversation-analysis')),
+  title text not null,
+  next_turn_no integer not null default 1 check (next_turn_no > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_turn_at timestamptz not null default now(),
+  check (
+    (context_kind = 'project' and project_id is not null)
+    or (context_kind <> 'project' and project_id is null)
+  )
+);
+
+create table if not exists ai_conversation_tombstones (
+  conversation_id uuid primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  deleted_at timestamptz not null default now()
+);
+
+create table if not exists ai_turn_cancellations (
+  user_id bigint not null references users(id) on delete cascade,
+  conversation_id uuid not null,
+  turn_id uuid not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, turn_id)
+);
+
+create table if not exists ai_intent_classifications (
+  user_id bigint not null references users(id) on delete cascade,
+  turn_id uuid not null,
+  input_digest text not null
+    check (input_digest ~ '^veges:mac:[^:]+:[A-Za-z0-9_-]{43}$'),
+  source_context_kind text not null
+    check (source_context_kind in ('general', 'project', 'conversation-analysis')),
+  source_project_id bigint,
+  status text not null
+    check (status in ('processing', 'completed', 'failed', 'consumed')),
+  intent_payload text,
+  error_code text,
+  attempt_count integer not null default 1 check (attempt_count > 0),
+  lease_token uuid,
+  lease_until timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  consumed_at timestamptz,
+  primary key (user_id, turn_id),
+  unique (turn_id),
+  check (
+    (source_context_kind = 'project' and source_project_id is not null and source_project_id > 0)
+    or (source_context_kind <> 'project' and source_project_id is null)
+  ),
+  check (
+    (
+      status = 'processing'
+      and intent_payload is null
+      and error_code is null
+      and lease_token is not null
+      and lease_until is not null
+      and completed_at is null
+      and consumed_at is null
+    )
+    or (
+      status = 'completed'
+      and intent_payload is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+      and consumed_at is null
+    )
+    or (
+      status = 'failed'
+      and intent_payload is null
+      and error_code is not null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is null
+      and consumed_at is null
+    )
+    or (
+      status = 'consumed'
+      and intent_payload is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+      and consumed_at is not null
+    )
+  )
+);
+
+create index if not exists ai_intent_classifications_cleanup_idx
+  on ai_intent_classifications(updated_at);
+
+create table if not exists ai_turns (
+  id uuid primary key,
+  conversation_id uuid not null references ai_conversations(id) on delete cascade,
+  turn_no integer not null check (turn_no > 0),
+  intent_kind text not null
+    check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis', 'workspace-review')),
+  intent_payload text,
+  status text not null
+    check (status in ('processing', 'completed', 'failed', 'cancelled')),
+  user_content text not null,
+  assistant_content text,
+  error_code text,
+  attempt_count integer not null default 1 check (attempt_count > 0),
+  lease_token uuid,
+  lease_until timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (conversation_id, turn_no),
+  check (
+    (
+      status = 'processing'
+      and assistant_content is null
+      and error_code is null
+      and lease_token is not null
+      and lease_until is not null
+      and completed_at is null
+    )
+    or (
+      status = 'completed'
+      and assistant_content is not null
+      and error_code is null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is not null
+    )
+    or (
+      status in ('failed', 'cancelled')
+      and assistant_content is null
+      and error_code is not null
+      and lease_token is null
+      and lease_until is null
+      and completed_at is null
+    )
+  )
+);
+
+create table if not exists ai_turn_attachments (
+  id bigserial primary key,
+  turn_id uuid not null references ai_turns(id) on delete cascade,
+  ordinal smallint not null check (ordinal between 0 and 3),
+  name text not null,
+  media_type text not null,
+  size_bytes integer not null check (size_bytes between 1 and 65536),
+  content_characters integer not null check (content_characters between 1 and 20000),
+  content text not null,
+  created_at timestamptz not null default now(),
+  unique (turn_id, ordinal)
+);
+
+create table if not exists ai_turn_project_sources (
+  turn_id uuid not null references ai_turns(id) on delete cascade,
+  project_id bigint not null,
+  primary key (turn_id, project_id)
+);
+
+create table if not exists ai_todo_proposal_batches (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  source_filename text not null,
+  source_content text not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'confirmed', 'discarded')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table ai_todo_proposal_batches
+  add column if not exists source_turn_id uuid;
+
+alter table ai_turns
+  add column if not exists intent_payload text;
+
+do $$
+declare
+  intent_constraint_definition text;
+begin
+  select pg_get_constraintdef(oid)
+  into intent_constraint_definition
+  from pg_constraint
+  where conname = 'ai_turns_intent_kind_check'
+    and conrelid = 'ai_turns'::regclass;
+
+  if intent_constraint_definition is null
+     or position('workspace-review' in intent_constraint_definition) = 0 then
+    alter table ai_turns
+      drop constraint if exists ai_turns_intent_kind_check;
+    alter table ai_turns
+      add constraint ai_turns_intent_kind_check
+      check (intent_kind in ('chat', 'project-summary', 'todo-extraction', 'conversation-analysis', 'workspace-review'));
+  end if;
+end $$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'ai_todo_proposal_batches_source_turn_id_fkey'
+      and conrelid = 'ai_todo_proposal_batches'::regclass
+      and confdeltype <> 'n'
+  ) then
+    alter table ai_todo_proposal_batches
+      drop constraint ai_todo_proposal_batches_source_turn_id_fkey;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'ai_todo_proposal_batches_source_turn_id_fkey'
+      and conrelid = 'ai_todo_proposal_batches'::regclass
+  ) then
+    alter table ai_todo_proposal_batches
+      add constraint ai_todo_proposal_batches_source_turn_id_fkey
+      foreign key (source_turn_id) references ai_turns(id) on delete set null;
+  end if;
+end
+$$;
+
+create table if not exists ai_todo_proposals (
+  id bigserial primary key,
+  batch_id bigint not null references ai_todo_proposal_batches(id) on delete cascade,
+  proposal_key text not null,
+  project_id bigint references projects(id) on delete set null,
+  project_module_id bigint references project_modules(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  title text not null,
+  detail text not null default '',
+  due_date date,
+  priority text not null default 'medium',
+  confidence double precision not null default 0,
+  source_excerpt text not null default '',
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'rejected')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (batch_id, proposal_key)
 );
 
 create table if not exists summaries (
@@ -227,6 +485,9 @@ where summaries.project_id = projects.id
 
 alter table summaries
   alter column project_id drop not null;
+
+alter table summaries
+  add column if not exists source_turn_id uuid references ai_turns(id) on delete set null;
 
 create table if not exists notification_states (
   id bigserial primary key,
@@ -267,6 +528,40 @@ create table if not exists notification_deliveries (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (kind, source_id, channel, target_type, target_id)
+);
+
+create table if not exists notification_subscriptions (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null default 'daily_todo_digest',
+  channel text not null default 'feishu',
+  enabled boolean not null default false,
+  timezone text not null default 'Asia/Shanghai',
+  local_send_time time not null default '10:00',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, kind, channel)
+);
+
+create table if not exists notification_digest_runs (
+  id bigserial primary key,
+  subscription_id bigint not null references notification_subscriptions(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  kind text not null default 'daily_todo_digest',
+  local_date date not null,
+  period_start timestamptz not null,
+  period_end timestamptz not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'processing', 'retry', 'sent', 'failed', 'skipped')),
+  attempts integer not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  lease_until timestamptz,
+  content text not null default '',
+  last_error text not null default '',
+  delivered_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (subscription_id, local_date)
 );
 
 create table if not exists project_package_events (
@@ -409,6 +704,13 @@ create index if not exists idx_todos_created_by_user_id on todos(created_by_user
 create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
 create index if not exists idx_todos_due_date on todos(due_date);
 create index if not exists idx_todos_project_module_id on todos(project_module_id);
+create index if not exists idx_todos_completed_at on todos(completed_at);
+create index if not exists idx_todo_activity_events_project_time
+  on todo_activity_events(project_id, occurred_at desc, id desc);
+create index if not exists idx_todo_activity_events_todo_time
+  on todo_activity_events(todo_id, occurred_at desc, id desc);
+create index if not exists idx_todo_activity_events_assignee_time
+  on todo_activity_events(assignee_user_id, occurred_at desc, id desc);
 create index if not exists idx_project_modules_project_id on project_modules(project_id);
 create index if not exists idx_todo_notes_todo_id on todo_notes(todo_id);
 create index if not exists idx_todo_notes_author_user_id on todo_notes(author_user_id);
@@ -418,8 +720,36 @@ create index if not exists idx_collaborators_project_id on collaborators(project
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);
 create index if not exists idx_risks_project_id on risks(project_id);
 create index if not exists idx_draft_items_user_id on draft_items(user_id);
+create index if not exists idx_ai_conversations_user_activity
+  on ai_conversations(user_id, last_turn_at desc, id desc);
+create index if not exists idx_ai_conversations_project_user
+  on ai_conversations(project_id, user_id)
+  where project_id is not null;
+create index if not exists idx_ai_turn_cancellations_user_created
+  on ai_turn_cancellations(user_id, created_at);
+create index if not exists idx_ai_intent_classifications_user_created
+  on ai_intent_classifications(user_id, created_at desc);
+create index if not exists idx_ai_turns_conversation_order
+  on ai_turns(conversation_id, turn_no desc);
+create index if not exists idx_ai_turn_project_sources_project
+  on ai_turn_project_sources(project_id, turn_id);
+create unique index if not exists idx_ai_turns_one_processing
+  on ai_turns(conversation_id)
+  where status = 'processing';
+create index if not exists idx_ai_turn_attachments_turn
+  on ai_turn_attachments(turn_id, ordinal);
+create index if not exists idx_ai_todo_proposal_batches_user_status
+  on ai_todo_proposal_batches(user_id, status, created_at desc);
+create unique index if not exists idx_ai_todo_proposal_batches_source_turn
+  on ai_todo_proposal_batches(source_turn_id)
+  where source_turn_id is not null;
+create index if not exists idx_ai_todo_proposals_batch_status
+  on ai_todo_proposals(batch_id, status, id);
 create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
+create unique index if not exists idx_summaries_source_turn
+  on summaries(source_turn_id)
+  where source_turn_id is not null;
 create index if not exists idx_notification_states_user_kind
   on notification_states(user_id, kind);
 create index if not exists idx_project_integrations_project_provider
@@ -428,6 +758,10 @@ create index if not exists idx_notification_deliveries_status
   on notification_deliveries(channel, status, updated_at);
 create index if not exists idx_notification_deliveries_user_kind
   on notification_deliveries(user_id, kind);
+create index if not exists idx_notification_subscriptions_due
+  on notification_subscriptions(enabled, timezone, local_send_time);
+create index if not exists idx_notification_digest_runs_claim
+  on notification_digest_runs(status, next_attempt_at, lease_until);
 create index if not exists idx_project_package_events_project_id
   on project_package_events(project_id, created_at);
 create index if not exists idx_project_package_groups_event_id

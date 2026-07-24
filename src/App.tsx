@@ -1,9 +1,12 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
+  type ChangeEvent,
   type ClipboardEvent,
   type CSSProperties,
   type ComponentProps,
@@ -15,30 +18,44 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  parseTodoDeepLink,
+  removeTodoDeepLink,
+  resolveTodoDeepLinkTarget,
+  shouldDeferTodoDeepLinkForInvite,
+} from '@/todo-deep-link'
+import {
   Archive,
   AddressBook,
+  At,
   Bell,
+  CalendarBlank,
   Check,
+  ChatCircleDots,
   CopySimple,
   CornersIn,
   CornersOut,
   DotsThree,
   CaretDown,
+  ClockCounterClockwise,
   ImageSquare,
   PencilSimple,
   DownloadSimple,
   FileText,
   FunnelSimple,
+  GearSix,
   LinkSimple,
   ListChecks,
   MagnifyingGlass,
   NotePencil,
+  Paperclip,
   PaperPlaneTilt,
   Plus,
   ShoppingCartSimple,
   SignIn,
   SignOut,
+  SidebarSimple,
   Sparkle,
+  SpinnerGap,
   Sun,
   Target,
   Tray,
@@ -48,6 +65,7 @@ import {
   X,
 } from '@phosphor-icons/react'
 import { JournalDatePicker } from '@/components/journal-date-picker'
+import { AccountSettingsDialog } from '@/components/account-settings-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -90,8 +108,8 @@ import {
   createFeishuOAuthUrl,
   createProject,
   createRiskFromJournal,
+  createAiTurnDocument,
   createSummary,
-  createSummaryFromContent,
   createTodo,
   createTodoNote,
   exportProjectPackageTimeline,
@@ -103,9 +121,14 @@ import {
   fetchPackageMarketRules,
   fetchProjectPackageTimeline,
   fetchWorkspace,
-  fetchAiSettings,
+  fetchAiStatus,
+  fetchAiConversations,
+  fetchAiConversationTurns,
+  fetchTodoProposalBatch,
   fetchCurrentUser,
   fetchNotifications,
+  ApiError,
+  AiTurnStreamTerminalError,
   fetchProjectInviteLinkInfo,
   formatApiErrorDiagnostic,
   getAuthToken,
@@ -136,15 +159,19 @@ import {
   updateTodo,
   updateTodoNote,
   uploadTodoImage,
-  updateAiSettings,
-  updateCurrentPassword,
   setAuthToken,
-  sendAiChat,
+  classifyAiConversationTurnIntent,
+  sendAiConversationTurn,
+  retryAiConversationTurn,
+  cancelAiConversationTurn,
+  reconcileAiConversationTurn,
+  renameAiConversation,
+  deleteAiConversation,
   updateCurrentUser,
+  type AiStatus,
+  type AiTurnStreamHandlers,
+  type AiTurnStreamPhase,
   verifyProjectInviteLink,
-  type AiAgentType,
-  type AiChatMessage,
-  type AiSettings,
   type AuthUser,
   type WorkspaceData,
 } from './api'
@@ -168,10 +195,36 @@ import type {
   ProjectMembership,
   ProjectStatus,
   Summary,
+  SummaryPeriodType,
+  AiConversation,
+  AiConversationContextKind,
+  AiTurn,
+  AiTurnOutcome,
+  AiTurnRunResponse,
   Todo,
   TodoNotification,
   TodoNote,
 } from './types'
+import { TodoActivityPanel } from './components/todo-activity-panel'
+import {
+  TodoProposalWorkflow,
+  type TodoProposalWorkflowHandle,
+} from './components/todo-proposal-workflow'
+import { AiConversationHistoryPanel } from './components/ai-conversation-history-panel'
+import {
+  GENERAL_AI_CONVERSATION_CONTEXT,
+  aiConversationHistoryReducer,
+  canonicalProcessingAiTurn,
+  createAiConversationHistoryState,
+  currentAiConversationId,
+  isAiTurnCanonicalStateUnknown,
+  latestRetryableAiTurnId,
+  mergeAiTurns,
+  nextAiTurnNumber,
+  type AiConversationContext,
+  type AiConversationHistoryState,
+  type AiConversationListItem,
+} from './ai-conversation-state'
 import {
   ProjectPackageWorkbench,
   type ProjectPackageWorkbenchHandle,
@@ -181,12 +234,177 @@ import {
   removeTodoNotifications,
   startNotificationRefreshSchedule,
 } from './notifications'
+import {
+  buildAiClassificationContent,
+  deriveAiIntentTargetContext,
+  type AiIntentClassification,
+} from './ai-input-intent'
+import { aiTurnFailureDetail } from './ai-turn-error'
+import {
+  AI_ATTACHMENT_MAX_BYTES,
+  AI_ATTACHMENT_MAX_CHARACTERS,
+  AI_ATTACHMENT_MAX_COUNT,
+  buildAiMessageContent,
+  formatAttachmentSize,
+  isSupportedAiAttachment,
+  totalAttachmentCharacters,
+  type AiTextAttachment,
+} from './ai-attachments'
 import './App.css'
 
-type View = 'project' | 'inbox' | 'notifications' | 'search' | 'summaries'
+type View = 'project' | 'inbox' | 'notifications' | 'search' | 'ai'
 type DetailEntrySource = 'project' | 'notifications'
-type DisplayAiChatMessage = AiChatMessage & { createdAt: string }
+type DisplayAiAttachment = {
+  id: number | string
+  name: string
+  size: number
+}
+type DisplayAiChatMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  attachments?: DisplayAiAttachment[]
+  createdAt: string
+  outcome?: AiTurnOutcome
+  turnId: string
+  turnStatus: AiTurn['status']
+  statusDetail?: string
+  statusKind?: 'cancelled' | 'failed' | 'processing' | 'reconciling'
+  statusTitle?: string
+}
+type AiTurnLiveState = {
+  connection: 'connected' | 'reconciling'
+  content: string
+  error?: string
+  mode: 'progress' | 'text'
+  phase: AiTurnStreamPhase
+}
 type ThemeMode = 'dark' | 'light'
+type AiMobilePane = 'workspace' | 'history' | 'artifacts'
+
+function getDefaultAiPane(): AiMobilePane {
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1101px)').matches
+    ? 'artifacts'
+    : 'workspace'
+}
+type AiMessageRoute = {
+  attachments?: AiTextAttachment[]
+  content?: string
+  contextKind?: AiConversationContextKind
+  intent: AiIntentClassification
+  turnId: string
+}
+
+function aiTurnProgressTitle(turn: AiTurn, phase: AiTurnStreamPhase) {
+  if (turn.intentKind === 'todo-extraction') {
+    if (phase === 'validating') return '正在校验待办候选'
+    if (phase === 'saving') return '正在保存待办候选'
+    return phase === 'preparing' ? '正在读取内容' : '正在提取待办'
+  }
+  if (turn.intentKind === 'project-summary') {
+    return phase === 'saving' ? '正在保存项目总结' : '正在生成项目总结'
+  }
+  if (turn.intentKind === 'conversation-analysis') {
+    return phase === 'saving' ? '正在保存分析结果' : '正在分析对话'
+  }
+  if (turn.intentKind === 'workspace-review') {
+    return phase === 'saving' ? '正在保存工作区复盘' : '正在整理工作区进展'
+  }
+  return phase === 'saving' ? '正在保存回复' : '正在回复'
+}
+
+function displayMessagesFromAiTurn(
+  turn: AiTurn,
+  liveState?: AiTurnLiveState,
+): DisplayAiChatMessage[] {
+  const attachments = turn.attachments.map(({ id, name, size }) => ({ id, name, size }))
+  const messages: DisplayAiChatMessage[] = [{
+    attachments,
+    content: turn.userContent || '请阅读附件内容。',
+    createdAt: turn.createdAt,
+    id: `${turn.id}:user`,
+    role: 'user',
+    turnId: turn.id,
+    turnStatus: turn.status,
+  }]
+  const statusKind = turn.status === 'processing'
+    ? liveState?.connection === 'reconciling' ? 'reconciling' : 'processing'
+    : turn.status === 'failed' || turn.status === 'cancelled' ? turn.status : undefined
+  const statusTitle = statusKind === 'reconciling'
+    ? '正在确认回复结果'
+    : statusKind === 'processing'
+      ? aiTurnProgressTitle(turn, liveState?.phase ?? 'preparing')
+      : statusKind === 'failed'
+        ? '回复失败'
+        : statusKind === 'cancelled'
+          ? '回复已停止'
+          : undefined
+  const statusDetail = statusKind === 'reconciling'
+    ? '连接已中断，正在从服务端恢复这条回复。'
+    : statusKind === 'failed'
+      ? liveState?.error || aiTurnFailureDetail(turn.errorCode)
+      : statusKind === 'cancelled'
+        ? '你可以重试这条消息。'
+        : undefined
+  const assistantContent = turn.status === 'completed'
+    ? turn.assistantContent
+    : turn.status === 'processing' && liveState?.mode === 'text'
+      ? liveState.content
+      : ''
+  if (assistantContent || statusTitle) {
+    messages.push({
+      content: assistantContent || '',
+      createdAt: turn.completedAt ?? turn.updatedAt,
+      id: `${turn.id}:assistant`,
+      outcome: turn.outcome,
+      role: 'assistant',
+      turnId: turn.id,
+      turnStatus: turn.status,
+      statusDetail,
+      statusKind,
+      statusTitle,
+    })
+  }
+  return messages
+}
+
+function toAiConversationListItem(conversation: AiConversation): AiConversationListItem {
+  return {
+    contextType: conversation.contextKind,
+    createdAt: conversation.createdAt,
+    id: conversation.id,
+    lastTurnAt: conversation.lastTurnAt,
+    projectId: conversation.projectId,
+    projectName: conversation.projectName,
+    title: conversation.title,
+    updatedAt: conversation.updatedAt,
+  }
+}
+
+function aiConversationContext(
+  contextKind: AiConversationContextKind,
+  projectId: number | null,
+  projects: Project[],
+): AiConversationContext {
+  return {
+    contextType: contextKind,
+    projectId: contextKind === 'project' ? projectId : null,
+    projectName: contextKind === 'project'
+      ? projects.find((project) => project.id === projectId)?.name ?? null
+      : null,
+  }
+}
+
+function formatAiMessageTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
 type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
   assigneeUserId?: number | null
   createdAt?: string
@@ -207,7 +425,7 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'journal' | 'packages'
+type ProjectDetailTab = 'journal' | 'activity' | 'packages'
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -236,19 +454,6 @@ type TodoFilterCondition = {
   value: string
 }
 
-const aiAgentMeta: Record<AiAgentType, { avatar: string; subtitle: string; title: string }> = {
-  'project-summary': {
-    avatar: 'V',
-    subtitle: 'Veges AI Agent',
-    title: '项目总结助理',
-  },
-  'conversation-analysis': {
-    avatar: '析',
-    subtitle: '群聊对话分析 Agent',
-    title: '对话分析助理',
-  },
-}
-
 const themeStorageKey = 'veges.theme'
 const todoCreateDraftStoragePrefix = 'veges.todoCreateDraft.v1'
 
@@ -272,6 +477,20 @@ function clearInviteTokenFromUrl() {
   const url = new URL(window.location.href)
   url.searchParams.delete('invite')
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+function getTodoDeepLinkIdFromUrl() {
+  if (typeof window === 'undefined') return null
+  return parseTodoDeepLink(window.location.search).todoId
+}
+
+function clearTodoDeepLinkFromUrl() {
+  if (typeof window === 'undefined') return
+  window.history.replaceState({}, '', removeTodoDeepLink({
+    hash: window.location.hash,
+    pathname: window.location.pathname,
+    search: window.location.search,
+  }))
 }
 
 const todoNotesReadStoragePrefix = 'veges.todoNotesReadAt.v1'
@@ -464,11 +683,6 @@ function getPreviousDateStamp(dateStamp = getTodayStamp()) {
   const date = new Date(`${dateStamp}T00:00:00+08:00`)
   date.setDate(date.getDate() - 1)
   return getShanghaiDateParts(date).date
-}
-
-function getCurrentDateTimeStamp() {
-  const parts = getShanghaiDateParts()
-  return `${parts.date} ${parts.time}`
 }
 
 function getProjectJournalSortKey(project: Project) {
@@ -1049,6 +1263,7 @@ function App() {
   const [displayNameOnboardingError, setDisplayNameOnboardingError] = useState('')
   const [displayNameOnboardingBusy, setDisplayNameOnboardingBusy] = useState(false)
   const [inviteToken, setInviteToken] = useState(getInviteTokenFromUrl)
+  const [settledInviteToken, setSettledInviteToken] = useState('')
   const [invitePasswordChecking, setInvitePasswordChecking] = useState(false)
   const [invitePasswordDraft, setInvitePasswordDraft] = useState('')
   const [invitePasswordError, setInvitePasswordError] = useState('')
@@ -1063,6 +1278,7 @@ function App() {
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
   const [selectedProjectId, setSelectedProjectId] = useState(1)
+  const [pendingTodoDeepLinkId, setPendingTodoDeepLinkId] = useState(getTodoDeepLinkIdFromUrl)
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
@@ -1089,15 +1305,86 @@ function App() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
-  const initialAiMessages: DisplayAiChatMessage[] = []
-  const [aiMessages, setAiMessages] = useState<DisplayAiChatMessage[]>(initialAiMessages)
+  const [aiHistory, dispatchAiHistory] = useReducer(
+    aiConversationHistoryReducer,
+    GENERAL_AI_CONVERSATION_CONTEXT,
+    createAiConversationHistoryState,
+  )
+  const [aiTurns, setAiTurns] = useState<AiTurn[]>([])
+  const [aiTurnLiveStates, setAiTurnLiveStates] = useState<Record<string, AiTurnLiveState>>({})
+  const [aiTurnsLoading, setAiTurnsLoading] = useState(false)
+  const [aiTurnsError, setAiTurnsError] = useState('')
+  const [aiNextBeforeTurn, setAiNextBeforeTurn] = useState<number | null>(null)
   const [aiDraft, setAiDraft] = useState('')
-  const [activeAiAgent, setActiveAiAgent] = useState<AiAgentType>('project-summary')
+  const [aiMobilePane, setAiMobilePane] = useState<AiMobilePane>(getDefaultAiPane)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiReconcileAttempt, setAiReconcileAttempt] = useState(0)
   const packageWorkbenchRef = useRef<ProjectPackageWorkbenchHandle>(null)
   const acceptingInviteTokenRef = useRef('')
   const notificationRefreshRequestIdRef = useRef(0)
+  const aiRequestIdRef = useRef(0)
+  const authSessionGenerationRef = useRef(0)
+  const aiHistoryRequestIdRef = useRef(0)
+  const aiTurnsRequestIdRef = useRef(0)
+  const deletingAiConversationIdsRef = useRef(new Set<string>())
+  const summariesRef = useRef(summaries)
+  summariesRef.current = summaries
+  const activeAiTurnRef = useRef<{
+    awaitingCanonical?: boolean
+    conversationId: string
+    localRequestId: number | null
+    stopRequested?: boolean
+    turnId: string
+    userContent?: string
+  } | null>(null)
+  const aiSelectionRef = useRef(aiHistory.selection)
+  aiSelectionRef.current = aiHistory.selection
+  const aiProjectId = aiHistory.selection.context.projectId
+  const selectedAiConversationId = currentAiConversationId(aiHistory.selection)
+  const aiMessages = useMemo(
+    () => aiTurns.flatMap((turn) => displayMessagesFromAiTurn(turn, aiTurnLiveStates[turn.id])),
+    [aiTurnLiveStates, aiTurns],
+  )
+
+  const replaceAiConversationTurns = useCallback((
+    result: Awaited<ReturnType<typeof fetchAiConversationTurns>>,
+    mode: 'merge' | 'replace' = 'replace',
+  ) => {
+    dispatchAiHistory({
+      type: 'conversation/upserted',
+      conversation: toAiConversationListItem(result.conversation),
+    })
+    setAiTurns((current) => mode === 'merge'
+      ? mergeAiTurns(current, result.turns)
+      : result.turns)
+    setAiTurnLiveStates((current) => {
+      const terminalIds = new Set(
+        result.turns.filter((turn) => turn.status !== 'processing').map((turn) => turn.id),
+      )
+      if (terminalIds.size === 0) return current
+      return Object.fromEntries(
+        Object.entries(current).filter(([turnId]) => !terminalIds.has(turnId)),
+      )
+    })
+    if (mode === 'replace') setAiNextBeforeTurn(result.nextBeforeTurn)
+    setAiTurnsError('')
+    const processing = canonicalProcessingAiTurn(result.turns)
+    if (processing) {
+      const currentActive = activeAiTurnRef.current
+      activeAiTurnRef.current = currentActive?.turnId === processing.id
+        ? currentActive
+        : {
+            conversationId: result.conversation.id,
+            localRequestId: null,
+            turnId: processing.id,
+          }
+      setAiBusy(true)
+    } else if (activeAiTurnRef.current?.conversationId === result.conversation.id) {
+      activeAiTurnRef.current = null
+      setAiBusy(false)
+    }
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', themeMode === 'dark')
@@ -1109,6 +1396,12 @@ function App() {
       // Ignore storage failures so theme switching still works for the session.
     }
   }, [themeMode])
+
+  useEffect(() => {
+    if (parseTodoDeepLink(window.location.search).status === 'invalid') {
+      clearTodoDeepLinkFromUrl()
+    }
+  }, [])
 
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
@@ -1129,6 +1422,36 @@ function App() {
     })
   }, [])
 
+  const applyAiRunOutcome = useCallback(async (outcome: AiTurnRunResponse['outcome']) => {
+    if (
+      outcome?.type !== 'summary' ||
+      summariesRef.current.some((summary) => summary.id === outcome.summaryId)
+    ) return
+    const sessionGeneration = authSessionGenerationRef.current
+    try {
+      const workspace = await fetchWorkspace()
+      if (authSessionGenerationRef.current !== sessionGeneration) return
+      applyWorkspace(workspace)
+    } catch {
+      if (authSessionGenerationRef.current !== sessionGeneration) return
+      setAiError('AI 文档已保存，但工作区刷新失败，请重新载入页面。')
+    }
+  }, [applyWorkspace])
+
+  const applyCanonicalAiTurnOutcome = useCallback(async (turn: AiTurn | null | undefined) => {
+    if (turn?.status !== 'completed') return
+    setAiError('')
+    await applyAiRunOutcome(turn.outcome)
+  }, [applyAiRunOutcome])
+
+  const applyAiWorkspaceForSession = useCallback((
+    data: WorkspaceData,
+    sessionGeneration: number,
+  ) => {
+    if (authSessionGenerationRef.current !== sessionGeneration) return
+    applyWorkspace(data)
+  }, [applyWorkspace])
+
   const refreshNotifications = useCallback(async () => {
     const requestId = notificationRefreshRequestIdRef.current + 1
     notificationRefreshRequestIdRef.current = requestId
@@ -1146,21 +1469,191 @@ function App() {
   useEffect(() => {
     if (!loggedIn) return
 
+    const sessionGeneration = authSessionGenerationRef.current
     fetchCurrentUser()
       .then((data) => {
+        if (authSessionGenerationRef.current !== sessionGeneration) return
         setAuthUser(data.user)
         applyWorkspace(data.workspace)
         void refreshNotifications()
         setWorkspaceError('')
       })
       .catch(() => {
+        if (authSessionGenerationRef.current !== sessionGeneration) return
+        authSessionGenerationRef.current += 1
         clearAuthToken()
         setLoggedIn(false)
         setWorkspaceError('')
         setAuthError('登录状态已失效，请重新登录。')
       })
-      .finally(() => setWorkspaceLoaded(true))
+      .finally(() => {
+        if (authSessionGenerationRef.current === sessionGeneration) setWorkspaceLoaded(true)
+      })
   }, [applyWorkspace, loggedIn, refreshNotifications])
+
+  useEffect(() => {
+    if (!loggedIn || !authUser) return
+
+    const historyRequestId = aiHistoryRequestIdRef.current + 1
+    aiHistoryRequestIdRef.current = historyRequestId
+    dispatchAiHistory({ type: 'history/load-started', mode: 'initial' })
+    fetchAiConversations()
+      .then(async (page) => {
+        if (aiHistoryRequestIdRef.current !== historyRequestId) return
+        const conversations = page.conversations
+          .filter((conversation) => !deletingAiConversationIdsRef.current.has(conversation.id))
+          .map(toAiConversationListItem)
+        dispatchAiHistory({
+          type: 'history/load-succeeded',
+          conversations,
+          mode: 'initial',
+          nextCursor: page.nextCursor,
+        })
+        const latest = conversations[0]
+        if (!latest) {
+          setAiTurns([])
+          setAiTurnLiveStates({})
+          setAiNextBeforeTurn(null)
+          setAiTurnsError('')
+          dispatchAiHistory({
+            type: 'conversation/blanked',
+            context: GENERAL_AI_CONVERSATION_CONTEXT,
+          })
+          return
+        }
+
+        const turnsRequestId = aiTurnsRequestIdRef.current + 1
+        aiTurnsRequestIdRef.current = turnsRequestId
+        setAiTurnsLoading(true)
+        setAiTurnsError('')
+        try {
+          const result = await fetchAiConversationTurns(latest.id)
+          if (
+            aiHistoryRequestIdRef.current !== historyRequestId ||
+            aiTurnsRequestIdRef.current !== turnsRequestId
+          ) return
+          replaceAiConversationTurns(result)
+          await applyCanonicalAiTurnOutcome(
+            [...result.turns].reverse().find((turn) =>
+              turn.status === 'completed' && turn.outcome?.type === 'summary'),
+          )
+        } catch (error) {
+          if (
+            aiHistoryRequestIdRef.current !== historyRequestId ||
+            aiTurnsRequestIdRef.current !== turnsRequestId
+          ) return
+          setAiTurnsError(
+            error instanceof Error && error.message
+              ? error.message
+              : '无法恢复最近的对话。',
+          )
+        }
+      })
+      .catch((error) => {
+        if (aiHistoryRequestIdRef.current !== historyRequestId) return
+        const message = error instanceof Error && error.message
+          ? error.message
+          : '无法读取历史对话。'
+        dispatchAiHistory({ type: 'history/load-failed', error: message })
+        setAiTurnsError(message)
+      })
+      .finally(() => {
+        if (aiHistoryRequestIdRef.current === historyRequestId) setAiTurnsLoading(false)
+      })
+
+    return () => {
+      if (aiHistoryRequestIdRef.current === historyRequestId) {
+        aiHistoryRequestIdRef.current += 1
+        aiTurnsRequestIdRef.current += 1
+      }
+    }
+  }, [applyCanonicalAiTurnOutcome, authUser, loggedIn, replaceAiConversationTurns])
+
+  useEffect(() => {
+    const processing = canonicalProcessingAiTurn(aiTurns)
+    const active = activeAiTurnRef.current
+    const conversationId = selectedAiConversationId ?? (
+      active && processing && active.turnId === processing.id ? active.conversationId : null
+    )
+    if (!loggedIn || !conversationId || !processing) return
+
+    if (
+      !active ||
+      active.conversationId !== conversationId ||
+      active.turnId !== processing.id
+    ) {
+      activeAiTurnRef.current = {
+        conversationId,
+        localRequestId: null,
+        turnId: processing.id,
+      }
+    }
+    setAiBusy(true)
+
+    let cancelled = false
+    const sessionGeneration = authSessionGenerationRef.current
+    const isCurrentRequest = () => {
+      if (cancelled || authSessionGenerationRef.current !== sessionGeneration) return false
+      const currentConversationId = currentAiConversationId(aiSelectionRef.current)
+      const currentActive = activeAiTurnRef.current
+      return currentConversationId === conversationId || (
+        currentActive?.conversationId === conversationId &&
+        currentActive.turnId === processing.id
+      )
+    }
+    const timeout = window.setTimeout(() => {
+      reconcileAiConversationTurn(conversationId, processing.id)
+        .then(async (result) => {
+          if (!isCurrentRequest()) return
+          dispatchAiHistory({
+            type: 'conversation/upserted',
+            conversation: toAiConversationListItem(result.conversation),
+          })
+          setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+          setAiTurnsError('')
+          if (result.turn.status !== 'processing') {
+            clearAiTurnLiveState(result.turn.id)
+            if (activeAiTurnRef.current?.turnId === result.turn.id) {
+              activeAiTurnRef.current = null
+            }
+            setAiBusy(false)
+            await applyCanonicalAiTurnOutcome(result.turn)
+          }
+        })
+        .catch((error) => {
+          if (!isCurrentRequest()) return
+          const activeTurn = activeAiTurnRef.current
+          if (
+            error instanceof ApiError &&
+            error.status === 404 &&
+            activeTurn?.localRequestId === null
+          ) {
+            hideUnavailableAiConversation(conversationId)
+            return
+          }
+          if (activeTurn?.localRequestId === null) {
+            markAiTurnReconciling(
+              processing.id,
+              processing.intentKind === 'chat' || processing.intentKind === 'conversation-analysis'
+                ? 'text'
+                : 'progress',
+            )
+          }
+          setAiReconcileAttempt((current) => current + 1)
+        })
+    }, 1_500)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [
+    aiReconcileAttempt,
+    aiTurns,
+    applyCanonicalAiTurnOutcome,
+    loggedIn,
+    selectedAiConversationId,
+  ])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -1278,6 +1771,27 @@ function App() {
       : undefined
 
   useEffect(() => {
+    if (aiProjectId == null || projects.some((project) => project.id === aiProjectId)) return
+
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    activeAiTurnRef.current = null
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: GENERAL_AI_CONVERSATION_CONTEXT,
+    })
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiTurnsLoading(false)
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('当前项目已不可访问，已开始新的普通对话。')
+    setAiDraft('')
+    setAiBusy(false)
+    setAiError('')
+  }, [aiProjectId, projects])
+
+  useEffect(() => {
     if (view !== 'project' || requestedTodoDetailId == null) return
     const frame = window.requestAnimationFrame(() => setRequestedTodoDetailId(null))
     return () => window.cancelAnimationFrame(frame)
@@ -1374,6 +1888,7 @@ function App() {
         clearInviteTokenFromUrl()
       })
       .catch(() => {
+        setSettledInviteToken(inviteToken)
         setWorkspaceError('项目邀请链接无效或已失效。')
       })
       .finally(() => {
@@ -1387,6 +1902,45 @@ function App() {
     invitePasswordVerified,
     inviteToken,
     loggedIn,
+    workspaceLoaded,
+  ])
+
+  useEffect(() => {
+    if (
+      !loggedIn ||
+      !workspaceLoaded ||
+      !authUser ||
+      shouldDeferTodoDeepLinkForInvite(inviteToken, settledInviteToken) ||
+      pendingTodoDeepLinkId == null
+    ) return
+
+    const todo = resolveTodoDeepLinkTarget({
+      projectIds: projects.map((project) => project.id),
+      todoId: pendingTodoDeepLinkId,
+      todos,
+    })
+    setPendingTodoDeepLinkId(null)
+    clearTodoDeepLinkFromUrl()
+    if (!todo) {
+      setWorkspaceError('待办不存在或你无权访问')
+      return
+    }
+
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(todo.id)
+    setRequestedPackageEventId(null)
+    setSelectedProjectId(todo.projectId)
+    setJournalDraft('')
+    setProjectDetailTab('journal')
+    setView('project')
+  }, [
+    authUser,
+    inviteToken,
+    loggedIn,
+    pendingTodoDeepLinkId,
+    projects,
+    settledInviteToken,
+    todos,
     workspaceLoaded,
   ])
 
@@ -1500,8 +2054,17 @@ function App() {
         clearInviteTokenFromUrl()
       }
       void refreshNotifications()
-    } catch {
-      setAuthError(mode === 'register' ? '注册失败，请确认用户名未被使用且密码不少于 6 位。' : '登录失败，请检查用户名和密码。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      if (mode === 'register' && message.includes('active project invite')) {
+        setAuthError('系统已启用共享 AI，请通过有效项目邀请或飞书登录创建账号。')
+      } else {
+        setAuthError(
+          mode === 'register'
+            ? '注册失败，请确认用户名未被使用且密码不少于 6 位。'
+            : '登录失败，请检查用户名和密码。',
+        )
+      }
     }
   }
 
@@ -1529,7 +2092,13 @@ function App() {
   }
 
   function signOut() {
+    authSessionGenerationRef.current += 1
     notificationRefreshRequestIdRef.current += 1
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    activeAiTurnRef.current = null
+    deletingAiConversationIdsRef.current.clear()
     clearAuthToken()
     setLoggedIn(false)
     setAuthUser(null)
@@ -1540,6 +2109,16 @@ function App() {
     setWorkspaceError('')
     setWorkspaceLoaded(false)
     setNotifications(emptyNotifications)
+    dispatchAiHistory({ type: 'session/reset' })
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiTurnsLoading(false)
+    setAiTurnsError('')
+    setAiNextBeforeTurn(null)
+    setAiDraft('')
+    setAiBusy(false)
+    setAiError('')
+    setAiMobilePane(getDefaultAiPane())
   }
 
   async function updateAccountSettings(payload: {
@@ -1554,8 +2133,9 @@ function App() {
       })
       setAuthUser(result.user)
       setWorkspaceError('')
-    } catch {
+    } catch (error) {
       setWorkspaceError('账户设置保存失败，请稍后再试。')
+      throw error
     }
   }
 
@@ -1951,9 +2531,13 @@ function App() {
     await runMutation(() => removeTodo(todoId))
   }
 
-  async function generateSummary(projectId: number, type: Summary['type']) {
-    await runMutation(() => createSummary(projectId, type))
-    setView('summaries')
+  async function generateSummary(projectId: number, type: SummaryPeriodType) {
+    const data = await runMutation(() => createSummary(projectId, type))
+    if (data) {
+      setAiMobilePane('artifacts')
+      setView('ai')
+    }
+    return Boolean(data)
   }
 
   async function createInstallEvent(payload: {
@@ -2237,68 +2821,669 @@ function App() {
     return (await fetchPackageMarketReleaseVersions(payload)).versions
   }
 
-  async function generateSummaryFromAiMessage(message: DisplayAiChatMessage) {
-    const content = message.content.trim()
-    const projectId = selectedProject?.id ?? projects[0]?.id
-    if (!content || !projectId) return
+  async function stopActiveAiTurn() {
+    const active = activeAiTurnRef.current
+    if (!active) return
 
-    await runMutation(() =>
-      createSummaryFromContent({
-        content,
-        projectId,
-        title: `${message.createdAt.slice(0, 10)} AI 生成总结`,
-        type: 'weekly',
-      }),
-    )
+    const requestId = aiRequestIdRef.current
+    activeAiTurnRef.current = { ...active, localRequestId: null, stopRequested: true }
+    setAiBusy(true)
+    setAiError('')
+    try {
+      const result = await cancelAiConversationTurn(active.conversationId, active.turnId)
+      if (aiRequestIdRef.current !== requestId) return
+      aiRequestIdRef.current += 1
+      if (result.pending) {
+        activeAiTurnRef.current = null
+        setAiTurns((current) => current.filter((turn) => turn.id !== active.turnId))
+        clearAiTurnLiveState(active.turnId)
+        if (active.userContent) setAiDraft((current) => current || active.userContent || '')
+        setAiBusy(false)
+        setAiTurnsError('')
+        return
+      }
+      dispatchAiHistory({
+        type: 'conversation/upserted',
+        conversation: toAiConversationListItem(result.conversation),
+      })
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status !== 'processing') {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+        clearAiTurnLiveState(active.turnId)
+      }
+    } catch {
+      if (aiRequestIdRef.current !== requestId) return
+      try {
+        const restored = await fetchAiConversationTurns(active.conversationId)
+        if (aiRequestIdRef.current !== requestId) return
+        const canonicalTurn = restored.turns.find((turn) => turn.id === active.turnId)
+        if (!canonicalTurn) {
+          markAiTurnReconciling(active.turnId, 'text')
+          return
+        }
+        aiRequestIdRef.current += 1
+        replaceAiConversationTurns(restored, 'merge')
+        await applyCanonicalAiTurnOutcome(canonicalTurn)
+        return
+      } catch {
+        if (aiRequestIdRef.current !== requestId) return
+      }
+      if (activeAiTurnRef.current) {
+        markAiTurnReconciling(active.turnId, 'text')
+      }
+    }
   }
 
-  async function sendAgentMessage() {
-    const content = aiDraft.trim()
-    if (!content || aiBusy) return
+  async function loadAiHistoryPage(mode: 'initial' | 'more' = 'initial') {
+    if (mode === 'more' && !aiHistory.nextCursor) return null
+    const requestId = aiHistoryRequestIdRef.current + 1
+    aiHistoryRequestIdRef.current = requestId
+    dispatchAiHistory({ type: 'history/load-started', mode })
+    try {
+      const page = await fetchAiConversations(
+        mode === 'more' ? aiHistory.nextCursor ?? undefined : undefined,
+      )
+      if (aiHistoryRequestIdRef.current !== requestId) return null
+      const conversations = page.conversations
+        .filter((conversation) => !deletingAiConversationIdsRef.current.has(conversation.id))
+        .map(toAiConversationListItem)
+      dispatchAiHistory({
+        type: 'history/load-succeeded',
+        conversations,
+        mode,
+        nextCursor: page.nextCursor,
+      })
+      return conversations
+    } catch (error) {
+      if (aiHistoryRequestIdRef.current !== requestId) return
+      dispatchAiHistory({
+        type: 'history/load-failed',
+        error: error instanceof Error && error.message
+          ? error.message
+          : '无法读取历史对话。',
+      })
+      return null
+    }
+  }
 
-    const nextMessages: DisplayAiChatMessage[] = [
-      ...aiMessages,
-      { role: 'user', content, createdAt: getCurrentDateTimeStamp() },
-    ]
-    setAiMessages(nextMessages)
+  async function retryAiHistory() {
+    const conversations = await loadAiHistoryPage('initial')
+    if (!conversations) return
+    const currentId = currentAiConversationId(aiSelectionRef.current)
+    const target = conversations.find((conversation) => conversation.id === currentId)
+      ?? conversations[0]
+    if (target) await selectAiConversationHistory(target, true)
+    else setAiTurnsError('')
+  }
+
+  async function selectAiConversationHistory(
+    conversation: AiConversationListItem,
+    force = false,
+  ) {
+    if (deletingAiConversationIdsRef.current.has(conversation.id)) return
+    if (!force && currentAiConversationId(aiSelectionRef.current) === conversation.id) {
+      if (window.matchMedia('(max-width: 1100px)').matches) setAiMobilePane('workspace')
+      return
+    }
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    const requestId = aiTurnsRequestIdRef.current + 1
+    aiTurnsRequestIdRef.current = requestId
+    setAiTurnsLoading(true)
+    setAiTurnsError('')
+    try {
+      const result = await fetchAiConversationTurns(conversation.id)
+      if (
+        aiTurnsRequestIdRef.current !== requestId ||
+        deletingAiConversationIdsRef.current.has(conversation.id)
+      ) return
+      replaceAiConversationTurns(result)
+      await applyCanonicalAiTurnOutcome(
+        [...result.turns].reverse().find((turn) =>
+          turn.status === 'completed' && turn.outcome?.type === 'summary'),
+      )
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiDraft('')
+      setAiError('')
+      if (window.matchMedia('(max-width: 1100px)').matches) setAiMobilePane('workspace')
+    } catch (error) {
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurnsError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取这段对话。',
+      )
+    } finally {
+      if (aiTurnsRequestIdRef.current === requestId) setAiTurnsLoading(false)
+    }
+  }
+
+  async function loadEarlierAiTurns() {
+    const conversationId = currentAiConversationId(aiHistory.selection)
+    if (!conversationId || aiNextBeforeTurn == null || aiTurnsLoading) return
+    const requestId = aiTurnsRequestIdRef.current + 1
+    aiTurnsRequestIdRef.current = requestId
+    setAiTurnsLoading(true)
+    setAiTurnsError('')
+    try {
+      const result = await fetchAiConversationTurns(conversationId, aiNextBeforeTurn)
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurns((current) => mergeAiTurns(result.turns, current))
+      setAiNextBeforeTurn(result.nextBeforeTurn)
+      await applyCanonicalAiTurnOutcome(
+        [...result.turns].reverse().find((turn) =>
+          turn.status === 'completed' && turn.outcome?.type === 'summary'),
+      )
+    } catch (error) {
+      if (aiTurnsRequestIdRef.current !== requestId) return
+      setAiTurnsError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法加载更早的消息。',
+      )
+    } finally {
+      if (aiTurnsRequestIdRef.current === requestId) setAiTurnsLoading(false)
+    }
+  }
+
+  async function renameAiConversationHistory(conversationId: string, title: string) {
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    const result = await renameAiConversation(conversationId, title)
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    const conversation = toAiConversationListItem(result.conversation)
+    dispatchAiHistory({
+      type: 'conversation/renamed',
+      conversationId,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt,
+    })
+  }
+
+  async function deleteAiConversationHistory(conversationId: string) {
+    if (deletingAiConversationIdsRef.current.has(conversationId)) return
+    deletingAiConversationIdsRef.current.add(conversationId)
+    const deletedCurrent = currentAiConversationId(aiSelectionRef.current) === conversationId
+    const deletingActive = activeAiTurnRef.current?.conversationId === conversationId
+    if (deletedCurrent || deletingActive) {
+      aiTurnsRequestIdRef.current += 1
+      setAiTurnsLoading(false)
+    }
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    if (deletingActive) await stopActiveAiTurn()
+    if (activeAiTurnRef.current?.conversationId === conversationId) {
+      deletingAiConversationIdsRef.current.delete(conversationId)
+      return
+    }
+    if (deletedCurrent) aiRequestIdRef.current += 1
+    try {
+      await deleteAiConversation(conversationId)
+    } catch (error) {
+      deletingAiConversationIdsRef.current.delete(conversationId)
+      throw error
+    }
+    dispatchAiHistory({ type: 'conversation/deleted', conversationId })
+    if (deletedCurrent) {
+      aiTurnsRequestIdRef.current += 1
+      setAiTurns([])
+      setAiTurnLiveStates({})
+      setAiNextBeforeTurn(null)
+      setAiTurnsError('')
+      setAiDraft('')
+      setAiError('')
+    }
+  }
+
+  function clearAiTurnLiveState(turnId: string) {
+    setAiTurnLiveStates((current) => {
+      if (!current[turnId]) return current
+      const next = { ...current }
+      delete next[turnId]
+      return next
+    })
+  }
+
+  function hideUnavailableAiConversation(conversationId: string) {
+    dispatchAiHistory({ type: 'conversation/deleted', conversationId })
+    const selected = currentAiConversationId(aiSelectionRef.current) === conversationId
+    const active = activeAiTurnRef.current?.conversationId === conversationId
+    if (!selected && !active) return
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiError('')
+    if (active) activeAiTurnRef.current = null
+    setAiBusy(false)
+  }
+
+  function markAiTurnReconciling(turnId: string, fallbackMode: AiTurnLiveState['mode']) {
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'reconciling',
+        content: current[turnId]?.content ?? '',
+        mode: current[turnId]?.mode ?? fallbackMode,
+        phase: current[turnId]?.phase ?? 'preparing',
+      },
+    }))
+  }
+
+  function aiTurnStreamHandlers(
+    turnId: string,
+    requestId: number,
+    fallbackMode: AiTurnLiveState['mode'],
+  ): AiTurnStreamHandlers {
+    const update = (patch: Partial<AiTurnLiveState>) => {
+      if (aiRequestIdRef.current !== requestId) return
+      setAiTurnLiveStates((current) => {
+        const existing = current[turnId] ?? {
+          connection: 'connected',
+          content: '',
+          mode: fallbackMode,
+          phase: 'preparing',
+        }
+        return {
+          ...current,
+          [turnId]: {
+            ...existing,
+            ...patch,
+          },
+        }
+      })
+    }
+    return {
+      onDelta: (append) => {
+        if (aiRequestIdRef.current !== requestId) return
+        setAiTurnLiveStates((current) => ({
+          ...current,
+          [turnId]: {
+            connection: 'connected',
+            content: `${current[turnId]?.content ?? ''}${append}`,
+            mode: 'text',
+            phase: 'generating',
+          },
+        }))
+      },
+      onHeartbeat: () => update({ connection: 'connected' }),
+      onProgress: (phase) => update({ connection: 'connected', phase }),
+      onStarted: ({ conversation, mode, turn }) => {
+        if (aiRequestIdRef.current !== requestId) return
+        if (conversation) {
+          dispatchAiHistory({
+            type: 'conversation/upserted',
+            conversation: toAiConversationListItem(conversation),
+          })
+        }
+        if (turn) setAiTurns((current) => mergeAiTurns(current, [turn]))
+        update({ connection: 'connected', mode })
+      },
+    }
+  }
+
+  async function recoverAiTurnRequest(params: {
+    conversationId: string
+    error: unknown
+    failureMessage: string
+    missingTurnPolicy: 'always-remove' | 'preserve-while-unknown'
+    requestId: number
+    restoreDraft?: string
+    restoreDraftOnConversationMissing?: boolean
+    streamMode: AiTurnLiveState['mode']
+    turnId: string
+  }): Promise<AiTurnRunResponse | false> {
+    const {
+      conversationId,
+      error,
+      failureMessage,
+      missingTurnPolicy,
+      requestId,
+      restoreDraft,
+      restoreDraftOnConversationMissing = false,
+      streamMode,
+      turnId,
+    } = params
+    if (aiRequestIdRef.current !== requestId) return false
+
+    const terminalError = error instanceof AiTurnStreamTerminalError ? error : null
+    const transportStateUnknown = !terminalError && isAiTurnCanonicalStateUnknown(
+      error instanceof ApiError ? error.status : null,
+    )
+    if (transportStateUnknown) {
+      if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = {
+          ...activeAiTurnRef.current,
+          awaitingCanonical: true,
+          localRequestId: null,
+        }
+      }
+      markAiTurnReconciling(turnId, streamMode)
+    } else {
+      if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+      setAiBusy(false)
+      setAiTurns((current) => current.map((turn) => turn.id === turnId
+        ? {
+            ...turn,
+            errorCode: terminalError?.code ?? 'AI_REQUEST_FAILED',
+            status: terminalError?.event === 'cancelled' ? 'cancelled' : 'failed',
+            updatedAt: new Date().toISOString(),
+          }
+        : turn))
+      setAiTurnLiveStates((current) => ({
+        ...current,
+        [turnId]: {
+          connection: 'connected',
+          content: '',
+          error: terminalError
+            ? undefined
+            : error instanceof Error && error.message
+            ? error.message
+            : failureMessage,
+          mode: streamMode,
+          phase: 'preparing',
+        },
+      }))
+    }
+
+    try {
+      const restored = await fetchAiConversationTurns(conversationId)
+      if (aiRequestIdRef.current !== requestId) return false
+      const canonicalTurn = restored.turns.find((turn) => turn.id === turnId)
+      if (canonicalTurn) {
+        replaceAiConversationTurns(restored, 'merge')
+      } else if (
+        missingTurnPolicy === 'always-remove' ||
+        !transportStateUnknown
+      ) {
+        dispatchAiHistory({
+          type: 'conversation/upserted',
+          conversation: toAiConversationListItem(restored.conversation),
+        })
+        setAiTurns((current) => current.filter((turn) => turn.id !== turnId))
+        clearAiTurnLiveState(turnId)
+        if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+        setAiBusy(false)
+        if (restoreDraft) setAiDraft((current) => current || restoreDraft)
+      }
+      if (canonicalTurn?.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        setAiBusy(true)
+        markAiTurnReconciling(turnId, streamMode)
+        return false
+      }
+      if (!canonicalTurn) return false
+
+      if (activeAiTurnRef.current?.turnId === turnId) activeAiTurnRef.current = null
+      setAiBusy(false)
+      clearAiTurnLiveState(turnId)
+      setAiError('')
+      if (canonicalTurn.status !== 'completed') return false
+      await applyAiRunOutcome(canonicalTurn.outcome)
+      return {
+        conversation: restored.conversation,
+        outcome: canonicalTurn.outcome,
+        turn: canonicalTurn,
+      }
+    } catch (restoreError) {
+      if (restoreError instanceof ApiError && restoreError.status === 404) {
+        if (restoreDraftOnConversationMissing && restoreDraft) {
+          setAiDraft((current) => current || restoreDraft)
+        }
+        hideUnavailableAiConversation(conversationId)
+      }
+      return false
+    }
+  }
+
+  async function sendAgentMessage(
+    route: AiMessageRoute,
+  ): Promise<AiTurnRunResponse | false> {
+    const content = (route.content ?? aiDraft).trim()
+    const attachments = route.attachments ?? []
+    if ((!content && attachments.length === 0) || aiBusy || aiTurnsLoading) return false
+
+    const currentContext = aiHistory.selection.context
+    const contextKind = route.contextKind ?? currentContext.contextType
+    const projectId = contextKind === 'project' ? currentContext.projectId : null
+    const targetContext = aiConversationContext(contextKind, projectId, projects)
+    const contextChanged =
+      currentContext.contextType !== targetContext.contextType ||
+      currentContext.projectId !== targetContext.projectId
+    const existingConversationId = contextChanged
+      ? null
+      : currentAiConversationId(aiHistory.selection)
+    const conversationId = existingConversationId ?? crypto.randomUUID()
+    const turnId = route.turnId
+    const now = new Date().toISOString()
+    const optimisticTurn: AiTurn = {
+      assistantContent: null,
+      attachments: attachments.map((attachment, index) => ({
+        id: -(index + 1),
+        mediaType: 'text/plain',
+        name: attachment.name,
+        ordinal: index,
+        size: attachment.size,
+      })),
+      attemptCount: 1,
+      completedAt: null,
+      createdAt: now,
+      errorCode: null,
+      id: turnId,
+      intentKind: route.intent.kind,
+      outcome: null,
+      status: 'processing',
+      turnNo: nextAiTurnNumber(aiTurns),
+      updatedAt: now,
+      userContent: content,
+    }
+
+    aiHistoryRequestIdRef.current += 1
+    dispatchAiHistory({ type: 'history/load-cancelled' })
+    if (!existingConversationId) {
+      dispatchAiHistory({ type: 'conversation/blanked', context: targetContext })
+      setAiTurns([optimisticTurn])
+      setAiNextBeforeTurn(null)
+    } else {
+      setAiTurns((current) => mergeAiTurns(current, [optimisticTurn]))
+    }
+    const requestId = aiRequestIdRef.current + 1
+    aiRequestIdRef.current = requestId
+    activeAiTurnRef.current = {
+      conversationId,
+      localRequestId: requestId,
+      turnId,
+      userContent: content,
+    }
     setAiDraft('')
     setAiBusy(true)
     setAiError('')
-
-	    try {
-	      const scopedProjectId =
-	        activeAiAgent === 'project-summary' && selectedProject?.accessRole === 'member'
-	          ? selectedProject.id
-	          : undefined
-	      const result = await sendAiChat(
-	        nextMessages.map(({ role, content: messageContent }) => ({
-	          role,
-	          content: messageContent,
-	        })),
-	        activeAiAgent,
-	        scopedProjectId,
-	      )
-      setAiMessages([
-        ...nextMessages,
-        {
-          role: 'assistant',
-          content: result.message,
-          createdAt: getCurrentDateTimeStamp(),
-        },
-      ])
-    } catch {
-      setAiError('AI Agent 暂时没有响应，请先在左下角账号菜单的「AI 配置」里填写 Base URL、API Key 和模型。')
+    setAiTurnsError('')
+    const streamMode = route.intent.kind === 'chat' ||
+      route.intent.kind === 'conversation-analysis'
+      ? 'text'
+      : 'progress'
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'connected',
+        content: '',
+        mode: streamMode,
+        phase: 'preparing',
+      },
+    }))
+    try {
+      const result = await sendAiConversationTurn({
+        attachments: attachments.map(({ content: attachmentContent, name, size }) => ({
+          content: attachmentContent,
+          mediaType: 'text/plain',
+          name,
+          size,
+        })),
+        content,
+        contextKind,
+        conversationId,
+        projectId,
+        turnId,
+      }, aiTurnStreamHandlers(turnId, requestId, streamMode))
+      if (aiRequestIdRef.current !== requestId) return false
+      if (result.conversation) {
+        dispatchAiHistory({
+          type: 'conversation/upserted',
+          conversation: toAiConversationListItem(result.conversation),
+        })
+      }
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        markAiTurnReconciling(turnId, streamMode)
+      } else if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+        clearAiTurnLiveState(turnId)
+      }
+      await applyAiRunOutcome(result.outcome)
+      return result
+    } catch (error) {
+      return recoverAiTurnRequest({
+        conversationId,
+        error,
+        failureMessage: 'AI 暂时没有响应，可以重试这条消息。',
+        missingTurnPolicy: 'preserve-while-unknown',
+        requestId,
+        restoreDraft: content,
+        restoreDraftOnConversationMissing: !existingConversationId,
+        streamMode,
+        turnId,
+      })
     } finally {
-	    setAiBusy(false)
-	  }
-	}
+      if (
+        aiRequestIdRef.current === requestId &&
+        activeAiTurnRef.current?.localRequestId === requestId
+      ) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+    }
+  }
 
-	function changeActiveAiAgent(agentType: AiAgentType) {
-	  setActiveAiAgent(agentType)
-	  setAiMessages([])
-	  setAiDraft('')
-	  setAiError('')
-	}
+  async function retryAiTurn(turnId: string): Promise<AiTurnRunResponse | false> {
+    const conversationId = currentAiConversationId(aiHistory.selection)
+    if (!conversationId || aiBusy || aiTurnsLoading) return false
+    const retryingTurn = aiTurns.find((turn) => turn.id === turnId)
+    const streamMode = retryingTurn?.intentKind === 'chat' ||
+      retryingTurn?.intentKind === 'conversation-analysis'
+      ? 'text'
+      : 'progress'
+    const requestId = aiRequestIdRef.current + 1
+    aiRequestIdRef.current = requestId
+    activeAiTurnRef.current = { conversationId, localRequestId: requestId, turnId }
+    setAiTurns((current) => current.map((turn) =>
+      turn.id === turnId
+        ? {
+          ...turn,
+          errorCode: null,
+          status: 'processing',
+          updatedAt: new Date().toISOString(),
+        }
+        : turn,
+    ))
+    setAiBusy(true)
+    setAiError('')
+    setAiTurnLiveStates((current) => ({
+      ...current,
+      [turnId]: {
+        connection: 'connected',
+        content: '',
+        mode: streamMode,
+        phase: 'preparing',
+      },
+    }))
+    try {
+      const result = await retryAiConversationTurn(
+        conversationId,
+        turnId,
+        aiTurnStreamHandlers(turnId, requestId, streamMode),
+      )
+      if (aiRequestIdRef.current !== requestId) return false
+      dispatchAiHistory({
+        type: 'conversation/upserted',
+        conversation: toAiConversationListItem(result.conversation),
+      })
+      setAiTurns((current) => mergeAiTurns(current, [result.turn]))
+      if (result.turn.status === 'processing') {
+        activeAiTurnRef.current = { conversationId, localRequestId: null, turnId }
+        markAiTurnReconciling(turnId, streamMode)
+      } else if (activeAiTurnRef.current?.turnId === turnId) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+        clearAiTurnLiveState(turnId)
+      }
+      await applyAiRunOutcome(result.outcome)
+      return result
+    } catch (error) {
+      return recoverAiTurnRequest({
+        conversationId,
+        error,
+        failureMessage: '重试失败，请稍后再试。',
+        missingTurnPolicy: 'always-remove',
+        requestId,
+        streamMode,
+        turnId,
+      })
+    } finally {
+      if (
+        aiRequestIdRef.current === requestId &&
+        activeAiTurnRef.current?.localRequestId === requestId
+      ) {
+        activeAiTurnRef.current = null
+        setAiBusy(false)
+      }
+    }
+  }
+
+  async function resetAiConversation() {
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    setAiTurnsLoading(false)
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: aiHistory.selection.context,
+    })
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiDraft('')
+    setAiError('')
+  }
+
+  async function changeAiProjectContext(projectId: number | null) {
+    if (projectId === aiProjectId && aiHistory.selection.context.contextType !== 'conversation-analysis') {
+      return
+    }
+    await stopActiveAiTurn()
+    if (activeAiTurnRef.current) return
+    aiRequestIdRef.current += 1
+    aiHistoryRequestIdRef.current += 1
+    aiTurnsRequestIdRef.current += 1
+    setAiTurnsLoading(false)
+    dispatchAiHistory({
+      type: 'conversation/blanked',
+      context: aiConversationContext(projectId == null ? 'general' : 'project', projectId, projects),
+    })
+    setAiTurns([])
+    setAiTurnLiveStates({})
+    setAiNextBeforeTurn(null)
+    setAiTurnsError('')
+    setAiError('')
+  }
 
   async function exportMarkdown(projectId?: number) {
     const targets = projectId
@@ -2412,15 +3597,19 @@ ${packageTimelineText}`
             <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
               <Tray size={18} weight="duotone" /> 草稿箱
             </NavButton>
-            <NavButton active={view === 'summaries'} onClick={() => setView('summaries')}>
-              <FileText size={18} weight="duotone" /> AI 总结
+            <NavButton
+              active={view === 'ai'}
+              onClick={() => {
+                setAiMobilePane(getDefaultAiPane())
+                setView('ai')
+              }}
+            >
+              <Sparkle size={18} weight="duotone" /> Veges AI
             </NavButton>
           </nav>
           <AccountMenu
             user={authUser}
             themeMode={themeMode}
-            onSaveAiSettings={updateAiSettings}
-            onLoadAiSettings={fetchAiSettings}
             onDisconnectFeishu={disconnectFeishuBinding}
             onSaveAccountSettings={updateAccountSettings}
             onSignOut={signOut}
@@ -2559,16 +3748,16 @@ ${packageTimelineText}`
                     size={detailEntrySource === 'notifications' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
                       ? '返回通知中心'
-                      : projectDetailTab === 'packages' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回通知中心'
-                      : projectDetailTab === 'packages' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
                         returnToNotifications()
                         return
                       }
-                      if (projectDetailTab === 'packages') {
+                      if (projectDetailTab !== 'journal') {
                         setProjectDetailTab('journal')
                         return
                       }
@@ -2613,8 +3802,22 @@ ${packageTimelineText}`
                 <>
                   {view === 'project' && selectedProject && (
                     <Button
-                      className="solid-button"
+                      className={projectDetailTab === 'activity' ? 'solid-button' : 'ghost-button'}
                       type="button"
+                      variant={projectDetailTab === 'activity' ? 'default' : 'outline'}
+                      onClick={() => setProjectDetailTab(
+                        projectDetailTab === 'activity' ? 'journal' : 'activity',
+                      )}
+                    >
+                      <ClockCounterClockwise size={17} />
+                      {projectDetailTab === 'activity' ? '返回项目日记' : '待办动态'}
+                    </Button>
+                  )}
+                  {view === 'project' && selectedProject && (
+                    <Button
+                      className="ghost-button"
+                      type="button"
+                      variant="outline"
                       onClick={() => setProjectDetailTab('packages')}
                     >
                       交付工作台
@@ -2681,16 +3884,18 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  <Button
-                    className="ghost-button"
-                    variant="outline"
-                    type="button"
-                    onClick={() =>
-                      exportMarkdown(view === 'project' ? selectedProject?.id : undefined)
-                    }
-                  >
-                    <DownloadSimple size={17} /> 批量导出
-                  </Button>
+                  {view !== 'ai' ? (
+                    <Button
+                      className="ghost-button"
+                      variant="outline"
+                      type="button"
+                      onClick={() =>
+                        exportMarkdown(view === 'project' ? selectedProject?.id : undefined)
+                      }
+                    >
+                      <DownloadSimple size={17} /> 批量导出
+                    </Button>
+                  ) : null}
                 </>
               )}
               {view === 'search' ? (
@@ -2859,23 +4064,39 @@ ${packageTimelineText}`
           />
         )}
 
-	        {view === 'summaries' && (
-	          <SummaryView
-	            activeAiAgent={activeAiAgent}
-	            aiBusy={aiBusy}
-	            aiDraft={aiDraft}
-	            aiError={aiError}
-	            aiMessages={aiMessages}
-	            onAiDraftChange={setAiDraft}
-	            onAgentChange={changeActiveAiAgent}
-	            onCreateSummaryFromAiMessage={generateSummaryFromAiMessage}
-            onResetAiChat={() => {
-              setAiMessages(initialAiMessages)
-              setAiDraft('')
-              setAiError('')
+        {view === 'ai' && (
+          <VegesAiView
+            aiBusy={aiBusy}
+            aiDraft={aiDraft}
+            aiError={aiError}
+            aiHistory={aiHistory}
+            aiMessages={aiMessages}
+            aiNextBeforeTurn={aiNextBeforeTurn}
+            aiTurnsError={aiTurnsError}
+            aiTurnsLoading={aiTurnsLoading}
+            retryableAiTurnId={latestRetryableAiTurnId(aiTurns)}
+            memberships={memberships}
+            mobilePane={aiMobilePane}
+            onAiDraftChange={setAiDraft}
+            onDeleteConversation={deleteAiConversationHistory}
+            onExportWorkspace={() => exportMarkdown()}
+            onLoadEarlierTurns={loadEarlierAiTurns}
+            onLoadHistory={async (mode) => {
+              await loadAiHistoryPage(mode)
             }}
+            onMobilePaneChange={setAiMobilePane}
+            onRenameConversation={renameAiConversationHistory}
+            onResetAiChat={resetAiConversation}
+            onRetryHistory={retryAiHistory}
+            onRetryTurn={retryAiTurn}
+            onSelectConversation={selectAiConversationHistory}
             onSendAgentMessage={sendAgentMessage}
+            onSelectedProjectIdChange={changeAiProjectContext}
+            onStopAiTurn={stopActiveAiTurn}
+            onWorkspace={applyAiWorkspaceForSession}
             projects={projects}
+            sessionGeneration={authSessionGenerationRef.current}
+            selectedProjectId={aiProjectId}
             summaries={summaries}
           />
         )}
@@ -3109,7 +4330,9 @@ function LoginScreen({
                     <button className="inline-text-button" type="button" onClick={() => switchMode('login')}>
                       返回登录
                     </button>
-                    。注册后会创建你的个人工作区，密码会加密保存。
+                    。{hasProjectInvite
+                      ? '注册后会创建个人工作区并加入受邀项目，密码会加密保存。'
+                      : '共享 AI 环境下，密码注册需要项目邀请；也可以使用公司飞书账号继续。'}
                   </>
                 )
               : (
@@ -3176,201 +4399,32 @@ function getUserDisplayName(user: AuthUser | null) {
 }
 
 function AccountMenu({
-  onLoadAiSettings,
   onDisconnectFeishu,
   user,
   themeMode,
   onSaveAccountSettings,
-  onSaveAiSettings,
   onSignOut,
   onToggleTheme,
 }: {
-  onLoadAiSettings: () => Promise<{ settings: AiSettings }>
   onDisconnectFeishu: () => Promise<AuthUser>
   user: AuthUser | null
   themeMode: ThemeMode
   onSaveAccountSettings: (payload: {
     displayName: string
   }) => Promise<void>
-  onSaveAiSettings: (payload: {
-    apiKey?: string
-    baseUrl: string
-    model: string
-  }) => Promise<{ settings: AiSettings }>
   onSignOut: () => void
   onToggleTheme: () => void
 }) {
   const [accountDialogOpen, setAccountDialogOpen] = useState(false)
-  const [aiDialogOpen, setAiDialogOpen] = useState(false)
-  const [displayNameDraft, setDisplayNameDraft] = useState(getUserDisplayName(user))
-  const [currentPasswordDraft, setCurrentPasswordDraft] = useState('')
-  const [nextPasswordDraft, setNextPasswordDraft] = useState('')
-  const [confirmPasswordDraft, setConfirmPasswordDraft] = useState('')
-  const [accountBusy, setAccountBusy] = useState(false)
-  const [accountError, setAccountError] = useState('')
-  const [feishuBindingBusy, setFeishuBindingBusy] = useState(false)
-  const [passwordBusy, setPasswordBusy] = useState(false)
-  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
-  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
-  const [aiModelDraft, setAiModelDraft] = useState('')
-  const [aiHasApiKey, setAiHasApiKey] = useState(false)
-  const [aiSettingsBusy, setAiSettingsBusy] = useState(false)
-  const [aiSettingsError, setAiSettingsError] = useState('')
+  const accountTriggerRef = useRef<HTMLButtonElement>(null)
   const displayName = getUserDisplayName(user)
   const accountMeta = user?.username ?? '尚未登录'
-
-  function syncAccountDrafts() {
-    setDisplayNameDraft(displayName)
-    setAccountError('')
-  }
-
-  function resetPasswordForm() {
-    setCurrentPasswordDraft('')
-    setNextPasswordDraft('')
-    setConfirmPasswordDraft('')
-    setPasswordBusy(false)
-  }
-
-  function changeAccountDialogOpen(open: boolean) {
-    setAccountDialogOpen(open)
-    if (open) {
-      syncAccountDrafts()
-      return
-    }
-    resetPasswordForm()
-    setAccountError('')
-  }
-
-  async function saveAccountSettings() {
-    const displayNameValue = displayNameDraft.trim()
-    if (!displayNameValue) {
-      setAccountError('昵称不能为空。')
-      return
-    }
-
-    const wantsPasswordChange =
-      Boolean(currentPasswordDraft || nextPasswordDraft || confirmPasswordDraft)
-    if (wantsPasswordChange && (!currentPasswordDraft || nextPasswordDraft.length < 6)) {
-      setAccountError('请输入旧密码，并确保新密码不少于 6 位。')
-      return
-    }
-    if (wantsPasswordChange && nextPasswordDraft !== confirmPasswordDraft) {
-      setAccountError('两次输入的新密码不一致。')
-      return
-    }
-
-    setAccountBusy(true)
-    setPasswordBusy(wantsPasswordChange)
-    setAccountError('')
-    try {
-      await onSaveAccountSettings({
-        displayName: displayNameValue,
-      })
-      if (wantsPasswordChange) {
-        await updateCurrentPassword({
-          currentPassword: currentPasswordDraft,
-          nextPassword: nextPasswordDraft,
-        })
-      }
-      setAccountDialogOpen(false)
-      resetPasswordForm()
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : wantsPasswordChange ? '保存失败，请确认旧密码是否正确。' : '保存失败，请稍后重试。',
-      )
-    } finally {
-      setAccountBusy(false)
-      setPasswordBusy(false)
-    }
-  }
-
-  async function bindFeishuAccount() {
-    setFeishuBindingBusy(true)
-    setAccountError('')
-    try {
-      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
-      const result = await createFeishuOAuthUrl({ returnTo })
-      window.location.href = result.url
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : '飞书授权链接生成失败，请稍后重试。',
-      )
-      setFeishuBindingBusy(false)
-    }
-  }
-
-  async function disconnectFeishu() {
-    setFeishuBindingBusy(true)
-    setAccountError('')
-    try {
-      const result = await onDisconnectFeishu()
-      setDisplayNameDraft(result.displayName || result.username)
-    } catch (error) {
-      setAccountError(
-        error instanceof Error && error.message
-          ? error.message
-          : '解除飞书绑定失败，请稍后重试。',
-      )
-    } finally {
-      setFeishuBindingBusy(false)
-    }
-  }
-
-  async function openAiSettingsDialog() {
-    setAiSettingsError('')
-    setAiDialogOpen(true)
-    setAiSettingsBusy(true)
-    try {
-      const result = await onLoadAiSettings()
-      setAiBaseUrlDraft(result.settings.baseUrl)
-      setAiApiKeyDraft('')
-      setAiModelDraft(result.settings.model)
-      setAiHasApiKey(result.settings.hasApiKey)
-    } catch {
-      setAiSettingsError('AI 配置读取失败，请稍后重试。')
-    } finally {
-      setAiSettingsBusy(false)
-    }
-  }
-
-  async function saveAiSettings() {
-    const baseUrl = aiBaseUrlDraft.trim()
-    const apiKey = aiApiKeyDraft.trim()
-    const model = aiModelDraft.trim()
-    if (!baseUrl || !model || (!apiKey && !aiHasApiKey)) {
-      setAiSettingsError('请填写 Base URL、API Key 和模型。')
-      return
-    }
-
-    setAiSettingsBusy(true)
-    setAiSettingsError('')
-    try {
-      const result = await onSaveAiSettings({
-        baseUrl,
-        model,
-        ...(apiKey ? { apiKey } : {}),
-      })
-      setAiBaseUrlDraft(result.settings.baseUrl)
-      setAiApiKeyDraft('')
-      setAiModelDraft(result.settings.model)
-      setAiHasApiKey(result.settings.hasApiKey)
-      setAiDialogOpen(false)
-    } catch {
-      setAiSettingsError('AI 配置保存失败，请确认信息后重试。')
-    } finally {
-      setAiSettingsBusy(false)
-    }
-  }
 
   return (
     <div className="sidebar-footer">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button className="account-trigger" variant="outline" type="button">
+          <Button ref={accountTriggerRef} className="account-trigger" variant="outline" type="button">
             <span className="account-status-dot" aria-hidden />
             <span className="account-copy">
               <strong>{displayName}</strong>
@@ -3381,12 +4435,9 @@ function AccountMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="account-menu-content">
           <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              changeAccountDialogOpen(true)
-            }}
+            onSelect={() => setAccountDialogOpen(true)}
           >
-            <PencilSimple /> 账户设置
+            <GearSix /> 账户设置
           </DropdownMenuItem>
           <DropdownMenuItem
             className="theme-menu-item"
@@ -3403,14 +4454,6 @@ function AccountMenu({
               aria-hidden
             />
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              openAiSettingsDialog()
-            }}
-          >
-            <Sparkle /> AI 配置
-          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onSignOut} variant="destructive">
             <SignOut /> 退出登录
@@ -3418,206 +4461,15 @@ function AccountMenu({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={accountDialogOpen} onOpenChange={changeAccountDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>账户设置</DialogTitle>
-            <DialogDescription>
-              统一维护昵称、飞书通知身份和登录密码。绑定飞书账号后，可以接收 Veges 个人通知和群内 @。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            autoComplete="off"
-            className="new-project-dialog-form account-settings-form"
-            data-1p-ignore="true"
-            data-lpignore="true"
-            data-protonpass-ignore="true"
-            onSubmit={(event) => {
-              event.preventDefault()
-              saveAccountSettings()
-            }}
-          >
-            <div aria-hidden="true" className="autofill-decoys">
-              <input autoComplete="username" name="username" tabIndex={-1} type="text" />
-              <input autoComplete="current-password" name="password" tabIndex={-1} type="password" />
-              <input autoComplete="new-password" name="new-password" tabIndex={-1} type="password" />
-            </div>
-            <Label>
-              昵称
-              <Input
-                autoFocus
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                maxLength={32}
-                name="veges-account-display-name"
-                required
-                spellCheck={false}
-                value={displayNameDraft}
-                onChange={(event) => setDisplayNameDraft(event.target.value)}
-              />
-            </Label>
-            <section className="feishu-binding-panel" aria-label="飞书账号绑定">
-              <div>
-                <strong>飞书账号</strong>
-                <p>
-                  {user?.feishuLinked
-                    ? `已绑定${user.feishuEmail ? `：${user.feishuEmail}` : '，后续个人通知会发送到飞书。'}`
-                    : '未绑定。绑定后，Veges 会通过 OAuth 自动获取你的飞书 open_id。'}
-                </p>
-              </div>
-              <div className="feishu-binding-actions">
-                <Button
-                  type="button"
-                  variant={user?.feishuLinked ? 'outline' : 'default'}
-                  disabled={feishuBindingBusy}
-                  onClick={bindFeishuAccount}
-                >
-                  <LinkSimple />
-                  {feishuBindingBusy ? '处理中...' : user?.feishuLinked ? '重新绑定' : '绑定飞书账号'}
-                </Button>
-                {user?.feishuLinked && (
-                  <Button
-                    className="feishu-disconnect-button"
-                    type="button"
-                    variant="destructive"
-                    disabled={feishuBindingBusy}
-                    onClick={disconnectFeishu}
-                  >
-                    解除绑定
-                  </Button>
-                )}
-              </div>
-            </section>
-            <p className="form-note">
-              绑定过程会跳转到飞书授权页；授权成功后自动回到 Veges，并保存当前飞书用户的 open_id。
-            </p>
-            <div className="account-password-section">
-              <strong>修改密码</strong>
-              <p>可选项。需要修改密码时再填写下面三项。</p>
-            </div>
-            <Label>
-              旧密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                name="veges-account-current-secret"
-                type="password"
-                value={currentPasswordDraft}
-                onChange={(event) => setCurrentPasswordDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              新密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                minLength={6}
-                name="veges-account-next-secret"
-                type="password"
-                value={nextPasswordDraft}
-                onChange={(event) => setNextPasswordDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              确认新密码
-              <Input
-                autoComplete="new-password"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                minLength={6}
-                name="veges-account-confirm-secret"
-                type="password"
-                value={confirmPasswordDraft}
-                onChange={(event) => setConfirmPasswordDraft(event.target.value)}
-              />
-            </Label>
-            {accountError && <p className="form-error">{accountError}</p>}
-            <DialogFooter>
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() => changeAccountDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={accountBusy || passwordBusy}>
-                {accountBusy || passwordBusy ? '保存中...' : '保存设置'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <AccountSettingsDialog
+        open={accountDialogOpen}
+        returnFocusRef={accountTriggerRef}
+        user={user}
+        onDisconnectFeishu={onDisconnectFeishu}
+        onOpenChange={setAccountDialogOpen}
+        onSaveProfile={onSaveAccountSettings}
+      />
 
-      <Dialog open={aiDialogOpen} onOpenChange={setAiDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>AI 配置</DialogTitle>
-            <DialogDescription>
-              配置后才可以使用 AI 总结。API Key 只会保存在你的账号配置里，重新打开时不会明文展示。
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="new-project-dialog-form ai-settings-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              saveAiSettings()
-            }}
-          >
-            <Label>
-              Base URL
-              <Input
-                autoFocus
-                placeholder="https://api.openai.com"
-                required
-                value={aiBaseUrlDraft}
-                onChange={(event) => setAiBaseUrlDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              API Key
-              <Input
-                placeholder={aiHasApiKey ? '已保存，留空则继续使用原 Key' : '请输入 API Key'}
-                required={!aiHasApiKey}
-                type="password"
-                value={aiApiKeyDraft}
-                onChange={(event) => setAiApiKeyDraft(event.target.value)}
-              />
-            </Label>
-            <Label>
-              模型
-              <Input
-                placeholder="例如：gpt-4.1-mini"
-                required
-                value={aiModelDraft}
-                onChange={(event) => setAiModelDraft(event.target.value)}
-              />
-            </Label>
-            {aiSettingsError && <p className="form-error">{aiSettingsError}</p>}
-            {aiHasApiKey && !aiApiKeyDraft && (
-              <p className="form-note">当前已有 API Key，保存时留空会继续使用原 Key。</p>
-            )}
-            <DialogFooter>
-              <Button
-                variant="outline"
-                type="button"
-                onClick={() => setAiDialogOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={aiSettingsBusy}>
-                {aiSettingsBusy ? '保存中...' : '保存配置'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
@@ -4025,13 +4877,17 @@ function ProjectDetail({
       className={
         projectDetailTab === 'packages'
           ? 'detail-layout packages-mode'
+          : projectDetailTab === 'activity'
+            ? 'detail-layout activity-mode'
           : isProjectTodoFocusOpen
             ? 'detail-layout todo-detail-focus'
             : 'detail-layout'
       }
     >
       <div className="project-detail-main">
-        {projectDetailTab === 'packages' ? (
+        {projectDetailTab === 'activity' ? (
+          <TodoActivityPanel projectId={project.id} />
+        ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
             onAddItems={onInstallSelectPackages}
@@ -4832,6 +5688,7 @@ function ConfirmDialog({
 
 function ProjectActionsMenu({
   exportProject,
+  generateDailySummary,
   generateWeeklySummary,
   onDeleteProject,
   onEditDescriptionClick,
@@ -4839,6 +5696,7 @@ function ProjectActionsMenu({
   projectName,
 }: {
   exportProject: () => void
+  generateDailySummary: () => void
   generateWeeklySummary: () => void
   onDeleteProject: () => void
   onEditDescriptionClick: () => void
@@ -4870,6 +5728,9 @@ function ProjectActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={generateWeeklySummary}>
           <Sparkle /> 生成周总结
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={generateDailySummary}>
+          <CalendarBlank /> 生成日总结
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ConfirmDialog
@@ -6482,7 +7343,7 @@ function SearchView({
   allTags: string[]
   exportMarkdown: (projectId?: number) => Promise<void>
   filteredResults: Project[]
-  generateSummary: (projectId: number, type: Summary['type']) => void
+  generateSummary: (projectId: number, type: SummaryPeriodType) => Promise<boolean>
   onDeleteProject: (projectId: number) => void
   onEditProjectDescription: (projectId: number, description: string) => void
   onProjectClick: (id: number) => void
@@ -6602,6 +7463,7 @@ function SearchView({
                 </div>
                 <ProjectActionsMenu
                   exportProject={() => void exportMarkdown(project.id)}
+                  generateDailySummary={() => void generateSummary(project.id, 'daily')}
                   generateWeeklySummary={() => generateSummary(project.id, 'weekly')}
                   onDeleteProject={() => onDeleteProject(project.id)}
                   onEditDescriptionClick={() => openDescriptionDialog(project)}
@@ -6706,231 +7568,1262 @@ function SearchView({
   )
 }
 
-function SummaryView({
-  activeAiAgent,
+function VegesAiView({
   aiBusy,
   aiDraft,
   aiError,
+  aiHistory,
   aiMessages,
+  aiNextBeforeTurn,
+  aiTurnsError,
+  aiTurnsLoading,
+  retryableAiTurnId,
+  memberships,
+  mobilePane,
   onAiDraftChange,
-  onAgentChange,
-  onCreateSummaryFromAiMessage,
+  onDeleteConversation,
+  onExportWorkspace,
+  onLoadEarlierTurns,
+  onLoadHistory,
+  onMobilePaneChange,
+  onRenameConversation,
   onResetAiChat,
+  onRetryHistory,
+  onRetryTurn,
+  onSelectConversation,
   onSendAgentMessage,
+  onSelectedProjectIdChange,
+  onStopAiTurn,
+  onWorkspace,
   projects,
+  sessionGeneration,
+  selectedProjectId,
   summaries,
 }: {
-  activeAiAgent: AiAgentType
   aiBusy: boolean
   aiDraft: string
   aiError: string
+  aiHistory: AiConversationHistoryState
   aiMessages: DisplayAiChatMessage[]
+  aiNextBeforeTurn: number | null
+  aiTurnsError: string
+  aiTurnsLoading: boolean
+  retryableAiTurnId: string | null
+  memberships: ProjectMembership[]
+  mobilePane: AiMobilePane
   onAiDraftChange: (value: string) => void
-  onAgentChange: (agentType: AiAgentType) => void
-  onCreateSummaryFromAiMessage: (message: DisplayAiChatMessage) => void
-  onResetAiChat: () => void
-  onSendAgentMessage: () => void
+  onDeleteConversation: (conversationId: string) => Promise<void>
+  onExportWorkspace: () => void
+  onLoadEarlierTurns: () => Promise<void>
+  onLoadHistory: (mode: 'initial' | 'more') => Promise<void>
+  onMobilePaneChange: (pane: AiMobilePane) => void
+  onRenameConversation: (conversationId: string, title: string) => Promise<void>
+  onResetAiChat: () => Promise<void>
+  onRetryHistory: () => Promise<void>
+  onRetryTurn: (turnId: string) => Promise<AiTurnRunResponse | false>
+  onSelectConversation: (conversation: AiConversationListItem) => Promise<void>
+  onSendAgentMessage: (route: AiMessageRoute) => Promise<AiTurnRunResponse | false>
+  onSelectedProjectIdChange: (projectId: number | null) => Promise<void>
+  onStopAiTurn: () => Promise<void>
+  onWorkspace: (workspace: WorkspaceData, sessionGeneration: number) => void
   projects: Project[]
+  sessionGeneration: number
+  selectedProjectId: number | null
   summaries: Summary[]
 }) {
   const [selectedSummaryId, setSelectedSummaryId] = useState<number | null>(null)
   const [isSummaryFullscreen, setIsSummaryFullscreen] = useState(false)
   const [isComposing, setIsComposing] = useState(false)
-  const activeAgentMeta = aiAgentMeta[activeAiAgent]
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectMention, setProjectMention] = useState<{ end: number; start: number } | null>(null)
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
+  const [aiStatusLoading, setAiStatusLoading] = useState(true)
+  const [aiStatusError, setAiStatusError] = useState('')
+  const [generationError, setGenerationError] = useState('')
+  const [documentSavingTurnIds, setDocumentSavingTurnIds] = useState<Set<string>>(() => new Set())
+  const [todoWorkflowBusy, setTodoWorkflowBusy] = useState(false)
+  const [attachments, setAttachments] = useState<AiTextAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentReading, setAttachmentReading] = useState(false)
+  const [intentClassifying, setIntentClassifying] = useState(false)
+  const attachmentInputRef = useRef<HTMLInputElement>(null)
+  const attachmentReadRequestIdRef = useRef(0)
+  const intentClassificationAbortControllerRef = useRef<AbortController | null>(null)
+  const intentClassificationRequestIdRef = useRef(0)
+  const documentRequestGenerationRef = useRef(0)
+  const todoOutcomeRequestIdRef = useRef(0)
+  const artifactsRef = useRef<HTMLDivElement>(null)
+  const artifactsTriggerRef = useRef<HTMLButtonElement>(null)
+  const historyRef = useRef<HTMLElement>(null)
+  const historyTriggerRef = useRef<HTMLButtonElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const composerShellRef = useRef<HTMLDivElement>(null)
+  const todoWorkflowRef = useRef<TodoProposalWorkflowHandle>(null)
   const selectedSummary =
     summaries.find((summary) => summary.id === selectedSummaryId) ?? null
-  const selectedProject = selectedSummary
+  const documentIdBySourceTurn = useMemo(
+    () => new Map(
+      summaries.flatMap((summary) =>
+        summary.sourceTurnId ? [[summary.sourceTurnId, summary.id] as const] : [],
+      ),
+    ),
+    [summaries],
+  )
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null
+  const selectedDocumentProject = selectedSummary
     ? projects.find((project) => project.id === selectedSummary.projectId)
     : null
-  const selectedDocumentOwner = selectedProject?.name ?? selectedSummary?.period ?? 'AI 总结文档'
+  const selectedDocumentOwner =
+    selectedDocumentProject?.name ?? selectedSummary?.period ?? 'Veges AI'
+  const filteredProjects = useMemo(() => {
+    const normalizedQuery = projectQuery.trim().toLocaleLowerCase()
+    if (!normalizedQuery) return projects
+    return projects.filter((project) =>
+      project.name.toLocaleLowerCase().includes(normalizedQuery),
+    )
+  }, [projectQuery, projects])
+  const aiConfigured = Boolean(aiStatus?.configured)
+  const workspaceBusy =
+    aiBusy ||
+    aiTurnsLoading ||
+    attachmentReading ||
+    intentClassifying ||
+    documentSavingTurnIds.size > 0 ||
+    todoWorkflowBusy
+  const artifactsOpen = mobilePane === 'artifacts'
+  const historyOpen = mobilePane === 'history'
+  const auxiliaryOpen = artifactsOpen || historyOpen
+  const documentFullscreen = isSummaryFullscreen && artifactsOpen
+  const currentConversationId = currentAiConversationId(aiHistory.selection)
+  const currentConversationIdRef = useRef(currentConversationId)
+  const sessionGenerationRef = useRef(sessionGeneration)
+  const currentConversation = aiHistory.conversations.find(
+    (conversation) => conversation.id === currentConversationId,
+  ) ?? null
+  const currentConversationTitle = currentConversation?.title ?? (
+    selectedProject ? `新对话 · ${selectedProject.name}` : '新对话'
+  )
+
+  useLayoutEffect(() => {
+    if (
+      currentConversationIdRef.current !== currentConversationId ||
+      sessionGenerationRef.current !== sessionGeneration
+    ) {
+      documentRequestGenerationRef.current += 1
+    }
+    currentConversationIdRef.current = currentConversationId
+    sessionGenerationRef.current = sessionGeneration
+  }, [currentConversationId, sessionGeneration])
+
+  const loadAiStatus = useCallback(async () => {
+    setAiStatusLoading(true)
+    setAiStatusError('')
+    try {
+      setAiStatus(await fetchAiStatus())
+    } catch (error) {
+      setAiStatus(null)
+      setAiStatusError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取系统 AI 状态。',
+      )
+    } finally {
+      setAiStatusLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    if (!isSummaryFullscreen) return
+    void loadAiStatus()
+  }, [loadAiStatus])
+
+  useEffect(() => () => {
+    attachmentReadRequestIdRef.current += 1
+    intentClassificationRequestIdRef.current += 1
+    intentClassificationAbortControllerRef.current?.abort()
+    intentClassificationAbortControllerRef.current = null
+    todoOutcomeRequestIdRef.current += 1
+  }, [])
+
+  useEffect(() => {
+    if (!artifactsOpen) return
+    const frame = window.requestAnimationFrame(() => artifactsRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [artifactsOpen])
+
+  useEffect(() => {
+    if (!artifactsOpen) return
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        setIsSummaryFullscreen(false)
+        if (documentFullscreen) {
+          setIsSummaryFullscreen(false)
+          return
+        }
+        onMobilePaneChange('workspace')
+        window.requestAnimationFrame(() => artifactsTriggerRef.current?.focus())
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isSummaryFullscreen])
+  }, [artifactsOpen, documentFullscreen, onMobilePaneChange])
+
+  useEffect(() => {
+    if (!historyOpen) return
+    const frame = window.requestAnimationFrame(() => historyRef.current?.focus())
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      onMobilePaneChange('workspace')
+      window.requestAnimationFrame(() => historyTriggerRef.current?.focus())
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [historyOpen, onMobilePaneChange])
+
+  useEffect(() => {
+    if (!projectPickerOpen) return
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!composerShellRef.current?.contains(event.target as Node)) {
+        setProjectPickerOpen(false)
+        setProjectMention(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [projectPickerOpen])
+
+  function openArtifacts() {
+    setIsSummaryFullscreen(false)
+    onMobilePaneChange('artifacts')
+    window.requestAnimationFrame(() => artifactsRef.current?.focus())
+  }
+
+  async function convertReplyToDocument(message: DisplayAiChatMessage) {
+    if (!currentConversationId || documentSavingTurnIds.has(message.turnId)) return
+    const conversationId = currentConversationId
+    const requestGeneration = documentRequestGenerationRef.current
+    const requestSessionGeneration = sessionGeneration
+    const isCurrentRequest = () =>
+      documentRequestGenerationRef.current === requestGeneration &&
+      currentConversationIdRef.current === conversationId &&
+      sessionGenerationRef.current === requestSessionGeneration
+    setGenerationError('')
+    setDocumentSavingTurnIds((current) => new Set(current).add(message.turnId))
+    try {
+      const result = await createAiTurnDocument(conversationId, message.turnId)
+      onWorkspace(result.workspace, requestSessionGeneration)
+      if (!isCurrentRequest()) return
+      setSelectedSummaryId(result.summaryId)
+      openArtifacts()
+    } catch (error) {
+      if (!isCurrentRequest()) return
+      setGenerationError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法将这条回复转为文档。',
+      )
+    } finally {
+      setDocumentSavingTurnIds((current) => {
+        const next = new Set(current)
+        next.delete(message.turnId)
+        return next
+      })
+    }
+  }
+
+  function closeArtifacts() {
+    setIsSummaryFullscreen(false)
+    onMobilePaneChange('workspace')
+    window.requestAnimationFrame(() => artifactsTriggerRef.current?.focus())
+  }
+
+  function openHistory() {
+    setIsSummaryFullscreen(false)
+    onMobilePaneChange('history')
+    window.requestAnimationFrame(() => historyRef.current?.focus())
+  }
+
+  function closeHistory() {
+    onMobilePaneChange('workspace')
+    window.requestAnimationFrame(() => historyTriggerRef.current?.focus())
+  }
+
+  async function openTodoProposalOutcome(batchId: number) {
+    const requestId = todoOutcomeRequestIdRef.current + 1
+    todoOutcomeRequestIdRef.current = requestId
+    setGenerationError('')
+    try {
+      const result = await fetchTodoProposalBatch(batchId)
+      if (todoOutcomeRequestIdRef.current !== requestId) return
+      todoWorkflowRef.current?.openProposals(
+        result.batchId,
+        result.proposals,
+        'AI 对话输入.md',
+        result.status === 'confirmed' || result.status === 'discarded'
+          ? result.status
+          : 'pending',
+      )
+    } catch (error) {
+      if (todoOutcomeRequestIdRef.current !== requestId) return
+      setGenerationError(
+        error instanceof Error && error.message
+          ? error.message
+          : '无法读取这批待办候选。',
+      )
+    }
+  }
+
+  async function retryTurn(turnId: string) {
+    const result = await onRetryTurn(turnId)
+    if (!result) return
+    if (result.outcome?.type === 'todo-proposals') {
+      await openTodoProposalOutcome(result.outcome.batchId)
+    }
+    if (result.outcome?.type === 'summary') {
+      setSelectedSummaryId(result.outcome.summaryId)
+      openArtifacts()
+    }
+  }
+
+  function handleDraftChange(value: string, caret: number) {
+    onAiDraftChange(value)
+    setGenerationError('')
+    setAttachmentError('')
+    const prefix = value.slice(0, caret)
+    const match = prefix.match(/(?:^|\s)@([^\s@]*)$/)
+    if (!match) {
+      setProjectPickerOpen(false)
+      setProjectMention(null)
+      setProjectQuery('')
+      return
+    }
+
+    const matchStart = match.index ?? 0
+    const mentionStart = matchStart + match[0].lastIndexOf('@')
+    setProjectMention({ end: caret, start: mentionStart })
+    setProjectQuery(match[1])
+    setProjectPickerOpen(true)
+  }
+
+  function cancelIntentClassification() {
+    intentClassificationRequestIdRef.current += 1
+    intentClassificationAbortControllerRef.current?.abort()
+    intentClassificationAbortControllerRef.current = null
+    setIntentClassifying(false)
+  }
+
+  function selectProjectContext(projectId: number) {
+    let nextDraft = aiDraft
+    if (projectMention) {
+      nextDraft = `${aiDraft.slice(0, projectMention.start)}${aiDraft.slice(projectMention.end)}`
+    }
+    const shouldRestoreDraft = Boolean(projectMention) || selectedProjectId == null
+    const isChangingProject = selectedProjectId != null && selectedProjectId !== projectId
+    cancelIntentClassification()
+    attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
+    setAttachmentReading(false)
+    onSelectedProjectIdChange(projectId)
+    if (shouldRestoreDraft) onAiDraftChange(nextDraft)
+    if (isChangingProject) setAttachments([])
+    setAttachmentError('')
+    setGenerationError('')
+    setProjectPickerOpen(false)
+    setProjectMention(null)
+    setProjectQuery('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function removeProjectContext() {
+    cancelIntentClassification()
+    attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
+    setAttachmentReading(false)
+    onSelectedProjectIdChange(null)
+    setAttachments([])
+    setAttachmentError('')
+    setProjectPickerOpen(false)
+    setProjectMention(null)
+    setProjectQuery('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  async function handleAttachmentSelection(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (selectedFiles.length === 0) return
+
+    if (attachments.length + selectedFiles.length > AI_ATTACHMENT_MAX_COUNT) {
+      setAttachmentError(`最多添加 ${AI_ATTACHMENT_MAX_COUNT} 个附件。`)
+      return
+    }
+
+    const requestId = attachmentReadRequestIdRef.current + 1
+    attachmentReadRequestIdRef.current = requestId
+    setAttachmentReading(true)
+    const accepted: AiTextAttachment[] = []
+    const rejected: string[] = []
+    const duplicateKeys = new Set(
+      attachments.map((attachment) => `${attachment.name}\u0000${attachment.size}`),
+    )
+    let characterCount = totalAttachmentCharacters(attachments)
+
+    for (const file of selectedFiles) {
+      const duplicateKey = `${file.name}\u0000${file.size}`
+      if (duplicateKeys.has(duplicateKey)) {
+        rejected.push(`${file.name} 已添加`)
+        continue
+      }
+      if (!isSupportedAiAttachment(file.name, file.type)) {
+        rejected.push(`${file.name} 不是支持的文本格式`)
+        continue
+      }
+      if (file.size === 0) {
+        rejected.push(`${file.name} 是空文件`)
+        continue
+      }
+      if (file.size > AI_ATTACHMENT_MAX_BYTES) {
+        rejected.push(`${file.name} 超过 64 KB`)
+        continue
+      }
+
+      try {
+        const content = await file.text()
+        if (!content.trim()) {
+          rejected.push(`${file.name} 没有可读内容`)
+          continue
+        }
+        if (characterCount + content.length > AI_ATTACHMENT_MAX_CHARACTERS) {
+          rejected.push(`${file.name} 会使附件内容超过 20,000 字符`)
+          continue
+        }
+        accepted.push({
+          content,
+          id: crypto.randomUUID(),
+          name: file.name,
+          size: file.size,
+        })
+        duplicateKeys.add(duplicateKey)
+        characterCount += content.length
+      } catch {
+        rejected.push(`${file.name} 无法读取`)
+      }
+    }
+
+    if (attachmentReadRequestIdRef.current !== requestId) return
+    if (accepted.length > 0) setAttachments((current) => [...current, ...accepted])
+    setAttachmentError(rejected.join('；'))
+    setAttachmentReading(false)
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  function removeAttachment(id: string) {
+    attachmentReadRequestIdRef.current += 1
+    setAttachmentReading(false)
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
+    setAttachmentError('')
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  async function sendComposerMessage(prompt = aiDraft) {
+    const draftContent = prompt.trim()
+    if ((!draftContent && attachments.length === 0) || workspaceBusy || !aiConfigured) return
+
+    const modelContent = buildAiMessageContent(draftContent, attachments)
+    const sourceContent = buildAiClassificationContent(draftContent, attachments)
+    setGenerationError('')
+    setAttachmentError('')
+
+    const maxMessageLength = aiStatus?.maxMessageLength ?? 2_000
+    if (modelContent.length > maxMessageLength) {
+      setAttachmentError(
+        `当前模型单条消息最多 ${maxMessageLength.toLocaleString()} 字符，请减少附件或输入内容。`,
+      )
+      return
+    }
+
+    const sourceContext = aiHistory.selection.context
+    const turnId = crypto.randomUUID()
+    const classificationRequestId = intentClassificationRequestIdRef.current + 1
+    intentClassificationRequestIdRef.current = classificationRequestId
+    const classificationController = new AbortController()
+    intentClassificationAbortControllerRef.current = classificationController
+    setIntentClassifying(true)
+    try {
+      const { intent } = await classifyAiConversationTurnIntent({
+        attachments: attachments.map(({ content, name, size }) => ({
+          content,
+          mediaType: 'text/plain',
+          name,
+          size,
+        })),
+        content: draftContent,
+        contextKind: sourceContext.contextType,
+        projectId: sourceContext.contextType === 'project' ? sourceContext.projectId : null,
+        turnId,
+      }, classificationController.signal)
+      if (intentClassificationRequestIdRef.current !== classificationRequestId) return
+
+      const classificationSourceContext = sourceContext.contextType === 'project'
+        ? { contextKind: 'project' as const, projectId: sourceContext.projectId as number }
+        : { contextKind: sourceContext.contextType, projectId: null }
+      const targetContext = deriveAiIntentTargetContext(intent, classificationSourceContext)
+      if (!targetContext.ok) {
+        setGenerationError(
+          targetContext.reason === 'project-required'
+            ? '请先用 @ 选择一个项目，再生成项目总结。'
+            : '工作区复盘不能绑定单个项目，请先移除 @ 项目。',
+        )
+        return
+      }
+
+      if (intent.kind === 'todo-extraction' && sourceContent.length > AI_ATTACHMENT_MAX_CHARACTERS) {
+        setAttachmentError('待办提取内容最多 20,000 字符，请减少附件或输入内容。')
+        return
+      }
+      if (intent.kind === 'project-summary' && attachments.length > 0) {
+        setGenerationError('生成项目总结时不能同时添加附件。')
+        return
+      }
+      if (intent.kind === 'workspace-review' && attachments.length > 0) {
+        setGenerationError('梳理工作区进展时不能同时添加附件。')
+        return
+      }
+
+      setIntentClassifying(false)
+      const result = await onSendAgentMessage({
+        attachments,
+        content: draftContent,
+        contextKind: targetContext.context.contextKind,
+        intent,
+        turnId,
+      })
+      if (!result) return
+
+      setAttachments([])
+      if (result.outcome?.type === 'todo-proposals') {
+        await openTodoProposalOutcome(result.outcome.batchId)
+      }
+      if (result.outcome?.type === 'summary') {
+        setSelectedSummaryId(result.outcome.summaryId)
+        setIsSummaryFullscreen(false)
+        openArtifacts()
+      }
+    } catch (error) {
+      if (intentClassificationRequestIdRef.current !== classificationRequestId) return
+      const errorCode = error instanceof ApiError &&
+        error.responseBody &&
+        typeof error.responseBody === 'object' &&
+        'code' in error.responseBody
+        ? String(error.responseBody.code)
+        : ''
+      setGenerationError(
+        errorCode === 'AI_PROJECT_REQUIRED'
+          ? '请先用 @ 选择一个项目，再生成项目总结。'
+          : error instanceof ApiError && error.status === 429
+          ? 'AI 请求过于频繁，请稍后再试。'
+          : 'AI 暂时无法理解这条请求，请重试。',
+      )
+    } finally {
+      if (intentClassificationRequestIdRef.current === classificationRequestId) {
+        if (intentClassificationAbortControllerRef.current === classificationController) {
+          intentClassificationAbortControllerRef.current = null
+        }
+        setIntentClassifying(false)
+      }
+    }
+  }
+
+  function resetConversation() {
+    cancelIntentClassification()
+    attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
+    setAttachmentReading(false)
+    setGenerationError('')
+    setAttachmentError('')
+    setAttachments([])
+    todoWorkflowRef.current?.reset()
+    void onResetAiChat()
+    if (historyOpen) closeHistory()
+  }
+
+  async function selectConversationHistory(conversation: AiConversationListItem) {
+    if (conversation.id === currentConversationId) {
+      if (historyOpen) closeHistory()
+      return
+    }
+    cancelIntentClassification()
+    attachmentReadRequestIdRef.current += 1
+    documentRequestGenerationRef.current += 1
+    todoOutcomeRequestIdRef.current += 1
+    setAttachmentReading(false)
+    setAttachments([])
+    setAttachmentError('')
+    setGenerationError('')
+    todoWorkflowRef.current?.reset()
+    await onSelectConversation(conversation)
+  }
+
+  async function deleteConversationHistory(conversationId: string) {
+    if (conversationId === currentConversationId) {
+      cancelIntentClassification()
+      attachmentReadRequestIdRef.current += 1
+      documentRequestGenerationRef.current += 1
+      todoOutcomeRequestIdRef.current += 1
+      setAttachmentReading(false)
+      setAttachments([])
+      setAttachmentError('')
+      setGenerationError('')
+      todoWorkflowRef.current?.reset()
+    }
+    await onDeleteConversation(conversationId)
+  }
+
+  const showPromptExamples =
+    aiConfigured &&
+    !aiStatusLoading &&
+    aiMessages.length === 0 &&
+    !aiDraft.trim() &&
+    attachments.length === 0 &&
+    !workspaceBusy
+  const promptExamples = [
+    {
+      description: selectedProject
+        ? '基于当前项目事实生成本周周报'
+        : '把零散进展整理成周报与下一步',
+      icon: <Sparkle aria-hidden size={18} weight="fill" />,
+      label: selectedProject
+        ? `总结 ${selectedProject.name} 本周进展`
+        : '梳理本周进展和下一步',
+      prompt: selectedProject
+        ? '生成这个项目的周报'
+        : '帮我梳理本周进展，并给出下一步行动建议。',
+    },
+    {
+      description: '提炼结论、分歧和推进建议',
+      icon: <ChatCircleDots aria-hidden size={19} weight="fill" />,
+      label: '分析一段对话的结论和分歧',
+      prompt: [
+        '分析下面这段对话里的结论和分歧：',
+        '',
+        '小王：本周先上线搜索，导出功能下周再做。',
+        '小李：我认为导出更影响交付，应该优先。',
+        '小王：那先补导出，搜索顺延到下周。',
+      ].join('\n'),
+    },
+    {
+      description: '识别可执行事项并进入候选审核',
+      icon: <ListChecks aria-hidden size={19} weight="fill" />,
+      label: '从 Markdown 示例提取待办',
+      prompt: [
+        '从下面的 Markdown 示例中提取待办：',
+        '',
+        '## 发布准备',
+        '- [ ] 完成移动端回归',
+        '- [ ] 更新部署说明',
+        '- [x] 确认版本号',
+      ].join('\n'),
+    },
+  ]
 
   return (
-    <div className={isSummaryFullscreen ? 'summary-layout is-document-fullscreen' : 'summary-layout'}>
-      <Card className="panel ai-agent-panel">
-	        <div className="agent-hero">
-	          <div className="agent-orb">
-	            {activeAgentMeta.avatar}
-	          </div>
-	          <div>
-	            <h3>{activeAgentMeta.title}</h3>
-	            <p>{activeAgentMeta.subtitle}</p>
-	          </div>
-	          <DropdownMenu>
-	            <DropdownMenuTrigger asChild>
-	              <Button
-	                className="agent-new-chat-button"
-	                type="button"
-	                variant="ghost"
-	                size="icon"
-	                aria-label="选择 AI 助理"
-	                title="选择 AI 助理"
-	              >
-	                <Plus size={28} />
-	              </Button>
-	            </DropdownMenuTrigger>
-	            <DropdownMenuContent align="end" className="agent-menu-content">
-	              <DropdownMenuItem
-	                data-selected={activeAiAgent === 'project-summary'}
-	                onSelect={() => onAgentChange('project-summary')}
-	              >
-	                <span className="agent-menu-check">
-	                  {activeAiAgent === 'project-summary' && <Check size={13} weight="bold" />}
-	                </span>
-	                <span>
-	                  <strong>项目总结助理</strong>
-	                  <small>整理项目、待办、风险与总结</small>
-	                </span>
-	              </DropdownMenuItem>
-	              <DropdownMenuItem
-	                data-selected={activeAiAgent === 'conversation-analysis'}
-	                onSelect={() => onAgentChange('conversation-analysis')}
-	              >
-	                <span className="agent-menu-check">
-	                  {activeAiAgent === 'conversation-analysis' && <Check size={13} weight="bold" />}
-	                </span>
-	                <span>
-	                  <strong>对话分析助理</strong>
-	                  <small>分析群聊中其他人的对话</small>
-	                </span>
-	              </DropdownMenuItem>
-	              <DropdownMenuSeparator />
-	              <DropdownMenuItem onSelect={onResetAiChat}>
-	                <span className="agent-menu-spacer" />
-	                <span>
-	                  <strong>清空当前对话</strong>
-	                  <small>保留当前助理类型</small>
-	                </span>
-	              </DropdownMenuItem>
-	            </DropdownMenuContent>
-	          </DropdownMenu>
-	        </div>
-        <div className="agent-messages">
-          {aiMessages.map((message, index) => (
-            <article
-              className={`agent-message ${message.role}`}
-              key={`${message.role}-${index}`}
+    <div className={`veges-ai-layout${auxiliaryOpen ? ' has-artifacts' : ''}${documentFullscreen ? ' is-document-fullscreen' : ''}`}>
+      <Card className="panel veges-ai-workspace">
+        <header className="veges-ai-toolbar">
+          <div className="veges-ai-conversation-title">
+            <ChatCircleDots aria-hidden size={17} weight="duotone" />
+            <strong title={currentConversationTitle}>{currentConversationTitle}</strong>
+          </div>
+          <div className="veges-ai-toolbar-actions">
+            <Button
+              aria-label="开始新对话"
+              disabled={workspaceBusy || (aiMessages.length === 0 && !aiDraft && attachments.length === 0)}
+              size="icon"
+              title="开始新对话"
+              type="button"
+              variant="ghost"
+              onClick={resetConversation}
             >
-              <div className="agent-message-content">
-                <MarkdownPreview content={message.content} compact />
+              <Plus size={17} weight="bold" />
+            </Button>
+            <Button
+              ref={historyTriggerRef}
+              aria-label={`历史对话 ${aiHistory.conversations.length}`}
+              aria-expanded={historyOpen}
+              className="ai-history-trigger"
+              title="打开历史对话"
+              type="button"
+              variant="ghost"
+              onClick={openHistory}
+            >
+              <ClockCounterClockwise size={17} />
+              <span>历史</span>
+              <small>{aiHistory.conversations.length}</small>
+            </Button>
+            <Button
+              ref={artifactsTriggerRef}
+              aria-label={`AI 文档 ${summaries.length}`}
+              aria-controls="veges-ai-documents"
+              aria-expanded={artifactsOpen}
+              className="ai-artifacts-trigger"
+              title="打开 AI 文档"
+              type="button"
+              variant="ghost"
+              onClick={openArtifacts}
+            >
+              <SidebarSimple size={17} />
+              <span>AI 文档</span>
+              <small>{summaries.length}</small>
+            </Button>
+          </div>
+        </header>
+
+        {aiStatusError ? (
+          <div className="veges-ai-notice is-error" role="alert">
+            <WarningCircle size={19} weight="fill" />
+            <div>
+              <strong>无法确认模型状态</strong>
+              <span>{aiStatusError}</span>
+            </div>
+            <Button size="sm" type="button" variant="outline" onClick={() => void loadAiStatus()}>
+              重新检查
+            </Button>
+          </div>
+        ) : !aiStatusLoading && !aiConfigured ? (
+          <div className="veges-ai-notice" role="status">
+            <WarningCircle size={19} weight="fill" />
+            <div>
+              <strong>Veges AI 暂不可用</strong>
+              <span>管理员完成系统模型配置后，这里的能力会自动启用。</span>
+            </div>
+            <Button size="sm" type="button" variant="outline" onClick={() => void loadAiStatus()}>
+              重新检查
+            </Button>
+          </div>
+        ) : null}
+
+        <section aria-label="Veges AI 对话" className="veges-ai-stage">
+              <div
+                aria-busy={aiBusy || intentClassifying}
+                aria-live="polite"
+                aria-relevant="additions text"
+                className={`agent-messages${aiMessages.length === 0 ? ' is-empty' : ''}`}
+                role="log"
+              >
+                {intentClassifying ? (
+                  <span className="sr-only" role="status">正在理解请求</span>
+                ) : null}
+                {aiNextBeforeTurn != null ? (
+                  <Button
+                    className="ai-load-earlier"
+                    disabled={aiTurnsLoading}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => void onLoadEarlierTurns()}
+                  >
+                    <ClockCounterClockwise aria-hidden size={14} />
+                    {aiTurnsLoading ? '正在加载…' : '加载更早消息'}
+                  </Button>
+                ) : null}
+                {showPromptExamples ? (
+                  <div aria-label="示例提示" className="veges-ai-prompt-examples">
+                    {promptExamples.map((example) => (
+                      <button
+                        key={example.label}
+                        type="button"
+                        onClick={() => void sendComposerMessage(example.prompt)}
+                      >
+                        <span className="veges-ai-prompt-icon">{example.icon}</span>
+                        <span className="veges-ai-prompt-copy">
+                          <strong>{example.label}</strong>
+                          <small>{example.description}</small>
+                        </span>
+                        <PaperPlaneTilt
+                          aria-hidden
+                          className="veges-ai-prompt-send-icon"
+                          size={15}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {aiMessages.map((message) => (
+                  <article
+                    aria-busy={message.turnStatus === 'processing'}
+                    className={`agent-message ${message.role} is-${message.turnStatus}`}
+                    key={message.id}
+                  >
+                    {message.content ? (
+                      <div
+                        aria-live={message.turnStatus === 'processing' ? 'off' : undefined}
+                        className="agent-message-content"
+                      >
+                        <MarkdownPreview content={message.content} compact />
+                      </div>
+                    ) : null}
+                    {message.statusTitle && message.statusKind ? (
+                      <div
+                        aria-atomic="true"
+                        className={`agent-message-state is-${message.statusKind}`}
+                        role={message.statusKind === 'failed' ? 'alert' : 'status'}
+                      >
+                        {message.statusKind === 'processing' ? (
+                          <SpinnerGap aria-hidden className="agent-message-state-spinner" size={17} />
+                        ) : message.statusKind === 'reconciling' ? (
+                          <ClockCounterClockwise aria-hidden size={17} />
+                        ) : message.statusKind === 'failed' ? (
+                          <WarningCircle aria-hidden size={17} weight="fill" />
+                        ) : (
+                          <X aria-hidden size={17} />
+                        )}
+                        <span>
+                          <strong>{message.statusTitle}</strong>
+                          {message.statusDetail ? <small>{message.statusDetail}</small> : null}
+                        </span>
+                      </div>
+                    ) : null}
+                    {message.attachments?.length ? (
+                      <div className="agent-message-attachments" aria-label="消息附件">
+                        {message.attachments.map((attachment) => (
+                          <span key={attachment.id} title={attachment.name}>
+                            <FileText size={13} aria-hidden />
+                            <span>{attachment.name}</span>
+                            <small>{formatAttachmentSize(attachment.size)}</small>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {message.role === 'assistant' ? (
+                      <div className="agent-message-footer">
+                        <time className="agent-message-time" dateTime={message.createdAt}>
+                          {formatAiMessageTime(message.createdAt)}
+                        </time>
+                        <div className="agent-message-actions">
+                          {message.turnId === retryableAiTurnId &&
+                          (message.turnStatus === 'failed' || message.turnStatus === 'cancelled') ? (
+                            <Button
+                              disabled={workspaceBusy}
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void retryTurn(message.turnId)}
+                            >
+                              <ClockCounterClockwise aria-hidden size={14} />
+                              重试
+                            </Button>
+                          ) : null}
+                          {message.turnStatus === 'processing' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void onStopAiTurn()}
+                            >
+                              <X aria-hidden size={14} />
+                              停止
+                            </Button>
+                          ) : null}
+                          {message.outcome?.type === 'todo-proposals' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                const outcome = message.outcome
+                                if (outcome?.type === 'todo-proposals') {
+                                  void openTodoProposalOutcome(outcome.batchId)
+                                }
+                              }}
+                            >
+                              <ListChecks aria-hidden size={14} />
+                              查看待办候选
+                            </Button>
+                          ) : null}
+                          {message.outcome?.type === 'summary' ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                const outcome = message.outcome
+                                if (outcome?.type === 'summary') {
+                                  setSelectedSummaryId(outcome.summaryId)
+                                  openArtifacts()
+                                }
+                              }}
+                            >
+                              <FileText aria-hidden size={14} />
+                              打开 AI 文档
+                            </Button>
+                          ) : null}
+                          {selectedProjectId && message.turnStatus === 'completed' && !message.outcome &&
+                          documentIdBySourceTurn.has(message.turnId) ? (
+                            <Button
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => {
+                                const summaryId = documentIdBySourceTurn.get(message.turnId)
+                                if (summaryId) {
+                                  setSelectedSummaryId(summaryId)
+                                  openArtifacts()
+                                }
+                              }}
+                            >
+                              <FileText aria-hidden size={14} />
+                              打开文档
+                            </Button>
+                          ) : selectedProjectId && message.turnStatus === 'completed' && !message.outcome ? (
+                            <Button
+                              disabled={workspaceBusy}
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                              onClick={() => void convertReplyToDocument(message)}
+                            >
+                              {documentSavingTurnIds.has(message.turnId) ? (
+                                <SpinnerGap aria-hidden className="agent-message-state-spinner" size={14} />
+                              ) : (
+                                <FileText aria-hidden size={14} />
+                              )}
+                              {documentSavingTurnIds.has(message.turnId) ? '保存中' : '转为文档'}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
               </div>
-              {message.role === 'assistant' && (
-                <div className="agent-message-footer">
-                  <time className="agent-message-time">{message.createdAt}</time>
-                  {index > 0 && (
+              {aiTurnsError || aiError ? (
+                <div className="veges-ai-inline-notice" role="alert">
+                  <WarningCircle aria-hidden size={16} weight="fill" />
+                  <span>{aiTurnsError || aiError}</span>
+                </div>
+              ) : null}
+              {generationError || attachmentError ? (
+                <p className="form-error" role="alert">
+                  {generationError || attachmentError}
+                </p>
+              ) : null}
+              <div className="ai-todo-workflow-status">
+                <TodoProposalWorkflow
+                  ref={todoWorkflowRef}
+                  memberships={memberships}
+                  onBusyChange={setTodoWorkflowBusy}
+                  onWorkspace={onWorkspace}
+                  projects={projects}
+                  sessionGeneration={sessionGeneration}
+                />
+              </div>
+              <div className="agent-composer" ref={composerShellRef}>
+                <input
+                  ref={attachmentInputRef}
+                  accept=".csv,.json,.log,.md,.markdown,.text,.txt,.yaml,.yml,application/json,application/yaml,application/x-yaml,text/csv,text/markdown,text/plain,text/x-log"
+                  aria-label="选择文本附件"
+                  className="ai-attachment-input"
+                  multiple
+                  type="file"
+                  onChange={(event) => void handleAttachmentSelection(event)}
+                />
+                {projectPickerOpen ? (
+                  <div aria-label="选择项目上下文" className="ai-project-picker" role="listbox">
+                    {filteredProjects.length > 0 ? filteredProjects.map((project) => (
+                      <button
+                        aria-selected={project.id === selectedProjectId}
+                        key={project.id}
+                        role="option"
+                        type="button"
+                        onClick={() => selectProjectContext(project.id)}
+                      >
+                        <At size={15} weight="bold" />
+                        <span>{project.name}</span>
+                        {project.id === selectedProjectId ? <Check size={15} weight="bold" /> : null}
+                      </button>
+                    )) : (
+                      <p>没有匹配的项目</p>
+                    )}
+                  </div>
+                ) : null}
+                <Textarea
+                  ref={composerRef}
+                  aria-label="Veges AI 消息"
+                  disabled={aiTurnsLoading || intentClassifying || todoWorkflowBusy}
+                  placeholder="输入消息，或粘贴需要处理的内容"
+                  rows={2}
+                  value={aiDraft}
+                  onCompositionEnd={() => setIsComposing(false)}
+                  onCompositionStart={() => setIsComposing(true)}
+                  onChange={(event) => handleDraftChange(
+                    event.target.value,
+                    event.target.selectionStart ?? event.target.value.length,
+                  )}
+                  onKeyDown={(event) => {
+                    const nativeEvent = event.nativeEvent as KeyboardEvent
+                    if (event.key === 'Escape' && projectPickerOpen) {
+                      event.preventDefault()
+                      setProjectPickerOpen(false)
+                      setProjectMention(null)
+                      return
+                    }
+                    if (
+                      event.key === 'Enter' &&
+                      !event.shiftKey &&
+                      !isComposing &&
+                      !nativeEvent.isComposing &&
+                      projectPickerOpen &&
+                      filteredProjects[0]
+                    ) {
+                      event.preventDefault()
+                      selectProjectContext(filteredProjects[0].id)
+                      return
+                    }
+                    if (
+                      event.key === 'Enter' &&
+                      !event.shiftKey &&
+                      !isComposing &&
+                      !nativeEvent.isComposing &&
+                      !workspaceBusy &&
+                      aiConfigured
+                    ) {
+                      event.preventDefault()
+                      void sendComposerMessage()
+                    }
+                  }}
+                />
+                {selectedProject || attachments.length > 0 ? (
+                  <div className="ai-composer-context-row">
+                    {selectedProject ? (
+                      <span className="ai-project-chip">
+                        <At size={14} weight="bold" aria-hidden />
+                        <span>{selectedProject.name}</span>
+                        <button
+                          aria-label={`移除项目 ${selectedProject.name}`}
+                          disabled={workspaceBusy}
+                          title="移除项目"
+                          type="button"
+                          onClick={removeProjectContext}
+                        >
+                          <X size={13} weight="bold" />
+                        </button>
+                      </span>
+                    ) : null}
+                    {attachments.map((attachment) => (
+                      <span className="ai-attachment-chip" key={attachment.id}>
+                        <FileText size={14} aria-hidden />
+                        <span title={attachment.name}>{attachment.name}</span>
+                        <small>{formatAttachmentSize(attachment.size)}</small>
+                        <button
+                          aria-label={`移除附件 ${attachment.name}`}
+                          disabled={workspaceBusy}
+                          title="移除附件"
+                          type="button"
+                          onClick={() => removeAttachment(attachment.id)}
+                        >
+                          <X size={13} weight="bold" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="ai-composer-toolbar">
+                  <div className="ai-composer-tools">
                     <Button
-                      className="agent-summary-button"
+                      aria-label="添加文本附件"
+                      className="ai-attachment-trigger"
+                      disabled={workspaceBusy || attachments.length >= AI_ATTACHMENT_MAX_COUNT}
+                      size="icon"
+                      title="添加文本附件"
                       type="button"
                       variant="ghost"
-                      size="icon"
-                      aria-label="生成总结文档"
-                      title="生成总结文档"
-                      onClick={() => onCreateSummaryFromAiMessage(message)}
+                      onClick={() => attachmentInputRef.current?.click()}
                     >
-                      <FileText size={14} weight="bold" />
+                      <Paperclip size={18} weight="bold" />
                     </Button>
-                  )}
+                    <Button
+                      aria-expanded={projectPickerOpen}
+                      aria-haspopup="listbox"
+                      aria-label="关联项目"
+                      className="ai-project-trigger"
+                      disabled={workspaceBusy}
+                      size="icon"
+                      title="关联项目"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setProjectMention(null)
+                        setProjectQuery('')
+                        setProjectPickerOpen((current) => !current)
+                        window.requestAnimationFrame(() => composerRef.current?.focus())
+                      }}
+                    >
+                      <At size={18} weight="bold" />
+                    </Button>
+                  </div>
+                  <Button
+                    aria-label={intentClassifying ? '正在理解请求' : aiBusy ? '停止回复' : '发送消息'}
+                    className={`agent-send-button${aiBusy || intentClassifying ? ' is-stop' : ''}`}
+                    disabled={
+                      !aiConfigured || (
+                        !aiBusy && !intentClassifying && (
+                          aiTurnsLoading ||
+                          attachmentReading ||
+                          todoWorkflowBusy ||
+                          (!aiDraft.trim() && attachments.length === 0)
+                        )
+                      )
+                    }
+                    size="icon"
+                    title={intentClassifying ? '正在理解请求' : aiBusy ? '停止回复' : '发送消息'}
+                    type="button"
+                    onClick={() => {
+                      if (intentClassifying) cancelIntentClassification()
+                      else if (aiBusy) void onStopAiTurn()
+                      else void sendComposerMessage()
+                    }}
+                  >
+                    {aiBusy || intentClassifying
+                      ? <X size={17} weight="bold" />
+                      : <PaperPlaneTilt size={17} weight="fill" />}
+                  </Button>
                 </div>
-              )}
-            </article>
-          ))}
-          {aiBusy && (
-            <article className="agent-message assistant">
-              <div className="agent-message-content">
-                <MarkdownPreview content="正在整理项目上下文..." compact />
               </div>
-            </article>
+        </section>
+      </Card>
+
+      {historyOpen ? (
+        <AiConversationHistoryPanel
+          className="veges-ai-history"
+          conversations={aiHistory.conversations}
+          currentConversationId={currentConversationId}
+          error={aiHistory.error || aiTurnsError}
+          hasLoaded={aiHistory.hasLoaded}
+          loadState={aiHistory.loadState}
+          nextCursor={aiHistory.nextCursor}
+          panelRef={historyRef}
+          onClose={closeHistory}
+          onCreateConversation={resetConversation}
+          onDeleteConversation={deleteConversationHistory}
+          onLoadMore={() => onLoadHistory('more')}
+          onRenameConversation={onRenameConversation}
+          onRetry={onRetryHistory}
+          onSelectConversation={selectConversationHistory}
+        />
+      ) : null}
+
+      {artifactsOpen ? (
+        <Card
+          ref={artifactsRef}
+          aria-label="AI 文档"
+          className={`panel summary-list veges-ai-artifacts${documentFullscreen ? ' is-fullscreen' : ''}`}
+          id="veges-ai-documents"
+          role="region"
+          tabIndex={-1}
+        >
+          {selectedSummary ? (
+            <SummaryDocumentDetail
+              isFullscreen={documentFullscreen}
+              projectName={selectedDocumentOwner}
+              summary={selectedSummary}
+              onBack={() => {
+                setIsSummaryFullscreen(false)
+                setSelectedSummaryId(null)
+                window.requestAnimationFrame(() => artifactsRef.current?.focus())
+              }}
+              onClose={closeArtifacts}
+              onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
+            />
+          ) : (
+            <AiDocumentList
+              onClose={closeArtifacts}
+              onExport={onExportWorkspace}
+              projects={projects}
+              summaries={summaries}
+              onSelect={(id) => {
+                setSelectedSummaryId(id)
+                window.requestAnimationFrame(() => artifactsRef.current?.focus())
+              }}
+            />
           )}
-        </div>
-        {aiError && <p className="form-error">{aiError}</p>}
-        <div className="agent-composer">
-          <Textarea
-            placeholder="例如：帮我生成本周所有进行中项目的总结，并列出下周最关键的 3 个动作..."
-            value={aiDraft}
-            onCompositionEnd={() => setIsComposing(false)}
-            onCompositionStart={() => setIsComposing(true)}
-            onChange={(event) => onAiDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              const nativeEvent = event.nativeEvent as KeyboardEvent
-              if (
-                event.key === 'Enter' &&
-                !event.shiftKey &&
-                !isComposing &&
-                !nativeEvent.isComposing
-              ) {
-                event.preventDefault()
-                onSendAgentMessage()
-              }
-            }}
-          />
-          <Button
-            className="agent-send-button"
-            type="button"
-            disabled={aiBusy || !aiDraft.trim()}
-            variant="ghost"
-            size="icon"
-            aria-label="发送消息"
-            onClick={onSendAgentMessage}
-          >
-            <PaperPlaneTilt size={18} weight="bold" />
-          </Button>
-        </div>
-      </Card>
-      <Card className={isSummaryFullscreen ? 'panel summary-list is-fullscreen' : 'panel summary-list'}>
-        {selectedSummary ? (
-          <SummaryDocumentDetail
-            isFullscreen={isSummaryFullscreen}
-            projectName={selectedDocumentOwner}
-            summary={selectedSummary}
-            onBack={() => {
-              setIsSummaryFullscreen(false)
-              setSelectedSummaryId(null)
-            }}
-            onToggleFullscreen={() => setIsSummaryFullscreen((current) => !current)}
-          />
-        ) : (
-          <SummaryDocumentList
-            projects={projects}
-            summaries={summaries}
-            onSelect={setSelectedSummaryId}
-          />
-        )}
-      </Card>
+        </Card>
+      ) : null}
     </div>
   )
 }
 
-function SummaryDocumentList({
+function AiDocumentList({
+  onClose,
+  onExport,
   onSelect,
   projects,
   summaries,
 }: {
+  onClose: () => void
+  onExport: () => void
   onSelect: (id: number) => void
   projects: Project[]
   summaries: Summary[]
 }) {
   return (
     <>
-      <PanelTitle icon={<FileText size={18} />} title="总结文档" />
+      <header className="veges-ai-artifacts-header">
+        <div>
+          <FileText size={17} weight="duotone" />
+          <h3>AI 文档</h3>
+          <span>{summaries.length}</span>
+        </div>
+        <div className="veges-ai-artifacts-actions">
+          <Button
+            aria-label="导出工作区"
+            disabled={projects.length === 0}
+            size="icon"
+            title="导出工作区"
+            type="button"
+            variant="ghost"
+            onClick={onExport}
+          >
+            <DownloadSimple size={16} />
+          </Button>
+          <Button
+            aria-label="关闭 AI 文档"
+            size="icon"
+            title="关闭"
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </Button>
+        </div>
+      </header>
       <div className="summary-doc-list">
         {summaries.length === 0 ? (
-          <p className="empty-state">还没有总结文档。</p>
+          <div className="veges-ai-artifacts-empty">
+            <FileText size={22} />
+            <strong>还没有 AI 文档</strong>
+            <span>生成项目总结或将项目回复转为文档后，会显示在这里。</span>
+          </div>
         ) : (
           summaries.map((summary) => {
             const project = projects.find((item) => item.id === summary.projectId)
-            const ownerName = project?.name ?? (summary.period === '飞书对话分析' ? '飞书对话分析' : 'AI 总结文档')
+            const ownerName = project?.name ?? (summary.period === '飞书对话分析' ? '飞书对话分析' : 'Veges AI')
+            const documentLabel = summary.type === 'reply'
+              ? '对话文档'
+              : summary.period === 'AI 对话生成'
+                ? '历史对话文档'
+                : summary.period
             return (
               <button
                 className="summary-doc-item"
@@ -6938,9 +8831,12 @@ function SummaryDocumentList({
                 type="button"
                 onClick={() => onSelect(summary.id)}
               >
-                <span>{ownerName}</span>
-                <strong>{summary.title}</strong>
-                <small>{summary.period} · {summary.createdAt}</small>
+                <span className="summary-doc-item-icon" aria-hidden><FileText size={15} /></span>
+                <span className="summary-doc-item-copy">
+                  <strong>{summary.title}</strong>
+                  <small>{ownerName} · {documentLabel}</small>
+                </span>
+                <time>{summary.createdAt}</time>
               </button>
             )
           })
@@ -6953,12 +8849,14 @@ function SummaryDocumentList({
 function SummaryDocumentDetail({
   isFullscreen,
   onBack,
+  onClose,
   onToggleFullscreen,
   projectName,
   summary,
 }: {
   isFullscreen: boolean
   onBack: () => void
+  onClose: () => void
   onToggleFullscreen: () => void
   projectName: string
   summary: Summary
@@ -6970,18 +8868,30 @@ function SummaryDocumentDetail({
           <Button className="ghost-button summary-back-button" variant="outline" type="button" onClick={onBack}>
             <ArrowLeft size={15} /> 返回列表
           </Button>
-          <Button
-            className="summary-fullscreen-button"
-            variant="ghost"
-            size="icon"
-            type="button"
-            aria-label={isFullscreen ? '退出全屏展示总结文档' : '全屏展示总结文档'}
-            aria-pressed={isFullscreen}
-            title={isFullscreen ? '退出全屏' : '全屏展示'}
-            onClick={onToggleFullscreen}
-          >
-            {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
-          </Button>
+          <div className="veges-ai-artifacts-actions">
+            <Button
+              className="summary-fullscreen-button"
+              variant="ghost"
+              size="icon"
+              type="button"
+              aria-label={isFullscreen ? '退出展开阅读 AI 文档' : '展开阅读 AI 文档'}
+              aria-pressed={isFullscreen}
+              title={isFullscreen ? '退出展开阅读' : '展开阅读'}
+              onClick={onToggleFullscreen}
+            >
+              {isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}
+            </Button>
+            <Button
+              aria-label="关闭 AI 文档"
+              size="icon"
+              title="关闭"
+              type="button"
+              variant="ghost"
+              onClick={onClose}
+            >
+              <X size={16} />
+            </Button>
+          </div>
         </div>
         <div className="summary-doc-meta">
           <span>{projectName}</span>
@@ -7784,6 +9694,11 @@ function TodoEditorDialog({
                   <span>{creatorName} 创建</span>
                   <span>{confirmLabel}</span>
                 </div>
+                {todo?.done && todo.completedAt ? (
+                  <p className="todo-completion-meta">
+                    由 {todo.completedByName ?? '项目成员'} 于 {todo.completedAt.slice(0, 16)} 完成
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
@@ -8617,7 +10532,7 @@ function getViewTitle(view: View, projectName: string) {
   if (view === 'notifications') return '通知中心'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'
-  return 'AI 总结文档'
+  return 'Veges AI'
 }
 
 export default App

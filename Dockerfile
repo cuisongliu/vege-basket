@@ -13,13 +13,12 @@ FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8787
-RUN printf '%s\n' \
-  '{"type":"module","dependencies":{"ali-oss":"^6.23.0","bcryptjs":"^3.0.3","cors":"^2.8.6","dotenv":"^17.4.2","express":"^5.2.1","js-yaml":"^5.2.0","pg":"^8.20.0"}}' \
-  > package.json \
-  && npm install --omit=dev --no-audit --no-fund \
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund \
   && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY server ./server
+COPY shared ./shared
 USER node
 EXPOSE 8787
 CMD ["node", "server/index.ts"]

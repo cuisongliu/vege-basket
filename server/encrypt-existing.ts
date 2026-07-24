@@ -15,7 +15,7 @@ async function encryptColumn(table: string, column: string) {
     if (!row.value || isEncryptedText(row.value)) continue
     await query(`update ${table} set ${column} = $1 where id = $2`, [
       encryptText(row.value),
-      Number(row.id),
+      row.id,
     ])
   }
 }
@@ -79,6 +79,12 @@ async function main() {
   await encryptColumn('todos', 'detail')
   await encryptColumn('risks', 'content')
   await encryptColumn('draft_items', 'content')
+  await encryptColumn('ai_conversations', 'title')
+  await encryptColumn('ai_turns', 'user_content')
+  await encryptColumn('ai_turns', 'intent_payload')
+  await encryptColumn('ai_turns', 'assistant_content')
+  await encryptColumn('ai_turn_attachments', 'name')
+  await encryptColumn('ai_turn_attachments', 'content')
   await encryptColumn('summaries', 'title')
   await encryptColumn('summaries', 'period')
   await encryptColumn('summaries', 'content')
@@ -125,28 +131,6 @@ async function main() {
         maybeEncrypt(membership.invited_email),
         plainEmail ? blindIndex(plainEmail) : membership.invited_email_lookup,
         Number(membership.id),
-      ],
-    )
-  }
-
-  const aiSettings = await query<{ user_id: string; base_url: string; api_key: string; model: string }>(
-    'select user_id, base_url, api_key, model from ai_settings',
-  )
-  for (const settings of aiSettings.rows) {
-    await query(
-      `
-      update ai_settings
-      set base_url = $1,
-          api_key = $2,
-          model = $3,
-          updated_at = now()
-      where user_id = $4
-      `,
-      [
-        settings.base_url ? maybeEncrypt(settings.base_url) : '',
-        settings.api_key ? maybeEncrypt(settings.api_key) : '',
-        settings.model ? maybeEncrypt(settings.model) : '',
-        Number(settings.user_id),
       ],
     )
   }
