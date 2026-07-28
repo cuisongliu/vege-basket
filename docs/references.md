@@ -5,9 +5,9 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
-| HTTP routes and authorization | `server/index.ts` |
+| HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts` |
 | Database schema | `server/schema.ts` |
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
@@ -44,6 +44,7 @@ Core and AI controls:
 | `AI_MODEL` | Shared provider model name; required to enable AI. |
 | `AI_RATE_LIMIT` | `5` requests per user per in-memory window. |
 | `AI_GLOBAL_RATE_LIMIT` | `30` total requests per application replica per window. |
+| `VEGES_ADMIN_USERNAMES` | Comma-separated normalized usernames allowed to manage account roles; empty disables role administration. |
 | `AI_RATE_WINDOW_MS` | `60000`. |
 | `AI_MAX_MESSAGE_LENGTH` | `2000` characters. |
 | `AI_MAX_CONTEXT_CHARS` | `12000` characters. |
@@ -61,10 +62,11 @@ Feishu integration:
 | `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | OAuth, identity lookup, message fetch, and delivery. |
 | `FEISHU_OAUTH_REDIRECT_URI` | Explicit OAuth callback URL; otherwise derived from the request origin. |
 | `FEISHU_OAUTH_STATE_SECRET` | OAuth state signing secret; falls back to app secret or encryption key ring. |
-| `FEISHU_VERIFICATION_TOKEN` | Required token for `/api/integrations/feishu/events`. |
+| `FEISHU_VERIFICATION_TOKEN` | Required token for `/api/integrations/feishu/events` and `/api/integrations/feishu/card-actions`. |
 | `FEISHU_WEBHOOK_USER_EMAIL` | Veges account receiving conversation-analysis output. |
 | `FEISHU_WEBHOOK_BASIC_USER`, `FEISHU_WEBHOOK_BASIC_PASSWORD` | Basic credentials for the conversation-analysis webhook. |
 | `FEISHU_DELIVERY_ENABLED` | Set to `false` to disable outbound notification delivery. |
+| `FEISHU_AI_CHAT_ENABLED` | Defaults to disabled. Set to `true` to accept bound users' private bot messages as canonical Veges AI turns and reply in Feishu. |
 
 `FEISHU_ENCRYPT_KEY` is declared in deployment metadata but is not consumed by the
 current server.
@@ -72,6 +74,18 @@ current server.
 Successful Feishu OAuth is treated as internal identity and may create a user without a
 project invite. The Feishu custom application's availability scope must therefore be
 restricted to the intended company users; Veges has no separate tenant/domain allowlist.
+
+When Feishu AI chat is enabled, `im.message.receive_v1` accepts only `p2p` text and
+`merge_forward` messages from a `users.feishu_user_id` binding. Each Feishu message is
+persisted and claimed idempotently before semantic classification. The same canonical AI
+conversation, intent receipt, turn lifecycle, rate limits, encryption, and project
+authorization used by the browser also apply to Feishu. Forwarded content opens a new
+conversation-analysis context; later private messages reuse that conversation and its
+encrypted source content. Todo extraction replies with a proposal card. `创建全部` uses the
+same transactional confirmation path as the browser. Candidates with a recognized due date but
+no recognized project become structured todo drafts; the remaining candidates become todos in
+the same transaction. `进入 Veges 编辑` uses
+`APP_PUBLIC_URL/?aiTodoBatch=<id>` and survives authentication before opening the review.
 
 OSS and package market:
 
@@ -84,9 +98,9 @@ OSS and package market:
 | `PACKAGE_MARKET_BASE_OBJECT_TEMPLATE` | Exact base-package object template. |
 | `PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE` | Versioned base-package listing prefix. |
 | `PACKAGE_MARKET_DOWNLOAD_EXPIRE_SECONDS` | Default signed URL lifetime; fallback is 30 minutes. |
-| `TODO_IMAGE_UPLOAD_MAX_BYTES` | Default `10485760` bytes. |
-| `TODO_IMAGE_OBJECT_PREFIX` | Default `todo-images`. |
-| `TODO_IMAGE_URL_SECRET` | HMAC secret; falls back to OAuth state secret or encryption key ring. |
+| `TODO_IMAGE_UPLOAD_MAX_BYTES` | Default `10485760` bytes. Applies to todo images and test-workbench evidence attachments. |
+| `TODO_IMAGE_OBJECT_PREFIX` | Default `todo-images`. Used for todo images and test-workbench evidence attachments. |
+| `TODO_IMAGE_URL_SECRET` | HMAC secret for todo image and test-workbench evidence URLs; falls back to OAuth state secret or encryption key ring. |
 
 Compatibility aliases remain accepted for `OSS_UI_MIDDLEWARE_ROOT`,
 `OSS_UI_BASE_OBJECT_TEMPLATE`, `OSS_UI_BASE_LIST_PREFIX_TEMPLATE`,
@@ -112,11 +126,16 @@ families are:
 | Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
-| Drafts and summaries | `/api/drafts`, draft archive/delete, `/api/summaries` |
+| Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
+| Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
+| Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, member invitations, resource attachment, task overview, weekly reports, and weekly summaries |
+| Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases, CSV case preview/import, creator-managed plan details/cases/deletion, executions, bugs, comments, and author-owned comment edits/deletions |
+| Test-space collaboration | `GET /api/test-spaces/settings`, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
+| Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
@@ -134,12 +153,91 @@ must remain bound to the authorized project ID.
   `conversation-analysis`; AI turn status: `processing`, `completed`, `failed`,
   `cancelled`.
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
+- Todo responses expose an optional single watcher through `watcherUserId` and
+  `watcherName`. `POST /api/todos` and `PATCH /api/todos/:todoId` accept
+  `watcherUserId`; a non-null watcher must be the project owner or an active project
+  member. Adding a watcher creates a `watched_todo` notification for that user in the
+  notification center and schedules personal-only Feishu delivery; watcher notifications
+  are not sent to the project chat. Changing the watcher resets notification state for
+  the new watcher, while an unchanged watcher does not redeliver.
+- Todo responses expose an optional designated reviewer through `reviewerUserId` and
+  `reviewerName`. `POST /api/todos` and `PATCH /api/todos/:todoId` accept
+  `reviewerUserId`; a non-null reviewer must be the project owner or an active project
+  member. A null reviewer means the todo creator remains the effective reviewer. When a
+  todo is submitted for review, personal Feishu delivery targets the effective reviewer
+  and the project-chat card mentions that same reviewer.
+- Creating a todo note sends a personal-only Feishu notification to the effective todo
+  creator, the current watcher, and every project member explicitly mentioned in the note.
+  The note author is excluded and duplicate roles collapse to one delivery per note and
+  recipient. Editing a note can notify newly mentioned recipients, while the idempotent
+  delivery key prevents repeat messages to recipients already notified for that note.
 - Package event type: `init`, `upgrade`.
 - Package event status: `draft`, `delivering`, `delivered`.
 - Package operation kind: `document`, `event`.
 - Package operation status: `pending`, `success`, `failed`.
 - Package market channel: `release`, `ci`.
-- Supported todo images: PNG, JPEG, WebP, GIF.
+- Supported todo images and test-workbench evidence attachments: PNG, JPEG, WebP, GIF images; MP4, WebM, and QuickTime videos.
+- Account roles: `developer`, `tester`, `delivery`, `organization_admin`. The first three
+  are switchable session personas. `organization_admin` is additive, is not shown in the
+  role switcher, and allows the account to assume any of the three business personas.
+  System administrators assign it through user role management.
+- Organization access: `owner`, `admin`, `member`. System administrators create
+  organizations; organization owners and administrators rename or delete organizations
+  and manage organization membership. Deletion requires the exact organization name,
+  detaches projects and test spaces, and removes organization-only records.
+  Accounts assigned `organization_admin` always see the organization management entry.
+  If they also have active `owner` or `admin` membership in an organization, they receive
+  read-only access to all attached projects and project records, test spaces and test
+  records, and Bugs and comments. Project, test-space, plan, case, and Bug mutation still
+  requires the corresponding original resource permission.
+- Projects and test spaces remain personal while `organization_id` is null. Test-space
+  creation and owner updates accept a nullable `organizationId` selected from the owner's
+  active organization memberships. Moving a test space into or between organizations is
+  allowed only when every pending or active space member already has active membership in
+  the target organization; moving it to no organization retains its members and data.
+- Test-space access: `owner`, `editor`, `viewer`.
+- Any account with the active tester role may create a test space and becomes its owner.
+  Owners may rename it, change its organization assignment, delete it, invite tester accounts, change editor/viewer
+  access, remove members, and create expiring invite links with an optional bcrypt-hashed
+  password. Pending invitations have no data access until accepted. Deletion requires the
+  decrypted space name as confirmation and cascades to every subject, case, plan, bug,
+  comment, membership, and invite link in the space.
+- Test-case status: `draft`, `active`, `archived` remains accepted for compatibility,
+  but the workbench no longer exposes case versions or archived status as the primary
+  workflow.
+- Test-case kind: `functional`, `baseline`. Archiving a case promotes it from
+  `functional` to `baseline`; baseline cases remain active and serve as the reusable
+  bottom layer for each test subject. Test cases also support encrypted custom tags.
+- Test-case folders/modules are scoped to one test subject. Test-space owners and editors
+  can create, rename, and delete folders; deleting a folder clears `folder_id` on its
+  current cases and does not delete cases or immutable plan snapshots.
+- Test-case CSV import accepts UTF-8 `text/csv` at
+  `POST /api/test-spaces/:spaceId/cases/import?testSubjectId=:id`; add `preview=true` for
+  validation-only preview. Required headers are `用例名称`, `所属模块`, `前置条件`,
+  `步骤描述`, `预期结果`, `备注`, and `用例等级`. Levels map as P0/high,
+  P1/medium, and P2/low. Files are limited to 2 MB and 1000 non-empty rows.
+- Test-plan status: `draft`, `in_progress`, `completed`, `aborted`.
+- Test plans are scoped to a test space and then associated with one or more test
+  subjects. A plan may optionally link to an accessible project through `projectId`;
+  project access is checked when creating or updating the plan. A plan response includes
+  `projectId`, `testSubjectIds`, and `canManage`. Only its creator receives `true` and
+  may use `PATCH /api/test-spaces/:spaceId/plans/:planId/details` to change metadata,
+  change selected subjects, or append active cases from those subjects,
+  `DELETE .../plans/:planId/cases/:planCaseId` to remove an `untested` snapshot, or
+  `DELETE .../plans/:planId` to delete the plan. Existing snapshots are not rewritten.
+  Plan deletion keeps bugs and clears their plan and plan-case references.
+- Test result: `untested`, `passed`, `failed`, `blocked`, `skipped`.
+- Bug status: `new`, `confirmed`, `assigned`, `in_progress`, `pending_verification`, `closed`, `rejected`, `duplicate`, `reopened`.
+- A Bug in an organization-owned test space may be assigned to any active organization
+  member with the developer role. The developer does not receive test-space access and
+  continues to read and update only Bugs assigned to that account. An organization
+  administrator may read every Bug in an organization they manage, including terminal
+  Bugs, but may use the assigned-Bug mutation routes only for Bugs assigned to them.
+- Creating or reassigning a Bug to a developer schedules a personal Feishu card for the
+  new assignee. When that Bug belongs to a test plan whose `projectId` still resolves to a
+  project, the same assignment is also sent to the configured project chat and mentions
+  the assignee. Bugs without a project-linked plan never target a group chat. Status-only
+  edits and unchanged assignees do not redeliver the assignment notification.
 - Package download expiry choices: 30, 60, 90, 120, 300, or 600 minutes.
 
 `GET /api/ai/status` returns `configured`, `model`, and the effective positive

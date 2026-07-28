@@ -1,0 +1,362 @@
+import { request } from './api'
+import type {
+  BugSeverity,
+  BugStatus,
+  TestCaseStatus,
+  TestCaseKind,
+  TestCaseType,
+  TestCaseImportPreview,
+  TestPlanStatus,
+  TestResult,
+  TestSpaceInviteLink,
+  TestSpaceSettings,
+  TestWorkbenchData,
+} from './test-workbench-types'
+import type { Priority } from './types'
+
+export function fetchTestWorkbench() {
+  return request<TestWorkbenchData>('/api/test-workbench')
+}
+
+export function createTestSpace(name: string, organizationId?: number) {
+  return request<TestWorkbenchData>('/api/test-spaces', {
+    method: 'POST',
+    body: JSON.stringify({ name, organizationId: organizationId ?? null }),
+  })
+}
+
+export function fetchTestSpaceSettings() {
+  return request<TestSpaceSettings>('/api/test-spaces/settings')
+}
+
+export function updateTestSpace(spaceId: number, payload: { name: string; organizationId?: number }) {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name: payload.name, organizationId: payload.organizationId ?? null }),
+  })
+}
+
+export function deleteTestSpace(spaceId: number, confirmationName: string) {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirmationName }),
+  })
+}
+
+export function inviteTestSpaceMember(
+  spaceId: number,
+  username: string,
+  accessLevel: 'editor' | 'viewer',
+) {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ accessLevel, username }),
+  })
+}
+
+export function updateTestSpaceMember(
+  spaceId: number,
+  userId: number,
+  accessLevel: 'editor' | 'viewer',
+) {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ accessLevel }),
+  })
+}
+
+export function removeTestSpaceMember(spaceId: number, userId: number) {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}/members/${userId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function acceptTestSpaceInvitation(spaceId: number) {
+  return request<{ settings: TestSpaceSettings; workbench: TestWorkbenchData }>(
+    `/api/test-space-invitations/${spaceId}/accept`,
+    { method: 'POST' },
+  )
+}
+
+export function declineTestSpaceInvitation(spaceId: number) {
+  return request<TestSpaceSettings>(`/api/test-space-invitations/${spaceId}/decline`, {
+    method: 'POST',
+  })
+}
+
+export function createTestSpaceInviteLink(spaceId: number, payload: {
+  accessLevel: 'editor' | 'viewer'
+  expiresInMinutes: number
+  password?: string
+}) {
+  return request<TestSpaceInviteLink>(`/api/test-spaces/${spaceId}/invite-link`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function revokeTestSpaceInviteLink(spaceId: number) {
+  return request<{ ok: true }>(`/api/test-spaces/${spaceId}/invite-link`, { method: 'DELETE' })
+}
+
+export function fetchTestSpaceInviteLinkInfo(token: string) {
+  return request<{ passwordRequired: boolean; valid: true }>(
+    `/api/test-space-invite-links/${encodeURIComponent(token)}`,
+  )
+}
+
+export function verifyTestSpaceInviteLink(token: string, password?: string) {
+  return request<{ passwordRequired: boolean; valid: true }>(
+    `/api/test-space-invite-links/${encodeURIComponent(token)}/verify`,
+    { method: 'POST', body: JSON.stringify({ password }) },
+  )
+}
+
+export function acceptTestSpaceInviteLink(token: string, password?: string) {
+  return request<{ settings: TestSpaceSettings; workbench: TestWorkbenchData }>(
+    `/api/test-space-invite-links/${encodeURIComponent(token)}/accept`,
+    { method: 'POST', body: JSON.stringify({ password }) },
+  )
+}
+
+export function createTestSubject(spaceId: number, payload: {
+  description?: string
+  environment?: string
+  name: string
+  versionLabel?: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTestSubject(spaceId: number, subjectId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects/${subjectId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function createTestCaseFolder(spaceId: number, payload: { name: string; testSubjectId: number }) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/folders`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTestCaseFolder(spaceId: number, folderId: number, payload: { name: string }) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/folders/${folderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTestCaseFolder(spaceId: number, folderId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/folders/${folderId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function createTestCase(spaceId: number, payload: {
+  caseKind?: TestCaseKind
+  caseType: TestCaseType
+  customTags?: string[]
+  expectedResult: string
+  modulePath?: string
+  preconditions: string
+  priority: Priority
+  remarks: string
+  steps: string
+  testSubjectId: number
+  title: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/cases`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTestCase(spaceId: number, caseId: number, payload: Partial<{
+  caseKind: TestCaseKind
+  caseType: TestCaseType
+  customTags: string[]
+  expectedResult: string
+  modulePath?: string
+  preconditions: string
+  priority: Priority
+  remarks: string
+  status: TestCaseStatus
+  steps: string
+  title: string
+}>) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/cases/${caseId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewTestCaseImport(spaceId: number, testSubjectId: number, csvText: string) {
+  return request<{ preview: TestCaseImportPreview }>(
+    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}&preview=true`,
+    {
+      method: 'POST',
+      body: csvText,
+      headers: { 'Content-Type': 'text/csv; charset=utf-8' },
+    },
+  )
+}
+
+export async function importTestCases(spaceId: number, testSubjectId: number, csvText: string) {
+  const result = await request<{ importedCount: number; workbench: TestWorkbenchData }>(
+    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}`,
+    {
+      method: 'POST',
+      body: csvText,
+      headers: { 'Content-Type': 'text/csv; charset=utf-8' },
+    },
+  )
+  return result.workbench
+}
+
+export function createTestPlan(spaceId: number, payload: {
+  caseIds: number[]
+  endsOn?: string
+  environment: string
+  name: string
+  ownerUserId?: number
+  projectId?: number
+  startsOn?: string
+  testSubjectIds: number[]
+  versionLabel: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plans`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTestPlanStatus(spaceId: number, planId: number, status: TestPlanStatus) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plans/${planId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
+}
+
+export function updateTestPlan(spaceId: number, planId: number, payload: {
+  caseIds: number[]
+  endsOn?: string
+  environment: string
+  name: string
+  ownerUserId?: number
+  projectId?: number
+  startsOn?: string
+  testSubjectIds: number[]
+  versionLabel: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plans/${planId}/details`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeTestPlanCase(spaceId: number, planId: number, planCaseId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plans/${planId}/cases/${planCaseId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function deleteTestPlan(spaceId: number, planId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plans/${planId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function updateTestPlanCase(spaceId: number, planCaseId: number, payload: {
+  result: TestResult
+  resultNote?: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plan-cases/${planCaseId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createTestBug(spaceId: number, payload: {
+  actualResult: string
+  assigneeUserId?: number
+  environment: string
+  expectedResult: string
+  priority: Priority
+  reproductionSteps: string
+  severity: BugSeverity
+  testPlanCaseId?: number
+  testPlanId?: number
+  testSubjectId: number
+  title: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTestBug(spaceId: number, bugId: number, payload: {
+  assigneeUserId?: number
+  status?: BugStatus
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function addTestBugComment(spaceId: number, bugId: number, content: string) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function updateTestBugComment(spaceId: number, bugId: number, commentId: number, content: string) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/comments/${commentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function deleteTestBugComment(spaceId: number, bugId: number, commentId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/comments/${commentId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function fetchAssignedTestBugs() {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>('/api/test-bugs/assigned')
+}
+
+export function updateAssignedTestBug(bugId: number, status: BugStatus) {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
+}
+
+export function addAssignedTestBugComment(bugId: number, content: string) {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function updateAssignedTestBugComment(bugId: number, commentId: number, content: string) {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function deleteAssignedTestBugComment(bugId: number, commentId: number) {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+    method: 'DELETE',
+  })
+}

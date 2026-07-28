@@ -26,6 +26,137 @@ create table if not exists sessions (
   expires_at timestamptz not null
 );
 
+alter table sessions
+  add column if not exists active_role text not null default 'developer';
+
+create table if not exists user_roles (
+  user_id bigint not null references users(id) on delete cascade,
+  role text not null check (role in ('developer', 'tester', 'delivery', 'organization_admin')),
+  created_at timestamptz not null default now(),
+  primary key (user_id, role)
+);
+
+alter table user_roles
+  drop constraint if exists user_roles_role_check;
+
+alter table user_roles
+  add constraint user_roles_role_check
+  check (role in ('developer', 'tester', 'delivery', 'organization_admin'));
+
+create table if not exists organizations (
+  id bigserial primary key,
+  owner_user_id bigint not null references users(id) on delete restrict,
+  name text not null,
+  name_lookup text not null,
+  week_starts_on smallint not null default 1 check (week_starts_on between 1 and 7),
+  feishu_tenant_key text not null default '',
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (name_lookup)
+);
+
+alter table organizations
+  add column if not exists feishu_tenant_key text not null default '',
+  add column if not exists week_starts_on smallint not null default 1;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'organizations_week_starts_on_check'
+      and conrelid = 'organizations'::regclass
+  ) then
+    alter table organizations
+      add constraint organizations_week_starts_on_check
+      check (week_starts_on between 1 and 7);
+  end if;
+end
+$$;
+
+create table if not exists organization_memberships (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  access_role text not null default 'member'
+    check (access_role in ('owner', 'admin', 'member')),
+  status text not null default 'active'
+    check (status in ('active', 'removed')),
+  invited_by_user_id bigint references users(id) on delete set null,
+  joined_at timestamptz not null default now(),
+  removed_at timestamptz,
+  primary key (organization_id, user_id)
+);
+
+create table if not exists organization_invitations (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  invited_by_user_id bigint references users(id) on delete set null,
+  target_email text not null,
+  target_email_lookup text not null,
+  target_open_id text not null,
+  target_tenant_key text not null default '',
+  token_hash text not null unique,
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'declined', 'revoked', 'expired', 'delivery_failed')),
+  expires_at timestamptz not null,
+  responded_by_user_id bigint references users(id) on delete set null,
+  feishu_message_id text not null default '',
+  last_error text not null default '',
+  created_at timestamptz not null default now(),
+  responded_at timestamptz
+);
+
+create table if not exists organization_callback_events (
+  event_id text primary key,
+  invitation_id bigint references organization_invitations(id) on delete set null,
+  received_at timestamptz not null default now()
+);
+
+create table if not exists organization_audit_events (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  actor_user_id bigint references users(id) on delete set null,
+  action text not null,
+  subject_type text not null,
+  subject_id text not null default '',
+  detail text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists organization_weekly_reports (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  week_start date not null,
+  content text not null default '',
+  status text not null default 'draft' check (status in ('draft', 'submitted')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  submitted_at timestamptz,
+  unique (organization_id, user_id, week_start)
+);
+
+create table if not exists organization_weekly_summaries (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  week_start date not null,
+  requested_by_user_id bigint references users(id) on delete set null,
+  content text not null,
+  source_report_count integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, week_start)
+);
+
+insert into user_roles (user_id, role)
+select id, 'developer'
+from users
+where not exists (
+  select 1 from user_roles where user_roles.user_id = users.id
+)
+on conflict (user_id, role) do nothing;
+
 create table if not exists projects (
   id bigserial primary key,
   user_id bigint not null references users(id) on delete cascade,
@@ -35,6 +166,9 @@ create table if not exists projects (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table projects
+  add column if not exists organization_id bigint references organizations(id) on delete restrict;
 
 alter table projects
   add column if not exists tags_encrypted text;
@@ -161,6 +295,14 @@ alter table todos
   add column if not exists completed_by_user_id bigint references users(id) on delete set null;
 
 alter table todos
+  add column if not exists watcher_user_id bigint references users(id) on delete set null,
+  add column if not exists watched_by_user_id bigint references users(id) on delete set null,
+  add column if not exists watched_at timestamptz;
+
+alter table todos
+  add column if not exists reviewer_user_id bigint references users(id) on delete set null;
+
+alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
 
 alter table todos
@@ -209,11 +351,51 @@ create table if not exists draft_items (
   id bigserial primary key,
   user_id bigint not null references users(id) on delete cascade,
   source text not null default 'manual',
+  item_type text not null default 'journal',
+  todo_title text,
   content text not null,
+  todo_due_date date,
+  todo_priority text,
   suggested_project_id bigint references projects(id) on delete set null,
   processed boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+alter table draft_items
+  add column if not exists item_type text not null default 'journal',
+  add column if not exists todo_title text,
+  add column if not exists todo_due_date date,
+  add column if not exists todo_priority text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'draft_items_item_type_check'
+      and conrelid = 'draft_items'::regclass
+  ) then
+    alter table draft_items
+      add constraint draft_items_item_type_check
+      check (item_type in ('journal', 'todo'));
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'draft_items_todo_fields_check'
+      and conrelid = 'draft_items'::regclass
+  ) then
+    alter table draft_items
+      add constraint draft_items_todo_fields_check
+      check (
+        (item_type = 'journal' and todo_title is null and todo_due_date is null and todo_priority is null)
+        or
+        (item_type = 'todo' and todo_title is not null and todo_due_date is not null and todo_priority in ('high', 'medium', 'low'))
+      );
+  end if;
+end
+$$;
 
 create table if not exists ai_conversations (
   id uuid primary key,
@@ -380,6 +562,52 @@ create table if not exists ai_turn_project_sources (
   primary key (turn_id, project_id)
 );
 
+create table if not exists feishu_ai_chats (
+  user_id bigint not null references users(id) on delete cascade,
+  chat_id text not null,
+  conversation_id uuid references ai_conversations(id) on delete set null,
+  source_message_id text not null default '',
+  source_content text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, chat_id)
+);
+
+create table if not exists feishu_ai_messages (
+  message_id text primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  sender_open_id text not null,
+  chat_id text not null,
+  message_type text not null,
+  event_content text not null default '',
+  request_turn_id uuid not null default gen_random_uuid(),
+  request_conversation_id uuid not null default gen_random_uuid(),
+  status text not null default 'pending'
+    check (status in ('pending', 'processing', 'completed', 'failed')),
+  attempts integer not null default 0 check (attempts >= 0),
+  next_attempt_at timestamptz not null default now(),
+  lease_token uuid,
+  lease_until timestamptz,
+  conversation_id uuid references ai_conversations(id) on delete set null,
+  turn_id uuid references ai_turns(id) on delete set null,
+  response_message_id text not null default '',
+  last_error text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  check (
+    (status = 'processing' and lease_token is not null and lease_until is not null)
+    or (status <> 'processing' and lease_token is null and lease_until is null)
+  )
+);
+
+alter table feishu_ai_messages
+  add column if not exists sender_open_id text not null default '';
+alter table feishu_ai_messages
+  add column if not exists request_turn_id uuid not null default gen_random_uuid();
+alter table feishu_ai_messages
+  add column if not exists request_conversation_id uuid not null default gen_random_uuid();
+
 create table if not exists ai_todo_proposal_batches (
   id bigserial primary key,
   user_id bigint not null references users(id) on delete cascade,
@@ -389,6 +617,14 @@ create table if not exists ai_todo_proposal_batches (
     check (status in ('pending', 'confirmed', 'discarded')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists feishu_ai_callback_events (
+  event_id text primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  batch_id bigint references ai_todo_proposal_batches(id) on delete set null,
+  action text not null,
+  created_at timestamptz not null default now()
 );
 
 alter table ai_todo_proposal_batches
@@ -679,7 +915,341 @@ create table if not exists todo_note_mentions (
   unique (todo_note_id, mentioned_user_id)
 );
 
+create table if not exists test_spaces (
+  id bigserial primary key,
+  owner_user_id bigint not null references users(id) on delete cascade,
+  name text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table test_spaces
+  add column if not exists organization_id bigint references organizations(id) on delete restrict;
+
+create table if not exists test_space_memberships (
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  access_level text not null default 'editor'
+    check (access_level in ('owner', 'editor', 'viewer')),
+  status text not null default 'active'
+    check (status in ('pending', 'active', 'declined')),
+  invited_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  declined_at timestamptz,
+  primary key (test_space_id, user_id)
+);
+
+alter table test_space_memberships
+  add column if not exists status text not null default 'active',
+  add column if not exists invited_by_user_id bigint references users(id) on delete set null,
+  add column if not exists accepted_at timestamptz,
+  add column if not exists declined_at timestamptz;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'test_space_memberships_status_check'
+  ) then
+    alter table test_space_memberships
+      add constraint test_space_memberships_status_check
+      check (status in ('pending', 'active', 'declined'));
+  end if;
+end $$;
+
+create table if not exists test_space_invite_links (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  owner_user_id bigint not null references users(id) on delete cascade,
+  token text not null unique,
+  password_hash text not null default '',
+  access_level text not null default 'editor'
+    check (access_level in ('editor', 'viewer')),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
+create table if not exists test_subjects (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  project_id bigint references projects(id) on delete set null,
+  created_by_user_id bigint references users(id) on delete set null,
+  name text not null,
+  name_lookup text,
+  description text not null default '',
+  version_label text not null default '',
+  environment text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (test_space_id, name),
+  unique (id, test_space_id)
+);
+
+alter table test_subjects
+  add column if not exists name_lookup text;
+
+alter table test_subjects
+  add column if not exists created_by_user_id bigint references users(id) on delete set null;
+
+update test_subjects subject
+set created_by_user_id = space.owner_user_id
+from test_spaces space
+where subject.test_space_id = space.id
+  and subject.created_by_user_id is null
+  and not exists (
+    select 1
+    from test_space_memberships membership
+    where membership.test_space_id = subject.test_space_id
+      and membership.user_id <> space.owner_user_id
+  );
+
+create table if not exists test_case_folders (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  test_subject_id bigint not null,
+  name text not null,
+  name_lookup text,
+  created_at timestamptz not null default now(),
+  unique (test_subject_id, name),
+  unique (id, test_space_id, test_subject_id),
+  foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade
+);
+
+alter table test_case_folders
+  add column if not exists name_lookup text;
+
+create table if not exists test_cases (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  test_subject_id bigint not null,
+  folder_id bigint references test_case_folders(id),
+  title text not null,
+  preconditions text not null default '',
+  steps text not null default '',
+  expected_result text not null default '',
+  remarks text not null default '',
+  priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
+  case_type text not null default 'functional'
+    check (case_type in ('functional', 'regression', 'smoke', 'security', 'performance')),
+  case_kind text not null default 'functional' check (case_kind in ('functional', 'baseline')),
+  custom_tags text not null default '',
+  status text not null default 'active' check (status in ('draft', 'active', 'archived')),
+  owner_user_id bigint references users(id) on delete set null,
+  version integer not null default 1,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade,
+  foreign key (folder_id, test_space_id, test_subject_id)
+    references test_case_folders(id, test_space_id, test_subject_id)
+);
+
+alter table test_cases
+  add column if not exists remarks text not null default '';
+
+alter table test_cases
+  add column if not exists case_kind text not null default 'functional';
+
+alter table test_cases
+  add column if not exists custom_tags text not null default '';
+
+do $$
+begin
+  alter table test_cases
+    add constraint test_cases_case_kind_check check (case_kind in ('functional', 'baseline'));
+exception
+  when duplicate_object then null;
+end $$;
+
+update test_cases
+set case_kind = 'baseline',
+    status = 'active'
+where status = 'archived';
+
+create table if not exists test_plans (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  test_subject_id bigint not null,
+  project_id bigint references projects(id) on delete set null,
+  name text not null,
+  version_label text not null default '',
+  environment text not null default '',
+  starts_on date,
+  ends_on date,
+  status text not null default 'draft'
+    check (status in ('draft', 'in_progress', 'completed', 'aborted')),
+  owner_user_id bigint references users(id) on delete set null,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (id, test_space_id, test_subject_id),
+  foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade
+);
+
+alter table test_plans
+  add column if not exists project_id bigint references projects(id) on delete set null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'test_plans_id_space_unique'
+      and conrelid = 'test_plans'::regclass
+  ) then
+    alter table test_plans
+      add constraint test_plans_id_space_unique unique (id, test_space_id);
+  end if;
+end $$;
+
+create table if not exists test_plan_subjects (
+  test_plan_id bigint not null,
+  test_space_id bigint not null,
+  test_subject_id bigint not null,
+  created_at timestamptz not null default now(),
+  primary key (test_plan_id, test_subject_id),
+  foreign key (test_plan_id, test_space_id)
+    references test_plans(id, test_space_id) on delete cascade,
+  foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade
+);
+
+alter table test_plan_subjects
+  add column if not exists test_space_id bigint;
+
+update test_plan_subjects ps
+set test_space_id = p.test_space_id
+from test_plans p
+where p.id = ps.test_plan_id
+  and ps.test_space_id is null;
+
+alter table test_plan_subjects
+  alter column test_space_id set not null;
+
+do $$
+begin
+  alter table test_plan_subjects
+    add constraint test_plan_subjects_plan_space_fkey
+    foreign key (test_plan_id, test_space_id)
+    references test_plans(id, test_space_id) on delete cascade;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter table test_plan_subjects
+    add constraint test_plan_subjects_subject_space_fkey
+    foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade;
+exception
+  when duplicate_object then null;
+end $$;
+
+insert into test_plan_subjects (test_plan_id, test_space_id, test_subject_id)
+select id, test_space_id, test_subject_id
+from test_plans
+on conflict do nothing;
+
+create table if not exists test_plan_cases (
+  id bigserial primary key,
+  test_plan_id bigint not null references test_plans(id) on delete cascade,
+  test_case_id bigint references test_cases(id) on delete set null,
+  test_subject_id bigint references test_subjects(id) on delete set null,
+  snapshot_title text not null,
+  snapshot_preconditions text not null default '',
+  snapshot_steps text not null default '',
+  snapshot_expected_result text not null default '',
+  snapshot_case_version integer not null,
+  result text not null default 'untested'
+    check (result in ('untested', 'passed', 'failed', 'blocked', 'skipped')),
+  result_note text not null default '',
+  executed_by_user_id bigint references users(id) on delete set null,
+  executed_at timestamptz,
+  unique (test_plan_id, test_case_id),
+  unique (id, test_plan_id)
+);
+
+alter table test_plan_cases
+  add column if not exists test_subject_id bigint references test_subjects(id) on delete set null;
+
+update test_plan_cases pc
+set test_subject_id = coalesce(
+  (select c.test_subject_id from test_cases c where c.id = pc.test_case_id),
+  (select p.test_subject_id from test_plans p where p.id = pc.test_plan_id)
+)
+where pc.test_subject_id is null;
+
+create table if not exists test_bugs (
+  id bigserial primary key,
+  test_space_id bigint not null references test_spaces(id) on delete cascade,
+  test_subject_id bigint not null,
+  test_plan_id bigint references test_plans(id),
+  test_plan_case_id bigint references test_plan_cases(id),
+  title text not null,
+  severity text not null default 'major'
+    check (severity in ('blocker', 'critical', 'major', 'minor', 'trivial')),
+  priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
+  status text not null default 'new'
+    check (status in ('new', 'confirmed', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
+  environment text not null default '',
+  reproduction_steps text not null default '',
+  expected_result text not null default '',
+  actual_result text not null default '',
+  reporter_user_id bigint references users(id) on delete set null,
+  assignee_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (test_plan_case_id is null or test_plan_id is not null),
+  foreign key (test_subject_id, test_space_id)
+    references test_subjects(id, test_space_id) on delete cascade,
+  foreign key (test_plan_id, test_space_id)
+    references test_plans(id, test_space_id),
+  foreign key (test_plan_case_id, test_plan_id)
+    references test_plan_cases(id, test_plan_id) on delete set null
+);
+
+alter table test_bugs
+  drop constraint if exists test_bugs_test_plan_id_test_space_id_test_subject_id_fkey;
+
+do $$
+begin
+  alter table test_bugs
+    add constraint test_bugs_test_plan_id_test_space_id_fkey
+    foreign key (test_plan_id, test_space_id)
+    references test_plans(id, test_space_id);
+exception
+  when duplicate_object then null;
+end $$;
+
+create table if not exists test_bug_comments (
+  id bigserial primary key,
+  test_bug_id bigint not null references test_bugs(id) on delete cascade,
+  author_user_id bigint references users(id) on delete set null,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table test_bug_comments
+  add column if not exists updated_at timestamptz;
+
 create index if not exists idx_projects_user_id on projects(user_id);
+create index if not exists idx_projects_organization_id on projects(organization_id);
+create index if not exists idx_organization_memberships_user_id
+  on organization_memberships(user_id, status);
+create index if not exists idx_organization_invitations_organization_id
+  on organization_invitations(organization_id, status, created_at desc);
+create unique index if not exists idx_organization_invitations_pending_target
+  on organization_invitations(organization_id, target_email_lookup)
+  where status = 'pending';
+create index if not exists idx_organization_weekly_reports_lookup
+  on organization_weekly_reports(organization_id, week_start, status);
+create index if not exists idx_organization_audit_events_lookup
+  on organization_audit_events(organization_id, created_at desc);
 create index if not exists idx_project_memberships_project_id on project_memberships(project_id);
 create index if not exists idx_project_memberships_owner_user_id on project_memberships(owner_user_id);
 create index if not exists idx_project_memberships_invited_user_id on project_memberships(invited_user_id);
@@ -696,12 +1266,15 @@ create unique index if not exists idx_project_invite_links_active_project
   where revoked_at is null;
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
+create index if not exists idx_user_roles_role on user_roles(role, user_id);
 create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
 create index if not exists idx_journal_entries_author_user_id on journal_entries(author_user_id);
 create index if not exists idx_todos_project_id on todos(project_id);
 create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
 create index if not exists idx_todos_created_by_user_id on todos(created_by_user_id);
 create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
+create index if not exists idx_todos_watcher_user_id on todos(watcher_user_id);
+create index if not exists idx_todos_reviewer_user_id on todos(reviewer_user_id);
 create index if not exists idx_todos_due_date on todos(due_date);
 create index if not exists idx_todos_project_module_id on todos(project_module_id);
 create index if not exists idx_todos_completed_at on todos(completed_at);
@@ -745,6 +1318,12 @@ create unique index if not exists idx_ai_todo_proposal_batches_source_turn
   where source_turn_id is not null;
 create index if not exists idx_ai_todo_proposals_batch_status
   on ai_todo_proposals(batch_id, status, id);
+create index if not exists idx_feishu_ai_messages_claim
+  on feishu_ai_messages(status, next_attempt_at, lease_until, created_at);
+create index if not exists idx_feishu_ai_messages_user_chat
+  on feishu_ai_messages(user_id, chat_id, created_at desc);
+create index if not exists idx_feishu_ai_chats_conversation
+  on feishu_ai_chats(conversation_id);
 create index if not exists idx_summaries_user_id on summaries(user_id);
 create index if not exists idx_summaries_project_id on summaries(project_id);
 create unique index if not exists idx_summaries_source_turn
@@ -779,4 +1358,42 @@ create index if not exists idx_project_package_operation_todos_operation_id
   on project_package_operation_todos(project_package_operation_id);
 create index if not exists idx_project_package_operation_todos_todo_id
   on project_package_operation_todos(todo_id);
+create index if not exists idx_test_space_memberships_user_id
+  on test_space_memberships(user_id, test_space_id);
+create index if not exists idx_test_space_memberships_status
+  on test_space_memberships(user_id, status, test_space_id);
+create index if not exists idx_test_space_invite_links_space_id
+  on test_space_invite_links(test_space_id);
+create index if not exists idx_test_space_invite_links_token
+  on test_space_invite_links(token);
+create unique index if not exists idx_test_space_invite_links_active_space
+  on test_space_invite_links(test_space_id)
+  where revoked_at is null;
+create index if not exists idx_test_subjects_space_id
+  on test_subjects(test_space_id, created_at);
+create unique index if not exists idx_test_subjects_space_name_lookup
+  on test_subjects(test_space_id, name_lookup)
+  where name_lookup is not null;
+create unique index if not exists idx_test_case_folders_subject_name_lookup
+  on test_case_folders(test_subject_id, name_lookup)
+  where name_lookup is not null;
+create index if not exists idx_test_cases_subject_id
+  on test_cases(test_subject_id, updated_at desc);
+create index if not exists idx_test_plans_subject_id
+  on test_plans(test_subject_id, updated_at desc);
+create index if not exists idx_test_plans_space_id
+  on test_plans(test_space_id, updated_at desc);
+create index if not exists idx_test_plans_project_id
+  on test_plans(project_id, updated_at desc);
+create index if not exists idx_test_plan_subjects_subject_id
+  on test_plan_subjects(test_subject_id, test_plan_id);
+create index if not exists idx_test_plan_cases_plan_id
+  on test_plan_cases(test_plan_id, id);
+create index if not exists idx_test_bugs_space_status
+  on test_bugs(test_space_id, status, updated_at desc);
+create index if not exists idx_test_bugs_assignee_id
+  on test_bugs(assignee_user_id, status, updated_at desc);
+create index if not exists idx_test_spaces_organization_id on test_spaces(organization_id);
+create index if not exists idx_test_bug_comments_bug_id
+  on test_bug_comments(test_bug_id, created_at);
 `

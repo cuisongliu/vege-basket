@@ -47,11 +47,17 @@ function DialogOverlay({
 function DialogContent({
   className,
   children,
+  fixedHeader = false,
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  fixedHeader?: boolean
   showCloseButton?: boolean
 }) {
+  const content = React.Children.toArray(children)
+  const header = fixedHeader ? content[0] : null
+  const body = fixedHeader ? content.slice(1) : content
+
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -61,9 +67,15 @@ function DialogContent({
           "fixed left-1/2 top-1/2 z-50 grid w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border bg-background p-5 shadow-lg outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
           className,
         )}
+        data-fixed-header={fixedHeader || undefined}
         {...props}
       >
-        {children}
+        {fixedHeader ? (
+          <>
+            {header}
+            <div data-slot="dialog-body">{body}</div>
+          </>
+        ) : children}
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"

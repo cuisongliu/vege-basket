@@ -585,6 +585,10 @@ textarea:focus {
   min-width: var(--radix-dropdown-menu-trigger-width);
 }
 
+.account-role-submenu {
+  min-width: 140px;
+}
+
 .theme-menu-item {
   justify-content: space-between;
   gap: 10px;
@@ -634,6 +638,18 @@ textarea:focus {
 .workspace {
   min-width: 0;
   padding: 20px clamp(14px, 1.6vw, 28px) 36px;
+}
+
+.embedded-module-workspace {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 20px;
+}
+
+.embedded-module-workspace .topbar {
+  flex: 0 0 auto;
 }
 
 .cockpit-workspace {
@@ -1907,6 +1923,55 @@ textarea:focus {
   font-weight: 560;
 }
 
+.todo-reviewer-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+}
+
+.todo-reviewer-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-text);
+  cursor: help;
+  outline: none;
+}
+
+.todo-reviewer-help:hover,
+.todo-reviewer-help:focus-visible {
+  color: var(--brand);
+}
+
+.todo-reviewer-tooltip {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 32px));
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--strong);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.todo-reviewer-help:hover .todo-reviewer-tooltip,
+.todo-reviewer-help:focus-visible .todo-reviewer-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .member-picker.project-module-picker {
   display: grid;
   gap: 8px;
@@ -2786,7 +2851,8 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
-.todo-assignee-inline {
+.todo-assignee-inline,
+.todo-watcher-inline {
   color: var(--strong);
   font-weight: 650;
 }
@@ -2933,6 +2999,12 @@ textarea:focus {
   color: var(--text);
   border-color: color-mix(in oklch, var(--text) 14%, var(--line));
   background: color-mix(in oklch, var(--surface-elevated) 82%, black 18%);
+}
+
+.todo-confirm-select.completed {
+  color: var(--brand);
+  border-color: color-mix(in oklch, var(--brand) 28%, var(--line));
+  background: color-mix(in oklch, var(--brand) 8%, var(--field));
 }
 
 .todo-confirm-select.pending_review {
@@ -3217,9 +3289,38 @@ textarea:focus {
   gap: 12px;
 }
 
+.notification-center-toolbar {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.notification-center-toolbar .todo-metric {
+  flex: 0 0 auto;
+}
+
+.notification-project-filter {
+  width: 126px;
+  min-width: 126px;
+  flex: 0 0 126px;
+}
+
+.notification-project-filter .select-value {
+  white-space: nowrap;
+}
+
+.current-todos-metrics {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
 .notification-sections {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .notification-section {
@@ -3336,12 +3437,33 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.notification-center-toolbar {
+  min-width: 0;
+}
+
+.notification-project-filter {
+  width: 126px;
+  min-width: 126px;
+  flex: 0 0 126px;
+}
+
+.notification-project-filter [data-slot='select-value'] {
+  white-space: nowrap;
+}
+
 .current-todos-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 14px;
+}
+
+.notification-center-panel .current-todos-header {
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .current-todos-header .panel-title {
@@ -3353,11 +3475,11 @@ textarea:focus {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
-.todo-metric,
-.current-todos-metrics span {
+.todo-metric {
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -4385,6 +4507,32 @@ textarea:focus {
   gap: 7px;
 }
 
+.inbox-todo-draft {
+  display: grid;
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.inbox-todo-draft > strong {
+  color: var(--strong);
+  font-size: 15px;
+  font-weight: 640;
+  line-height: 1.45;
+}
+
+.inbox-todo-draft-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--muted-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.inbox-todo-draft .markdown-preview {
+  padding-top: 0;
+}
+
 .history-item .markdown-preview {
   border-top: 0;
   padding-top: 6px;
@@ -5231,6 +5379,12 @@ textarea:focus {
   text-align: left;
 }
 
+.project-package-entry {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .project-event-tab-button strong,
 .project-package-tab-button strong {
   color: var(--strong);
@@ -5267,6 +5421,46 @@ textarea:focus {
   line-height: 1.55;
   word-break: break-word;
   margin: 0;
+}
+
+.package-file-list-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.package-file-list-row .package-file-list-text {
+  min-width: 0;
+}
+
+.package-file-copy-button {
+  display: inline-flex;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 0;
+  color: var(--muted-text);
+  cursor: pointer;
+}
+
+.package-file-copy-button:hover {
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+  color: var(--strong);
+}
+
+.package-file-copy-button.is-copied {
+  color: var(--primary);
+}
+
+.package-file-copy-button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .project-event-tab-button .project-event-badges {
@@ -7060,6 +7254,69 @@ textarea:focus {
   overflow: hidden;
 }
 
+.package-market-workspace {
+  width: min(100%, var(--content-max));
+  min-height: 0;
+  margin: 0 auto;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.package-market-workspace .package-market-grid {
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 0;
+}
+
+.package-market-workspace .package-market-sidebar {
+  padding-right: 14px;
+  border-right: 1px solid var(--line);
+}
+
+.package-market-workspace .package-market-main {
+  padding-left: 14px;
+}
+
+.package-market-workspace .package-market-rule-list {
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--field) 52%, var(--surface));
+}
+
+.package-market-workspace .package-market-group-toggle {
+  min-height: 40px;
+  padding: 10px 12px;
+  letter-spacing: 0;
+}
+
+.package-market-workspace .package-market-group-list {
+  gap: 2px;
+  padding: 6px;
+}
+
+.package-market-workspace .package-market-rule {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 9px 10px;
+  gap: 2px;
+}
+
+.package-market-workspace .package-market-rule:hover {
+  background: color-mix(in oklch, var(--muted) 72%, var(--surface));
+}
+
+.package-market-workspace .package-market-rule.active {
+  background: var(--muted);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 18%, var(--line));
+}
+
+.package-market-workspace .package-market-link-card {
+  border-radius: 8px;
+}
+
 .package-market-grid {
   display: grid;
   grid-template-columns: minmax(220px, 0.52fr) minmax(0, 1fr);
@@ -7096,6 +7353,37 @@ textarea:focus {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: color-mix(in oklch, var(--surface) 94%, black);
+  scrollbar-color: transparent transparent;
+  scrollbar-width: none;
+}
+
+.package-market-rule-list:hover,
+.package-market-rule-list:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.package-market-rule-list::-webkit-scrollbar {
+  width: 0;
+}
+
+.package-market-rule-list:hover::-webkit-scrollbar,
+.package-market-rule-list:focus-within::-webkit-scrollbar {
+  width: 6px;
+}
+
+.package-market-rule-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.package-market-rule-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.package-market-rule-list:hover::-webkit-scrollbar-thumb,
+.package-market-rule-list:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .package-market-group {
@@ -7156,6 +7444,37 @@ textarea:focus {
   padding-right: 4px;
   display: grid;
   align-content: start;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: none;
+}
+
+.package-market-detail-area:hover,
+.package-market-detail-area:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.package-market-detail-area::-webkit-scrollbar {
+  width: 0;
+}
+
+.package-market-detail-area:hover::-webkit-scrollbar,
+.package-market-detail-area:focus-within::-webkit-scrollbar {
+  width: 6px;
+}
+
+.package-market-detail-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.package-market-detail-area::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.package-market-detail-area:hover::-webkit-scrollbar-thumb,
+.package-market-detail-area:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .package-market-version-control {
@@ -7221,6 +7540,7 @@ textarea:focus {
 .package-market-link-actions {
   flex-shrink: 0;
   flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 
 .package-market-link-actions button,
@@ -7228,7 +7548,8 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.package-market-dialog input:focus {
+.package-market-dialog input:focus,
+.package-market-workspace input:focus {
   border-color: color-mix(in oklch, var(--foreground) 12%, var(--line));
   background: color-mix(in oklch, var(--surface) 88%, var(--field));
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent);
@@ -9506,6 +9827,35 @@ textarea:focus {
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .embedded-module-workspace {
+    height: auto;
+    overflow: visible;
+  }
+
+  .package-market-workspace {
+    min-height: 760px;
+    overflow: visible;
+  }
+
+  .package-market-workspace .package-market-grid {
+    height: auto;
+    overflow: visible;
+  }
+
+  .package-market-workspace .package-market-sidebar {
+    max-height: 420px;
+    padding-right: 0;
+    padding-bottom: 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .package-market-workspace .package-market-main {
+    min-height: 560px;
+    padding-top: 14px;
+    padding-left: 0;
   }
 
   .nav-list {

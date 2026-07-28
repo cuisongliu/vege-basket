@@ -63,7 +63,31 @@ test('allows unresolved optional inferences to stay null', () => {
   assert.equal(parsed[0].projectId, null)
 })
 
-test('rejects inaccessible projects, cross-project relations, and invented excerpts', () => {
+test('drops stale assignee and module when a correction moves the todo to another project', () => {
+  const retargetCatalog: AiTodoProposalCatalog = {
+    projects: [
+      catalog.projects[0],
+      {
+        assignees: [{ id: 8, name: '王五' }],
+        id: 4,
+        modules: [{ id: 12, name: '网络方案' }],
+        name: '测试空间',
+      },
+    ],
+  }
+
+  const parsed = parseAiTodoProposalResponse(response({ projectId: 4 }), {
+    catalog: retargetCatalog,
+    normalizeInvalidRelations: true,
+    sourceMarkdown,
+  })
+
+  assert.equal(parsed[0].projectId, 4)
+  assert.equal(parsed[0].assigneeUserId, null)
+  assert.equal(parsed[0].moduleId, null)
+})
+
+test('strict parsing rejects inaccessible projects, cross-project relations, and invented excerpts', () => {
   assert.throws(
     () => parseAiTodoProposalResponse(response({ projectId: 99 }), { catalog, sourceMarkdown }),
     /projectId is not accessible/,
@@ -132,10 +156,11 @@ test('requires strict JSON and enforces the proposal count limit', () => {
   )
 })
 
-test('builds an inference request with Markdown and the permission catalog as untrusted context', () => {
+test('builds an inference request for source text and the permission catalog as untrusted context', () => {
   const request = buildAiTodoProposalRequest(sourceMarkdown, catalog, '2026-07-16')
 
   assert.equal(request.responseFormat, 'json_object')
+  assert.match(request.systemPrompt, /自然语言指令或 Markdown/u)
   assert.match(request.systemPrompt, /sourceExcerpt 必须原样摘自/)
   assert.match(request.untrustedContext, /内部平台/)
   assert.match(request.untrustedContext, /李四在 2026-07-20/)

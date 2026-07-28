@@ -38,6 +38,11 @@ import {
   type AiIntentClassification,
 } from '../shared/ai-input-intent'
 import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
+import type {
+  OrganizationAccessRole,
+  OrganizationDetail,
+  OrganizationListItem,
+} from './organization-types'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
 export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
@@ -65,10 +70,22 @@ export type PackageMarketRulesResponse = {
 }
 
 export type AuthUser = {
+  activeRole: UserRole
   displayName: string
   feishuEmail: string
   feishuLinked: boolean
   id: number
+  isSystemAdmin: boolean
+  roles: UserRole[]
+  username: string
+}
+
+export type UserRole = 'developer' | 'tester' | 'delivery' | 'organization_admin'
+
+export type ManagedUser = {
+  displayName: string
+  id: number
+  roles: UserRole[]
   username: string
 }
 
@@ -121,8 +138,37 @@ export class AiTurnStreamTerminalError extends Error {
 }
 
 export type TodoImageUploadResponse = {
+  attachmentUrl?: string
+  contentType?: string
   imageUrl: string
   objectKey: string
+}
+
+function inferTodoAttachmentContentType(file: File) {
+  const declaredType = file.type.split(';')[0].trim().toLowerCase()
+  if (
+    declaredType === 'image/jpeg' ||
+    declaredType === 'image/jpg' ||
+    declaredType === 'image/png' ||
+    declaredType === 'image/webp' ||
+    declaredType === 'image/gif' ||
+    declaredType === 'video/mp4' ||
+    declaredType === 'video/webm' ||
+    declaredType === 'video/quicktime'
+  ) {
+    return declaredType === 'image/jpg' ? 'image/jpeg' : declaredType
+  }
+
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
+  if (extension === 'png') return 'image/png'
+  if (extension === 'webp') return 'image/webp'
+  if (extension === 'gif') return 'image/gif'
+  if (extension === 'mp4' || extension === 'm4v') return 'video/mp4'
+  if (extension === 'webm') return 'video/webm'
+  if (extension === 'mov') return 'video/quicktime'
+
+  return declaredType || 'application/octet-stream'
 }
 
 function apiErrorMessage(body: unknown, fallback: string) {
@@ -155,14 +201,14 @@ export function clearAuthToken() {
   browserStorage?.removeItem(tokenStorageKey)
 }
 
-async function request<T>(path: string, options: RequestInit = {}) {
+export async function request<T>(path: string, options: RequestInit = {}) {
   const response = await fetch(path, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...options.headers,
     },
-    ...options,
   })
 
   if (!response.ok) {
@@ -323,6 +369,125 @@ export function updateCurrentUser(payload: {
   })
 }
 
+export function switchActiveRole(role: UserRole) {
+  return request<{ activeRole: UserRole }>('/api/auth/active-role', {
+    method: 'POST',
+    body: JSON.stringify({ role }),
+  })
+}
+
+export function fetchManagedUsers() {
+  return request<{ users: ManagedUser[] }>('/api/admin/users')
+}
+
+export function updateManagedUserRoles(userId: number, roles: UserRole[]) {
+  return request<{ roles: UserRole[] }>(`/api/admin/users/${userId}/roles`, {
+    method: 'PATCH',
+    body: JSON.stringify({ roles }),
+  })
+}
+
+export function fetchOrganizations() {
+  return request<{ canCreate: boolean; organizations: OrganizationListItem[] }>('/api/organizations')
+}
+
+export function createOrganization(payload: { name: string; ownerUsername?: string }) {
+  return request<OrganizationDetail>('/api/admin/organizations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchOrganization(organizationId: number) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}`)
+}
+
+export function updateOrganization(organizationId: number, name: string) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function updateOrganizationWeekStart(organizationId: number, weekStartsOn: number) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/week-start`, {
+    method: 'PATCH',
+    body: JSON.stringify({ weekStartsOn }),
+  })
+}
+
+export function deleteOrganization(organizationId: number, confirmationName: string) {
+  return request<{
+    deleted: true
+    detachedProjectCount: number
+    detachedTestSpaceCount: number
+  }>(`/api/organizations/${organizationId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirmationName }),
+  })
+}
+
+export function inviteOrganizationMember(organizationId: number, email: string) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+}
+
+export function inviteOrganizationMemberByUsername(organizationId: number, username: string) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/username-invitations`, {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+  })
+}
+
+export function updateOrganizationMemberRole(
+  organizationId: number,
+  userId: number,
+  accessRole: Exclude<OrganizationAccessRole, 'owner'>,
+) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ accessRole }),
+  })
+}
+
+export function removeOrganizationMember(organizationId: number, userId: number) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/members/${userId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function attachProjectToOrganization(organizationId: number, projectId: number) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/projects/${projectId}`, {
+    method: 'POST',
+  })
+}
+
+export function attachTestSpaceToOrganization(organizationId: number, spaceId: number) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/test-spaces/${spaceId}`, {
+    method: 'POST',
+  })
+}
+
+export function saveOrganizationWeeklyReport(
+  organizationId: number,
+  weekStart: string,
+  payload: { content: string; status: 'draft' | 'submitted' },
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/weekly-reports/${weekStart}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+  )
+}
+
+export function generateOrganizationWeeklySummary(organizationId: number, weekStart: string) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/weekly-summaries/${weekStart}`,
+    { method: 'POST' },
+  )
+}
+
 export function createFeishuOAuthUrl(payload: {
   invitePassword?: string
   inviteToken?: string
@@ -469,10 +634,11 @@ export function removeDraft(draftId: number) {
 }
 
 export async function uploadTodoImage(file: File) {
+  const contentType = inferTodoAttachmentContentType(file)
   const response = await fetch('/api/todo-images', {
     method: 'POST',
     headers: {
-      'Content-Type': file.type || 'application/octet-stream',
+      'Content-Type': contentType,
       ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
     },
     body: file,
@@ -492,8 +658,12 @@ export async function uploadTodoImage(file: File) {
   return response.json() as Promise<TodoImageUploadResponse>
 }
 
+export const uploadWorkbenchAttachment = uploadTodoImage
+
 export function createTodo(payload: {
   assigneeUserId?: number
+  watcherUserId?: number
+  reviewerUserId?: number
   createdAt?: string
   detail?: string
   dueDate: string
@@ -576,7 +746,7 @@ export function declineProjectInvitation(membershipId: number) {
 }
 
 export function markNotificationRead(
-  kind: 'project_invite' | 'assigned_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
+  kind: 'project_invite' | 'assigned_todo' | 'watched_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
   sourceId: number,
   dismiss = false,
 ) {
@@ -588,11 +758,13 @@ export function markNotificationRead(
 
 export function updateTodo(
   todoId: number,
-  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId'> & {
+  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId'> & {
     assigneeUserId?: number | null
     createdAt?: string
     moduleId?: number | null
     rejectionReason?: string
+    reviewerUserId?: number | null
+    watcherUserId?: number | null
   },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {

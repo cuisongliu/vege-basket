@@ -25,6 +25,7 @@ export type TodoFilterField =
   | 'title'
   | 'module'
   | 'assignee'
+  | 'watcher'
   | 'creator'
   | 'priority'
   | 'done'
@@ -52,6 +53,7 @@ const todoFilterFieldLabels: Record<TodoFilterField, string> = {
   title: '待办内容',
   module: '所属模块',
   assignee: '负责人',
+  watcher: '关注人',
   creator: '创建人',
   priority: '优先级',
   done: '完成状态',
@@ -76,6 +78,7 @@ const todoFilterFields: TodoFilterField[] = [
   'title',
   'module',
   'assignee',
+  'watcher',
   'creator',
   'priority',
   'done',
@@ -88,6 +91,7 @@ const todoFilterOperatorsByField: Record<TodoFilterField, TodoFilterOperator[]> 
   title: ['contains', 'not_contains', 'equals', 'not_equals'],
   module: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   assignee: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
+  watcher: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   creator: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   priority: ['equals', 'not_equals'],
   done: ['equals', 'not_equals'],
@@ -147,6 +151,7 @@ function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
   if (field === 'title') return todo.title
   if (field === 'module') return todo.moduleId ? String(todo.moduleId) : ''
   if (field === 'assignee') return todo.assigneeUserId ? String(todo.assigneeUserId) : ''
+  if (field === 'watcher') return todo.watcherUserId ? String(todo.watcherUserId) : ''
   if (field === 'creator') return todo.createdByUserId ? String(todo.createdByUserId) : ''
   if (field === 'priority') return todo.priority
   if (field === 'done') return todo.done ? 'done' : 'open'
@@ -204,6 +209,7 @@ export function TodoFilterBuilderDialog({
   creatorOptions,
   join,
   moduleOptions,
+  watcherOptions,
   onApply,
   open,
   onOpenChange,
@@ -213,6 +219,7 @@ export function TodoFilterBuilderDialog({
   creatorOptions: Array<{ id: number; name: string }>
   join: TodoFilterJoin
   moduleOptions: Array<{ id: number; name: string }>
+  watcherOptions: Array<{ id: number; name: string }>
   onApply: (next: { conditions: TodoFilterCondition[]; join: TodoFilterJoin }) => void
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -297,9 +304,17 @@ export function TodoFilterBuilderDialog({
       )
     }
 
-    if (condition.field === 'assignee' || condition.field === 'creator') {
-      const options = condition.field === 'assignee' ? assigneeOptions : creatorOptions
-      const label = condition.field === 'assignee' ? '负责人' : '创建人'
+    if (condition.field === 'assignee' || condition.field === 'watcher' || condition.field === 'creator') {
+      const options = condition.field === 'assignee'
+        ? assigneeOptions
+        : condition.field === 'watcher'
+          ? watcherOptions
+          : creatorOptions
+      const label = condition.field === 'assignee'
+        ? '负责人'
+        : condition.field === 'watcher'
+          ? '关注人'
+          : '创建人'
       return (
         <Select
           value={condition.value}

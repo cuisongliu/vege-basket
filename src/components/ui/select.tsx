@@ -47,9 +47,12 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
+  footer,
   position = "popper",
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  footer?: React.ReactNode
+}) {
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
@@ -75,6 +78,7 @@ function SelectContent({
           {children}
         </SelectPrimitive.Viewport>
         <SelectScrollDownButton />
+        {footer}
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   )

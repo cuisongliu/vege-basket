@@ -38,6 +38,11 @@ read-only check. Importing the running API validates encryption config and appli
 runs and may send personal Feishu messages. Run it only with an authorized database,
 configured Feishu application, and explicit permission to deliver messages.
 
+`FEISHU_AI_CHAT_ENABLED=true` makes the API callback path persist inbound Feishu messages,
+apply schema additions at startup, invoke the shared AI provider, and send personal Feishu
+replies. Enable it only in an authorized environment with a current database backup and a
+verified bot availability scope. Keep it `false` for read-only or production-adjacent checks.
+
 ## Local Runtime
 
 Only after selecting a disposable database and authorizing database writes:

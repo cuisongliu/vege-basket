@@ -43,7 +43,8 @@ export function JournalDatePicker({
   onChange: (date: string) => void
   value: string
 }) {
-  const selectedDate = new Date(`${value}T00:00:00`)
+  const parsedDate = value ? new Date(`${value}T00:00:00`) : new Date()
+  const selectedDate = Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate
   const [displayMonth, setDisplayMonth] = useState(() => ({
     month: selectedDate.getMonth(),
     year: selectedDate.getFullYear(),

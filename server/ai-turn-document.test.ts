@@ -180,8 +180,10 @@ test('workspace visibility keeps reply documents private to their creator', () =
   assert.match(summariesQuery, /where user_id = \$1/u)
   assert.match(
     summariesQuery,
-    /type <> 'reply'[\s\S]*?project_id in \(select id from projects where user_id = \$1\)/u,
+    /type <> 'reply'[\s\S]*?p\.id = summaries\.project_id/u,
   )
+  assert.match(summariesQuery, /p\.user_id = \$1/u)
+  assert.match(summariesQuery, /managedOrganizationReadScopeSql\('p\.organization_id'\)/u)
 })
 
 test('rejects invalid conversation context, turn state, turn intent, and blank replies', async (t) => {

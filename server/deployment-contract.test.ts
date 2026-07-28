@@ -27,3 +27,12 @@ test('Sealos application and digest worker share one required immutable image in
     /ghcr\.io\/felixqiu014-wq\/vege-basket:/u,
   )
 })
+
+test('Sealos does not grant system administration to a predictable default username', () => {
+  const adminInput = sealosTemplate.slice(
+    sealosTemplate.indexOf('VEGES_ADMIN_USERNAMES:'),
+    sealosTemplate.indexOf('AI_API_BASE:'),
+  )
+  assert.match(adminInput, /default: ''/u)
+  assert.doesNotMatch(adminInput, /default: admin/u)
+})

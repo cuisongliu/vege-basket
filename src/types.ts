@@ -21,6 +21,10 @@ export type Todo = {
   creatorName?: string
   assigneeUserId?: number
   assigneeName?: string
+  watcherUserId?: number
+  watcherName?: string
+  reviewerUserId?: number
+  reviewerName?: string
   assignedByUserId?: number
   assignedByName?: string
   title: string
@@ -70,6 +74,7 @@ export type ProjectMembership = {
 export type NotificationState = {
   readAt?: string
   dismissedAt?: string
+  sortAt?: string
 }
 
 export type ProjectInviteNotification = NotificationState & {
@@ -95,7 +100,10 @@ export type TodoNotification = NotificationState & {
   noteAuthorName?: string
   notePreview?: string
   createdAt?: string
-  type?: 'assigned' | 'due_tomorrow' | 'note_mention'
+  watchedAt?: string
+  watchedByName?: string
+  watcherName?: string
+  type?: 'assigned' | 'watched' | 'due_tomorrow' | 'note_mention'
 }
 
 export type PackageEventNotification = NotificationState & {
@@ -112,6 +120,7 @@ export type PackageEventNotification = NotificationState & {
 export type NotificationCenterData = {
   assignedPackageEvents: PackageEventNotification[]
   assignedTodos: TodoNotification[]
+  watchedTodos: TodoNotification[]
   dueTomorrowTodos: TodoNotification[]
   noteMentions: TodoNotification[]
   invites: ProjectInviteNotification[]
@@ -120,7 +129,11 @@ export type NotificationCenterData = {
 export type InboxItem = {
   id: number
   source: 'manual' | 'feishu'
+  itemType: 'journal' | 'todo'
+  todoTitle?: string
   content: string
+  todoDueDate?: string
+  todoPriority?: Priority
   createdAt: string
   suggestedProjectId?: number
   processed: boolean
@@ -317,6 +330,7 @@ export type Project = {
   description: string
   ownerName: string
   ownerUserId: number
+  readOnly?: boolean
   status: ProjectStatus
   feishuChatEnabled?: boolean
   feishuChatId?: string

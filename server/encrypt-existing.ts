@@ -79,6 +79,7 @@ async function main() {
   await encryptColumn('todos', 'detail')
   await encryptColumn('risks', 'content')
   await encryptColumn('draft_items', 'content')
+  await encryptColumn('draft_items', 'todo_title')
   await encryptColumn('ai_conversations', 'title')
   await encryptColumn('ai_turns', 'user_content')
   await encryptColumn('ai_turns', 'intent_payload')
@@ -92,6 +93,7 @@ async function main() {
   await encryptColumn('project_package_operations', 'title')
   await encryptColumn('project_package_operations', 'content')
   await encryptProjectPackageOperationTodoNotes()
+  await encryptColumn('test_cases', 'remarks')
 
   const collaborators = await query<{ id: string; name: string; role: string }>(
     'select id, name, role from collaborators',

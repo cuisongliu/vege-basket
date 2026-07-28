@@ -13,6 +13,7 @@ import {
 import {
   CaretDown,
   CaretRight,
+  Check,
   Copy,
   DotsThree,
   FunnelSimple,
@@ -51,6 +52,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { getProjectPackageOperationTitle } from '@/lib/project-package-operation'
 import {
   TodoFilterBuilderDialog,
   createTodoFilterCondition,
@@ -130,6 +132,7 @@ type PackageWorkbenchProps = {
     packageId: string
     releaseVersion?: string
   }) => Promise<PackageMarketDetail>
+  onLoadPackageItemDownloadUrl: (itemId: number) => Promise<string>
   onLoadPackageMarketRules: () => Promise<{
     expireMinutes: number
     rules: PackageMarketRule[]
@@ -232,6 +235,12 @@ type PackageMarketDependencyState = {
   rule: PackageMarketRule
   selectedVersion: string
   versions: PackageMarketVersion[]
+}
+
+type PackageMarketBrowserProps = {
+  onLoadPackageMarketDetail: PackageWorkbenchProps['onLoadPackageMarketDetail']
+  onLoadPackageMarketRules: PackageWorkbenchProps['onLoadPackageMarketRules']
+  onLoadPackageMarketVersions: PackageWorkbenchProps['onLoadPackageMarketVersions']
 }
 
 function eventTypeLabel(type: ProjectPackageEventType) {
@@ -346,7 +355,10 @@ function summarizeGroupFileNames(group: ProjectPackageGroup) {
 }
 
 function operationHeading(operation: ProjectPackageOperation) {
-  return operation.kind === 'document' ? operation.title || '未命名文档' : operation.label || '操作事件'
+  return getProjectPackageOperationTitle(
+    operation,
+    operation.kind === 'document' ? '未命名文档' : '操作事件',
+  )
 }
 
 function summarizeTodoNote(note?: string, limit = 42) {
@@ -376,6 +388,7 @@ function todoSearchMeta(todo: Todo) {
     todo.title,
     todo.moduleName ?? '',
     todo.assigneeName ?? '',
+    todo.watcherName ?? '',
     todo.creatorName ?? '',
     todo.priority,
     todo.createdAt,
@@ -389,6 +402,633 @@ function todoSearchMeta(todo: Todo) {
 
 function packageMarketSearchMeta(value: string) {
   return value.trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
+}
+
+function getPackageMarketBaseRules(): PackageMarketRule[] {
+  return [
+    {
+      id: 'base-pro',
+      name: 'sealos-pro',
+      category: 'apps',
+      mode: 'release',
+      releaseRoots: [],
+      flatFileRoots: [],
+      fileNameFormats: [],
+      ciFileNameFormats: [],
+    },
+    {
+      id: 'base-oss',
+      name: 'sealos-oss',
+      category: 'apps',
+      mode: 'release',
+      releaseRoots: [],
+      flatFileRoots: [],
+      fileNameFormats: [],
+      ciFileNameFormats: [],
+    },
+  ]
+}
+
+export function PackageMarketBrowser({
+  onLoadPackageMarketDetail,
+  onLoadPackageMarketRules,
+  onLoadPackageMarketVersions,
+}: PackageMarketBrowserProps) {
+  const [copiedValue, setCopiedValue] = useState('')
+  const [marketRules, setMarketRules] = useState<PackageMarketRule[]>([])
+  const [marketExpireMinutes, setMarketExpireMinutes] = useState(packageMarketExpireOptions[0].value)
+  const [marketSelectedPackage, setMarketSelectedPackage] = useState('base-pro')
+  const [marketChannel, setMarketChannel] = useState<PackageMarketChannel>('release')
+  const [marketArch, setMarketArch] = useState<'amd64' | 'arm64'>('amd64')
+  const [marketSearch, setMarketSearch] = useState('')
+  const [marketReleaseVersion, setMarketReleaseVersion] = useState('')
+  const [marketCiVersion, setMarketCiVersion] = useState('')
+  const [marketReleaseVersions, setMarketReleaseVersions] = useState<PackageMarketVersion[]>([])
+  const [marketCiVersions, setMarketCiVersions] = useState<PackageMarketVersion[]>([])
+  const [marketDetail, setMarketDetail] = useState<PackageMarketDetail | null>(null)
+  const [marketDetailContext, setMarketDetailContext] = useState<PackageMarketDetailContext | null>(null)
+  const [marketDependencyDetails, setMarketDependencyDetails] = useState<PackageMarketDependencyState[]>([])
+  const [marketLoading, setMarketLoading] = useState(false)
+  const [marketError, setMarketError] = useState('')
+  const [marketExpandedGroups, setMarketExpandedGroups] = useState<Record<'base' | 'apps' | 'middleware', boolean>>({
+    apps: true,
+    base: true,
+    middleware: true,
+  })
+  const marketDetailRequestIdRef = useRef(0)
+  const loadMarketRulesRef = useRef(onLoadPackageMarketRules)
+  const refreshMarketDetailRef = useRef<(
+    nextOverrides?: Partial<{
+      arch: 'amd64' | 'arm64'
+      channel: PackageMarketChannel
+      ciVersion: string
+      expireMinutes: number
+      marketRules: PackageMarketRule[]
+      packageId: string
+      releaseVersion: string
+      dependencyVersions: Record<string, string>
+    }>,
+  ) => Promise<void>>(async () => undefined)
+
+  const filteredRules = useMemo(() => {
+    const query = packageMarketSearchMeta(marketSearch)
+    const baseRules = [...getPackageMarketBaseRules(), ...marketRules]
+    return baseRules.filter((rule) => {
+      if (!query) return true
+      return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
+    })
+  }, [marketRules, marketSearch])
+
+  const groupedMarketRules = useMemo(() => {
+    const base = filteredRules.filter((rule) => rule.id === 'base-pro' || rule.id === 'base-oss')
+    const apps = filteredRules.filter(
+      (rule) => rule.category === 'apps' && rule.id !== 'base-pro' && rule.id !== 'base-oss',
+    )
+    const middleware = filteredRules.filter((rule) => rule.category === 'middleware')
+    return { apps, base, middleware }
+  }, [filteredRules])
+
+  const selectedMarketDependencyRules = useMemo(
+    () => marketRules.filter((rule) => rule.category === 'dependency' && rule.parent === marketSelectedPackage),
+    [marketRules, marketSelectedPackage],
+  )
+
+  async function copyToClipboard(value: string, feedbackKey: string) {
+    if (!value) return
+    await navigator.clipboard.writeText(value)
+    setCopiedValue(feedbackKey)
+    window.setTimeout(() => {
+      setCopiedValue((current) => (current === feedbackKey ? '' : current))
+    }, 1200)
+  }
+
+  function copiedLabel(feedbackKey: string, fallback: string) {
+    return copiedValue === feedbackKey ? '已复制' : fallback
+  }
+
+  async function refreshMarketDependencyDetails(params: {
+    arch: 'amd64' | 'arm64'
+    expireMinutes: number
+    requestId: number
+    rules: PackageMarketRule[]
+    selectedVersions?: Record<string, string>
+  }) {
+    const { arch, expireMinutes, requestId, rules, selectedVersions = {} } = params
+    if (rules.length === 0) {
+      setMarketDependencyDetails([])
+      return
+    }
+
+    setMarketDependencyDetails(rules.map((rule) => ({
+      context: null,
+      detail: null,
+      error: '',
+      loading: true,
+      rule,
+      selectedVersion: selectedVersions[rule.id] ?? '',
+      versions: [],
+    })))
+
+    const nextDetails = await Promise.all(rules.map(async (rule): Promise<PackageMarketDependencyState> => {
+      const dependencyChannel: PackageMarketChannel = rule.dependencyRoots?.length ? 'ci' : 'release'
+      try {
+        const versions = await onLoadPackageMarketVersions({
+          arch,
+          kind: dependencyChannel,
+          packageId: rule.id,
+        })
+        const selectedVersion =
+          selectedVersions[rule.id] ||
+          (dependencyChannel === 'ci' ? versions[0]?.hash : versions[0]?.version) ||
+          ''
+        const detail = await onLoadPackageMarketDetail({
+          packageId: rule.id,
+          channel: dependencyChannel,
+          arch,
+          expireMinutes,
+          ciVersion: dependencyChannel === 'ci' ? selectedVersion : '',
+          releaseVersion: dependencyChannel === 'release' ? selectedVersion : '',
+        })
+        return {
+          context: {
+            arch,
+            channel: dependencyChannel,
+            ciVersion: dependencyChannel === 'ci' ? selectedVersion : '',
+            packageId: rule.id,
+            releaseVersion: dependencyChannel === 'release' ? selectedVersion : '',
+          },
+          detail,
+          error: '',
+          loading: false,
+          rule,
+          selectedVersion,
+          versions,
+        }
+      } catch (error) {
+        return {
+          context: null,
+          detail: null,
+          error: error instanceof Error ? error.message : '附属包详情加载失败',
+          loading: false,
+          rule,
+          selectedVersion: selectedVersions[rule.id] ?? '',
+          versions: [],
+        }
+      }
+    }))
+
+    if (requestId !== marketDetailRequestIdRef.current) return
+    setMarketDependencyDetails(nextDetails)
+  }
+
+  async function refreshMarketDetail(nextOverrides?: Partial<{
+    arch: 'amd64' | 'arm64'
+    channel: PackageMarketChannel
+    ciVersion: string
+    expireMinutes: number
+    marketRules: PackageMarketRule[]
+    packageId: string
+    releaseVersion: string
+    dependencyVersions: Record<string, string>
+  }>) {
+    const packageId = nextOverrides?.packageId ?? marketSelectedPackage
+    const channel = nextOverrides?.channel ?? marketChannel
+    const arch = nextOverrides?.arch ?? marketArch
+    const releaseVersion = nextOverrides?.releaseVersion ?? marketReleaseVersion
+    const ciVersion = nextOverrides?.ciVersion ?? marketCiVersion
+    const expireMinutes = nextOverrides?.expireMinutes ?? marketExpireMinutes
+    const rules = nextOverrides?.marketRules ?? marketRules
+    const requestId = ++marketDetailRequestIdRef.current
+    const context: PackageMarketDetailContext = {
+      arch,
+      channel,
+      ciVersion,
+      packageId,
+      releaseVersion,
+    }
+    setMarketLoading(true)
+    setMarketError('')
+    setMarketDetail(null)
+    setMarketDetailContext(null)
+    setMarketDependencyDetails([])
+    try {
+      const [versions, detail] = await Promise.all([
+        channel === 'ci'
+          ? onLoadPackageMarketVersions({
+              arch,
+              kind: 'ci',
+              packageId,
+            })
+          : onLoadPackageMarketVersions({
+              arch,
+              kind: 'release',
+              packageId,
+              deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
+            }),
+        onLoadPackageMarketDetail({
+          packageId,
+          channel,
+          arch,
+          deployType:
+            packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
+          expireMinutes,
+          releaseVersion,
+          ciVersion,
+        }),
+      ])
+      if (requestId !== marketDetailRequestIdRef.current) return
+      if (channel === 'ci') {
+        setMarketCiVersions(versions)
+      } else {
+        setMarketReleaseVersions(versions)
+      }
+      setMarketDetail(detail)
+      setMarketDetailContext(context)
+      const dependencyRules =
+        rules.filter((rule) => rule.category === 'dependency' && rule.parent === packageId)
+      void refreshMarketDependencyDetails({
+        arch,
+        expireMinutes,
+        requestId,
+        rules: dependencyRules,
+        selectedVersions: nextOverrides?.dependencyVersions,
+      })
+    } catch (error) {
+      if (requestId !== marketDetailRequestIdRef.current) return
+      setMarketError(error instanceof Error ? error.message : '包详情加载失败')
+    } finally {
+      if (requestId === marketDetailRequestIdRef.current) {
+        setMarketLoading(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    loadMarketRulesRef.current = onLoadPackageMarketRules
+    refreshMarketDetailRef.current = refreshMarketDetail
+  })
+
+  function renderMarketLinkCard(
+    detail: PackageMarketDetail,
+    context: PackageMarketDetailContext | null,
+    link: PackageMarketDetail['links'][number],
+  ) {
+    const fileName = link.objectKey.split('/').filter(Boolean).at(-1) || link.name
+    return (
+      <article className="package-market-link-card" key={`${context?.packageId ?? detail.title}-${link.objectKey}-${link.version}`}>
+        <div className="package-market-link-head">
+          <div className="package-market-link-meta">
+            <strong>{fileName}</strong>
+            {link.size ? <small>{formatBytes(link.size)}</small> : null}
+          </div>
+          <div className="package-market-link-actions">
+            <Button
+              className="ghost-button"
+              variant="outline"
+              type="button"
+              onClick={() =>
+                void copyToClipboard(
+                  link.downloadUrl,
+                  `browser-copy-download-url-${link.objectKey}`,
+                )
+              }
+            >
+              <Copy size={15} /> {copiedLabel(`browser-copy-download-url-${link.objectKey}`, '链接')}
+            </Button>
+            <Button
+              className="ghost-button"
+              variant="outline"
+              type="button"
+              onClick={() =>
+                void copyToClipboard(link.objectKey, `browser-copy-object-key-${link.objectKey}`)
+              }
+            >
+              <Copy size={15} /> {copiedLabel(`browser-copy-object-key-${link.objectKey}`, 'Key')}
+            </Button>
+          </div>
+        </div>
+        <code>{link.objectKey}</code>
+        <div className="package-market-link-footer">
+          <a href={link.downloadUrl} target="_blank" rel="noreferrer">
+            查看临时链接
+          </a>
+        </div>
+      </article>
+    )
+  }
+
+  useEffect(() => {
+    const requestId = ++marketDetailRequestIdRef.current
+    setMarketDetail(null)
+    setMarketDetailContext(null)
+    setMarketLoading(true)
+    setMarketError('')
+    void loadMarketRulesRef.current()
+      .then((rulesPayload) => {
+        if (requestId !== marketDetailRequestIdRef.current) return
+        setMarketRules(rulesPayload.rules)
+        const expireMinutes = packageMarketExpireOptions.some(
+          (option) => option.value === rulesPayload.expireMinutes,
+        )
+          ? rulesPayload.expireMinutes
+          : packageMarketExpireOptions[0].value
+        setMarketExpireMinutes(expireMinutes)
+        void refreshMarketDetailRef.current({
+          expireMinutes,
+          marketRules: rulesPayload.rules,
+        })
+      })
+      .catch((error) => {
+        if (requestId !== marketDetailRequestIdRef.current) return
+        setMarketError(error instanceof Error ? error.message : '包市场读取失败')
+        setMarketLoading(false)
+      })
+  }, [])
+
+  return (
+    <section className="package-market-workspace" aria-label="安装包市场">
+      <div className="package-market-grid">
+          <div className="package-market-sidebar">
+            <Label>
+              搜索
+              <Input
+                value={marketSearch}
+                onChange={(event) => setMarketSearch(event.target.value)}
+                placeholder="sealos / db / app"
+              />
+            </Label>
+            <div className="package-market-rule-list">
+              {(
+                [
+                  { id: 'base' as const, label: '基础包', rules: groupedMarketRules.base },
+                  { id: 'apps' as const, label: 'APPS', rules: groupedMarketRules.apps },
+                  { id: 'middleware' as const, label: 'SEALOS-PRO 中间件', rules: groupedMarketRules.middleware },
+                ] satisfies Array<{
+                  id: 'base' | 'apps' | 'middleware'
+                  label: string
+                  rules: PackageMarketRule[]
+                }>
+              ).map((group) => (
+                <section
+                  className={marketExpandedGroups[group.id] ? 'package-market-group' : 'package-market-group collapsed'}
+                  key={group.id}
+                >
+                  <button
+                    className="package-market-group-toggle"
+                    type="button"
+                    onClick={() =>
+                      setMarketExpandedGroups((current) => ({
+                        ...current,
+                        [group.id]: !current[group.id],
+                      }))
+                    }
+                  >
+                    <span>{group.label}</span>
+                    {marketExpandedGroups[group.id] ? (
+                      <CaretDown size={14} weight="bold" />
+                    ) : (
+                      <CaretRight size={14} weight="bold" />
+                    )}
+                  </button>
+                  {marketExpandedGroups[group.id] ? (
+                    <div className="package-market-group-list">
+                      {group.rules.length === 0 ? (
+                        <p className="package-market-group-empty">当前分组没有匹配到安装包。</p>
+                      ) : (
+                        group.rules.map((rule) => (
+                          <button
+                            key={rule.id}
+                            type="button"
+                            className={rule.id === marketSelectedPackage ? 'package-market-rule active' : 'package-market-rule'}
+                            onClick={() => {
+                              const nextChannel =
+                                rule.id === 'base-pro' || rule.id === 'base-oss'
+                                  ? 'release'
+                                  : marketChannel
+                              setMarketSelectedPackage(rule.id)
+                              setMarketChannel(nextChannel)
+                              setMarketReleaseVersion('')
+                              setMarketCiVersion('')
+                              void refreshMarketDetail({
+                                packageId: rule.id,
+                                channel: nextChannel,
+                                releaseVersion: '',
+                                ciVersion: '',
+                              })
+                            }}
+                          >
+                            <strong>{rule.name}</strong>
+                            <small>{rule.id}</small>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </section>
+              ))}
+            </div>
+          </div>
+          <div className="package-market-main">
+            <div className="package-market-controls">
+              <Label>
+                渠道
+                <Select
+                  value={marketChannel}
+                  onValueChange={(value) => {
+                    const next = value as PackageMarketChannel
+                    setMarketChannel(next)
+                    setMarketCiVersion('')
+                    setMarketReleaseVersion('')
+                    void refreshMarketDetail({ channel: next, ciVersion: '', releaseVersion: '' })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="release">正式包</SelectItem>
+                    {marketSelectedPackage !== 'base-pro' && marketSelectedPackage !== 'base-oss' ? (
+                      <SelectItem value="ci">测试包</SelectItem>
+                    ) : null}
+                  </SelectContent>
+                </Select>
+              </Label>
+              <Label>
+                架构
+                <Select
+                  value={marketArch}
+                  onValueChange={(value) => {
+                    const next = value as 'amd64' | 'arm64'
+                    setMarketArch(next)
+                    setMarketCiVersion('')
+                    setMarketReleaseVersion('')
+                    void refreshMarketDetail({ arch: next, ciVersion: '', releaseVersion: '' })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amd64">amd64</SelectItem>
+                    <SelectItem value="arm64">arm64</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
+              {marketChannel === 'release' && marketReleaseVersions.length > 0 ? (
+                <Label className="package-market-version-control">
+                  正式版本
+                  <Select
+                    value={marketReleaseVersion || marketReleaseVersions[0]?.version || ''}
+                    onValueChange={(value) => {
+                      setMarketReleaseVersion(value)
+                      void refreshMarketDetail({ releaseVersion: value })
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择版本" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {marketReleaseVersions.map((version) => (
+                        <SelectItem key={version.version ?? version.label} value={version.version ?? version.label}>
+                          {version.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Label>
+              ) : null}
+              {marketChannel === 'ci' && marketCiVersions.length > 0 ? (
+                <Label className="package-market-version-control">
+                  测试版本
+                  <Select
+                    value={marketCiVersion || marketCiVersions[0]?.hash || ''}
+                    onValueChange={(value) => {
+                      setMarketCiVersion(value)
+                      void refreshMarketDetail({ ciVersion: value })
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择版本" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {marketCiVersions.map((version) => (
+                        <SelectItem key={version.hash ?? version.label} value={version.hash ?? version.label}>
+                          {version.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Label>
+              ) : null}
+            </div>
+            <div className="package-market-detail-area">
+              {marketError ? <p className="form-error">{marketError}</p> : null}
+              {marketLoading ? (
+                <p className="empty-state">正在读取 OSS 包信息...</p>
+              ) : marketDetail ? (
+                <div className="package-market-link-list">
+                  {marketDetail.links.length === 0 ? (
+                    <p className="empty-state">当前参数下没有找到可用对象。</p>
+                  ) : (
+                    marketDetail.links.map((link) => renderMarketLinkCard(marketDetail, marketDetailContext, link))
+                  )}
+                  {selectedMarketDependencyRules.length > 0 ? (
+                    marketDependencyDetails.map((dependency) => (
+                      <section className="package-market-dependency" key={dependency.rule.id}>
+                        <div className="package-market-dependency-head">
+                          <div>
+                            <strong>{dependency.rule.name}</strong>
+                            <small>附属包 · {dependency.rule.id}</small>
+                          </div>
+                          {dependency.versions.length > 0 ? (
+                            <Label className="package-market-dependency-version">
+                              版本
+                              <Select
+                                value={dependency.selectedVersion}
+                                onValueChange={(value) => {
+                                  const selectedVersions = Object.fromEntries(
+                                    marketDependencyDetails.map((item) => [item.rule.id, item.selectedVersion]),
+                                  )
+                                  selectedVersions[dependency.rule.id] = value
+                                  void refreshMarketDependencyDetails({
+                                    arch: marketArch,
+                                    expireMinutes: marketExpireMinutes,
+                                    requestId: marketDetailRequestIdRef.current,
+                                    rules: selectedMarketDependencyRules,
+                                    selectedVersions,
+                                  })
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="选择版本" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {dependency.versions.map((version) => (
+                                    <SelectItem
+                                      key={version.hash ?? version.version ?? version.label}
+                                      value={version.hash ?? version.version ?? version.label}
+                                    >
+                                      {version.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </Label>
+                          ) : null}
+                        </div>
+                        {dependency.error ? <p className="form-error">{dependency.error}</p> : null}
+                        {dependency.loading ? (
+                          <p className="empty-state">正在读取附属包...</p>
+                        ) : dependency.detail ? (
+                          dependency.detail.links.length === 0 ? (
+                            <p className="empty-state">当前参数下没有找到可用附属包对象。</p>
+                          ) : (
+                            <div className="package-market-link-list">
+                              {dependency.detail.links.map((link) =>
+                                renderMarketLinkCard(dependency.detail as PackageMarketDetail, dependency.context, link),
+                              )}
+                            </div>
+                          )
+                        ) : (
+                          <p className="empty-state">当前包没有可用附属包对象。</p>
+                        )}
+                      </section>
+                    ))
+                  ) : null}
+                </div>
+              ) : (
+                <p className="empty-state">选择一个包后查看详情。</p>
+              )}
+            </div>
+            <div className="package-market-expire-row">
+              <Label>
+                配置链接有效期
+                <Select
+                  value={String(marketExpireMinutes)}
+                  onValueChange={(value) => {
+                    const nextExpireMinutes = Number(value)
+                    setMarketExpireMinutes(nextExpireMinutes)
+                    void refreshMarketDetail({ expireMinutes: nextExpireMinutes })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {packageMarketExpireOptions.map((option) => (
+                      <SelectItem key={option.value} value={String(option.value)}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Label>
+              <small>影响当前页面内“查看临时链接”和“复制下载链接”的有效期。</small>
+            </div>
+          </div>
+      </div>
+    </section>
+  )
 }
 
 function renderOperationTodoChips(
@@ -510,6 +1150,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   onDeleteOperation,
   onExportTimeline,
   onLoadPackageMarketDetail,
+  onLoadPackageItemDownloadUrl,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
   onUpdateEvent,
@@ -588,6 +1229,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   >([])
   const [busyAction, setBusyAction] = useState('')
   const [copiedValue, setCopiedValue] = useState('')
+  const [copyingPackageItemId, setCopyingPackageItemId] = useState<number | null>(null)
   const marketDetailRequestIdRef = useRef(0)
   const todoPickerSearchRef = useRef<HTMLInputElement | null>(null)
   const todoPickerOptionsRef = useRef<HTMLDivElement | null>(null)
@@ -651,7 +1293,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     () => new Map(selectableTodos.map((todo) => [todo.id, todo])),
     [selectableTodos],
   )
-  const canManageTimeline = project.accessRole === 'owner' || project.accessRole === 'member'
+  const canManageTimeline = !project.readOnly && (
+    project.accessRole === 'owner' || project.accessRole === 'member'
+  )
   const todoDialogOperation = useMemo(
     () =>
       todoDialogOperationId == null
@@ -696,6 +1340,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       }
     }
     return Array.from(creators, ([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [selectableTodos])
+  const todoDialogWatcherOptions = useMemo(() => {
+    const watchers = new Map<number, string>()
+    for (const todo of selectableTodos) {
+      if (todo.watcherUserId && todo.watcherName) {
+        watchers.set(todo.watcherUserId, todo.watcherName)
+      }
+    }
+    return Array.from(watchers, ([id, name]) => ({ id, name }))
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
   }, [selectableTodos])
   const activeTodoFilterCount = todoFilterConditions.length
@@ -795,6 +1449,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   function copiedLabel(feedbackKey: string, fallback: string) {
     return copiedValue === feedbackKey ? '已复制' : fallback
+  }
+
+  async function copyPackageItemDownloadLink(item: ProjectPackageItem) {
+    setCopyingPackageItemId(item.id)
+    try {
+      const downloadUrl = await onLoadPackageItemDownloadUrl(item.id)
+      await copyToClipboard(downloadUrl, `package-item-download-url-${item.id}`)
+    } catch {
+      return
+    } finally {
+      setCopyingPackageItemId((current) => (current === item.id ? null : current))
+    }
   }
 
   function addMarketLinkToCart(
@@ -1080,10 +1746,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setPendingOperationTarget(target)
     setOperationKind(target?.operation?.kind ?? kind)
     setOperationTitle(
-      target?.operation?.title ??
-        target?.operation?.label ??
-        target?.defaultTitle ??
-        (kind === 'document' ? '操作文档' : '操作事件'),
+      target?.operation
+        ? getProjectPackageOperationTitle(
+            target.operation,
+            target.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
+          )
+        : target?.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
     )
     setOperationContent(target?.operation?.content ?? '')
     setOperationDialogOpen(true)
@@ -1685,27 +2353,42 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           className={group.id === selectedGroup?.id ? 'project-package-item active' : 'project-package-item'}
                           key={group.id}
                         >
-                          <button
-                            className="project-package-tab-button"
-                            type="button"
-                            onClick={() => setSelectedGroupId(group.id)}
-                          >
-                            <strong>{group.packageName}</strong>
-                            <span className="package-meta-block">
+                          <div className="project-package-entry">
+                            <button
+                              className="project-package-tab-button"
+                              type="button"
+                              onClick={() => setSelectedGroupId(group.id)}
+                            >
+                              <strong>{group.packageName}</strong>
                               <span className="package-meta-text">
                                 {summarizeGroup(group) || `${group.items.length} 条记录`}
                               </span>
-                              {summarizeGroupFileNames(group).length > 0 ? (
-                                <span className="package-file-list">
-                                  {summarizeGroupFileNames(group).map((fileName) => (
-                                    <span className="package-file-list-text" key={fileName}>
-                                      {fileName}
-                                    </span>
-                                  ))}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
+                            </button>
+                            {group.items.length > 0 ? (
+                              <div className="package-file-list">
+                                {group.items.map((item) => {
+                                  const fileName = packageItemFileName(item)
+                                  const feedbackKey = `package-item-download-url-${item.id}`
+                                  const copied = copiedValue === feedbackKey
+                                  return (
+                                    <div className="package-file-list-row" key={item.id}>
+                                      <span className="package-file-list-text">{fileName}</span>
+                                      <button
+                                        aria-label={copied ? `已复制 ${fileName} 的下载链接` : `复制 ${fileName} 的下载链接`}
+                                        className={copied ? 'package-file-copy-button is-copied' : 'package-file-copy-button'}
+                                        disabled={copyingPackageItemId === item.id}
+                                        onClick={() => void copyPackageItemDownloadLink(item)}
+                                        title={copied ? '已复制' : '复制安装包链接'}
+                                        type="button"
+                                      >
+                                        {copied ? <Check size={13} weight="bold" /> : <Copy size={13} />}
+                                      </button>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
                           {canManageTimeline ? (
                             <DeleteConfirmDialog
                               confirmLabel="删除安装包"
@@ -2127,6 +2810,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       creatorOptions={todoDialogCreatorOptions}
                       join={todoFilterJoin}
                       moduleOptions={todoDialogModuleOptions}
+                      watcherOptions={todoDialogWatcherOptions}
                       open={todoFilterDialogOpen}
                       onOpenChange={setTodoFilterDialogOpen}
                       onApply={({ conditions: nextConditions, join: nextJoin }) => {

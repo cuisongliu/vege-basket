@@ -7,7 +7,7 @@ spec:
   url: https://github.com/felixqiu014-wq/vege-basket
   gitRepo: https://github.com/felixqiu014-wq/vege-basket
   author: felixqiu014-wq
-  description: Personal project workspace for journals, todos, drafts, package timelines, and AI summaries.
+  description: Project and testing workspace for journals, todos, test plans, bugs, package timelines, and AI summaries.
   readme: https://raw.githubusercontent.com/felixqiu014-wq/vege-basket/main/README.md
   icon: https://raw.githubusercontent.com/labring-actions/templates/main/template/sealos.svg
   templateType: inline
@@ -40,6 +40,11 @@ spec:
       type: string
       default: ''
       required: true
+    VEGES_ADMIN_USERNAMES:
+      description: Comma-separated trusted Veges usernames allowed to assign account roles. Empty disables role administration.
+      type: string
+      default: ''
+      required: false
     AI_API_BASE:
       description: Optional OpenAI-compatible AI API base URL saved as the default per-instance provider endpoint.
       type: string
@@ -89,6 +94,11 @@ spec:
       description: Set to false to stop all outbound Feishu notification delivery.
       type: string
       default: 'true'
+      required: false
+    FEISHU_AI_CHAT_ENABLED:
+      description: Enable Veges AI conversations and todo proposal cards in private Feishu bot chats.
+      type: string
+      default: 'false'
       required: false
     FEISHU_VERIFICATION_TOKEN:
       description: Required Feishu webhook verification token used before accepting challenge or event payloads.
@@ -379,6 +389,8 @@ spec:
               value: ${{ inputs.APP_ENCRYPTION_ACTIVE_KEY_ID }}
             - name: APP_ENCRYPTION_KEYS
               value: ${{ inputs.APP_ENCRYPTION_KEYS }}
+            - name: VEGES_ADMIN_USERNAMES
+              value: ${{ inputs.VEGES_ADMIN_USERNAMES }}
             - name: AI_API_BASE
               value: ${{ inputs.AI_API_BASE }}
             - name: AI_API_KEY
@@ -407,6 +419,8 @@ spec:
               value: ${{ inputs.FEISHU_APP_SECRET }}
             - name: FEISHU_DELIVERY_ENABLED
               value: ${{ inputs.FEISHU_DELIVERY_ENABLED }}
+            - name: FEISHU_AI_CHAT_ENABLED
+              value: ${{ inputs.FEISHU_AI_CHAT_ENABLED }}
             - name: FEISHU_VERIFICATION_TOKEN
               value: ${{ inputs.FEISHU_VERIFICATION_TOKEN }}
             - name: FEISHU_ENCRYPT_KEY

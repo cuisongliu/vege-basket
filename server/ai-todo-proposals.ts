@@ -33,12 +33,13 @@ export type AiTodoProposalRequest = {
 export type AiTodoProposalValidationOptions = {
   catalog: AiTodoProposalCatalog
   maxProposals?: number
+  normalizeInvalidRelations?: boolean
   sourceMarkdown: string
 }
 
-export const AI_TODO_PROPOSAL_SYSTEM_PROMPT = `你是 Veges 的 Markdown 待办提取助手。根据文档内容识别可执行事项，并从权限目录中推断项目、模块和负责人。
+export const AI_TODO_PROPOSAL_SYSTEM_PROMPT = `你是 Veges 的待办候选提取助手。根据自然语言指令或 Markdown 内容识别可执行事项，并从权限目录中推断项目、模块和负责人。
 只返回一个 JSON 对象，结构必须是 {"proposals":[...]}。每项必须且只能包含 projectId、moduleId、assigneeUserId、title、detail、dueDate、priority、confidence、sourceExcerpt。
-projectId、moduleId 和 assigneeUserId 应优先从权限目录推断；无法判断时使用 null。非空 projectId 必须来自权限目录，非空 moduleId 和 assigneeUserId 必须属于该项目。dueDate 使用 YYYY-MM-DD，无法判断时使用 null。priority 只能是 high、medium、low。confidence 是 0 到 1 的数字。sourceExcerpt 必须原样摘自 Markdown 文档。不要创建文档中没有依据的事项。`
+projectId、moduleId 和 assigneeUserId 应优先从权限目录推断；无法判断时使用 null。非空 projectId 必须来自权限目录，非空 moduleId 和 assigneeUserId 必须属于该项目。用户修正项目后，如果原模块或负责人不属于新项目，对应字段必须改为 null。dueDate 使用 YYYY-MM-DD，无法判断时使用 null。priority 只能是 high、medium、low。confidence 是 0 到 1 的数字。sourceExcerpt 必须原样摘自输入内容。不要创建输入中没有依据的事项。`
 
 const proposalKeys = [
   'assigneeUserId',
@@ -116,8 +117,8 @@ function parseProposal(
   }
 
   const projectId = nullablePositiveId(value.projectId, `proposals[${index}].projectId`)
-  const moduleId = nullablePositiveId(value.moduleId, `proposals[${index}].moduleId`)
-  const assigneeUserId = nullablePositiveId(
+  const requestedModuleId = nullablePositiveId(value.moduleId, `proposals[${index}].moduleId`)
+  const requestedAssigneeUserId = nullablePositiveId(
     value.assigneeUserId,
     `proposals[${index}].assigneeUserId`,
   )
@@ -127,22 +128,27 @@ function parseProposal(
   if (projectId !== null && !project) {
     throw new AiTodoProposalValidationError(`proposals[${index}].projectId is not accessible`)
   }
-  if (projectId === null && (moduleId !== null || assigneeUserId !== null)) {
-    throw new AiTodoProposalValidationError(
-      `proposals[${index}] cannot infer a module or assignee without a project`,
-    )
+  const moduleBelongsToProject = requestedModuleId === null ||
+    Boolean(project?.modules.some((module) => module.id === requestedModuleId))
+  const assigneeBelongsToProject = requestedAssigneeUserId === null ||
+    Boolean(project?.assignees.some((assignee) => assignee.id === requestedAssigneeUserId))
+  if (!options.normalizeInvalidRelations) {
+    if (projectId === null && (requestedModuleId !== null || requestedAssigneeUserId !== null)) {
+      throw new AiTodoProposalValidationError(
+        `proposals[${index}] cannot infer a module or assignee without a project`,
+      )
+    }
+    if (!moduleBelongsToProject) {
+      throw new AiTodoProposalValidationError(`proposals[${index}].moduleId is outside the project`)
+    }
+    if (!assigneeBelongsToProject) {
+      throw new AiTodoProposalValidationError(
+        `proposals[${index}].assigneeUserId is outside the project`,
+      )
+    }
   }
-  if (moduleId !== null && !project?.modules.some((module) => module.id === moduleId)) {
-    throw new AiTodoProposalValidationError(`proposals[${index}].moduleId is outside the project`)
-  }
-  if (
-    assigneeUserId !== null &&
-    !project?.assignees.some((assignee) => assignee.id === assigneeUserId)
-  ) {
-    throw new AiTodoProposalValidationError(
-      `proposals[${index}].assigneeUserId is outside the project`,
-    )
-  }
+  const moduleId = moduleBelongsToProject ? requestedModuleId : null
+  const assigneeUserId = assigneeBelongsToProject ? requestedAssigneeUserId : null
 
   const priority = value.priority
   if (priority !== 'high' && priority !== 'medium' && priority !== 'low') {

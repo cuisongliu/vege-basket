@@ -43,6 +43,30 @@ test('builds a deterministic bounded semantic-classification request', () => {
   assert.match(request.systemPrompt, /盘一盘这礼拜都推进了啥/u)
 })
 
+test('routes direct todo creation requests to reviewable proposal extraction', () => {
+  const request = buildAiIntentClassificationRequest({
+    ...input,
+    content: '在测试空间创建待办：完成网络标准方案，8 月 5 日截止。',
+  })
+
+  assert.match(request.systemPrompt, /直接要求创建、添加或记录待办/u)
+  assert.match(request.systemPrompt, /todo-extraction/u)
+  assert.match(request.systemPrompt, /只生成待办候选/u)
+  assert.match(request.systemPrompt, /不能归类为 chat/u)
+})
+
+test('keeps explicit corrections to pending todo proposals on the extraction path', () => {
+  const request = buildAiIntentClassificationRequest({
+    ...input,
+    content: '不放在 J001 中，放在“测试空间”中。',
+    hasPendingTodoProposals: true,
+  })
+
+  assert.match(request.untrustedContext ?? '', /当前对话存在待确认待办候选：是/u)
+  assert.match(request.systemPrompt, /修正这些候选的项目、负责人、模块、截止日期/u)
+  assert.match(request.systemPrompt, /即使没有再次说“待办”或“创建”，仍归为 todo-extraction/u)
+})
+
 test('includes only project context kind and validates context identity', () => {
   const request = buildAiIntentClassificationRequest({
     ...input,
