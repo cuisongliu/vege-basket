@@ -1,0 +1,411 @@
+.image-sync-workbench {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.image-sync-submit {
+  display: grid;
+  gap: 8px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.image-sync-submit-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.image-sync-arch {
+  display: grid;
+  grid-template-columns: repeat(2, 76px);
+  height: 36px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  background: var(--control-bg);
+}
+
+.image-sync-arch button {
+  border: 0;
+  background: transparent;
+  color: var(--muted-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.image-sync-arch button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
+}
+
+.image-sync-error,
+.image-sync-run-error {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 11px 18px;
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--destructive) 22%, var(--line));
+}
+
+.image-sync-layout {
+  display: grid;
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.image-sync-list {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.image-sync-pane-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.image-sync-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 2px;
+  border: 1px solid var(--line);
+  background: var(--control-bg);
+}
+
+.image-sync-filters button {
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-text);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.image-sync-filters button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
+}
+
+.image-sync-filters span {
+  font-family: var(--font-mono);
+}
+
+.image-sync-list > button {
+  display: grid;
+  width: 100%;
+  gap: 7px;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.image-sync-list > button:hover,
+.image-sync-list > button.active {
+  background: var(--control-bg);
+}
+
+.image-sync-list > button.active {
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.image-sync-list-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.image-sync-list code,
+.image-sync-detail h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-sync-list code {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.image-sync-list small,
+.image-sync-detail-heading p,
+.image-sync-run-summary span,
+.image-sync-job li small {
+  color: var(--muted-text);
+}
+
+.image-sync-detail {
+  min-width: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+.image-sync-detail-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.image-sync-detail-heading span {
+  color: var(--muted-text);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.image-sync-detail-heading h3 {
+  max-width: 760px;
+  margin: 5px 0;
+  font-size: 18px;
+}
+
+.image-sync-detail-heading p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.image-sync-detail-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.image-sync-run-error {
+  margin-top: 16px;
+  border: 1px solid color-mix(in srgb, var(--destructive) 22%, var(--line));
+}
+
+.image-sync-run-error div {
+  display: grid;
+  gap: 4px;
+}
+
+.image-sync-run-error code {
+  font-size: 11px;
+}
+
+.image-sync-run-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.image-sync-run-summary div {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 16px 14px 16px 0;
+}
+
+.image-sync-run-summary strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-sync-artifacts {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+}
+
+.image-sync-artifacts header,
+.image-sync-artifacts > div {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.image-sync-artifacts header {
+  grid-template-columns: 1fr auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.image-sync-artifacts header span,
+.image-sync-artifacts > div > span {
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.image-sync-artifacts > div {
+  grid-template-columns: 72px minmax(0, 1fr) 32px;
+  border-bottom: 1px solid var(--line);
+}
+
+.image-sync-artifacts > div:last-child {
+  border-bottom: 0;
+}
+
+.image-sync-artifacts code {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-sync-jobs {
+  display: grid;
+  gap: 18px;
+  padding-top: 18px;
+}
+
+.image-sync-job {
+  border: 1px solid var(--line);
+}
+
+.image-sync-job header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.image-sync-job ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.image-sync-job li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.image-sync-job li:last-child {
+  border-bottom: 0;
+}
+
+.image-sync-job svg,
+.image-sync-pending svg {
+  width: 18px;
+  height: 18px;
+  color: var(--muted-text);
+}
+
+.image-sync-job svg.is-success {
+  color: var(--chart-1);
+}
+
+.image-sync-job svg.is-failure {
+  color: var(--destructive);
+}
+
+.image-sync-pending,
+.image-sync-empty {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  justify-content: center;
+  min-height: 140px;
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 13px;
+}
+
+.image-sync-spin {
+  animation: image-sync-spin 0.9s linear infinite;
+}
+
+@keyframes image-sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .image-sync-submit-row {
+    grid-template-columns: 1fr;
+  }
+
+  .image-sync-arch {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .image-sync-layout {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .image-sync-list {
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .image-sync-detail {
+    overflow: visible;
+  }
+
+  .image-sync-detail-heading {
+    flex-direction: column;
+  }
+
+  .image-sync-run-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .image-sync-artifacts > div {
+    grid-template-columns: 1fr 32px;
+  }
+
+  .image-sync-artifacts > div > span {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .image-sync-submit,
+  .image-sync-detail {
+    padding: 14px;
+  }
+
+  .image-sync-detail-actions {
+    width: 100%;
+  }
+
+  .image-sync-detail-actions > * {
+    flex: 1;
+  }
+
+  .image-sync-run-summary {
+    grid-template-columns: 1fr;
+  }
+}
