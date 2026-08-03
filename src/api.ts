@@ -4,6 +4,8 @@ import type {
   AiConversationPage,
   AiTurnPage,
   AiTurnRunResponse,
+  ImageSyncArchitecture,
+  ImageSyncRun,
   JournalVisibility,
   PackageMarketChannel,
   PackageMarketDetail,
@@ -326,6 +328,31 @@ async function requestAiTurnStream(
 
 export function fetchWorkspace() {
   return request<WorkspaceData>('/api/workspace')
+}
+
+export function createImageSyncRun(payload: {
+  arch: ImageSyncArchitecture
+  image: string
+}) {
+  return request<{ run: ImageSyncRun }>('/api/image-sync-runs', {
+    body: JSON.stringify(payload),
+    method: 'POST',
+  })
+}
+
+export function fetchImageSyncRuns() {
+  return request<{ runs: ImageSyncRun[] }>('/api/image-sync-runs')
+}
+
+export function fetchImageSyncRun(runId: number, refresh = false) {
+  const params = refresh ? '?refresh=true' : ''
+  return request<{ run: ImageSyncRun }>(`/api/image-sync-runs/${runId}${params}`)
+}
+
+export function deleteImageSyncRun(runId: number) {
+  return request<{ deleted: true }>(`/api/image-sync-runs/${runId}`, {
+    method: 'DELETE',
+  })
 }
 
 export function fetchNotifications() {

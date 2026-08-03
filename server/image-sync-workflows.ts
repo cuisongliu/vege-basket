@@ -1,0 +1,673 @@
+// 提供用户隔离的 GitHub 镜像同步任务 API，并封装固定目标的 GitHub Actions 请求。
+import { Router } from 'express'
+import type { PoolClient } from 'pg'
+import { decryptText, encryptText } from './crypto.ts'
+import { pool, query } from './db.ts'
+import { getAuthenticatedRoleSession } from './roles.ts'
+
+export const imageSyncArchitectures = ['amd64', 'arm64'] as const
+export type ImageSyncArchitecture = (typeof imageSyncArchitectures)[number]
+export type ImageSyncRunStatus = 'dispatching' | 'queued' | 'in_progress' | 'completed' | 'failed'
+export type ImageSyncRunGroup = 'failure' | 'running' | 'success'
+
+type ImageSyncProgressStep = {
+  completedAt: string | null
+  conclusion: string | null
+  name: string
+  number: number
+  startedAt: string | null
+  status: string
+}
+
+type ImageSyncProgressJob = {
+  completedAt: string | null
+  conclusion: string | null
+  id: number
+  name: string
+  startedAt: string | null
+  status: string
+  steps: ImageSyncProgressStep[]
+}
+
+type ImageSyncRunRow = {
+  architecture: ImageSyncArchitecture
+  completed_at: string | null
+  conclusion: string | null
+  created_at: string
+  error_code: string | null
+  error_message: string | null
+  github_run_id: string | null
+  github_run_url: string | null
+  id: string
+  image_ref_encrypted: string
+  last_synced_at: string | null
+  progress: unknown
+  status: ImageSyncRunStatus
+  updated_at: string
+  user_id: string
+}
+
+type GitHubWorkflowRun = {
+  conclusion?: unknown
+  created_at?: unknown
+  html_url?: unknown
+  id?: unknown
+  status?: unknown
+  updated_at?: unknown
+}
+
+type ImageSyncStoredProgress = {
+  jobs: ImageSyncProgressJob[]
+  runCreatedAt: string | null
+}
+
+type GitHubWorkflowJob = {
+  completed_at?: unknown
+  conclusion?: unknown
+  id?: unknown
+  name?: unknown
+  started_at?: unknown
+  status?: unknown
+  steps?: unknown
+}
+
+const githubApiVersion = '2026-03-10'
+const githubOwner = 'labring'
+const githubRepo = 'sealos-pro'
+const githubWorkflow = 'sync-images-tar-oss.yml'
+const githubRef = 'main'
+const githubApiRoot = `https://api.github.com/repos/${githubOwner}/${githubRepo}`
+const activeStatuses: readonly ImageSyncRunStatus[] = ['dispatching', 'queued', 'in_progress']
+
+export class ImageSyncWorkflowError extends Error {
+  code: string
+  status: number
+
+  constructor(code: string, message: string, status: number) {
+    super(message)
+    this.name = 'ImageSyncWorkflowError'
+    this.code = code
+    this.status = status
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function boundedString(value: unknown, maxLength = 160) {
+  return typeof value === 'string' ? value.slice(0, maxLength) : ''
+}
+
+function nullableString(value: unknown, maxLength = 160) {
+  const normalized = boundedString(value, maxLength)
+  return normalized || null
+}
+
+function normalizeIsoDate(value: unknown) {
+  const candidate = nullableString(value, 40)
+  if (!candidate) return null
+  const date = new Date(candidate)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function positiveInteger(value: unknown) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number > 0 ? number : null
+}
+
+function isPrivateIpv4(hostname: string) {
+  const octets = hostname.split('.').map(Number)
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false
+  }
+  return octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+}
+
+function hasUnsafeRegistry(imageBody: string) {
+  const firstSegment = imageBody.split('/')[0].toLowerCase()
+  if (!firstSegment.includes('.') && !firstSegment.includes(':')) return false
+  const hostname = firstSegment.replace(/:\d+$/, '')
+  return hostname === 'localhost' || hostname.endsWith('.local') || isPrivateIpv4(hostname)
+}
+
+export function normalizeImageSyncInput(input: { arch?: unknown; image?: unknown }) {
+  const arch = String(input.arch ?? '').trim().toLowerCase()
+  if (!imageSyncArchitectures.includes(arch as ImageSyncArchitecture)) {
+    throw new ImageSyncWorkflowError('INVALID_ARCHITECTURE', '目标架构必须是 amd64 或 arm64。', 400)
+  }
+
+  const image = String(input.image ?? '').trim()
+  const imageBody = image.startsWith('docker://') ? image.slice('docker://'.length) : image
+  if (
+    image.length === 0 ||
+    image.length > 512 ||
+    imageBody.length === 0 ||
+    imageBody.includes('://') ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(imageBody) ||
+    imageBody.endsWith('/') ||
+    hasUnsafeRegistry(imageBody)
+  ) {
+    throw new ImageSyncWorkflowError(
+      'INVALID_IMAGE_REFERENCE',
+      '请输入有效的完整镜像引用，且长度不能超过 512 个字符。',
+      400,
+    )
+  }
+
+  return { arch: arch as ImageSyncArchitecture, image }
+}
+
+export function mapGitHubRunStatus(status: unknown, conclusion: unknown): {
+  conclusion: string | null
+  status: ImageSyncRunStatus
+} {
+  const normalizedStatus = boundedString(status, 40).toLowerCase()
+  const normalizedConclusion = nullableString(conclusion, 40)?.toLowerCase() ?? null
+  if (normalizedStatus === 'completed') {
+    return { conclusion: normalizedConclusion, status: 'completed' }
+  }
+  if (normalizedStatus === 'in_progress') {
+    return { conclusion: normalizedConclusion, status: 'in_progress' }
+  }
+  return { conclusion: normalizedConclusion, status: 'queued' }
+}
+
+export function normalizeGitHubJobs(value: unknown): ImageSyncProgressJob[] {
+  if (!isRecord(value) || !Array.isArray(value.jobs)) return []
+  return value.jobs.slice(0, 20).flatMap((candidate) => {
+    if (!isRecord(candidate)) return []
+    const job = candidate as GitHubWorkflowJob
+    const id = positiveInteger(job.id)
+    const name = boundedString(job.name, 160)
+    if (id == null || !name) return []
+    const rawSteps = Array.isArray(job.steps) ? job.steps : []
+    const steps = rawSteps.slice(0, 50).flatMap((rawStep) => {
+      if (!isRecord(rawStep)) return []
+      const number = positiveInteger(rawStep.number)
+      const stepName = boundedString(rawStep.name, 160)
+      if (number == null || !stepName) return []
+      return [{
+        completedAt: nullableString(rawStep.completed_at, 40),
+        conclusion: nullableString(rawStep.conclusion, 40),
+        name: stepName,
+        number,
+        startedAt: nullableString(rawStep.started_at, 40),
+        status: boundedString(rawStep.status, 40) || 'queued',
+      }]
+    })
+    return [{
+      completedAt: nullableString(job.completed_at, 40),
+      conclusion: nullableString(job.conclusion, 40),
+      id,
+      name,
+      startedAt: nullableString(job.started_at, 40),
+      status: boundedString(job.status, 40) || 'queued',
+      steps,
+    }]
+  })
+}
+
+export function isImageSyncRunTerminal(status: ImageSyncRunStatus) {
+  return status === 'completed' || status === 'failed'
+}
+
+export function classifyImageSyncRun(
+  status: ImageSyncRunStatus,
+  conclusion: string | null,
+): ImageSyncRunGroup {
+  if (status === 'dispatching' || status === 'queued' || status === 'in_progress') {
+    return 'running'
+  }
+  if (status === 'completed' && conclusion === 'success') return 'success'
+  return 'failure'
+}
+
+function normalizeOssBucket(value: unknown) {
+  const bucket = String(value ?? '').trim().toLowerCase()
+  return /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket) ? bucket : null
+}
+
+export function buildImageSyncArtifactUris(input: {
+  arch: ImageSyncArchitecture
+  bucket: unknown
+  image: string
+  runCreatedAt: string
+}) {
+  const bucket = normalizeOssBucket(input.bucket)
+  const date = new Date(input.runCreatedAt)
+  if (!bucket || Number.isNaN(date.getTime())) return null
+  const imageBody = input.image.startsWith('docker://')
+    ? input.image.slice('docker://'.length)
+    : input.image
+  const safeBase = imageBody
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'image'
+  const datePath = date.toISOString().slice(0, 10).replaceAll('-', '/')
+  const tarName = `${safeBase}-${input.arch}.tar`
+  const tarUri = `oss://${bucket}/temp/${datePath}/${tarName}`
+  return { md5Uri: `${tarUri}.md5`, tarUri }
+}
+
+function readGitHubToken() {
+  const token = String(process.env.GITHUB_ACTIONS_TOKEN ?? '').trim()
+  if (!token) {
+    throw new ImageSyncWorkflowError(
+      'GITHUB_ACTIONS_NOT_CONFIGURED',
+      '镜像同步服务尚未配置，请联系管理员。',
+      503,
+    )
+  }
+  return token
+}
+
+async function githubRequest(path: string, options: RequestInit = {}) {
+  const token = readGitHubToken()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const response = await fetch(`${githubApiRoot}${path}`, {
+      ...options,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'veges-image-sync',
+        'X-GitHub-Api-Version': githubApiVersion,
+        ...options.headers,
+      },
+      redirect: 'error',
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new ImageSyncWorkflowError(
+          'GITHUB_ACTIONS_FORBIDDEN',
+          'GitHub Actions 鉴权失败或请求已受限，请联系管理员。',
+          502,
+        )
+      }
+      if (response.status === 404) {
+        throw new ImageSyncWorkflowError(
+          'GITHUB_WORKFLOW_NOT_FOUND',
+          '目标 GitHub workflow 不存在或当前 Token 无权访问。',
+          502,
+        )
+      }
+      throw new ImageSyncWorkflowError(
+        'GITHUB_ACTIONS_UNAVAILABLE',
+        'GitHub Actions 暂时不可用，请稍后重试。',
+        502,
+      )
+    }
+    if (response.status === 204) return null
+    return await response.json() as unknown
+  } catch (error) {
+    if (error instanceof ImageSyncWorkflowError) throw error
+    throw new ImageSyncWorkflowError(
+      'GITHUB_ACTIONS_UNAVAILABLE',
+      '无法连接 GitHub Actions，请稍后重试。',
+      502,
+    )
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function dispatchImageSyncWorkflow(input: {
+  arch: ImageSyncArchitecture
+  image: string
+}) {
+  const result = await githubRequest(
+    `/actions/workflows/${encodeURIComponent(githubWorkflow)}/dispatches`,
+    {
+      body: JSON.stringify({
+        inputs: { arch: input.arch, image: input.image },
+        ref: githubRef,
+      }),
+      method: 'POST',
+    },
+  )
+  if (!isRecord(result)) {
+    throw new ImageSyncWorkflowError(
+      'GITHUB_RUN_ID_MISSING',
+      'GitHub 已接收任务，但未返回可跟踪的运行编号。',
+      502,
+    )
+  }
+  const runId = positiveInteger(result.workflow_run_id)
+  const runUrl = boundedString(result.html_url, 500)
+  if (runId == null || !runUrl.startsWith(`https://github.com/${githubOwner}/${githubRepo}/actions/runs/`)) {
+    throw new ImageSyncWorkflowError(
+      'GITHUB_RUN_ID_MISSING',
+      'GitHub 已接收任务，但未返回可跟踪的运行编号。',
+      502,
+    )
+  }
+  return { runId, runUrl }
+}
+
+async function loadGitHubRun(githubRunId: number) {
+  const [runValue, jobsValue] = await Promise.all([
+    githubRequest(`/actions/runs/${githubRunId}`),
+    githubRequest(`/actions/runs/${githubRunId}/jobs?per_page=100`),
+  ])
+  if (!isRecord(runValue)) {
+    throw new ImageSyncWorkflowError(
+      'GITHUB_RUN_INVALID',
+      'GitHub 返回了无法识别的任务状态。',
+      502,
+    )
+  }
+  const run = runValue as GitHubWorkflowRun
+  if (positiveInteger(run.id) !== githubRunId) {
+    throw new ImageSyncWorkflowError(
+      'GITHUB_RUN_INVALID',
+      'GitHub 返回了无法识别的任务状态。',
+      502,
+    )
+  }
+  return {
+    ...mapGitHubRunStatus(run.status, run.conclusion),
+    runCreatedAt: normalizeIsoDate(run.created_at),
+    progress: normalizeGitHubJobs(jobsValue),
+    runUrl: boundedString(run.html_url, 500),
+  }
+}
+
+function parseProgress(value: unknown): ImageSyncStoredProgress {
+  if (Array.isArray(value)) return { jobs: value as ImageSyncProgressJob[], runCreatedAt: null }
+  if (isRecord(value) && Array.isArray(value.jobs)) {
+    return {
+      jobs: value.jobs as ImageSyncProgressJob[],
+      runCreatedAt: normalizeIsoDate(value.runCreatedAt),
+    }
+  }
+  if (typeof value !== 'string') return { jobs: [], runCreatedAt: null }
+  try {
+    return parseProgress(JSON.parse(value))
+  } catch {
+    return { jobs: [], runCreatedAt: null }
+  }
+}
+
+function serializeRun(row: ImageSyncRunRow) {
+  const storedProgress = parseProgress(row.progress)
+  const artifacts = classifyImageSyncRun(row.status, row.conclusion) === 'success'
+    ? buildImageSyncArtifactUris({
+        arch: row.architecture,
+        bucket: process.env.OSS_BUCKET,
+        image: decryptText(row.image_ref_encrypted),
+        runCreatedAt: storedProgress.runCreatedAt ?? row.created_at,
+      })
+    : null
+  return {
+    arch: row.architecture,
+    artifacts,
+    completedAt: row.completed_at,
+    conclusion: row.conclusion,
+    createdAt: row.created_at,
+    error: row.error_code && row.error_message
+      ? { code: row.error_code, message: row.error_message }
+      : null,
+    githubRunId: row.github_run_id ? Number(row.github_run_id) : null,
+    githubRunUrl: row.github_run_url,
+    id: Number(row.id),
+    image: decryptText(row.image_ref_encrypted),
+    jobs: storedProgress.jobs,
+    lastSyncedAt: row.last_synced_at,
+    status: row.status,
+    updatedAt: row.updated_at,
+  }
+}
+
+const runColumns = `
+  id, user_id, image_ref_encrypted, architecture, status, conclusion,
+  github_run_id, github_run_url, progress, error_code, error_message,
+  created_at, updated_at, last_synced_at, completed_at
+`
+
+async function findOwnedRun(userId: number, runId: number) {
+  const result = await query<ImageSyncRunRow>(
+    `select ${runColumns} from image_sync_workflow_runs where id = $1 and user_id = $2`,
+    [runId, userId],
+  )
+  return result.rows[0] ?? null
+}
+
+async function createDispatchingRun(
+  client: PoolClient,
+  userId: number,
+  input: ReturnType<typeof normalizeImageSyncInput>,
+) {
+  await client.query(
+    `select pg_advisory_xact_lock(hashtextextended('image-sync:' || $1::text, 0))`,
+    [userId],
+  )
+  await client.query(
+    `update image_sync_workflow_runs
+     set status = 'failed', error_code = 'DISPATCH_LEASE_EXPIRED',
+         error_message = '任务提交超时，请重新发起。', updated_at = now(), completed_at = now()
+     where user_id = $1 and status = 'dispatching' and created_at < now() - interval '2 minutes'`,
+    [userId],
+  )
+  const recent = await client.query<{ active: boolean; cooling_down: boolean; hourly_count: string }>(
+    `select
+       exists(select 1 from image_sync_workflow_runs where user_id = $1 and status = any($2::text[])) as active,
+       exists(select 1 from image_sync_workflow_runs where user_id = $1 and created_at > now() - interval '10 seconds') as cooling_down,
+       (select count(*) from image_sync_workflow_runs where user_id = $1 and created_at > now() - interval '1 hour') as hourly_count`,
+    [userId, activeStatuses],
+  )
+  if (recent.rows[0]?.active) {
+    throw new ImageSyncWorkflowError(
+      'IMAGE_SYNC_ALREADY_ACTIVE',
+      '你已有一个镜像同步任务正在执行，请等待其结束。',
+      409,
+    )
+  }
+  if (recent.rows[0]?.cooling_down) {
+    throw new ImageSyncWorkflowError(
+      'IMAGE_SYNC_COOLDOWN',
+      '提交过于频繁，请稍后重试。',
+      429,
+    )
+  }
+  if (Number(recent.rows[0]?.hourly_count ?? 0) >= 10) {
+    throw new ImageSyncWorkflowError(
+      'IMAGE_SYNC_RATE_LIMITED',
+      '你在最近一小时提交的镜像同步任务过多，请稍后重试。',
+      429,
+    )
+  }
+  const inserted = await client.query<ImageSyncRunRow>(
+    `insert into image_sync_workflow_runs (
+       user_id, image_ref_encrypted, architecture, status
+     ) values ($1, $2, $3, 'dispatching')
+     returning ${runColumns}`,
+    [userId, encryptText(input.image), input.arch],
+  )
+  return inserted.rows[0]
+}
+
+export const imageSyncWorkflowRouter = Router()
+
+imageSyncWorkflowRouter.post('/image-sync-runs', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    const input = normalizeImageSyncInput(request.body)
+    readGitHubToken()
+    const client = await pool.connect()
+    let localRun: ImageSyncRunRow
+    try {
+      await client.query('begin')
+      localRun = await createDispatchingRun(client, session.userId, input)
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+
+    try {
+      const dispatched = await dispatchImageSyncWorkflow(input)
+      const updated = await query<ImageSyncRunRow>(
+        `update image_sync_workflow_runs
+         set status = 'queued', github_run_id = $1, github_run_url = $2, updated_at = now()
+         where id = $3 and user_id = $4 and status = 'dispatching'
+         returning ${runColumns}`,
+        [dispatched.runId, dispatched.runUrl, localRun.id, session.userId],
+      )
+      response.status(201).json({ run: serializeRun(updated.rows[0] ?? localRun) })
+    } catch (error) {
+      const safeError = error instanceof ImageSyncWorkflowError
+        ? error
+        : new ImageSyncWorkflowError(
+            'GITHUB_ACTIONS_UNAVAILABLE',
+            '无法连接 GitHub Actions，请稍后重试。',
+            502,
+          )
+      const failed = await query<ImageSyncRunRow>(
+        `update image_sync_workflow_runs
+         set status = 'failed', error_code = $1, error_message = $2,
+             updated_at = now(), completed_at = now()
+         where id = $3 and user_id = $4 and status = 'dispatching'
+         returning ${runColumns}`,
+        [safeError.code, safeError.message, localRun.id, session.userId],
+      )
+      response.status(safeError.status).json({
+        code: safeError.code,
+        error: safeError.message,
+        run: serializeRun(failed.rows[0] ?? localRun),
+      })
+    }
+  } catch (error) {
+    if (error instanceof ImageSyncWorkflowError) {
+      response.status(error.status).json({ code: error.code, error: error.message })
+      return
+    }
+    next(error)
+  }
+})
+
+imageSyncWorkflowRouter.get('/image-sync-runs', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    const result = await query<ImageSyncRunRow>(
+      `select ${runColumns}
+       from image_sync_workflow_runs
+       where user_id = $1
+       order by created_at desc, id desc
+       limit 100`,
+      [session.userId],
+    )
+    response.json({ runs: result.rows.map(serializeRun) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+imageSyncWorkflowRouter.delete('/image-sync-runs/:runId', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    const runId = positiveInteger(request.params.runId)
+    if (runId == null) {
+      response.status(404).json({ error: '镜像同步任务不存在。' })
+      return
+    }
+    const deleted = await query<{ id: string }>(
+      `delete from image_sync_workflow_runs
+       where id = $1 and user_id = $2
+         and (
+           status = 'failed'
+           or (status = 'completed' and conclusion is distinct from 'success')
+         )
+       returning id`,
+      [runId, session.userId],
+    )
+    if (deleted.rows[0]) {
+      response.json({ deleted: true })
+      return
+    }
+    const existing = await findOwnedRun(session.userId, runId)
+    if (!existing) {
+      response.status(404).json({ error: '镜像同步任务不存在。' })
+      return
+    }
+    response.status(409).json({ error: '只能清理已失败任务的本地记录。' })
+  } catch (error) {
+    next(error)
+  }
+})
+
+imageSyncWorkflowRouter.get('/image-sync-runs/:runId', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    const runId = positiveInteger(request.params.runId)
+    if (runId == null) {
+      response.status(404).json({ error: '镜像同步任务不存在。' })
+      return
+    }
+    let row = await findOwnedRun(session.userId, runId)
+    if (!row) {
+      response.status(404).json({ error: '镜像同步任务不存在。' })
+      return
+    }
+    const shouldRefresh = request.query.refresh === 'true'
+    const githubRunId = row.github_run_id ? Number(row.github_run_id) : null
+    if (shouldRefresh && githubRunId && !isImageSyncRunTerminal(row.status)) {
+      try {
+        const current = await loadGitHubRun(githubRunId)
+        const updated = await query<ImageSyncRunRow>(
+          `update image_sync_workflow_runs
+           set status = $1, conclusion = $2, github_run_url = coalesce(nullif($3, ''), github_run_url),
+               progress = $4::jsonb, last_synced_at = now(), updated_at = now(),
+               completed_at = case when $1 = 'completed' then coalesce(completed_at, now()) else completed_at end
+           where id = $5 and user_id = $6
+           returning ${runColumns}`,
+          [
+            current.status,
+            current.conclusion,
+            current.runUrl,
+            JSON.stringify({ jobs: current.progress, runCreatedAt: current.runCreatedAt }),
+            runId,
+            session.userId,
+          ],
+        )
+        row = updated.rows[0] ?? row
+      } catch (error) {
+        if (!(error instanceof ImageSyncWorkflowError)) throw error
+        response.status(error.status).json({
+          code: error.code,
+          error: error.message,
+          run: serializeRun(row),
+        })
+        return
+      }
+    }
+    response.json({ run: serializeRun(row) })
+  } catch (error) {
+    next(error)
+  }
+})

@@ -36,6 +36,25 @@ create table if not exists user_roles (
   primary key (user_id, role)
 );
 
+create table if not exists image_sync_workflow_runs (
+  id bigserial primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  image_ref_encrypted text not null,
+  architecture text not null check (architecture in ('amd64', 'arm64')),
+  status text not null
+    check (status in ('dispatching', 'queued', 'in_progress', 'completed', 'failed')),
+  conclusion text,
+  github_run_id bigint unique,
+  github_run_url text,
+  progress jsonb not null default '[]'::jsonb,
+  error_code text,
+  error_message text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_synced_at timestamptz,
+  completed_at timestamptz
+);
+
 alter table user_roles
   drop constraint if exists user_roles_role_check;
 
@@ -1267,6 +1286,11 @@ create unique index if not exists idx_project_invite_links_active_project
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
 create index if not exists idx_user_roles_role on user_roles(role, user_id);
+create index if not exists idx_image_sync_workflow_runs_user_created
+  on image_sync_workflow_runs(user_id, created_at desc);
+create unique index if not exists idx_image_sync_workflow_runs_user_active
+  on image_sync_workflow_runs(user_id)
+  where status in ('dispatching', 'queued', 'in_progress');
 create index if not exists idx_journal_entries_project_id on journal_entries(project_id);
 create index if not exists idx_journal_entries_author_user_id on journal_entries(author_user_id);
 create index if not exists idx_todos_project_id on todos(project_id);

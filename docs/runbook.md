@@ -8,6 +8,8 @@
 - Encryption keys generated and stored outside Git.
 - A company-owned Feishu custom application whose availability scope is restricted to
   intended internal users before using OAuth as the shared-AI account bootstrap path.
+- A fine-grained GitHub Token scoped only to `labring/sealos-pro` with Actions write
+  permission when testing the image-sync workbench.
 
 Use `.env.example` as a shape reference. Never commit `.env`, access keys, session
 tokens, database URLs with credentials, or encryption material.
@@ -42,6 +44,9 @@ configured Feishu application, and explicit permission to deliver messages.
 apply schema additions at startup, invoke the shared AI provider, and send personal Feishu
 replies. Enable it only in an authorized environment with a current database backup and a
 verified bot availability scope. Keep it `false` for read-only or production-adjacent checks.
+
+Do not submit an image-sync task during read-only verification. A real submission invokes
+GitHub Actions, pulls an external image, and writes a tar plus checksum to OSS.
 
 ## Local Runtime
 
@@ -91,6 +96,13 @@ must remove its lineage rows without deleting saved summaries or created todos. 
 membership revocation during generation and confirm the assistant content and lineage are not
 committed. Do not use production for this validation. No such database test is implied by
 `npm test` or `npm run build`.
+
+For image-sync integration testing, use an authorized non-production database and a dedicated
+fine-grained Token. Apply the schema, sign in as two ordinary users, and verify each can create
+a task but can list and refresh only their own task IDs. Confirm the first user cannot infer the
+second user's task through direct ID lookup. Use a harmless public image, verify Run/Job/Step
+progress and the terminal conclusion, then confirm the GitHub link matches
+`labring/sealos-pro/actions/runs/*`. This test consumes runner, registry, and OSS resources.
 
 Before an encryption-key change:
 
@@ -180,6 +192,9 @@ encrypted record, and the workflow that triggered rollback.
   base64 key in `APP_ENCRYPTION_KEYS` and retain keys for older envelopes.
 - Package market fails: verify the HTTPS OSS origin, bucket credentials, bundled or
   configured rules file, and allowed object-key roots.
+- Image sync is unavailable: verify `GITHUB_ACTIONS_TOKEN` is present and scoped to
+  `labring/sealos-pro` with Actions write permission. A 409 means the current user already has
+  an active run; a 429 means the ten-runs-per-hour user quota or submission cooldown was reached.
 - Todo image upload fails: verify OSS config, upload size/type, and the URL-signing secret
   or its documented fallback.
 - AI returns 503: verify `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` are all present in the

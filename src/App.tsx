@@ -38,6 +38,7 @@ import {
   CalendarBlank,
   Check,
   ChatCircleDots,
+  CloudArrowUp,
   CopySimple,
   CornersIn,
   CornersOut,
@@ -272,6 +273,7 @@ import { AssignedTestBugs, TestWorkbench } from './components/test-workbench'
 import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
+import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import {
   ManageRolesMenuLabel,
   UserRoleManagementDialog,
@@ -294,6 +296,7 @@ type View =
   | 'notifications'
   | 'organization'
   | 'package_market'
+  | 'image_sync'
   | 'search'
   | 'ai'
   | 'testing'
@@ -512,6 +515,7 @@ const appViews = [
   'notifications',
   'organization',
   'package_market',
+  'image_sync',
   'search',
   'ai',
   'testing',
@@ -3989,6 +3993,9 @@ ${packageTimelineText}`
             <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
               <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
             </NavButton>
+            <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
+              <CloudArrowUp size={18} weight="duotone" /> 镜像同步
+            </NavButton>
             {isOrganizationAdmin ? (
               <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
                 <Buildings size={18} weight="duotone" /> 组织管理
@@ -4132,7 +4139,7 @@ ${packageTimelineText}`
 
       <section className={view === 'project'
         ? 'workspace cockpit-workspace'
-        : view === 'assigned_bugs' || view === 'package_market'
+        : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync'
           ? 'workspace embedded-module-workspace'
           : 'workspace'}>
         {!(view === 'project' && isProjectTodoDetailActive) ? (
@@ -4288,7 +4295,7 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  {view !== 'ai' && view !== 'organization' && view !== 'assigned_bugs' && view !== 'package_market' ? (
+                  {view !== 'ai' && view !== 'organization' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' ? (
                     <Button
                       className="ghost-button"
                       variant="outline"
@@ -4493,6 +4500,8 @@ ${packageTimelineText}`
             onLoadPackageMarketVersions={loadPackageMarketVersions}
           />
         ) : null}
+
+        {view === 'image_sync' ? <ImageSyncWorkbench /> : null}
 
         {view === 'ai' && (
           <VegesAiView
@@ -11334,6 +11343,7 @@ function getViewTitle(view: View, projectName: string) {
   if (view === 'search') return '项目篮子'
   if (view === 'organization') return '组织管理'
   if (view === 'package_market') return '安装包市场'
+  if (view === 'image_sync') return '镜像同步'
   if (view === 'testing') return '测试工作台'
   if (view === 'assigned_bugs') return 'Bug 工作台'
   return 'Veges AI'

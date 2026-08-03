@@ -4,6 +4,45 @@ export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 
+export type ImageSyncArchitecture = 'amd64' | 'arm64'
+export type ImageSyncRunStatus = 'dispatching' | 'queued' | 'in_progress' | 'completed' | 'failed'
+
+export type ImageSyncRunStep = {
+  completedAt: string | null
+  conclusion: string | null
+  name: string
+  number: number
+  startedAt: string | null
+  status: string
+}
+
+export type ImageSyncRunJob = {
+  completedAt: string | null
+  conclusion: string | null
+  id: number
+  name: string
+  startedAt: string | null
+  status: string
+  steps: ImageSyncRunStep[]
+}
+
+export type ImageSyncRun = {
+  arch: ImageSyncArchitecture
+  artifacts: { md5Uri: string; tarUri: string } | null
+  completedAt: string | null
+  conclusion: string | null
+  createdAt: string
+  error: { code: string; message: string } | null
+  githubRunId: number | null
+  githubRunUrl: string | null
+  id: number
+  image: string
+  jobs: ImageSyncRunJob[]
+  lastSyncedAt: string | null
+  status: ImageSyncRunStatus
+  updatedAt: string
+}
+
 export type JournalEntry = {
   id: number
   createdAt: string
