@@ -14,6 +14,7 @@ flowchart LR
   api --> db["PostgreSQL"]
   api -->|"HTTPS SDK"| oss["Alibaba OSS"]
   api -->|"HTTPS fetch"| ai["AI provider"]
+  api -->|"fixed HTTPS REST target"| github["GitHub Actions"]
   feishu["Feishu"] -->|"verified webhook / OAuth"| api
   api -->|"notification delivery"| feishu
   cron["Todo digest CronJob"] -->|"claim + lease"| db
@@ -75,6 +76,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   multi-table writes, encrypted timeline fields, and Markdown export.
 - `server/package-market.ts`: OSS configuration, package rules, object-key allowlisting,
   object access, and signed download URLs.
+- `server/image-sync-workflows.ts`: fixed-repository GitHub workflow dispatch, encrypted
+  user-owned run records, bounded Run/Job/Step synchronization, per-user admission,
+  successful artifact URI derivation, and owner-scoped failed-record cleanup.
 - `server/schema.ts`: idempotent PostgreSQL DDL and integrity indexes.
 - `server/crypto.ts`: AES-256-GCM envelopes and blind indexes.
 - `server/db.ts`: the shared PostgreSQL pool. Domain modules must use one checked-out
@@ -226,6 +230,12 @@ The schema is normalized around these groups:
   administrator summaries derive the current seven-day period from that shared setting.
 - Projects and collaboration: `projects`, `project_memberships`,
   `project_invite_links`, `project_integrations`, `collaborators`.
+- Personal image-sync history: `image_sync_workflow_runs` binds each local request to its
+  authenticated user and optional GitHub run ID. A partial unique index permits one active
+  task per user; image references are encrypted and progress stores only bounded job/step metadata.
+  The progress JSONB remains backward-compatible with the original job array while new writes
+  use `{ jobs, runCreatedAt }` so artifact paths retain the GitHub Run UTC date. Failed-record
+  cleanup deletes only the authenticated owner's local row and never calls GitHub or OSS deletion.
 - Project knowledge: `journal_entries`, `todos`, `project_modules`,
   `todo_activity_events`, `todo_notes`, `todo_note_mentions`, `risks`, `draft_items`,
   `summaries`, `ai_todo_proposal_batches`, `ai_todo_proposals`. Draft items distinguish
@@ -348,6 +358,10 @@ Atomicity rules:
 
 Server startup validates encryption keys and executes `schemaSql`; starting the API is a
 database mutation, not a read-only smoke test. There is no automatic down migration.
+The image-sync surface additionally requires an instance-level `GITHUB_ACTIONS_TOKEN` scoped
+to `labring/sealos-pro` Actions write. It never accepts repository, workflow, ref, or token
+values from the browser. Real dispatch verification consumes GitHub runner and OSS resources
+and therefore requires explicit authorization.
 The Sealos template provisions PostgreSQL, injects runtime configuration, probes
 `/api/health`, deploys one application replica, and runs the todo-digest worker every
 five minutes. Digest runs are unique per subscription/date, claimed with row locking and

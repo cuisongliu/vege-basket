@@ -20,6 +20,7 @@
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
+| GitHub image sync workflow | `server/image-sync-workflows.ts` |
 | Container runtime | `Dockerfile` |
 | Sealos install surface | `.sealos/template/index.yaml` |
 
@@ -45,6 +46,7 @@ Core and AI controls:
 | `AI_RATE_LIMIT` | `5` requests per user per in-memory window. |
 | `AI_GLOBAL_RATE_LIMIT` | `30` total requests per application replica per window. |
 | `VEGES_ADMIN_USERNAMES` | Comma-separated normalized usernames allowed to manage account roles; empty disables role administration. |
+| `GITHUB_ACTIONS_TOKEN` | Instance-level fine-grained token scoped to `labring/sealos-pro` with Actions write permission. It is never returned to the browser. |
 | `AI_RATE_WINDOW_MS` | `60000`. |
 | `AI_MAX_MESSAGE_LENGTH` | `2000` characters. |
 | `AI_MAX_CONTEXT_CHARS` | `12000` characters. |
@@ -129,6 +131,7 @@ families are:
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
 | Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
+| Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
@@ -153,6 +156,8 @@ must remain bound to the authorized project ID.
   `conversation-analysis`; AI turn status: `processing`, `completed`, `failed`,
   `cancelled`.
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
+- Image sync run: `dispatching`, `queued`, `in_progress`, `completed`, `failed`; GitHub's terminal result remains in the separate `conclusion` field.
+- Image sync filtering maps `completed/success` to success, active statuses to running, and every other terminal state to failure. Successful DTOs expose tar and MD5 `oss://` URIs derived from the server-side bucket, GitHub Run UTC date, image safe base, and architecture; these are object identifiers rather than signed public download URLs.
 - Todo responses expose an optional single watcher through `watcherUserId` and
   `watcherName`. `POST /api/todos` and `PATCH /api/todos/:todoId` accept
   `watcherUserId`; a non-null watcher must be the project owner or an active project

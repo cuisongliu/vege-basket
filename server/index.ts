@@ -158,6 +158,7 @@ import {
   type TestBugAssignedEvent,
 } from './test-workbench.ts'
 import { createOrganizationRouter } from './organizations.ts'
+import { imageSyncWorkflowRouter } from './image-sync-workflows.ts'
 import {
   isFreshFeishuTimestamp,
   verifyFeishuCardSignature,
@@ -430,6 +431,7 @@ app.use(express.json({
   },
 }))
 app.use('/api', roleRouter)
+app.use('/api', imageSyncWorkflowRouter)
 configureTestWorkbenchNotifications({
   onTestBugAssigned: enqueueTestBugAssignedDelivery,
 })
