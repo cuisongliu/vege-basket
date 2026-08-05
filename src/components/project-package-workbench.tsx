@@ -17,6 +17,7 @@ import {
   Copy,
   DotsThree,
   FunnelSimple,
+  LinkSimple,
   Package,
   Plus,
   ShoppingCartSimple,
@@ -55,7 +56,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { getProjectPackageOperationTitle } from '@/lib/project-package-operation'
 import {
   TodoFilterBuilderDialog,
-  createTodoFilterCondition,
   matchesTodoFilterConditions,
   type TodoFilterCondition,
   type TodoFilterJoin,
@@ -76,6 +76,7 @@ import type {
   Project,
   ProjectMembership,
   ProjectPackageEvent,
+  ProjectPackageEventSavePayload,
   ProjectPackageEventStatus,
   ProjectPackageGroup,
   ProjectPackageItem,
@@ -86,29 +87,10 @@ import type {
   ProjectPackageTimeline,
   Todo,
 } from '@/types'
+import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
 
 type PackageWorkbenchProps = {
-  onAddItems: (
-    eventId: number,
-    items: Array<{
-      sourcePackageId: string
-      sourcePackageName: string
-      packageName: string
-      channel: string
-      channelLabel: string
-      arch: string
-      version: string
-      objectKey: string
-      objectLastModified?: string
-      sizeBytes?: number
-    }>,
-  ) => Promise<void>
-  onCreateEvent: (payload: {
-    assigneeUserId: number
-    deliveryDate: string
-    title: string
-    type: ProjectPackageEventType
-  }) => Promise<ProjectPackageEvent | null>
+  onCompleteEvent: (eventId: number) => Promise<boolean>
   onCreateOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -121,7 +103,7 @@ type PackageWorkbenchProps = {
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
   }) => Promise<boolean>
-  onDeleteEvent: (eventId: number) => Promise<void>
+  onDeleteEvent: (eventId: number) => Promise<boolean>
   onDeleteGroup: (groupId: number) => Promise<void>
   onDeleteOperation: (operationId: number) => Promise<void>
   onExportTimeline: (eventId?: number) => Promise<{ fileName: string; markdown: string }>
@@ -148,16 +130,10 @@ type PackageWorkbenchProps = {
     deployType?: 'pro' | 'oss'
     packageId: string
   }) => Promise<PackageMarketVersion[]>
-  onUpdateEvent: (
-    eventId: number,
-    payload: Partial<{
-      assigneeUserId: number
-      deliveryDate: string
-      status: ProjectPackageEventStatus
-      title: string
-      type: ProjectPackageEventType
-    }>,
-  ) => Promise<void>
+  onSaveEvent: (
+    eventId: number | null,
+    payload: ProjectPackageEventSavePayload,
+  ) => Promise<ProjectPackageEvent | null>
   onUpdateOperation: (
     operationId: number,
     payload: Partial<{
@@ -222,7 +198,6 @@ class MarkdownEditorLoadBoundary extends Component<
 
 export type ProjectPackageWorkbenchHandle = {
   exportTimeline: () => void
-  openPackageMarket: () => void
   selectEvent: (eventId: number) => void
 }
 
@@ -236,6 +211,12 @@ type PendingOperationTarget =
   | null
 
 type TimelineExportScope = 'current' | 'all'
+
+type EventDocumentDraftValue = {
+  content: string
+  relatedTodoIds: number[]
+  title: string
+}
 
 type PackageMarketDetailContext = {
   arch: 'amd64' | 'arm64'
@@ -271,6 +252,11 @@ function eventStatusLabel(status: ProjectPackageEventStatus) {
   if (status === 'delivered') return '已交付'
   if (status === 'delivering') return '交付中'
   return '草稿'
+}
+
+function eventDisplayStatus(event: ProjectPackageEvent): ProjectPackageEventStatus {
+  if (!event.publishedAt) return 'draft'
+  return event.status === 'delivered' ? 'delivered' : 'delivering'
 }
 
 function getTodayDateStamp() {
@@ -1215,8 +1201,7 @@ const operationEventOptions: Array<{
 export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle, PackageWorkbenchProps>(function ProjectPackageWorkbench({
   currentUserId,
   memberships,
-  onAddItems,
-  onCreateEvent,
+  onCompleteEvent,
   onCreateOperation,
   onDeleteEvent,
   onDeleteGroup,
@@ -1227,7 +1212,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   onLoadPackageItemDownloadUrl,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
-  onUpdateEvent,
+  onSaveEvent,
   onUpdateOperation,
   onUpdateTodo,
   project,
@@ -1236,8 +1221,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 }, ref) {
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
-  const [eventDialogOpen, setEventDialogOpen] = useState(false)
-  const [eventDialogMode, setEventDialogMode] = useState<'create' | 'edit'>('create')
+  const [eventEditorOpen, setEventEditorOpen] = useState(false)
+  const [eventEditorEventId, setEventEditorEventId] = useState<number | null>(null)
+  const [eventEditorStep, setEventEditorStep] = useState<1 | 2 | 3>(1)
+  const [eventEditorDirty, setEventEditorDirty] = useState(false)
+  const [eventDocumentTitle, setEventDocumentTitle] = useState('事件文档')
+  const [eventDocumentContent, setEventDocumentContent] = useState('')
+  const [eventDocumentRelatedTodoIds, setEventDocumentRelatedTodoIds] = useState<number[]>([])
+  const [packageDocumentValues, setPackageDocumentValues] = useState<Record<string, EventDocumentDraftValue>>({})
+  const [activeDocumentScope, setActiveDocumentScope] = useState('event')
+  const [documentTodoPickerOpen, setDocumentTodoPickerOpen] = useState(false)
+  const [documentTodoSearch, setDocumentTodoSearch] = useState('')
+  const [documentTodoFilterDialogOpen, setDocumentTodoFilterDialogOpen] = useState(false)
+  const [documentTodoFilterJoin, setDocumentTodoFilterJoin] = useState<TodoFilterJoin>('and')
+  const [documentTodoFilterConditions, setDocumentTodoFilterConditions] = useState<TodoFilterCondition[]>([])
+  const [, setEventEditorReady] = useState(false)
   const [eventAssigneeUserId, setEventAssigneeUserId] = useState('')
   const [eventDeliveryDate, setEventDeliveryDate] = useState(getTodayDateStamp)
   const [eventTitle, setEventTitle] = useState('')
@@ -1371,7 +1369,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     () => new Map(selectableTodos.map((todo) => [todo.id, todo])),
     [selectableTodos],
   )
-  const canManageTimeline = !project.readOnly && (
+  const canManageProject = !project.readOnly && (
     project.accessRole === 'owner' || project.accessRole === 'member'
   )
   const todoDialogOperation = useMemo(
@@ -1470,6 +1468,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   const selectedEvent =
     visibleEvents.find((event) => event.id === selectedEventId) ?? visibleEvents[0] ?? null
+  const canManageTimeline = canManageProject && Boolean(selectedEvent && !selectedEvent.publishedAt)
+  const existingOperationInteraction = resolveExistingOperationInteraction(canManageTimeline)
+  const operationDialogReadOnly = Boolean(
+    pendingOperationTarget?.operation && existingOperationInteraction.readOnly,
+  )
 
   const selectedGroup =
     selectedEvent?.groups.find((group) => group.id === selectedGroupId) ??
@@ -1491,18 +1494,102 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }
   }, [selectedEventId, selectedGroupId, visibleEvents])
 
-  const selectedEventObjectKeys = useMemo(
-    () => new Set(selectedEvent?.groups.flatMap((group) => group.items.map((item) => item.objectKey)) ?? []),
-    [selectedEvent],
-  )
   const selectedEventAddedObjectKeys = useMemo(() => {
-    const next = new Set(selectedEventObjectKeys)
+    const next = new Set<string>()
     cartItems.forEach((item) => next.add(item.objectKey))
     return next
-  }, [cartItems, selectedEventObjectKeys])
+  }, [cartItems])
   const selectedEventProgress = selectedEvent
     ? getEventCompletionProgress(selectedEvent, todosById)
     : { completed: 0, percent: 0, total: 0 }
+  const draftPackageNames = useMemo(
+    () => Array.from(new Set(cartItems.map((item) => item.packageName))),
+    [cartItems],
+  )
+  const activePackageDocumentName = activeDocumentScope.startsWith('package:')
+    ? activeDocumentScope.slice('package:'.length)
+    : ''
+  const activePackageDocument = activePackageDocumentName
+    ? packageDocumentValues[activePackageDocumentName] ?? {
+        content: '',
+        relatedTodoIds: [],
+        title: `${activePackageDocumentName} 安装包文档`,
+      }
+    : null
+  const activeDocumentRelatedTodoIds = activePackageDocument
+    ? activePackageDocument.relatedTodoIds
+    : eventDocumentRelatedTodoIds
+  const activeDocumentRelatedTodoIdSet = useMemo(
+    () => new Set(activeDocumentRelatedTodoIds),
+    [activeDocumentRelatedTodoIds],
+  )
+  const activeDocumentRelatedTodos = useMemo(
+    () =>
+      activeDocumentRelatedTodoIds
+        .map((todoId) => selectableTodosById.get(todoId) ?? todosById.get(todoId))
+        .filter((todo): todo is Todo => Boolean(todo)),
+    [activeDocumentRelatedTodoIds, selectableTodosById, todosById],
+  )
+  const activeDocumentTodoFilterCount = documentTodoFilterConditions.length
+  const documentTodoFilterSummary = activeDocumentTodoFilterCount > 0
+    ? `已筛选 ${activeDocumentTodoFilterCount} 条件`
+    : '筛选'
+  const filteredDocumentTodos = useMemo(() => {
+    const query = documentTodoSearch.trim().toLocaleLowerCase()
+    return selectableTodos.filter((todo) => {
+      const matchesSearch = !query ||
+        `${todo.title} ${todoSearchMeta(todo)}`.toLocaleLowerCase().includes(query)
+      return matchesSearch && matchesTodoFilterConditions(
+        todo,
+        documentTodoFilterConditions,
+        documentTodoFilterJoin,
+      )
+    })
+  }, [documentTodoFilterConditions, documentTodoFilterJoin, documentTodoSearch, selectableTodos])
+  const eventBasicInformationValid = Boolean(
+    eventTitle.trim() && eventDeliveryDate && Number(eventAssigneeUserId) > 0,
+  )
+
+  function updatePackageDocument(
+    packageName: string,
+    patch: Partial<EventDocumentDraftValue>,
+  ) {
+    setPackageDocumentValues((current) => ({
+      ...current,
+      [packageName]: {
+        content: current[packageName]?.content ?? '',
+        relatedTodoIds: current[packageName]?.relatedTodoIds ?? [],
+        title: current[packageName]?.title || `${packageName} 安装包文档`,
+        ...patch,
+      },
+    }))
+    setEventEditorDirty(true)
+  }
+
+  function selectDocumentScope(scope: string) {
+    setActiveDocumentScope(scope)
+    setDocumentTodoPickerOpen(false)
+    setDocumentTodoFilterDialogOpen(false)
+    setDocumentTodoSearch('')
+    setEventEditorReady(false)
+  }
+
+  function toggleActiveDocumentTodo(todoId: number) {
+    const nextRelatedTodoIds = activeDocumentRelatedTodoIds.includes(todoId)
+      ? activeDocumentRelatedTodoIds.filter((item) => item !== todoId)
+      : [...activeDocumentRelatedTodoIds, todoId]
+    if (activePackageDocumentName) {
+      updatePackageDocument(activePackageDocumentName, { relatedTodoIds: nextRelatedTodoIds })
+    } else {
+      setEventDocumentRelatedTodoIds(nextRelatedTodoIds)
+      setEventEditorDirty(true)
+    }
+  }
+
+  function removeDraftPackageItem(objectKey: string) {
+    setCartItems((current) => current.filter((item) => item.objectKey !== objectKey))
+    setEventEditorDirty(true)
+  }
 
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
@@ -1578,7 +1665,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     detail: PackageMarketDetail,
     link: PackageMarketDetail['links'][number],
   ) {
-    if (!context || selectedEventObjectKeys.has(link.objectKey)) return
+    if (!context || selectedEventAddedObjectKeys.has(link.objectKey)) return
     setCartItems((current) => {
       if (current.some((item) => item.objectKey === link.objectKey)) return current
       return [
@@ -1597,6 +1684,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         },
       ]
     })
+    setEventEditorDirty(true)
   }
 
   useEffect(() => {
@@ -1823,8 +1911,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }
   }
 
-  function openCreateEventDialog() {
-    setEventDialogMode('create')
+  function confirmDiscardEventChanges() {
+    return !eventEditorDirty || window.confirm('当前事件有未保存修改，确认离开吗？')
+  }
+
+  function openCreateEventEditor() {
+    if (!confirmDiscardEventChanges()) return
+    setEventEditorEventId(null)
+    setEventEditorStep(1)
     setEventTitle('')
     setEventType(events.length === 0 ? 'init' : 'upgrade')
     setEventDeliveryDate(getTodayDateStamp())
@@ -1835,7 +1929,20 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           '',
       ),
     )
-    setEventDialogOpen(true)
+    setCartItems([])
+    setEventDocumentTitle('事件文档')
+    setEventDocumentContent('')
+    setEventDocumentRelatedTodoIds([])
+    setPackageDocumentValues({})
+    setActiveDocumentScope('event')
+    setDocumentTodoPickerOpen(false)
+    setDocumentTodoSearch('')
+    setDocumentTodoFilterDialogOpen(false)
+    setDocumentTodoFilterJoin('and')
+    setDocumentTodoFilterConditions([])
+    setEventEditorReady(false)
+    setEventEditorDirty(false)
+    setEventEditorOpen(true)
   }
 
   function openPackageMarket() {
@@ -1858,14 +1965,80 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     })
   }
 
-  function openEditEventDialog(event: ProjectPackageEvent) {
-    setEventDialogMode('edit')
+  function openDraftEventEditor(event: ProjectPackageEvent) {
+    if (event.publishedAt || !confirmDiscardEventChanges()) return
+    const eventDocument = event.operations.find((operation) => operation.kind === 'document')
+    const packageDocuments = Object.fromEntries(
+      event.groups.map((group) => {
+        const document = group.operations.find((operation) => operation.kind === 'document')
+        return [
+          group.packageName,
+          {
+            content: document?.content ?? '',
+            relatedTodoIds: document?.relatedTodoIds ?? [],
+            title: document?.title || `${group.packageName} 安装包文档`,
+          },
+        ]
+      }),
+    )
+    setEventEditorEventId(event.id)
+    setEventEditorStep(1)
     setSelectedEventId(event.id)
     setEventTitle(event.title)
     setEventType(event.type)
     setEventDeliveryDate(getEventDeliveryDate(event))
     setEventAssigneeUserId(String(event.assigneeUserId ?? memberOptions[0]?.id ?? ''))
-    setEventDialogOpen(true)
+    setCartItems(event.groups.flatMap((group) => group.items.map((item) => ({
+      arch: item.arch,
+      channel: item.channel,
+      channelLabel: item.channelLabel,
+      objectKey: item.objectKey,
+      objectLastModified: item.objectLastModified,
+      packageName: item.packageName,
+      sizeBytes: item.sizeBytes,
+      sourcePackageId: item.sourcePackageId,
+      sourcePackageName: item.sourcePackageName,
+      version: item.version,
+    }))))
+    setEventDocumentTitle(eventDocument?.title || `${event.title} 事件文档`)
+    setEventDocumentContent(eventDocument?.content ?? '')
+    setEventDocumentRelatedTodoIds(eventDocument?.relatedTodoIds ?? [])
+    setPackageDocumentValues(packageDocuments)
+    setActiveDocumentScope('event')
+    setDocumentTodoPickerOpen(false)
+    setDocumentTodoSearch('')
+    setDocumentTodoFilterDialogOpen(false)
+    setDocumentTodoFilterJoin('and')
+    setDocumentTodoFilterConditions([])
+    setEventEditorReady(false)
+    setEventEditorDirty(false)
+    setEventEditorOpen(true)
+  }
+
+  function selectEventFromList(event: ProjectPackageEvent) {
+    if (!confirmDiscardEventChanges()) return
+    setEventEditorOpen(false)
+    setEventEditorDirty(false)
+    setSelectedEventId(event.id)
+    setSelectedGroupId(event.groups[0]?.id ?? null)
+  }
+
+  async function deleteEventFromList(event: ProjectPackageEvent) {
+    const deletedIndex = visibleEvents.findIndex((item) => item.id === event.id)
+    const nextEvent = deletedIndex >= 0
+      ? visibleEvents[deletedIndex + 1] ?? visibleEvents[deletedIndex - 1] ?? null
+      : null
+    const deletingActiveEvent = selectedEvent?.id === event.id || (
+      eventEditorOpen && eventEditorEventId === event.id
+    )
+    const deleted = await onDeleteEvent(event.id)
+    if (!deleted || !deletingActiveEvent) return
+
+    setEventEditorOpen(false)
+    setEventEditorDirty(false)
+    setEventEditorEventId(null)
+    setSelectedEventId(nextEvent?.id ?? null)
+    setSelectedGroupId(nextEvent?.groups[0]?.id ?? null)
   }
 
   function openOperationDialog(target: PendingOperationTarget, kind: ProjectPackageOperationKind) {
@@ -1899,7 +2072,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       Object.fromEntries(todos.map((todo) => [todo.id, todo.done] as const)),
     )
     setTodoDialogSearch('')
-    setTodoFilterConditions([createTodoFilterCondition('done')])
+    setTodoFilterConditions([])
     setTodoFilterJoin('and')
     setTodoFilterDialogOpen(false)
     setTodoPickerOpen(false)
@@ -1981,34 +2154,50 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }))
   }
 
-  async function submitEvent() {
+  async function saveEvent(action: 'publish' | 'save_draft') {
     const assigneeUserId = Number(eventAssigneeUserId)
     if (!eventTitle.trim() || !Number.isInteger(assigneeUserId) || assigneeUserId <= 0) return
+    if (action === 'publish' && (!eventDocumentTitle.trim() || !eventDocumentContent.trim())) {
+      setEventEditorStep(3)
+      return
+    }
     setBusyAction('event')
     try {
-      if (eventDialogMode === 'create') {
-        const createdEvent = await onCreateEvent({
-          assigneeUserId,
-          deliveryDate: eventDeliveryDate,
-          title: eventTitle.trim(),
-          type: eventType,
-        })
-        if (createdEvent) {
-          setAssignedOnly(false)
-          setEventFilterConditions([])
-          setEventFilterJoin('and')
-          setSelectedEventId(createdEvent.id)
-          setSelectedGroupId(createdEvent.groups[0]?.id ?? null)
-        }
-      } else if (selectedEvent) {
-        await onUpdateEvent(selectedEvent.id, {
-          assigneeUserId,
-          deliveryDate: eventDeliveryDate,
-          title: eventTitle.trim(),
-          type: eventType,
-        })
+      const packageNames = Array.from(new Set(cartItems.map((item) => item.packageName)))
+      const packageDocuments = packageNames.flatMap((packageName) => {
+        const document = packageDocumentValues[packageName]
+        if (action === 'publish' && !document?.content.trim()) return []
+        return [{
+          content: document?.content ?? '',
+          packageName,
+          relatedTodoIds: document?.relatedTodoIds ?? [],
+          scope: 'package' as const,
+          title: document?.title.trim() || `${packageName} 安装包文档`,
+        }]
+      })
+      const savedEvent = await onSaveEvent(eventEditorEventId, {
+        action,
+        assigneeUserId,
+        deliveryDate: eventDeliveryDate,
+        documents: [{
+          content: eventDocumentContent,
+          relatedTodoIds: eventDocumentRelatedTodoIds,
+          scope: 'event',
+          title: eventDocumentTitle.trim() || `${eventTitle.trim()} 事件文档`,
+        }, ...packageDocuments],
+        items: cartItems,
+        title: eventTitle.trim(),
+        type: eventType,
+      })
+      if (savedEvent) {
+        setAssignedOnly(false)
+        setEventFilterConditions([])
+        setEventFilterJoin('and')
+        setSelectedEventId(savedEvent.id)
+        setSelectedGroupId(savedEvent.groups[0]?.id ?? null)
+        setEventEditorOpen(false)
+        setEventEditorDirty(false)
       }
-      setEventDialogOpen(false)
     } finally {
       setBusyAction('')
     }
@@ -2072,15 +2261,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }
 
   async function submitCart() {
-    if (!selectedEvent || cartItems.length === 0) return
-    setBusyAction('cart')
-    try {
-      await onAddItems(selectedEvent.id, cartItems)
-      setCartItems([])
-      setMarketOpen(false)
-    } finally {
-      setBusyAction('')
-    }
+    setMarketOpen(false)
+    setEventEditorDirty(true)
   }
 
   function openExportScopeDialog() {
@@ -2166,7 +2348,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     exportTimeline: () => {
       openExportScopeDialog()
     },
-    openPackageMarket,
     selectEvent: (eventId: number) => {
       const targetEvent = events.find((event) => event.id === eventId)
       setAssignedOnly(false)
@@ -2174,6 +2355,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       setEventFilterJoin('and')
       setSelectedEventId(eventId)
       setSelectedGroupId(targetEvent?.groups[0]?.id ?? null)
+      setEventEditorOpen(false)
+      setEventEditorDirty(false)
     },
   }))
 
@@ -2187,16 +2370,384 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     [selectedGroup],
   )
 
+  function renderEventEditor() {
+    return (
+      <section className="event-wizard" aria-label="交付事件编辑器">
+        <header className="event-wizard-header">
+          <div className="event-wizard-heading">
+            <span className="event-wizard-eyebrow">
+              {eventEditorEventId == null ? '新建交付事件' : '编辑事件草稿'}
+            </span>
+            <h3>{eventTitle.trim() || '未命名事件'}</h3>
+          </div>
+        </header>
+        <div className="event-wizard-main">
+          <div className="event-wizard-steps-row">
+            <nav className="event-wizard-steps" aria-label="事件创建步骤">
+              {([
+                { label: '基本信息', step: 1 as const },
+                { label: '选择安装包', step: 2 as const },
+                { label: '填写文档', step: 3 as const },
+              ]).map((item) => (
+                <button
+                  aria-current={eventEditorStep === item.step ? 'step' : undefined}
+                  className={[
+                    'event-wizard-step',
+                    item.step <= eventEditorStep ? 'reached' : '',
+                    eventEditorStep === item.step ? 'active' : '',
+                  ].filter(Boolean).join(' ')}
+                  disabled={item.step > 1 && !eventBasicInformationValid}
+                  key={item.step}
+                  onClick={() => {
+                    setEventEditorStep(item.step)
+                    if (item.step === 3) setEventEditorReady(false)
+                  }}
+                  type="button"
+                >
+                  <span>{item.step}</span>
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          <div className="event-wizard-content">
+          {eventEditorStep === 1 ? (
+            <div className="event-wizard-form-grid">
+              <Label>
+                事件类型
+                <Select
+                  value={eventType}
+                  onValueChange={(value) => {
+                    setEventType(value as ProjectPackageEventType)
+                    setEventEditorDirty(true)
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="选择事件类型" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="init">初始化安装</SelectItem>
+                    <SelectItem value="upgrade">升级</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
+              <Label>
+                事件标题
+                <Input
+                  value={eventTitle}
+                  onChange={(event) => {
+                    setEventTitle(event.target.value)
+                    setEventEditorDirty(true)
+                  }}
+                  placeholder="例如：控制台升级到 v5.1.2"
+                />
+              </Label>
+              <Label>
+                交付时间
+                <JournalDatePicker
+                  ariaLabel="选择交付时间"
+                  className="package-event-date-trigger"
+                  datesWithEntries={[]}
+                  value={eventDeliveryDate}
+                  onChange={(value) => {
+                    setEventDeliveryDate(value)
+                    setEventEditorDirty(true)
+                  }}
+                />
+              </Label>
+              <Label>
+                交付人
+                <Select
+                  value={eventAssigneeUserId}
+                  onValueChange={(value) => {
+                    setEventAssigneeUserId(value)
+                    setEventEditorDirty(true)
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="选择交付人" /></SelectTrigger>
+                  <SelectContent>
+                    {memberOptions.map((member) => (
+                      <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Label>
+            </div>
+          ) : null}
+
+          {eventEditorStep === 2 ? (
+            <div className="event-wizard-packages">
+              <div className="event-wizard-section-head">
+                <div>
+                  <h4>安装包</h4>
+                  <p>{cartItems.length > 0 ? `已选择 ${cartItems.length} 个安装包文件` : '当前事件不包含安装包'}</p>
+                </div>
+                <Button className="solid-button" type="button" onClick={openPackageMarket}>
+                  <ShoppingCartSimple size={16} /> 从安装包市场选择
+                </Button>
+              </div>
+              {cartItems.length > 0 ? (
+                <div className="event-wizard-package-list">
+                  {cartItems.map((item) => (
+                    <div className="event-wizard-package-row" key={item.objectKey}>
+                      <div>
+                        <strong>{packageItemFileName(item)}</strong>
+                        <span>{item.packageName} · {itemChannelLabel(item)} · {item.arch} · {item.version}</span>
+                      </div>
+                      <button
+                        aria-label={`移除安装包 ${packageItemFileName(item)}`}
+                        className="icon-button event-wizard-remove-button"
+                        onClick={() => removeDraftPackageItem(item.objectKey)}
+                        type="button"
+                      >
+                        <Trash size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {eventEditorStep === 3 ? (
+            <div className="event-wizard-documents">
+              <div className="event-document-tabs" role="tablist" aria-label="事件文档范围">
+                <button
+                  aria-selected={activeDocumentScope === 'event'}
+                  className={activeDocumentScope === 'event' ? 'active' : ''}
+                  onClick={() => selectDocumentScope('event')}
+                  role="tab"
+                  type="button"
+                >
+                  事件文档
+                </button>
+                {draftPackageNames.map((packageName) => {
+                  const scope = `package:${packageName}`
+                  return (
+                    <button
+                      aria-selected={activeDocumentScope === scope}
+                      className={activeDocumentScope === scope ? 'active' : ''}
+                      key={packageName}
+                      onClick={() => selectDocumentScope(scope)}
+                      role="tab"
+                      type="button"
+                    >
+                      {packageName}
+                    </button>
+                  )
+                })}
+              </div>
+              <Label className="event-document-title-field">
+                文档标题
+                <Input
+                  value={activePackageDocument ? activePackageDocument.title : eventDocumentTitle}
+                  onChange={(event) => {
+                    if (activePackageDocumentName) {
+                      updatePackageDocument(activePackageDocumentName, { title: event.target.value })
+                    } else {
+                      setEventDocumentTitle(event.target.value)
+                      setEventEditorDirty(true)
+                    }
+                  }}
+                />
+              </Label>
+              <div className="event-document-todo-link">
+                <div className="event-document-todo-link-copy">
+                  <div>
+                    <strong>关联待办</strong>
+                    <span>可选</span>
+                  </div>
+                  <p>关联结果仅应用于当前文档。</p>
+                </div>
+                <DropdownMenu open={documentTodoPickerOpen} onOpenChange={setDocumentTodoPickerOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      className="operation-todo-picker-trigger event-document-todo-trigger"
+                      disabled={selectableTodos.length === 0}
+                      type="button"
+                      variant="outline"
+                    >
+                      <LinkSimple size={15} />
+                      <span className="operation-todo-picker-trigger-content">
+                        {activeDocumentRelatedTodos.length === 0 ? (
+                          <span className="operation-todo-picker-placeholder">
+                            {selectableTodos.length === 0 ? '暂无可关联待办' : '选择关联待办'}
+                          </span>
+                        ) : (
+                          <span className="operation-todo-picker-tags">
+                            {activeDocumentRelatedTodos.slice(0, 2).map((todo) => (
+                              <span className="operation-todo-picker-tag" key={todo.id}>
+                                {todo.title}
+                              </span>
+                            ))}
+                            {activeDocumentRelatedTodos.length > 2 ? (
+                              <span className="operation-todo-picker-tag">
+                                +{activeDocumentRelatedTodos.length - 2}
+                              </span>
+                            ) : null}
+                          </span>
+                        )}
+                      </span>
+                      <CaretDown
+                        className={documentTodoPickerOpen ? 'operation-todo-picker-caret open' : 'operation-todo-picker-caret'}
+                        size={14}
+                        weight="bold"
+                      />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="end"
+                    className="operation-todo-picker-content event-document-todo-menu"
+                    collisionPadding={20}
+                    onCloseAutoFocus={(event) => event.preventDefault()}
+                    sideOffset={8}
+                  >
+                    <div className="operation-todo-picker-search-row">
+                      <Input
+                        value={documentTodoSearch}
+                        onChange={(event) => setDocumentTodoSearch(event.target.value)}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        placeholder="搜索待办标题、负责人或模块"
+                      />
+                      <Button
+                        className={
+                          activeDocumentTodoFilterCount > 0
+                            ? 'todo-filter-open-button operation-todo-filter-open-button active'
+                            : 'todo-filter-open-button operation-todo-filter-open-button'
+                        }
+                        variant="outline"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setDocumentTodoFilterDialogOpen(true)
+                        }}
+                      >
+                        <FunnelSimple size={14} />
+                        <span>{documentTodoFilterSummary}</span>
+                      </Button>
+                    </div>
+                    <TodoFilterBuilderDialog
+                      assigneeOptions={todoDialogAssigneeOptions}
+                      conditions={documentTodoFilterConditions}
+                      creatorOptions={todoDialogCreatorOptions}
+                      join={documentTodoFilterJoin}
+                      moduleOptions={todoDialogModuleOptions}
+                      watcherOptions={todoDialogWatcherOptions}
+                      open={documentTodoFilterDialogOpen}
+                      onOpenChange={setDocumentTodoFilterDialogOpen}
+                      onApply={({ conditions: nextConditions, join: nextJoin }) => {
+                        setDocumentTodoFilterConditions(nextConditions)
+                        setDocumentTodoFilterJoin(nextJoin)
+                      }}
+                    />
+                    <div className="operation-todo-picker-options">
+                      {filteredDocumentTodos.length === 0 ? (
+                        <p className="operation-empty">没有搜索到匹配的待办。</p>
+                      ) : (
+                        filteredDocumentTodos.map((todo) => {
+                          const selected = activeDocumentRelatedTodoIdSet.has(todo.id)
+                          return (
+                            <button
+                              className={selected ? 'operation-todo-picker-option selected' : 'operation-todo-picker-option'}
+                              key={todo.id}
+                              onClick={() => toggleActiveDocumentTodo(todo.id)}
+                              type="button"
+                            >
+                              <span className="operation-todo-picker-option-check" aria-hidden="true" />
+                              <span className="operation-todo-picker-option-text">
+                                <strong>
+                                  <span className="operation-todo-dialog-item-title">{todo.title}</span>
+                                  {todo.moduleName ? (
+                                    <Badge className="todo-module-badge">{todo.moduleName}</Badge>
+                                  ) : null}
+                                </strong>
+                                <small>{todoDialogMeta(todo, todo.done)}</small>
+                              </span>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <MarkdownEditorLoadBoundary>
+                <Suspense fallback={<div className="markdown-wysiwyg-loading" role="status">正在加载编辑器…</div>}>
+                  <MarkdownWysiwygEditor
+                    ariaLabel={activePackageDocumentName ? `${activePackageDocumentName} 安装包文档内容` : '事件文档内容'}
+                    key={`event-wizard-${activeDocumentScope}`}
+                    onChange={(value) => {
+                      if (activePackageDocumentName) {
+                        updatePackageDocument(activePackageDocumentName, { content: value })
+                      } else {
+                        setEventDocumentContent(value)
+                        setEventEditorDirty(true)
+                      }
+                    }}
+                    onReady={() => setEventEditorReady(true)}
+                    placeholder="输入交付步骤、命令或说明…"
+                    value={activePackageDocument ? activePackageDocument.content : eventDocumentContent}
+                  />
+                </Suspense>
+              </MarkdownEditorLoadBoundary>
+            </div>
+          ) : null}
+          </div>
+        </div>
+
+        <footer className="event-wizard-footer">
+          <div className="event-wizard-footer-actions">
+            <div className="event-wizard-navigation">
+              <Button
+                disabled={eventEditorStep === 1}
+                onClick={() => setEventEditorStep((eventEditorStep - 1) as 1 | 2)}
+                type="button"
+                variant="outline"
+              >
+                上一步
+              </Button>
+              <Button
+                disabled={eventEditorStep === 3 || !eventBasicInformationValid}
+                onClick={() => setEventEditorStep((eventEditorStep + 1) as 2 | 3)}
+                type="button"
+                variant="outline"
+              >
+                下一步
+              </Button>
+            </div>
+            <div className="event-wizard-save-actions">
+              <Button
+                disabled={!eventBasicInformationValid || busyAction === 'event'}
+                onClick={() => void saveEvent('save_draft')}
+                type="button"
+                variant="outline"
+              >
+                保存草稿
+              </Button>
+              <Button
+                className="solid-button"
+                disabled={!eventBasicInformationValid || busyAction === 'event'}
+                onClick={() => void saveEvent('publish')}
+                type="button"
+              >
+                发布
+              </Button>
+            </div>
+          </div>
+        </footer>
+      </section>
+    )
+  }
+
   return (
     <div className="package-workbench">
-      {events.length === 0 ? (
+      {events.length === 0 && !eventEditorOpen ? (
         <section className="package-empty-state">
           <div className="package-empty-panel">
             <h3>先创建一个项目事件</h3>
             <p>正确路径是「项目 - 事件 - 选购安装包 - 编辑对应文档」，请先创建一个事件再开始维护交付记录。</p>
               <div className="package-empty-actions">
-              {canManageTimeline ? (
-                <Button className="solid-button" type="button" onClick={openCreateEventDialog}>
+              {canManageProject ? (
+                <Button className="solid-button" type="button" onClick={openCreateEventEditor}>
                   <Plus size={16} /> 新增事件
                 </Button>
               ) : null}
@@ -2228,8 +2779,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <FunnelSimple size={14} />
                 </Button>
               </div>
-              {canManageTimeline ? (
-                <Button className="solid-button" type="button" onClick={openCreateEventDialog}>
+              {canManageProject ? (
+                <Button className="solid-button" type="button" onClick={openCreateEventEditor}>
                   <Plus size={17} /> 新增事件
                 </Button>
               ) : null}
@@ -2291,10 +2842,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <button
                     className="project-event-tab-button"
                     type="button"
-                    onClick={() => {
-                      setSelectedEventId(event.id)
-                      setSelectedGroupId(event.groups[0]?.id ?? null)
-                    }}
+                    onClick={() => selectEventFromList(event)}
                   >
                     <strong>{event.title}</strong>
                     <span>{eventTypeLabel(event.type)} · {getEventDeliveryDate(event)}</span>
@@ -2302,12 +2850,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       <span className="project-event-assignee">
                         交付人：{event.assigneeName || '未指派'}
                       </span>
-                      <span className={`project-event-status-badge ${event.status}`}>
-                        {eventStatusLabel(event.status)}
+                      <span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>
+                        {eventStatusLabel(eventDisplayStatus(event))}
                       </span>
                     </span>
                   </button>
-                  {canManageTimeline ? (
+                  {canManageProject ? (
                     <div className="project-event-item-actions">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -2320,13 +2868,15 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="project-actions-menu-content" sideOffset={8}>
-                          <DropdownMenuItem onSelect={() => openEditEventDialog(event)}>
-                            编辑事件
-                          </DropdownMenuItem>
+                          {!event.publishedAt ? (
+                            <DropdownMenuItem onSelect={() => openDraftEventEditor(event)}>
+                              继续编辑
+                            </DropdownMenuItem>
+                          ) : null}
                           <DeleteConfirmDialog
                             confirmLabel="删除事件"
                             description={`删除「${event.title}」后，这个交付事件下的安装包、记录和文档都会一起移除。`}
-                            onConfirm={() => onDeleteEvent(event.id)}
+                            onConfirm={() => deleteEventFromList(event)}
                             title="确认删除这个交付事件？"
                             trigger={(
                               <DropdownMenuItem
@@ -2347,7 +2897,29 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </div>
           </aside>
 
-          {selectedEvent ? (
+          {eventEditorOpen ? (
+            renderEventEditor()
+          ) : selectedEvent && !selectedEvent.publishedAt ? (
+            <section className="event-workspace event-draft-summary">
+              <div className="event-draft-summary-head">
+                <div>
+                  <span>草稿</span>
+                  <h3>{selectedEvent.title}</h3>
+                  <p>{eventTypeLabel(selectedEvent.type)} · {getEventDeliveryDate(selectedEvent)} · {selectedEvent.assigneeName || '未指派'}</p>
+                </div>
+                {canManageProject ? (
+                  <Button className="solid-button" onClick={() => openDraftEventEditor(selectedEvent)} type="button">
+                    继续编辑
+                  </Button>
+                ) : null}
+              </div>
+              <dl className="event-draft-summary-metrics">
+                <div><dt>安装包</dt><dd>{selectedEvent.groups.flatMap((group) => group.items).length}</dd></div>
+                <div><dt>事件文档</dt><dd>{selectedEvent.operations.filter((operation) => operation.kind === 'document').length}</dd></div>
+                <div><dt>安装包文档</dt><dd>{selectedEvent.groups.reduce((total, group) => total + group.operations.filter((operation) => operation.kind === 'document').length, 0)}</dd></div>
+              </dl>
+            </section>
+          ) : selectedEvent ? (
           <section className="event-workspace">
             <div className="event-workspace-body">
               <section className="project-operations-panel">
@@ -2361,45 +2933,22 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           已完成 {selectedEventProgress.completed}/{selectedEventProgress.total} 个子事件 - 完成进度：{selectedEventProgress.percent}%
                         </span>
                       </p>
-                      {!canManageTimeline ? (
-                        <p className="package-workbench-readonly">
-                          当前为协作视角，你可以查看和导出时间线，安装记录由项目 Owner 统一维护。
-                        </p>
-                      ) : null}
+                      <p className="package-workbench-readonly">
+                        事件发布后，基本信息、安装包和文档保持只读。
+                      </p>
                     </div>
-                    {canManageTimeline ? (
+                    {canManageProject && selectedEvent.status !== 'delivered' ? (
                       <div className="operation-actions">
-                        <Select
-                          value={selectedEvent.status}
-                          onValueChange={(value) =>
-                            void onUpdateEvent(selectedEvent.id, {
-                              status: value as ProjectPackageEventStatus,
-                            })
-                          }
-                        >
-                          <SelectTrigger
-                            className="package-event-status-select"
-                            aria-label={`选择事件状态 ${selectedEvent.title}`}
-                          >
-                            <SelectValue placeholder="事件状态" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="draft">{eventStatusLabel('draft')}</SelectItem>
-                            <SelectItem value="delivering">{eventStatusLabel('delivering')}</SelectItem>
-                            <SelectItem value="delivered">{eventStatusLabel('delivered')}</SelectItem>
-                          </SelectContent>
-                        </Select>
                         <Button
                           className="solid-button"
                           type="button"
-                          onClick={() =>
-                            openOperationDialog(
-                              { eventId: selectedEvent.id, operation: null },
-                              'document',
-                            )
-                          }
+                          disabled={busyAction === `complete-event-${selectedEvent.id}`}
+                          onClick={() => {
+                            setBusyAction(`complete-event-${selectedEvent.id}`)
+                            void onCompleteEvent(selectedEvent.id).finally(() => setBusyAction(''))
+                          }}
                         >
-                          <Plus size={14} weight="bold" /> 新建文档
+                          <Check size={14} weight="bold" /> 标记已交付
                         </Button>
                       </div>
                     ) : null}
@@ -2428,14 +2977,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                             className="operation-entry-main"
                             type="button"
                             onClick={() =>
-                              canManageTimeline
-                                ? openOperationDialog(
-                                    { eventId: selectedEvent.id, operation },
-                                    operation.kind,
-                                  )
-                                : undefined
+                              openOperationDialog(
+                                { eventId: selectedEvent.id, operation },
+                                operation.kind,
+                              )
                             }
-                            disabled={!canManageTimeline}
+                            disabled={existingOperationInteraction.disabled}
                           >
                             <span className="operation-entry-kind">
                               {operation.kind === 'document' ? '文档' : '事件'}
@@ -2446,7 +2993,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                             </div>
                           </button>
                           {renderOperationTodoChips(operation, todosById)}
-                          {canManageTimeline ? (
+                          {canManageProject ? (
                             <div className="operation-entry-actions">
                               <button
                                 className="icon-button operation-action-button"
@@ -2456,21 +3003,23 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                               >
                                 关联待办
                               </button>
-                              <DeleteConfirmDialog
-                                confirmLabel="删除记录"
-                                description={`删除「${operationHeading(operation)}」后，这条交付记录将从当前事件中移除。`}
-                                onConfirm={() => onDeleteOperation(operation.id)}
-                                title="确认删除这条交付记录？"
-                                trigger={(
-                                  <button
-                                    className="icon-button operation-delete-button"
-                                    type="button"
-                                    aria-label="删除记录"
-                                  >
-                                    <Trash size={15} />
-                                  </button>
-                                )}
-                              />
+                              {canManageTimeline ? (
+                                <DeleteConfirmDialog
+                                  confirmLabel="删除记录"
+                                  description={`删除「${operationHeading(operation)}」后，这条交付记录将从当前事件中移除。`}
+                                  onConfirm={() => onDeleteOperation(operation.id)}
+                                  title="确认删除这条交付记录？"
+                                  trigger={(
+                                    <button
+                                      className="icon-button operation-delete-button"
+                                      type="button"
+                                      aria-label="删除记录"
+                                    >
+                                      <Trash size={15} />
+                                    </button>
+                                  )}
+                                />
+                              ) : null}
                             </div>
                           ) : null}
                         </article>
@@ -2620,18 +3169,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                   className="operation-entry-main"
                                   type="button"
                                   onClick={() =>
-                                    canManageTimeline
-                                      ? openOperationDialog(
-                                          {
-                                            eventId: selectedEvent.id,
-                                            groupId: selectedGroup.id,
-                                            operation,
-                                          },
-                                          operation.kind,
-                                        )
-                                      : undefined
+                                    openOperationDialog(
+                                      {
+                                        eventId: selectedEvent.id,
+                                        groupId: selectedGroup.id,
+                                        operation,
+                                      },
+                                      operation.kind,
+                                    )
                                   }
-                                  disabled={!canManageTimeline}
+                                  disabled={existingOperationInteraction.disabled}
                                 >
                                   <span className="operation-entry-kind">
                                     {operation.kind === 'document' ? '文档' : '事件'}
@@ -2642,7 +3189,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                   </div>
                                 </button>
                                 {renderOperationTodoChips(operation, todosById)}
-                                {canManageTimeline ? (
+                                {canManageProject ? (
                                   <div className="operation-entry-actions">
                                     <button
                                       className="icon-button operation-action-button"
@@ -2652,21 +3199,23 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                     >
                                       关联待办
                                     </button>
-                                    <DeleteConfirmDialog
-                                      confirmLabel="删除记录"
-                                      description={`删除「${operationHeading(operation)}」后，这条交付记录将从当前安装包时间线移除。`}
-                                      onConfirm={() => onDeleteOperation(operation.id)}
-                                      title="确认删除这条交付记录？"
-                                      trigger={(
-                                        <button
-                                          className="icon-button operation-delete-button"
-                                          type="button"
-                                          aria-label="删除记录"
-                                        >
-                                          <Trash size={15} />
-                                        </button>
-                                      )}
-                                    />
+                                    {canManageTimeline ? (
+                                      <DeleteConfirmDialog
+                                        confirmLabel="删除记录"
+                                        description={`删除「${operationHeading(operation)}」后，这条交付记录将从当前安装包时间线移除。`}
+                                        onConfirm={() => onDeleteOperation(operation.id)}
+                                        title="确认删除这条交付记录？"
+                                        trigger={(
+                                          <button
+                                            className="icon-button operation-delete-button"
+                                            type="button"
+                                            aria-label="删除记录"
+                                          >
+                                            <Trash size={15} />
+                                          </button>
+                                        )}
+                                      />
+                                    ) : null}
                                   </div>
                                 ) : null}
                               </article>
@@ -2700,86 +3249,24 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         </div>
       )}
 
-      <Dialog open={eventDialogOpen} onOpenChange={setEventDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{eventDialogMode === 'create' ? '新增安装事件' : '编辑安装事件'}</DialogTitle>
-            <DialogDescription>事件是安装升级时间线的第一层分组，建议按一次初始化或一次升级来建立。</DialogDescription>
-          </DialogHeader>
-          <div className="package-dialog-form">
-            <Label>
-              事件类型
-              <Select value={eventType} onValueChange={(value) => setEventType(value as ProjectPackageEventType)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择事件类型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="init">初始化安装</SelectItem>
-                  <SelectItem value="upgrade">升级</SelectItem>
-                </SelectContent>
-              </Select>
-            </Label>
-            <Label>
-              事件标题
-              <Input
-                value={eventTitle}
-                onChange={(event) => setEventTitle(event.target.value)}
-                placeholder="例如：控制台升级到 v5.1.2"
-              />
-            </Label>
-            <Label>
-              交付时间
-              <JournalDatePicker
-                ariaLabel="选择交付时间"
-                className="package-event-date-trigger"
-                datesWithEntries={[]}
-                value={eventDeliveryDate}
-                onChange={setEventDeliveryDate}
-              />
-            </Label>
-            <Label>
-              交付人
-              <Select value={eventAssigneeUserId} onValueChange={setEventAssigneeUserId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择交付人" />
-                </SelectTrigger>
-                <SelectContent>
-                  {memberOptions.map((member) => (
-                    <SelectItem key={member.id} value={String(member.id)}>
-                      {member.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Label>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" type="button" onClick={() => setEventDialogOpen(false)}>
-              取消
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void submitEvent()}
-              disabled={!eventTitle.trim() || !eventDeliveryDate || !eventAssigneeUserId || busyAction === 'event'}
-            >
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={operationDialogOpen} onOpenChange={setOperationDialogOpen}>
         <DialogContent className="package-operation-dialog">
           <DialogHeader className="operation-doc-header">
             <DialogTitle>
-              {pendingOperationTarget?.operation
+              {operationDialogReadOnly
+                ? operationKind === 'document'
+                  ? '查看操作文档'
+                  : '查看操作事件'
+                : pendingOperationTarget?.operation
                 ? operationKind === 'document'
                   ? '编辑操作文档'
                   : '编辑操作文档'
                 : '添加操作文档'}
             </DialogTitle>
             <DialogDescription>
-              记录交付过程中需要保留的步骤、命令和说明。
+              {operationDialogReadOnly
+                ? '事件发布后，文档内容仅供查看。'
+                : '记录交付过程中需要保留的步骤、命令和说明。'}
             </DialogDescription>
           </DialogHeader>
           <div className="operation-doc-form">
@@ -2788,6 +3275,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 文档标题
                 <Input
                   value={operationTitle}
+                  readOnly={operationDialogReadOnly}
                   onChange={(event) => setOperationTitle(event.target.value)}
                   placeholder={operationKind === 'document' ? '例如：升级前检查事项' : '例如：初始化安装'}
                 />
@@ -2802,26 +3290,35 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   onChange={setOperationContent}
                   onReady={() => setOperationEditorReady(true)}
                   placeholder="输入操作步骤、命令或说明…"
+                  readOnly={operationDialogReadOnly}
                 />
               </Suspense>
             </MarkdownEditorLoadBoundary>
           </div>
           <DialogFooter className="operation-doc-footer">
-            <Button variant="outline" type="button" onClick={() => setOperationDialogOpen(false)}>
-              取消
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void submitOperation()}
-              disabled={
-                busyAction === 'operation' ||
-                !operationEditorReady ||
-                !operationTitle.trim() ||
-                (operationKind === 'document' && !operationContent.trim())
-              }
-            >
-              保存
-            </Button>
+            {operationDialogReadOnly ? (
+              <Button variant="outline" type="button" onClick={() => setOperationDialogOpen(false)}>
+                关闭
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" type="button" onClick={() => setOperationDialogOpen(false)}>
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void submitOperation()}
+                  disabled={
+                    busyAction === 'operation' ||
+                    !operationEditorReady ||
+                    !operationTitle.trim() ||
+                    (operationKind === 'document' && !operationContent.trim())
+                  }
+                >
+                  保存
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3438,7 +3935,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </div>
           <div className="package-cart-strip">
             <div>
-              <strong>待加入当前事件：{cartItems.length} 项</strong>
+              <strong>当前草稿已选择：{cartItems.length} 项</strong>
               <small>
                 {cartItems.map((item) => `${item.packageName} · ${item.version}`).join('；') || '还没有选择安装包'}
               </small>
@@ -3447,13 +3944,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <Button
                 variant="outline"
                 type="button"
-                onClick={() => setCartItems([])}
+                onClick={() => {
+                  setCartItems([])
+                  setEventEditorDirty(true)
+                }}
                 disabled={cartItems.length === 0}
               >
                 清空
               </Button>
-              <Button type="button" onClick={() => void submitCart()} disabled={cartItems.length === 0 || busyAction === 'cart'}>
-                <ShoppingCartSimple size={16} /> 添加到当前事件
+              <Button type="button" onClick={() => void submitCart()}>
+                <Check size={16} /> 确认选择
               </Button>
             </div>
           </div>

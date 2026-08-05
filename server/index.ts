@@ -55,7 +55,6 @@ import {
   hasTodoWatchersChanged,
   resolveTodoNoteRecipientUserIds,
   shouldDeliverNotificationToProjectChat,
-  shouldRetirePackageEventNotification,
 } from './notification-policy.ts'
 import { createPackageItemFailureDiagnostic } from './package-item-diagnostics.ts'
 import {
@@ -73,24 +72,26 @@ import {
 } from './package-market.ts'
 import {
   addProjectPackageItems,
-  createProjectPackageEvent,
+  completeProjectPackageEvent,
   createProjectPackageOperation,
   deleteProjectPackageEvent,
   deleteProjectPackageGroup,
   deleteProjectPackageOperation,
-  ensureProjectPackageEventStatus,
   ensureProjectPackageEventType,
   ensureProjectPackageOperationKind,
   ensureProjectPackageOperationStatus,
   exportProjectPackageTimeline,
   getProjectPackageItemObjectKey,
   getProjectPackageTimeline,
+  ProjectPackageEventError,
+  saveProjectPackageEvent,
   updateProjectPackageEvent,
   updateProjectPackageOperation,
 } from './project-package-timeline.ts'
 import type {
   ProjectPackageEventStatus,
   ProjectPackageEventType,
+  ProjectPackageDocumentInput,
   ProjectPackageItemInput,
 } from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
@@ -5007,7 +5008,8 @@ async function getNotifications(userId: number) {
       left join users assigner on assigner.id = e.assigned_by_user_id
       where e.assignee_user_id = $1
         and e.assigned_by_user_id is distinct from $1
-        and e.status = 'draft'
+        and e.published_at is not null
+        and e.status = 'delivering'
         and not exists (
           select 1
           from notification_deliveries delivery
@@ -5821,7 +5823,7 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
   if (candidate.kind === 'package_event_assigned') {
     if (target.targetType === 'chat') {
       return [
-        `【Veges 通知】${candidate.operatorName || '有人'} 新增了 1 个交付事件指派：`,
+        `【Veges 通知】${candidate.operatorName || '有人'} 发布了 1 个交付事件指派：`,
         `- 指派给：${candidate.recipientName ?? ''}`,
         `- 项目名称：${candidate.projectName ?? ''}`,
         `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
@@ -5831,7 +5833,7 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
     }
 
     return [
-      `【Veges 通知】${candidate.operatorName || '有人'} 给您新增了 1 个交付事件指派：`,
+      `【Veges 通知】${candidate.operatorName || '有人'} 给您发布了 1 个交付事件指派：`,
       `- 项目名称：${candidate.projectName ?? ''}`,
       `- 交付事件：${candidate.eventTitle ?? candidate.title}`,
       `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
@@ -6467,8 +6469,8 @@ function buildFeishuInteractiveCard(
       : sanitizeFeishuMarkdownText(candidate.recipientName || '未配置')
     const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '有人')
     const headerTitle = target.targetType === 'chat'
-      ? `${operatorName} 新增了交付事件指派`
-      : `${operatorName} 给您新增了交付事件指派`
+      ? `${operatorName} 发布了交付事件指派`
+      : `${operatorName} 给您发布了交付事件指派`
     return {
       config: {
         wide_screen_mode: true,
@@ -8161,7 +8163,7 @@ function buildAssignedPackageEventFeishuCandidate(
     recipientFeishuOpenId: assigneeFeishuOpenId,
     recipientName,
     sourceId: Number(event.id),
-    title: '新的交付事件指派',
+    title: '交付事件指派',
     userId: Number(event.assignee_user_id),
   }
 }
@@ -8187,6 +8189,7 @@ async function buildAssignedPackageEventFeishuCandidateByEventId(eventId: number
     left join users assigner on assigner.id = e.assigned_by_user_id
     left join users assignee on assignee.id = e.assignee_user_id
     where e.id = $1
+      and e.published_at is not null
       and e.assignee_user_id is not null
       and e.assigned_by_user_id is distinct from e.assignee_user_id
     limit 1
@@ -10495,6 +10498,62 @@ app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler
   })
 }))
 
+function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
+  const items: ProjectPackageItemInput[] = Array.isArray(body.items)
+    ? body.items.map((item) => {
+        const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+        return {
+          sourcePackageId: String(value.sourcePackageId ?? ''),
+          sourcePackageName: String(value.sourcePackageName ?? ''),
+          packageName: String(value.packageName ?? ''),
+          channel: String(value.channel ?? ''),
+          channelLabel: String(value.channelLabel ?? ''),
+          arch: String(value.arch ?? ''),
+          version: String(value.version ?? ''),
+          objectKey: String(value.objectKey ?? ''),
+          objectLastModified: value.objectLastModified ? String(value.objectLastModified) : undefined,
+          sizeBytes: typeof value.sizeBytes === 'number' ? value.sizeBytes : undefined,
+        }
+      })
+    : []
+  const documents: ProjectPackageDocumentInput[] = Array.isArray(body.documents)
+    ? body.documents.map((document) => {
+        const value = document && typeof document === 'object'
+          ? document as Record<string, unknown>
+          : {}
+        return {
+          content: String(value.content ?? ''),
+          packageName: value.packageName ? String(value.packageName) : undefined,
+          relatedTodoIds: Array.isArray(value.relatedTodoIds)
+            ? value.relatedTodoIds.map((item) => Number(item))
+            : [],
+          scope: value.scope === 'package' ? 'package' : 'event',
+          title: String(value.title ?? ''),
+        }
+      })
+    : []
+  return {
+    action: body.action === 'publish' ? 'publish' as const : 'save_draft' as const,
+    documents,
+    items,
+  }
+}
+
+async function runProjectPackageEventMutation<T>(
+  response: express.Response,
+  mutation: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await mutation() }
+  } catch (error) {
+    if (error instanceof ProjectPackageEventError) {
+      response.status(error.status).json({ error: error.message })
+      return { ok: false }
+    }
+    throw error
+  }
+}
+
 app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -10525,17 +10584,87 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     response.status(400).json({ error: 'Package event assignee must be a project member' })
     return
   }
-  const eventId = await createProjectPackageEvent({
-    projectId,
+  const aggregate = parseProjectPackageEventAggregateBody(request.body)
+  const rejectedItem = aggregate.items.find((item) => !isAllowedPackageMarketObjectKey(item.objectKey))
+  if (rejectedItem) {
+    response.status(400).json({ error: '安装包对象路径不在允许范围内' })
+    return
+  }
+  const saved = await runProjectPackageEventMutation(response, () => saveProjectPackageEvent({
+    action: aggregate.action,
     assigneeUserId,
     assignedByUserId: userId,
     createdByUserId: userId,
     deliveryDate: String(request.body.deliveryDate ?? ''),
+    documents: aggregate.documents,
+    items: aggregate.items,
+    projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
-  })
-  enqueueLatestAssignedPackageEventDelivery(eventId)
+  }))
+  if (!saved.ok) return
+  const result = saved.value
+  if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
   response.status(201).json(await getProjectPackageTimeline(projectId))
+}))
+
+app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const assigneeUserId = await ensureProjectMemberUserId(
+    request.body.assigneeUserId,
+    projectId,
+    access.ownerUserId,
+  )
+  if (!assigneeUserId) {
+    response.status(400).json({ error: 'Package event assignee must be a project member' })
+    return
+  }
+  const aggregate = parseProjectPackageEventAggregateBody(request.body)
+  if (aggregate.items.some((item) => !isAllowedPackageMarketObjectKey(item.objectKey))) {
+    response.status(400).json({ error: '安装包对象路径不在允许范围内' })
+    return
+  }
+  const saved = await runProjectPackageEventMutation(response, () => saveProjectPackageEvent({
+    action: aggregate.action,
+    assignedByUserId: userId,
+    assigneeUserId,
+    createdByUserId: userId,
+    deliveryDate: String(request.body.deliveryDate ?? ''),
+    documents: aggregate.documents,
+    eventId: Number(request.params.eventId),
+    items: aggregate.items,
+    projectId,
+    title: String(request.body.title ?? ''),
+    type: ensureProjectPackageEventType(request.body.type),
+  }))
+  if (!saved.ok) return
+  const result = saved.value
+  if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events/:eventId/complete', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const completed = await runProjectPackageEventMutation(response, () => completeProjectPackageEvent({
+    eventId: Number(request.params.eventId),
+    projectId,
+  }))
+  if (!completed.ok) return
+  response.json(await getProjectPackageTimeline(projectId))
 }))
 
 app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
@@ -10545,25 +10674,6 @@ app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHand
   const access = await getProjectAccess(projectId, userId)
   if (!access) {
     response.status(404).json({ error: 'Project not found' })
-    return
-  }
-  const previousEvent = await query<{
-    assignee_user_id: string | null
-    status: ProjectPackageEventStatus
-  }>(
-    `
-    select assignee_user_id, status
-    from project_package_events
-    where id = $1 and project_id = $2
-    `,
-    [Number(request.params.eventId), projectId],
-  )
-  const previousAssigneeUserId = previousEvent.rows[0]?.assignee_user_id
-    ? Number(previousEvent.rows[0].assignee_user_id)
-    : null
-  const previousStatus = previousEvent.rows[0]?.status
-  if (!previousStatus) {
-    response.status(404).json({ error: 'Package event not found' })
     return
   }
   let nextAssigneeUserId: number | null | undefined
@@ -10578,68 +10688,24 @@ app.patch('/api/projects/:projectId/package-timeline/events/:eventId', asyncHand
       return
     }
   }
-  const nextStatus = 'status' in request.body
-    ? ensureProjectPackageEventStatus(request.body.status)
-    : undefined
+  if ('status' in request.body) {
+    response.status(409).json({ error: 'Use the event completion action after publishing' })
+    return
+  }
   const eventId = Number(request.params.eventId)
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    await updateProjectPackageEvent({
-      client,
-      projectId,
-      eventId,
-      ...('assigneeUserId' in request.body
-        ? {
-            assigneeUserId: nextAssigneeUserId,
-            assignedByUserId: userId,
-          }
-        : {}),
-      deliveryDate: 'deliveryDate' in request.body ? String(request.body.deliveryDate ?? '') : undefined,
-      status: nextStatus,
-      title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
-      type: 'type' in request.body ? ensureProjectPackageEventType(request.body.type) : undefined,
-    })
-    if (shouldRetirePackageEventNotification(previousStatus, nextStatus)) {
-      await client.query(
-        `
-        insert into notification_deliveries (
-          user_id,
-          kind,
-          source_id,
-          channel,
-          target_type,
-          target_id,
-          status,
-          updated_at
-        )
-        values ($1, 'package_event_assigned', $2, 'in_app', 'event', $3, 'retired', now())
-        on conflict (kind, source_id, channel, target_type, target_id) do update
-          set status = 'retired',
-              updated_at = now()
-        `,
-        [userId, eventId, String(eventId)],
-      )
-    }
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally {
-    client.release()
-  }
-  if (nextAssigneeUserId && nextAssigneeUserId !== previousAssigneeUserId) {
-    await query(
-      `
-      delete from notification_deliveries
-      where kind = 'package_event_assigned'
-        and source_id = $1
-        and channel = 'feishu'
-      `,
-      [eventId],
-    )
-    enqueueLatestAssignedPackageEventDelivery(eventId)
-  }
+  await updateProjectPackageEvent({
+    projectId,
+    eventId,
+    ...('assigneeUserId' in request.body
+      ? {
+          assigneeUserId: nextAssigneeUserId,
+          assignedByUserId: userId,
+        }
+      : {}),
+    deliveryDate: 'deliveryDate' in request.body ? String(request.body.deliveryDate ?? '') : undefined,
+    title: 'title' in request.body ? String(request.body.title ?? '') : undefined,
+    type: 'type' in request.body ? ensureProjectPackageEventType(request.body.type) : undefined,
+  })
   response.json(await getProjectPackageTimeline(projectId))
 }))
 

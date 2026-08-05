@@ -118,7 +118,6 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   acceptOrganizationInviteLink,
   acceptProjectInvitation,
-  addProjectPackageItems,
   archiveDraft,
   createProjectModule,
   createDraft,
@@ -164,6 +163,7 @@ import {
   loginAccount,
   registerAccount,
   clearAuthToken,
+  completeProjectPackageEvent,
   removeDraft,
   removeJournalEntry,
   removeProjectPackageEvent,
@@ -179,7 +179,6 @@ import {
   resolveRiskFromJournal,
   disconnectFeishuAccount,
   updateJournalEntry,
-  updateProjectPackageEvent,
   updateProjectPackageOperation,
   updateProject,
   updateProjectFeishuSettings,
@@ -189,6 +188,7 @@ import {
   setAuthToken,
   classifyAiConversationTurnIntent,
   sendAiConversationTurn,
+  saveProjectPackageEventDraft,
   retryAiConversationTurn,
   cancelAiConversationTurn,
   reconcileAiConversationTurn,
@@ -218,10 +218,9 @@ import type {
   Project,
   ProjectModule,
   ProjectPackageEvent,
-  ProjectPackageEventStatus,
+  ProjectPackageEventSavePayload,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
-  ProjectPackageEventType,
   ProjectPackageOperationKind,
   ProjectMembership,
   ProjectStatus,
@@ -261,7 +260,6 @@ import {
   type ProjectPackageWorkbenchHandle,
 } from './components/project-package-workbench'
 import {
-  removePackageEventNotification,
   startNotificationRefreshSchedule,
   workspaceRefreshIntervalMs,
 } from './notifications'
@@ -3344,63 +3342,51 @@ function App() {
     return Boolean(data)
   }
 
-  async function createInstallEvent(payload: {
-    assigneeUserId: number
-    deliveryDate: string
-    title: string
-    type: ProjectPackageEventType
-  }) {
+  async function saveInstallEvent(
+    eventId: number | null,
+    payload: ProjectPackageEventSavePayload,
+  ) {
     if (!selectedProject) return null
-    const previousEvents = projectPackageTimelines[selectedProject.id]?.events ?? []
-    const previousEventIds = new Set(previousEvents.map((event) => event.id))
     try {
-      const timeline = await createProjectPackageEvent(selectedProject.id, payload)
+      const timeline = eventId == null
+        ? await createProjectPackageEvent(selectedProject.id, payload)
+        : await saveProjectPackageEventDraft(selectedProject.id, eventId, payload)
+      setProjectPackageTimelines((current) => ({
+        ...current,
+        [selectedProject.id]: timeline,
+      }))
+      if (payload.action === 'publish') await refreshNotifications()
+      setWorkspaceError('')
+      return eventId == null
+        ? [...timeline.events].sort((left, right) => right.id - left.id)[0] ?? null
+        : timeline.events.find((event) => event.id === eventId) ?? null
+    } catch {
+      setWorkspaceError(payload.action === 'publish'
+        ? '交付事件发布失败，请检查必填内容后重试。'
+        : '交付事件草稿保存失败，请稍后再试。')
+      return null
+    }
+  }
+
+  async function completeInstallEvent(eventId: number) {
+    if (!selectedProject) return false
+    try {
+      const timeline = await completeProjectPackageEvent(selectedProject.id, eventId)
       setProjectPackageTimelines((current) => ({
         ...current,
         [selectedProject.id]: timeline,
       }))
       await refreshNotifications()
       setWorkspaceError('')
-      return timeline.events
-        .filter((event) => !previousEventIds.has(event.id))
-        .sort((left, right) => right.id - left.id)[0] ?? null
+      return true
     } catch {
-      setWorkspaceError('安装事件创建失败，请稍后再试。')
-      return null
-    }
-  }
-
-  async function updateInstallEvent(
-    eventId: number,
-    payload: Partial<{
-      assigneeUserId: number
-      deliveryDate: string
-      status: ProjectPackageEventStatus
-      title: string
-      type: ProjectPackageEventType
-    }>,
-  ) {
-    if (!selectedProject) return
-    try {
-      const timeline = await updateProjectPackageEvent(selectedProject.id, eventId, payload)
-      setProjectPackageTimelines((current) => ({
-        ...current,
-        [selectedProject.id]: timeline,
-      }))
-      if (payload.status && payload.status !== 'draft') {
-        setNotifications((current) => removePackageEventNotification(current, eventId))
-      }
-      if (payload.status) {
-        await refreshNotifications()
-      }
-      setWorkspaceError('')
-    } catch {
-      setWorkspaceError('安装事件更新失败，请稍后再试。')
+      setWorkspaceError('交付事件状态更新失败，请稍后再试。')
+      return false
     }
   }
 
   async function deleteInstallEvent(eventId: number) {
-    if (!selectedProject) return
+    if (!selectedProject) return false
     try {
       const timeline = await removeProjectPackageEvent(selectedProject.id, eventId)
       setProjectPackageTimelines((current) => ({
@@ -3414,36 +3400,10 @@ function App() {
         // The event is already deleted, so keep the timeline result if workspace refresh fails.
       }
       setWorkspaceError('')
+      return true
     } catch {
       setWorkspaceError('安装事件删除失败，请稍后再试。')
-    }
-  }
-
-  async function addInstallItems(
-    eventId: number,
-    items: Array<{
-      sourcePackageId: string
-      sourcePackageName: string
-      packageName: string
-      channel: string
-      channelLabel: string
-      arch: string
-      version: string
-      objectKey: string
-      objectLastModified?: string
-      sizeBytes?: number
-    }>,
-  ) {
-    if (!selectedProject) return
-    try {
-      const timeline = await addProjectPackageItems(selectedProject.id, eventId, { items })
-      setProjectPackageTimelines((current) => ({
-        ...current,
-        [selectedProject.id]: timeline,
-      }))
-      setWorkspaceError('')
-    } catch (error) {
-      setWorkspaceError(formatApiErrorDiagnostic(error, '安装包记录保存失败，请稍后再试。'))
+      return false
     }
   }
 
@@ -4708,18 +4668,6 @@ ${packageTimelineText}`
                   >
                     <DownloadSimple size={17} /> 导出时间线
                   </Button>
-                  {selectedProject && !selectedProject.readOnly && (
-                    <Button
-                      className="solid-button"
-                      type="button"
-                      disabled={
-                        (projectPackageTimelines[selectedProject.id]?.events.length ?? 0) === 0
-                      }
-                      onClick={() => packageWorkbenchRef.current?.openPackageMarket()}
-                    >
-                      <ShoppingCartSimple size={17} /> 添加事件安装包
-                    </Button>
-                  )}
                 </>
               ) : (
                 <>
@@ -4881,7 +4829,7 @@ ${packageTimelineText}`
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
             onAddTodo={addTodo}
-            onCreateInstallEvent={createInstallEvent}
+            onCompleteInstallEvent={completeInstallEvent}
             onCreateInstallOperation={createInstallOperation}
             onDeleteInstallEvent={deleteInstallEvent}
             onDeleteInstallGroup={deleteInstallGroup}
@@ -4893,10 +4841,9 @@ ${packageTimelineText}`
             onInstallLoadMarketCiBranches={loadPackageMarketCiBranches}
             onInstallLoadMarketRules={loadPackageMarketRules}
             onInstallLoadMarketVersions={loadPackageMarketVersions}
-            onInstallSelectPackages={addInstallItems}
+            onSaveInstallEvent={saveInstallEvent}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
             onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
-            onUpdateInstallEvent={updateInstallEvent}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
             onDeleteJournalEntry={deleteJournalEntry}
@@ -5640,7 +5587,7 @@ function ProjectDetail({
   packageWorkbenchRef,
   projectDetailTab,
   onAddTodo,
-  onCreateInstallEvent,
+  onCompleteInstallEvent,
   onCreateInstallOperation,
   onDeleteInstallEvent,
   onDeleteInstallGroup,
@@ -5652,8 +5599,7 @@ function ProjectDetail({
   onInstallLoadItemDownloadUrl,
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
-  onInstallSelectPackages,
-  onUpdateInstallEvent,
+  onSaveInstallEvent,
   onUpdateInstallOperation,
   onSaveJournal,
   onDeleteJournalEntry,
@@ -5699,12 +5645,7 @@ function ProjectDetail({
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
   onAddTodo: (projectId: number) => void | Promise<void>
-  onCreateInstallEvent: (payload: {
-    assigneeUserId: number
-    deliveryDate: string
-    title: string
-    type: ProjectPackageEventType
-  }) => Promise<ProjectPackageEvent | null>
+  onCompleteInstallEvent: (eventId: number) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -5717,7 +5658,7 @@ function ProjectDetail({
     relatedTodoIds?: number[]
     relatedTodoNotes?: Record<number, string>
   }) => Promise<boolean>
-  onDeleteInstallEvent: (eventId: number) => Promise<void>
+  onDeleteInstallEvent: (eventId: number) => Promise<boolean>
   onDeleteInstallGroup: (groupId: number) => Promise<void>
   onDeleteInstallOperation: (operationId: number) => Promise<void>
   onDraftChange: (value: string) => void
@@ -5744,31 +5685,10 @@ function ProjectDetail({
     deployType?: 'pro' | 'oss'
     packageId: string
   }) => Promise<PackageMarketVersion[]>
-  onInstallSelectPackages: (
-    eventId: number,
-    items: Array<{
-      sourcePackageId: string
-      sourcePackageName: string
-      packageName: string
-      channel: string
-      channelLabel: string
-      arch: string
-      version: string
-      objectKey: string
-      objectLastModified?: string
-      sizeBytes?: number
-    }>,
-  ) => Promise<void>
-  onUpdateInstallEvent: (
-    eventId: number,
-    payload: Partial<{
-      assigneeUserId: number
-      deliveryDate: string
-      status: ProjectPackageEventStatus
-      title: string
-      type: ProjectPackageEventType
-    }>,
-  ) => Promise<void>
+  onSaveInstallEvent: (
+    eventId: number | null,
+    payload: ProjectPackageEventSavePayload,
+  ) => Promise<ProjectPackageEvent | null>
   onUpdateInstallOperation: (
     operationId: number,
     payload: Partial<{
@@ -5956,8 +5876,7 @@ function ProjectDetail({
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
-            onAddItems={onInstallSelectPackages}
-            onCreateEvent={onCreateInstallEvent}
+            onCompleteEvent={onCompleteInstallEvent}
             onCreateOperation={onCreateInstallOperation}
             onDeleteEvent={onDeleteInstallEvent}
             onDeleteGroup={onDeleteInstallGroup}
@@ -5968,7 +5887,7 @@ function ProjectDetail({
             onLoadPackageItemDownloadUrl={onInstallLoadItemDownloadUrl}
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}
-            onUpdateEvent={onUpdateInstallEvent}
+            onSaveEvent={onSaveInstallEvent}
             onUpdateOperation={onUpdateInstallOperation}
             onUpdateTodo={onUpdateTodo}
             currentUserId={currentUser?.id}

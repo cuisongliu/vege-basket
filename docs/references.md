@@ -136,7 +136,7 @@ families are:
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
-| Package timeline | `/api/projects/:projectId/package-timeline/*`, package-item download URLs and timeline export |
+| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
@@ -193,7 +193,15 @@ must remain bound to the authorized project ID.
   recipient. Editing a note can notify newly mentioned recipients, while the idempotent
   delivery key prevents repeat messages to recipients already notified for that note.
 - Package event type: `init`, `upgrade`.
-- Package event status: `draft`, `delivering`, `delivered`.
+- Package event status: `draft`, `delivering`, `delivered`. `publishedAt` is absent for an
+  editable draft. Publishing atomically records `publishedAt`, changes the status to
+  `delivering`, makes the event read-only, and schedules the Feishu assignment notification.
+  A published event supports only the `delivering` to `delivered` completion action.
+- Package event aggregate save accepts `action` (`save_draft` or `publish`), basic event
+  fields, zero or more selected package `items`, and `documents`. Publishing always requires
+  one event-scoped Markdown document; each selected package may additionally have one
+  package-scoped Markdown document. Each document may independently include optional project
+  todo associations through `relatedTodoIds`. A saved draft may retain incomplete document content.
 - Package operation kind: `document`, `event`.
 - Package operation status: `pending`, `success`, `failed`.
 - Package market channel: `release`, `ci`.

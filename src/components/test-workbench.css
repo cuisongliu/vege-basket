@@ -2897,6 +2897,9 @@
 
 .assigned-bugs-shell {
   padding: 20px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .assigned-bugs-workspace {
@@ -2906,8 +2909,8 @@
   min-height: 0;
   margin: 0 auto;
   flex: 1 1 auto;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
 }
 
 .dark .assigned-bugs-workspace {
@@ -2916,7 +2919,9 @@
 }
 
 .assigned-bugs-workspace .test-split-view {
-  height: 100%;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .assigned-bugs-workspace > .test-inline-empty,
@@ -2937,7 +2942,55 @@
 }
 
 .assigned-bugs-shell .test-split-view {
-  height: calc(100dvh - 104px);
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.assigned-bugs-filter-toolbar {
+  min-height: 42px;
+  padding: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.assigned-bugs-filter-toolbar .todo-filter-open-button {
+  width: auto;
+  min-width: 82px;
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.assigned-bugs-filter-toolbar .todo-filter-open-button.active {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--strong);
+}
+
+.assigned-bugs-filter-count {
+  min-width: 18px;
+  height: 18px;
+  padding-inline: 5px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.assigned-bugs-filter-summary {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.assigned-bugs-filter-empty {
+  flex: 1 1 auto;
 }
 
 @media (max-width: 1100px) {

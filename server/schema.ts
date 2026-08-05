@@ -1125,9 +1125,33 @@ create table if not exists project_package_events (
   assigned_by_user_id bigint references users(id) on delete set null,
   assigned_at timestamptz,
   delivery_date date not null default current_date,
+  published_at timestamptz,
+  published_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Existing events were already visible and notified immediately after creation.
+-- Mark them published only when this column is first introduced so future drafts
+-- remain unpublished across repeated schema initialization.
+do $$
+begin
+  if not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = current_schema()
+      and table_name = 'project_package_events'
+      and column_name = 'published_at'
+  ) then
+    alter table project_package_events
+      add column published_at timestamptz,
+      add column published_by_user_id bigint references users(id) on delete set null;
+
+    update project_package_events
+    set published_at = created_at,
+        published_by_user_id = created_by_user_id;
+  end if;
+end $$;
 
 alter table project_package_events
   add column if not exists status text not null default 'draft';
@@ -1143,8 +1167,42 @@ alter table project_package_events
 alter table project_package_events
   add column if not exists delivery_date date not null default current_date;
 
+alter table project_package_events
+  add column if not exists published_at timestamptz,
+  add column if not exists published_by_user_id bigint references users(id) on delete set null;
+
+update project_package_events
+set status = case
+  when published_at is null then 'draft'
+  when status in ('delivered', 'success') then 'delivered'
+  else 'delivering'
+end
+where status not in ('draft', 'delivering', 'delivered')
+   or (published_at is null and status <> 'draft')
+   or (published_at is not null and status = 'draft');
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'project_package_events_lifecycle_check'
+      and conrelid = 'project_package_events'::regclass
+  ) then
+    alter table project_package_events
+      add constraint project_package_events_lifecycle_check
+      check (
+        (published_at is null and status = 'draft')
+        or (published_at is not null and status in ('delivering', 'delivered'))
+      );
+  end if;
+end $$;
+
 create index if not exists idx_project_package_events_assignee
   on project_package_events (assignee_user_id, created_at desc);
+
+create index if not exists idx_project_package_events_publication
+  on project_package_events (project_id, published_at, created_at desc);
 
 create unique index if not exists idx_project_package_events_id_project_id_unique
   on project_package_events(id, project_id);

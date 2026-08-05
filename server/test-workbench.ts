@@ -2754,24 +2754,40 @@ async function getAssignedBugs(userId: number) {
     expected_result: string
     id: string
     priority: string
+    reporter_display_name: string | null
+    reporter_email: string | null
+    reporter_user_id: string | null
     reproduction_steps: string
     severity: string
     status: BugStatus
+    test_plan_id: string | null
+    test_plan_name: string | null
     test_space_id: string
+    test_space_name: string
+    test_subject_id: string
+    test_subject_name: string
     title: string
     updated_at: Date
     organization_id: string | null
     organization_admin_access: boolean
   }>(
     `
-    select b.id, b.test_space_id, b.assignee_user_id, b.title, b.severity, b.priority,
+    select b.id, b.test_space_id, b.test_subject_id, b.test_plan_id,
+      b.reporter_user_id, b.assignee_user_id, b.title, b.severity, b.priority,
       b.status, b.environment, b.reproduction_steps, b.expected_result, b.actual_result,
       b.created_at, b.updated_at,
       space.organization_id as organization_id,
+      space.name as test_space_name,
+      subject.name as test_subject_name,
+      plan.name as test_plan_name,
+      reporter.display_name as reporter_display_name, reporter.email as reporter_email,
       assignee.display_name as assignee_display_name, assignee.email as assignee_email,
       ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
+    join test_subjects subject on subject.id = b.test_subject_id
+    left join test_plans plan on plan.id = b.test_plan_id
+    left join users reporter on reporter.id = b.reporter_user_id
     left join users assignee on assignee.id = b.assignee_user_id
     where (
       b.assignee_user_id = $1 and b.status not in ('closed', 'rejected', 'duplicate')
@@ -2912,10 +2928,17 @@ async function getAssignedBugs(userId: number) {
         ? membersByOrganization.get(Number(row.organization_id)) ?? []
         : [],
       priority: row.priority,
+      reporterName: row.reporter_display_name || row.reporter_email || undefined,
+      reporterUserId: row.reporter_user_id ? Number(row.reporter_user_id) : undefined,
       reproductionSteps: decryptText(row.reproduction_steps),
       severity: row.severity,
       status: row.status,
+      testPlanId: row.test_plan_id ? Number(row.test_plan_id) : undefined,
+      testPlanName: row.test_plan_name ? decryptText(row.test_plan_name) : undefined,
       testSpaceId: Number(row.test_space_id),
+      testSpaceName: decryptText(row.test_space_name),
+      testSubjectId: Number(row.test_subject_id),
+      testSubjectName: decryptText(row.test_subject_name),
       title: decryptText(row.title),
       transferCandidates: row.organization_id
         ? (transferCandidatesByOrganization.get(Number(row.organization_id)) ?? [])

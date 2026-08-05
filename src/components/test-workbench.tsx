@@ -17,6 +17,7 @@ import {
   FileText,
   Flask,
   FolderPlus,
+  FunnelSimple,
   GearSix,
   ListChecks,
   MagnifyingGlass,
@@ -55,6 +56,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
 import { WeeklyReportWorkbench } from './weekly-report-workbench'
+import {
+  BugFilterBuilderDialog,
+  type BugFilterOption,
+  type BugFilterOptions,
+} from './bug-filter-builder-dialog'
+import {
+  matchesBugFilterConditions,
+  type BugFilterCondition,
+  type BugFilterJoin,
+} from './bug-filter'
 import { uploadWorkbenchAttachment } from '@/api'
 import {
   addAssignedTestBugComment,
@@ -187,6 +198,20 @@ const severityLabel: Record<BugSeverity, string> = {
   major: '主要',
   minor: '次要',
   trivial: '轻微',
+}
+
+function uniqueBugFilterOptions(
+  bugs: TestBug[],
+  getOption: (bug: TestBug) => BugFilterOption | undefined,
+) {
+  const options = new Map<string, BugFilterOption>()
+  for (const bug of bugs) {
+    const option = getOption(bug)
+    if (option) options.set(option.value, option)
+  }
+  return Array.from(options.values()).sort((left, right) => (
+    left.label.localeCompare(right.label, 'zh-CN')
+  ))
 }
 const PLAN_EXECUTION_ROW_BLOCK_SIZE = 88
 const emptyTestSpaceSettings: TestSpaceSettings = { invitations: [], organizations: [], spaces: [] }
@@ -3580,6 +3605,9 @@ export function AssignedTestBugs({
   const [error, setError] = useState('')
   const [transferBug, setTransferBug] = useState<TestBug>()
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [filterDialogOpen, setFilterDialogOpen] = useState(false)
+  const [filterJoin, setFilterJoin] = useState<BugFilterJoin>('and')
+  const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>([])
   const refreshInFlightRef = useRef(false)
 
   useEffect(() => {
@@ -3630,7 +3658,38 @@ export function AssignedTestBugs({
     }
   }, [onBugsChange])
 
-  const selected = useMemo(() => bugs.find((bug) => bug.id === selectedId), [bugs, selectedId])
+  const filteredBugs = useMemo(() => bugs.filter((bug) => (
+    matchesBugFilterConditions(bug, filterConditions, filterJoin)
+  )), [bugs, filterConditions, filterJoin])
+  const selected = useMemo(
+    () => filteredBugs.find((bug) => bug.id === selectedId),
+    [filteredBugs, selectedId],
+  )
+  const filterOptions = useMemo<BugFilterOptions>(() => ({
+    assignees: uniqueBugFilterOptions(bugs, (bug) => bug.assigneeUserId && bug.assigneeName
+      ? { label: bug.assigneeName, value: String(bug.assigneeUserId) }
+      : undefined),
+    plans: uniqueBugFilterOptions(bugs, (bug) => bug.testPlanId && bug.testPlanName
+      ? { label: bug.testPlanName, value: String(bug.testPlanId) }
+      : undefined),
+    reporters: uniqueBugFilterOptions(bugs, (bug) => bug.reporterUserId && bug.reporterName
+      ? { label: bug.reporterName, value: String(bug.reporterUserId) }
+      : undefined),
+    spaces: uniqueBugFilterOptions(bugs, (bug) => bug.testSpaceName
+      ? { label: bug.testSpaceName, value: String(bug.testSpaceId) }
+      : undefined),
+    subjects: uniqueBugFilterOptions(bugs, (bug) => bug.testSubjectId && bug.testSubjectName
+      ? { label: bug.testSubjectName, value: String(bug.testSubjectId) }
+      : undefined),
+  }), [bugs])
+
+  useEffect(() => {
+    setSelectedId((current) => (
+      current && filteredBugs.some((bug) => bug.id === current)
+        ? current
+        : filteredBugs[0]?.id
+    ))
+  }, [filteredBugs])
 
   useEffect(() => {
     if (selected) onBugSeen?.(selected)
@@ -3676,14 +3735,43 @@ export function AssignedTestBugs({
         </header>
       ) : null}
       <WorkspaceError message={error} />
+      {!loading && bugs.length > 0 ? (
+        <div className="assigned-bugs-filter-toolbar">
+          <Button
+            className={filterConditions.length > 0 ? 'todo-filter-open-button active' : 'todo-filter-open-button'}
+            type="button"
+            variant="outline"
+            onClick={() => setFilterDialogOpen(true)}
+          >
+            <FunnelSimple />
+            筛选
+            {filterConditions.length > 0 ? (
+              <span className="assigned-bugs-filter-count">{filterConditions.length}</span>
+            ) : null}
+          </Button>
+          <span className="assigned-bugs-filter-summary">
+            {filterConditions.length > 0
+              ? `${filteredBugs.length} / ${bugs.length} 条 Bug`
+              : `共 ${bugs.length} 条 Bug`}
+          </span>
+        </div>
+      ) : null}
       {loading ? (
         <p className="test-list-empty">正在加载...</p>
       ) : bugs.length === 0 ? (
         <div className="test-inline-empty"><CheckCircle size={32} /><h2>没有可查看的 Bug</h2></div>
+      ) : filteredBugs.length === 0 ? (
+        <div className="test-inline-empty assigned-bugs-filter-empty">
+          <FunnelSimple size={32} />
+          <h2>没有符合筛选条件的 Bug</h2>
+          <Button type="button" variant="outline" onClick={() => setFilterConditions([])}>
+            清除筛选
+          </Button>
+        </div>
       ) : (
         <div className="test-split-view">
           <div className="test-record-list">
-            {bugs.map((bug) => (
+            {filteredBugs.map((bug) => (
               <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(bug.id)}>
                 <div><code>BUG-{bug.id}</code><Badge variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
                 <strong>{bug.title}</strong>
@@ -3751,6 +3839,17 @@ export function AssignedTestBugs({
           assigneeUserId,
           reason,
         }))}
+      />
+      <BugFilterBuilderDialog
+        conditions={filterConditions}
+        join={filterJoin}
+        open={filterDialogOpen}
+        options={filterOptions}
+        onOpenChange={setFilterDialogOpen}
+        onApply={(next) => {
+          setFilterConditions(next.conditions)
+          setFilterJoin(next.join)
+        }}
       />
     </Root>
   )

@@ -334,7 +334,38 @@ export type ProjectPackageEvent = {
   deliveryDate: string
   updatedAt: string
   operations: ProjectPackageOperation[]
+  publishedAt?: string
+  publishedByUserId?: number
   groups: ProjectPackageGroup[]
+}
+
+export type ProjectPackageEventDocumentInput = {
+  content: string
+  packageName?: string
+  relatedTodoIds: number[]
+  scope: 'event' | 'package'
+  title: string
+}
+
+export type ProjectPackageEventSavePayload = {
+  action: 'publish' | 'save_draft'
+  assigneeUserId: number
+  deliveryDate: string
+  documents: ProjectPackageEventDocumentInput[]
+  items: Array<{
+    sourcePackageId: string
+    sourcePackageName: string
+    packageName: string
+    channel: string
+    channelLabel: string
+    arch: string
+    version: string
+    objectKey: string
+    objectLastModified?: string
+    sizeBytes?: number
+  }>
+  title: string
+  type: ProjectPackageEventType
 }
 
 export type ProjectPackageTimeline = {

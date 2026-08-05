@@ -78,7 +78,11 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   session-scoped business personas, additive organization-administrator capability,
   and resource-scoped read/write authorization boundaries.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
-  multi-table writes, encrypted timeline fields, and Markdown export.
+  aggregate draft saves, one-way publication/completion transitions, encrypted timeline
+  fields, document-level todo links, and Markdown export. Publication atomically replaces
+  the draft's packages, documents, and document todo links, changes the event to `delivering`,
+  and makes document content and package structure read-only. Project members may continue
+  managing document todo links, their notes, and todo completion after publication.
 - `server/package-market.ts`: OSS configuration, package rules, object-key allowlisting,
   object access, and signed download URLs.
 - `server/image-sync-workflows.ts`: fixed-repository GitHub workflow dispatch, encrypted

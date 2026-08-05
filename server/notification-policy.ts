@@ -1,14 +1,3 @@
-import type { ProjectPackageEventStatus } from './project-package-timeline.ts'
-
-export function shouldRetirePackageEventNotification(
-  previousStatus: ProjectPackageEventStatus,
-  nextStatus: ProjectPackageEventStatus | undefined,
-) {
-  return nextStatus !== undefined && (
-    previousStatus !== 'draft' || nextStatus !== 'draft'
-  )
-}
-
 export function hasTodoWatcherChanged(
   previousWatcherUserId: number | null,
   nextWatcherUserId: number | null | undefined,

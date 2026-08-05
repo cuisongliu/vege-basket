@@ -8,7 +8,6 @@ import {
   resolveTodoReviewerUserId,
   resolveTodoNoteRecipientUserIds,
   shouldDeliverNotificationToProjectChat,
-  shouldRetirePackageEventNotification,
 } from './notification-policy.ts'
 import {
   notificationRefreshIntervalMs,
@@ -22,8 +21,16 @@ import type { NotificationCenterData, TodoNotification } from '../src/types.ts'
 const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
+const packageTimelineSource = readFileSync(
+  new URL('./project-package-timeline.ts', import.meta.url),
+  'utf8',
+)
 const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.meta.url), 'utf8')
 const testWorkbenchClientSource = readFileSync(new URL('../src/components/test-workbench.tsx', import.meta.url), 'utf8')
+const packageWorkbenchSource = readFileSync(
+  new URL('../src/components/project-package-workbench.tsx', import.meta.url),
+  'utf8',
+)
 
 test('notification center exposes a read-all endpoint without dismissing notifications', () => {
   const routeStart = serverSource.indexOf("app.patch('/api/notifications/read-all'")
@@ -163,13 +170,23 @@ test('removes only the delivery event whose status advanced', () => {
   assert.equal(result.assignedTodos, notifications.assignedTodos)
 })
 
-test('retires a delivery event notification after it leaves draft for the first time', () => {
-  assert.equal(shouldRetirePackageEventNotification('draft', 'delivering'), true)
-  assert.equal(shouldRetirePackageEventNotification('draft', 'delivered'), true)
-  assert.equal(shouldRetirePackageEventNotification('delivering', 'draft'), true)
-  assert.equal(shouldRetirePackageEventNotification('delivered', 'draft'), true)
-  assert.equal(shouldRetirePackageEventNotification('draft', 'draft'), false)
-  assert.equal(shouldRetirePackageEventNotification('draft', undefined), false)
+test('publishes delivery events before exposing assignment notifications', () => {
+  assert.match(serverSource, /and e\.published_at is not null\s+and e\.status = 'delivering'/u)
+  assert.match(serverSource, /where e\.id = \$1\s+and e\.published_at is not null/u)
+  assert.match(serverSource, /if \(result\.published\) enqueueLatestAssignedPackageEventDelivery\(result\.eventId\)/u)
+  assert.match(schemaSource, /column_name = 'published_at'[\s\S]*set published_at = created_at/u)
+  assert.match(schemaSource, /project_package_events_lifecycle_check/u)
+  assert.match(
+    packageTimelineSource,
+    /status: ensureProjectPackageEventStatus\(row\.status, row\.published_at\)/u,
+  )
+  assert.match(
+    packageTimelineSource,
+    /and published_at is not null\s+and status = 'delivering'/u,
+  )
+  assert.doesNotMatch(packageWorkbenchSource, /已发布/u)
+  assert.match(packageWorkbenchSource, /onClick=\{\(\) => void saveEvent\('publish'\)\}/u)
+  assert.doesNotMatch(packageWorkbenchSource, /eventDialogOpen/u)
 })
 
 test('detects only explicit todo watcher changes', () => {

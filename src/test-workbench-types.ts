@@ -176,14 +176,18 @@ export type TestBug = {
   id: number
   organizationMembers?: Array<{ id: number; name: string }>
   priority: Priority
+  reporterName?: string
   reporterUserId?: number
   reproductionSteps: string
   severity: BugSeverity
   status: BugStatus
   testPlanCaseId?: number
   testPlanId?: number
+  testPlanName?: string
   testSpaceId: number
+  testSpaceName?: string
   testSubjectId?: number
+  testSubjectName?: string
   title: string
   transferCandidates?: Array<{ id: number; name: string }>
   updatedAt: string

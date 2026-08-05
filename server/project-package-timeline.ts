@@ -21,6 +21,26 @@ export type ProjectPackageItemInput = {
   version: string
 }
 
+export type ProjectPackageDocumentInput = {
+  content: string
+  packageName?: string
+  relatedTodoIds?: number[]
+  scope: 'event' | 'package'
+  title: string
+}
+
+export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
+
+export class ProjectPackageEventError extends Error {
+  readonly status: 400 | 404 | 409
+
+  constructor(message: string, status: 400 | 404 | 409) {
+    super(message)
+    this.name = 'ProjectPackageEventError'
+    this.status = status
+  }
+}
+
 export type ProjectPackageItem = {
   arch: string
   channel: string
@@ -71,6 +91,8 @@ export type ProjectPackageEvent = {
   groups: ProjectPackageGroup[]
   id: number
   operations: ProjectPackageOperation[]
+  publishedAt?: string
+  publishedByUserId?: number
   status: ProjectPackageEventStatus
   title: string
   type: ProjectPackageEventType
@@ -93,6 +115,8 @@ type EventRow = {
   created_at: Date
   delivery_date: Date | string | null
   id: string
+  published_at: Date | null
+  published_by_user_id: string | null
   status: ProjectPackageEventStatus
   title: string
   type: ProjectPackageEventType
@@ -178,6 +202,14 @@ type NormalizedProjectPackageItem = {
   version: string
 }
 
+type NormalizedProjectPackageDocument = {
+  content: string
+  packageName: string
+  relatedTodoIds: number[]
+  scope: 'event' | 'package'
+  title: string
+}
+
 async function withTransaction<T>(operation: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect()
   try {
@@ -226,11 +258,11 @@ function formatDate(value: Date | string) {
 function normalizeDeliveryDate(value: unknown) {
   const rawDate = String(value ?? '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
-    throw new Error('Delivery date must use YYYY-MM-DD')
+    throw new ProjectPackageEventError('Delivery date must use YYYY-MM-DD', 400)
   }
   const date = new Date(`${rawDate}T00:00:00+08:00`)
   if (Number.isNaN(date.getTime()) || formatDate(date) !== rawDate) {
-    throw new Error('Delivery date is invalid')
+    throw new ProjectPackageEventError('Delivery date is invalid', 400)
   }
   return rawDate
 }
@@ -306,7 +338,14 @@ export function ensureProjectPackageEventType(value: unknown): ProjectPackageEve
   return value === 'init' ? 'init' : 'upgrade'
 }
 
-export function ensureProjectPackageEventStatus(value: unknown): ProjectPackageEventStatus {
+export function ensureProjectPackageEventStatus(
+  value: unknown,
+  publishedAt?: unknown,
+): ProjectPackageEventStatus {
+  if (publishedAt !== undefined) {
+    if (!publishedAt) return 'draft'
+    return value === 'delivered' || value === 'success' ? 'delivered' : 'delivering'
+  }
   if (value === 'delivered' || value === 'success') return 'delivered'
   if (value === 'delivering' || value === 'failed') return 'delivering'
   return 'draft'
@@ -327,21 +366,21 @@ function normalizeText(value: unknown, max = 200) {
 
 function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
   if (items.length === 0) {
-    throw new Error('At least one package item is required')
+    throw new ProjectPackageEventError('At least one package item is required', 400)
   }
 
   return items.map((item, index): NormalizedProjectPackageItem => {
     const packageName = normalizeText(item.packageName, 160)
     const objectKey = normalizeText(item.objectKey, 400)
     if (!packageName || !objectKey) {
-      throw new Error(`Package item ${index + 1} requires packageName and objectKey`)
+      throw new ProjectPackageEventError(`Package item ${index + 1} requires packageName and objectKey`, 400)
     }
 
     let objectLastModified: Date | null = null
     if (item.objectLastModified) {
       objectLastModified = new Date(item.objectLastModified)
       if (Number.isNaN(objectLastModified.getTime())) {
-        throw new Error(`Package item ${index + 1} has an invalid objectLastModified`)
+        throw new ProjectPackageEventError(`Package item ${index + 1} has an invalid objectLastModified`, 400)
       }
     }
 
@@ -349,7 +388,7 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
     if (item.sizeBytes != null) {
       sizeBytes = Math.round(item.sizeBytes)
       if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
-        throw new Error(`Package item ${index + 1} has an invalid sizeBytes`)
+        throw new ProjectPackageEventError(`Package item ${index + 1} has an invalid sizeBytes`, 400)
       }
     }
 
@@ -366,6 +405,35 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
       version: normalizeText(item.version, 80),
     }
   })
+}
+
+function normalizeProjectPackageDocuments(
+  documents: ProjectPackageDocumentInput[],
+  packageNames: Set<string>,
+  allowIncomplete: boolean,
+) {
+  const normalized = documents.map((document, index): NormalizedProjectPackageDocument => {
+    const scope = document.scope === 'package' ? 'package' : 'event'
+    const title = normalizeText(document.title, 120)
+    const content = String(document.content ?? '').trim()
+    const packageName = scope === 'package' ? normalizeText(document.packageName, 160) : ''
+    const relatedTodoIds = normalizeTodoIds(document.relatedTodoIds)
+    if (!allowIncomplete && (!title || !content)) {
+      throw new ProjectPackageEventError(`Document ${index + 1} requires title and content`, 400)
+    }
+    if (scope === 'package' && (!packageName || !packageNames.has(packageName))) {
+      throw new ProjectPackageEventError(`Document ${index + 1} references an unavailable package`, 400)
+    }
+    return { content, packageName, relatedTodoIds, scope, title }
+  })
+
+  const scopes = new Set<string>()
+  for (const document of normalized) {
+    const key = document.scope === 'event' ? 'event' : `package:${document.packageName}`
+    if (scopes.has(key)) throw new ProjectPackageEventError(`Only one document is allowed for ${key}`, 400)
+    scopes.add(key)
+  }
+  return normalized
 }
 
 function normalizePositiveIds(value: unknown) {
@@ -407,28 +475,37 @@ async function touchEvent(eventId: number, client?: PoolClient) {
 
 async function findEventMeta(eventId: number, projectId: number, client?: PoolClient) {
   const sql = `
-    select id, type
+    select id, type, published_at
     from project_package_events
     where id = $1 and project_id = $2
+    ${client ? 'for update' : ''}
   `
   const result = client
-    ? await client.query<{ id: string; type: ProjectPackageEventType }>(sql, [eventId, projectId])
-    : await query<{ id: string; type: ProjectPackageEventType }>(sql, [eventId, projectId])
+    ? await client.query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
+    : await query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
   return result.rows[0] ?? null
+}
+
+function ensureUnpublishedEvent<T extends { published_at: Date | null }>(event: T | null): T {
+  if (!event) throw new ProjectPackageEventError('Event not found', 404)
+  if (event.published_at) throw new ProjectPackageEventError('Published events are read-only', 409)
+  return event
 }
 
 async function findGroupMeta(groupId: number, projectId: number, client?: PoolClient) {
   const sql = `
     select e.id as event_id,
+           e.published_at,
            g.id as group_id,
            g.package_name
     from project_package_groups g
     join project_package_events e on e.id = g.project_package_event_id
     where g.id = $1 and e.project_id = $2
+    ${client ? 'for update of e' : ''}
   `
   const result = client
-    ? await client.query<{ event_id: string; group_id: string; package_name: string }>(sql, [groupId, projectId])
-    : await query<{ event_id: string; group_id: string; package_name: string }>(sql, [groupId, projectId])
+    ? await client.query<{ event_id: string; group_id: string; package_name: string; published_at: Date | null }>(sql, [groupId, projectId])
+    : await query<{ event_id: string; group_id: string; package_name: string; published_at: Date | null }>(sql, [groupId, projectId])
   return result.rows[0] ?? null
 }
 
@@ -437,7 +514,8 @@ async function findOperationMeta(operationId: number, projectId: number, client?
     select o.id,
            o.project_package_event_id as event_id,
            o.project_package_group_id as group_id,
-           o.completed
+           o.completed,
+           e.published_at
     from project_package_operations o
     join project_package_events e on e.id = o.project_package_event_id
     where o.id = $1
@@ -451,6 +529,7 @@ async function findOperationMeta(operationId: number, projectId: number, client?
             and g.project_package_event_id = o.project_package_event_id
         )
       )
+    ${client ? 'for update of e' : ''}
   `
   const result = client
     ? await client.query<{
@@ -458,12 +537,14 @@ async function findOperationMeta(operationId: number, projectId: number, client?
         event_id: string
         group_id: string | null
         id: string
+        published_at: Date | null
       }>(sql, [operationId, projectId])
     : await query<{
         completed: boolean
         event_id: string
         group_id: string | null
         id: string
+        published_at: Date | null
       }>(sql, [operationId, projectId])
   return result.rows[0] ?? null
 }
@@ -483,7 +564,7 @@ async function ensureProjectTodoIds(projectId: number, todoIds: number[], client
     : await query<{ id: string }>(sql, [projectId, normalizedTodoIds])
   const foundTodoIds = new Set(result.rows.map((row) => Number(row.id)))
   if (foundTodoIds.size !== normalizedTodoIds.length) {
-    throw new Error('Some todos were not found in this project')
+    throw new ProjectPackageEventError('Some todos were not found in this project', 400)
   }
   return normalizedTodoIds
 }
@@ -1086,6 +1167,8 @@ export async function getProjectPackageTimeline(projectId: number) {
              e.assigned_by_user_id,
              e.assigned_at,
              e.delivery_date,
+             e.published_at,
+             e.published_by_user_id,
              e.created_at,
              e.updated_at,
              assignee.email as assignee_email,
@@ -1282,8 +1365,10 @@ export async function getProjectPackageTimeline(projectId: number) {
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       id: Number(row.id),
+      publishedAt: row.published_at ? formatDateTime(row.published_at) : undefined,
+      publishedByUserId: row.published_by_user_id ? Number(row.published_by_user_id) : undefined,
       type: row.type,
-      status: ensureProjectPackageEventStatus(row.status),
+      status: ensureProjectPackageEventStatus(row.status, row.published_at),
       title: decryptText(row.title),
       createdAt: formatDateTime(row.created_at),
       deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
@@ -1292,6 +1377,236 @@ export async function getProjectPackageTimeline(projectId: number) {
       groups: groupsByEvent.get(Number(row.id)) ?? [],
     })),
   } satisfies ProjectPackageTimeline
+}
+
+export async function saveProjectPackageEvent(params: {
+  action: ProjectPackageEventSaveAction
+  assignedByUserId: number
+  assigneeUserId: number
+  createdByUserId: number
+  deliveryDate: string
+  documents: ProjectPackageDocumentInput[]
+  eventId?: number
+  items: ProjectPackageItemInput[]
+  projectId: number
+  title: string
+  type: ProjectPackageEventType
+}) {
+  const title = normalizeText(params.title, 120)
+  if (!title) throw new ProjectPackageEventError('Event title is required', 400)
+  const deliveryDate = normalizeDeliveryDate(params.deliveryDate)
+  const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
+  const duplicateObjectKeys = items.filter(
+    (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
+  )
+  if (duplicateObjectKeys.length > 0) {
+    throw new ProjectPackageEventError('Package items must be unique', 400)
+  }
+  const packageNames = new Set(items.map((item) => item.packageName))
+  const documents = normalizeProjectPackageDocuments(
+    params.documents,
+    packageNames,
+    params.action === 'save_draft',
+  )
+  if (params.action === 'publish' && !documents.some((document) => document.scope === 'event')) {
+    throw new ProjectPackageEventError('An event document is required before publishing', 400)
+  }
+
+  return withTransaction(async (client) => {
+    await ensureProjectTodoIds(
+      params.projectId,
+      documents.flatMap((document) => document.relatedTodoIds),
+      client,
+    )
+
+    let eventId = params.eventId
+    if (eventId != null) {
+      ensureUnpublishedEvent(await findEventMeta(eventId, params.projectId, client))
+      const updated = await client.query(
+        `
+        update project_package_events
+        set type = $1,
+            title = $2,
+            assignee_user_id = $3,
+            assigned_by_user_id = $4,
+            delivery_date = $5::date,
+            updated_at = now()
+        where id = $6
+          and project_id = $7
+          and published_at is null
+        `,
+        [
+          params.type,
+          encryptText(title),
+          params.assigneeUserId,
+          params.assignedByUserId,
+          deliveryDate,
+          eventId,
+          params.projectId,
+        ],
+      )
+      if (updated.rowCount !== 1) {
+        throw new ProjectPackageEventError('Published events are read-only', 409)
+      }
+    } else {
+      const created = await client.query<{ id: string }>(
+        `
+        insert into project_package_events (
+          project_id,
+          type,
+          status,
+          title,
+          created_by_user_id,
+          assignee_user_id,
+          assigned_by_user_id,
+          delivery_date
+        )
+        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date)
+        returning id
+        `,
+        [
+          params.projectId,
+          params.type,
+          encryptText(title),
+          params.createdByUserId,
+          params.assigneeUserId,
+          params.assignedByUserId,
+          deliveryDate,
+        ],
+      )
+      eventId = Number(created.rows[0].id)
+    }
+    if (eventId == null) throw new ProjectPackageEventError('Event could not be saved', 409)
+    const persistedEventId = eventId
+
+    await client.query(
+      'delete from project_package_operations where project_package_event_id = $1',
+      [persistedEventId],
+    )
+    await client.query(
+      'delete from project_package_groups where project_package_event_id = $1',
+      [persistedEventId],
+    )
+
+    const groupIds = new Map<string, number>()
+    for (const item of items) {
+      let groupId = groupIds.get(item.packageName)
+      if (!groupId) {
+        groupId = await findOrCreateGroup(client, persistedEventId, item.packageName)
+        groupIds.set(item.packageName, groupId)
+      }
+      await client.query(
+        `
+        insert into project_package_items (
+          project_package_group_id,
+          source_package_id,
+          source_package_name,
+          channel,
+          channel_label,
+          arch,
+          version,
+          object_key,
+          object_last_modified,
+          size_bytes,
+          created_by_user_id
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `,
+        [
+          groupId,
+          item.sourcePackageId,
+          item.sourcePackageName,
+          item.channel,
+          item.channelLabel,
+          item.arch,
+          item.version,
+          item.objectKey,
+          item.objectLastModified,
+          item.sizeBytes,
+          params.createdByUserId,
+        ],
+      )
+    }
+
+    for (const groupId of groupIds.values()) {
+      await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
+    }
+
+    for (const document of documents) {
+      const groupId = document.scope === 'package'
+        ? groupIds.get(document.packageName) ?? null
+        : null
+      const insertedDocument = await client.query<{ id: string }>(
+        `
+        insert into project_package_operations (
+          project_package_event_id,
+          project_package_group_id,
+          kind,
+          status,
+          title,
+          label,
+          content,
+          completed,
+          auto_generated,
+          created_by_user_id
+        )
+        values ($1, $2, 'document', 'pending', $3, '', $4, false, false, $5)
+        returning id
+        `,
+        [persistedEventId, groupId, encryptText(document.title), encryptText(document.content), params.createdByUserId],
+      )
+      await replaceOperationTodoLinks(
+        client,
+        Number(insertedDocument.rows[0].id),
+        params.createdByUserId,
+        document.relatedTodoIds,
+      )
+    }
+
+    let published = false
+    if (params.action === 'publish') {
+      const publication = await client.query(
+        `
+        update project_package_events
+        set status = 'delivering',
+            published_at = now(),
+            published_by_user_id = $1,
+            assigned_at = now(),
+            updated_at = now()
+        where id = $2
+          and project_id = $3
+          and published_at is null
+        `,
+        [params.assignedByUserId, persistedEventId, params.projectId],
+      )
+      if (publication.rowCount !== 1) {
+        throw new ProjectPackageEventError('Published events are read-only', 409)
+      }
+      published = true
+    }
+
+    return { eventId: persistedEventId, published }
+  })
+}
+
+export async function completeProjectPackageEvent(params: {
+  eventId: number
+  projectId: number
+}) {
+  const result = await query(
+    `
+    update project_package_events
+    set status = 'delivered', updated_at = now()
+    where id = $1
+      and project_id = $2
+      and published_at is not null
+      and status = 'delivering'
+    `,
+    [params.eventId, params.projectId],
+  )
+  if (result.rowCount !== 1) {
+    throw new ProjectPackageEventError('Only active published events can be completed', 409)
+  }
 }
 
 export async function createProjectPackageEvent(params: {
@@ -1380,15 +1695,17 @@ export async function updateProjectPackageEvent(params: {
     throw new Error('No supported fields to update')
   }
   values.push(params.eventId, params.projectId)
-  await (params.client ?? pool).query(
+  const result = await (params.client ?? pool).query(
     `
     update project_package_events
     set ${updates.join(', ')}, updated_at = now()
     where id = $${values.length - 1}
       and project_id = $${values.length}
+      and published_at is null
     `,
     values,
   )
+  if (result.rowCount !== 1) throw new Error('Event not found or already published')
 }
 
 export async function deleteProjectPackageEvent(params: { eventId: number; projectId: number }) {
@@ -1410,8 +1727,9 @@ export async function addProjectPackageItems(params: {
   const items = normalizeProjectPackageItems(params.items)
 
   await withTransaction(async (client) => {
-    const event = await findEventMeta(params.eventId, params.projectId, client)
-    if (!event) throw new Error('Event not found')
+    const event = ensureUnpublishedEvent(
+      await findEventMeta(params.eventId, params.projectId, client),
+    )
 
     for (const item of items) {
       const groupId = await findOrCreateGroup(client, params.eventId, item.packageName)
@@ -1463,10 +1781,13 @@ export async function deleteProjectPackageGroup(params: {
   groupId: number
   projectId: number
 }) {
-  const meta = await findGroupMeta(params.groupId, params.projectId)
-  if (!meta) throw new Error('Package group not found')
-  await query('delete from project_package_groups where id = $1', [params.groupId])
-  await touchEvent(Number(meta.event_id))
+  await withTransaction(async (client) => {
+    const meta = ensureUnpublishedEvent(
+      await findGroupMeta(params.groupId, params.projectId, client),
+    )
+    await client.query('delete from project_package_groups where id = $1', [params.groupId])
+    await touchEvent(Number(meta.event_id), client)
+  })
 }
 
 export async function createProjectPackageOperation(params: {
@@ -1494,8 +1815,9 @@ export async function createProjectPackageOperation(params: {
   if (kind === 'document' && !content) throw new Error('Operation content is required')
 
   await withTransaction(async (client) => {
-    const event = await findEventMeta(params.eventId, params.projectId, client)
-    if (!event) throw new Error('Event not found')
+    const event = ensureUnpublishedEvent(
+      await findEventMeta(params.eventId, params.projectId, client),
+    )
     if (params.groupId) {
       const group = await findGroupMeta(params.groupId, params.projectId, client)
       if (!group || Number(group.event_id) !== params.eventId) {
@@ -1614,7 +1936,10 @@ export async function updateProjectPackageOperation(params: {
 
   await withTransaction(async (client) => {
     const operation = await findOperationMeta(params.operationId, params.projectId, client)
-    if (!operation) throw new Error('Operation not found')
+    if (!operation) throw new ProjectPackageEventError('Event not found', 404)
+    if (operation.published_at && updates.length > 0) {
+      throw new ProjectPackageEventError('Published events are read-only', 409)
+    }
     const relatedTodoIds = shouldUpdateRelatedTodos
       ? await ensureProjectTodoIds(params.projectId, params.relatedTodoIds ?? [], client)
       : []
@@ -1664,10 +1989,13 @@ export async function deleteProjectPackageOperation(params: {
   operationId: number
   projectId: number
 }) {
-  const operation = await findOperationMeta(params.operationId, params.projectId)
-  if (!operation) throw new Error('Operation not found')
-  await query('delete from project_package_operations where id = $1', [params.operationId])
-  await touchEvent(Number(operation.event_id))
+  await withTransaction(async (client) => {
+    const operation = ensureUnpublishedEvent(
+      await findOperationMeta(params.operationId, params.projectId, client),
+    )
+    await client.query('delete from project_package_operations where id = $1', [params.operationId])
+    await touchEvent(Number(operation.event_id), client)
+  })
 }
 
 export async function getProjectPackageItemObjectKey(params: {

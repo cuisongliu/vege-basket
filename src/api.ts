@@ -17,6 +17,7 @@ import type {
   Priority,
   Project,
   ProjectPackageEventStatus,
+  ProjectPackageEventSavePayload,
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
@@ -1264,12 +1265,33 @@ export function fetchProjectPackageTimeline(projectId: number) {
 
 export function createProjectPackageEvent(
   projectId: number,
-  payload: { assigneeUserId: number; deliveryDate: string; title: string; type: ProjectPackageEventType },
+  payload: ProjectPackageEventSavePayload,
 ) {
   return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function saveProjectPackageEventDraft(
+  projectId: number,
+  eventId: number,
+  payload: ProjectPackageEventSavePayload,
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function completeProjectPackageEvent(projectId: number, eventId: number) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/complete`,
+    { method: 'POST' },
+  )
 }
 
 export function updateProjectPackageEvent(

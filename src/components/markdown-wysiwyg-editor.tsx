@@ -65,6 +65,7 @@ type MarkdownWysiwygEditorProps = {
   onPasteImages?: (files: File[]) => void
   onReady?: () => void
   placeholder?: string
+  readOnly?: boolean
   value: string
 }
 
@@ -284,10 +285,12 @@ export const MarkdownWysiwygEditor = forwardRef<
     onPasteImages,
     onReady,
     placeholder = '开始输入内容…',
+    readOnly = false,
     value,
   }, ref) {
   const onChangeRef = useRef(onChange)
   const onReadyRef = useRef(onReady)
+  const readOnlyRef = useRef(readOnly)
   const lastEmittedMarkdownRef = useRef(value)
   const initialValueHandledRef = useRef(false)
   const linkInputRef = useRef<HTMLInputElement | null>(null)
@@ -317,7 +320,7 @@ export const MarkdownWysiwygEditor = forwardRef<
         enableClickSelection: true,
         isAllowedUri: isAllowedWebUrl,
         linkOnPaste: true,
-        openOnClick: false,
+        openOnClick: readOnly,
         protocols: ['http', 'https'],
         shouldAutoLink: isAllowedWebUrl,
       }),
@@ -331,11 +334,12 @@ export const MarkdownWysiwygEditor = forwardRef<
       Placeholder.configure({ placeholder }),
       Markdown.configure({ indentation: { size: 2, style: 'space' } }),
     ],
-    [placeholder],
+    [placeholder, readOnly],
   )
   const editor = useEditor({
     content: value,
     contentType: 'markdown',
+    editable: !readOnly,
     editorProps: {
       attributes: {
         'aria-label': ariaLabel,
@@ -348,13 +352,13 @@ export const MarkdownWysiwygEditor = forwardRef<
       clearMarkdownEditorRecovery()
       const markdown = currentEditor.getMarkdown()
       lastEmittedMarkdownRef.current = markdown
-      if (markdown !== value) onChangeRef.current(markdown)
+      if (!readOnlyRef.current && markdown !== value) onChangeRef.current(markdown)
       onReadyRef.current?.()
     },
     onUpdate: ({ editor: currentEditor }) => {
       const markdown = currentEditor.getMarkdown()
       lastEmittedMarkdownRef.current = markdown
-      onChangeRef.current(markdown)
+      if (!readOnlyRef.current) onChangeRef.current(markdown)
     },
     shouldRerenderOnTransaction: false,
   })
@@ -410,9 +414,14 @@ export const MarkdownWysiwygEditor = forwardRef<
     onReadyRef.current = onReady
   }, [onReady])
 
+  useEffect(() => {
+    readOnlyRef.current = readOnly
+    editor?.setEditable(!readOnly)
+  }, [editor, readOnly])
+
   useImperativeHandle(ref, () => ({
     insertMarkdownAtCursor(markdown: string) {
-      if (!editor || !markdown.trim()) return false
+      if (!editor || readOnlyRef.current || !markdown.trim()) return false
       const chain = editor.chain().focus()
       if (editor.isActive('heading')) {
         const { $from } = editor.state.selection
@@ -500,7 +509,7 @@ export const MarkdownWysiwygEditor = forwardRef<
   }
 
   function handlePasteCapture(event: ClipboardEvent<HTMLDivElement>) {
-    if (!onPasteImages) return
+    if (readOnly || !onPasteImages) return
     const imageFiles = Array.from(event.clipboardData.items)
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
@@ -544,7 +553,11 @@ export const MarkdownWysiwygEditor = forwardRef<
   }
 
   return (
-    <div className="markdown-wysiwyg-editor" onPasteCapture={handlePasteCapture}>
+    <div
+      className={cn('markdown-wysiwyg-editor', readOnly && 'is-readonly')}
+      onPasteCapture={handlePasteCapture}
+    >
+      {!readOnly ? (
       <div className="markdown-wysiwyg-toolbar" role="toolbar" aria-label={`${ariaLabel}格式工具`}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -801,8 +814,8 @@ export const MarkdownWysiwygEditor = forwardRef<
             <ArrowClockwise size={17} />
           </ToolbarButton>
         </span>
-
       </div>
+      ) : null}
 
       <EditorContent editor={editor} className="markdown-wysiwyg-canvas" />
     </div>
