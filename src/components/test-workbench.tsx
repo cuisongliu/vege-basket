@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type ReactNode } from 'react'
 import {
   ArrowLeft,
+  ArrowsLeftRight,
   Bell,
   Bug,
   CaretDoubleLeft,
@@ -13,6 +14,7 @@ import {
   CopySimple,
   DownloadSimple,
   FileCsv,
+  FileText,
   Flask,
   FolderPlus,
   GearSix,
@@ -20,6 +22,7 @@ import {
   MagnifyingGlass,
   PencilSimple,
   Plus,
+  DotsThreeVertical,
   Trash,
   UploadSimple,
   UserPlus,
@@ -39,10 +42,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { MentionTextarea, type MentionMember } from './mention-textarea'
+import { WeeklyReportWorkbench } from './weekly-report-workbench'
 import { uploadWorkbenchAttachment } from '@/api'
 import {
   addAssignedTestBugComment,
@@ -58,6 +70,7 @@ import {
   createTestSubject,
   declineTestSpaceInvitation,
   deleteAssignedTestBugComment,
+  deleteTestCase,
   deleteTestCaseFolder,
   deleteTestPlan,
   deleteTestSpace,
@@ -72,6 +85,7 @@ import {
   previewTestCaseImport,
   removeTestPlanCase,
   removeTestSpaceMember,
+  transferAssignedTestBug,
   updateTestSpace,
   updateAssignedTestBugComment,
   updateAssignedTestBug,
@@ -83,6 +97,7 @@ import {
   updateTestPlanCase,
   updateTestPlanStatus,
   updateTestSpaceMember,
+  updateTestSubject,
   verifyTestSpaceInviteLink,
 } from '@/test-workbench-api'
 import type {
@@ -99,17 +114,19 @@ import type {
   TestSpaceSettings,
   TestSubject,
   TestWorkbenchData,
+  TestWorkbenchNotification,
   TestWorkbenchProjectOption,
 } from '@/test-workbench-types'
 import type { Priority } from '@/types'
 import './test-workbench.css'
 
-type WorkbenchTab = 'cases' | 'plans' | 'bugs' | 'notifications'
+type WorkbenchTab = 'cases' | 'plans' | 'bugs' | 'weekly_report' | 'notifications'
 
 const emptyWorkbench: TestWorkbenchData = {
   bugs: [],
   cases: [],
   folders: [],
+  notifications: [],
   planCases: [],
   plans: [],
   spaces: [],
@@ -180,9 +197,16 @@ const readNotificationStoragePrefix = 'veges.testWorkbench.readNotifications.v1'
 type BugCommentNotification = {
   bug: TestBug
   comment: TestBugComment
+  notification: TestWorkbenchNotification
+}
+
+type BugReturnNotification = {
+  bug: TestBug
+  notification: TestWorkbenchNotification
 }
 
 type PlanAssignmentNotification = {
+  notification: TestWorkbenchNotification
   plan: TestPlan
 }
 
@@ -206,14 +230,6 @@ function buildTestSpaceInviteUrl(token: string) {
 function getTimestampMs(value?: string) {
   const timestamp = Date.parse(value ?? '')
   return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-function getBugCommentTimestamp(comment: TestBugComment) {
-  return getTimestampMs(comment.updatedAt || comment.createdAt)
-}
-
-function getLatestBugComment(bug: TestBug) {
-  return bug.comments.slice().sort((left, right) => getBugCommentTimestamp(right) - getBugCommentTimestamp(left))[0]
 }
 
 function getSeenBugCommentStorageKey(currentUserId?: number) {
@@ -260,12 +276,8 @@ function writeReadNotificationKeys(currentUserId: number | undefined, keys: Set<
   window.localStorage.setItem(storageKey, JSON.stringify(Array.from(keys)))
 }
 
-function getBugReturnNotificationKey(bug: TestBug) {
-  return `bug-return:${bug.id}:${bug.status}:${bug.updatedAt}`
-}
-
-function getPlanAssignmentNotificationKey(plan: TestPlan) {
-  return `plan-assignment:${plan.id}:${plan.ownerUserId ?? 'none'}:${plan.updatedAt}`
+function getTestWorkbenchNotificationKey(notification: TestWorkbenchNotification) {
+  return `${notification.kind}:${notification.sourceId}:${notification.createdAt}`
 }
 
 function generateTestSpaceInvitePassword() {
@@ -297,10 +309,12 @@ export function TestWorkbench({
   accountMenu,
   currentUserId,
   projects,
+  refreshToken = 0,
 }: {
   accountMenu: ReactNode
   currentUserId?: number
   projects: TestWorkbenchProjectOption[]
+  refreshToken?: number
 }) {
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
   const [loading, setLoading] = useState(true)
@@ -317,16 +331,22 @@ export function TestWorkbench({
   const [spaceCreateOpen, setSpaceCreateOpen] = useState(false)
   const [spaceSettings, setSpaceSettings] = useState<TestSpaceSettings>(emptyTestSpaceSettings)
   const [subjectDialogOpen, setSubjectDialogOpen] = useState(false)
+  const [editingSubject, setEditingSubject] = useState<TestSubject>()
   const [subjectPendingDelete, setSubjectPendingDelete] = useState<TestSubject>()
+  const [subjectDeleteDialogOpen, setSubjectDeleteDialogOpen] = useState(false)
   const [folderDialogOpen, setFolderDialogOpen] = useState(false)
   const [caseDialogOpen, setCaseDialogOpen] = useState(false)
   const [caseImportDialogOpen, setCaseImportDialogOpen] = useState(false)
   const [editingCase, setEditingCase] = useState<TestCase>()
+  const [casePendingDelete, setCasePendingDelete] = useState<TestCase>()
+  const [caseDeleteDialogOpen, setCaseDeleteDialogOpen] = useState(false)
   const [planDialogOpen, setPlanDialogOpen] = useState(false)
   const [editingPlan, setEditingPlan] = useState<TestPlan>()
   const [planPendingDelete, setPlanPendingDelete] = useState<TestPlan>()
+  const [planDeleteDialogOpen, setPlanDeleteDialogOpen] = useState(false)
   const [bugDialogOpen, setBugDialogOpen] = useState(false)
   const [bugSeed, setBugSeed] = useState<Partial<TestBug>>({})
+  const [editingBug, setEditingBug] = useState<TestBug>()
   const [inviteToken, setInviteToken] = useState(getTestSpaceInviteTokenFromUrl)
   const [invitePasswordChecking, setInvitePasswordChecking] = useState(false)
   const [invitePasswordDraft, setInvitePasswordDraft] = useState('')
@@ -336,6 +356,7 @@ export function TestWorkbench({
   const [seenBugCommentIds, setSeenBugCommentIds] = useState<Set<number>>(() => readSeenBugCommentIds(currentUserId))
   const [readNotificationKeySet, setReadNotificationKeySet] = useState<Set<string>>(() => loadReadNotificationKeys(currentUserId))
   const acceptingInviteTokenRef = useRef('')
+  const refreshInFlightRef = useRef(false)
 
   useEffect(() => {
     setSeenBugCommentIds(readSeenBugCommentIds(currentUserId))
@@ -374,16 +395,22 @@ export function TestWorkbench({
     const refreshIfVisible = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       if (busy) return
-      fetchTestWorkbench()
-        .then((result) => {
-          if (!cancelled) setData(result)
-        })
-        .catch(() => undefined)
-      fetchTestSpaceSettings()
-        .then((result) => {
-          if (!cancelled) setSpaceSettings(result)
-        })
-        .catch(() => undefined)
+      if (refreshInFlightRef.current) return
+      refreshInFlightRef.current = true
+      Promise.all([
+        fetchTestWorkbench()
+          .then((result) => {
+            if (!cancelled) setData(result)
+          })
+          .catch(() => undefined),
+        fetchTestSpaceSettings()
+          .then((result) => {
+            if (!cancelled) setSpaceSettings(result)
+          })
+          .catch(() => undefined),
+      ]).then(() => {
+        refreshInFlightRef.current = false
+      })
     }
     const interval = window.setInterval(refreshIfVisible, notificationRefreshIntervalMs)
     return () => {
@@ -464,30 +491,41 @@ export function TestWorkbench({
   const bugs = data.bugs.filter(
     (bug) => bug.testSpaceId === spaceId && (!subjectId || bug.testSubjectId === subjectId),
   )
-  const returnedBugs = data.bugs.filter((bug) => bug.status === 'pending_verification' || bug.status === 'reopened')
-  const bugCommentNotifications: BugCommentNotification[] = currentUserId
-    ? data.bugs
-      .map((bug) => {
-        const latestComment = getLatestBugComment(bug)
-        if (!latestComment?.authorUserId || latestComment.authorUserId === currentUserId) return undefined
-        if (bug.status === 'closed' || bug.status === 'duplicate' || bug.status === 'rejected') return undefined
-        return { bug, comment: latestComment }
-      })
-      .filter((item): item is BugCommentNotification => Boolean(item))
-    : []
+  const returnedBugs: BugReturnNotification[] = data.notifications.flatMap((notification) => {
+    if (notification.kind !== 'test_bug_status_changed') return []
+    const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
+    if (!bug || (bug.status !== 'pending_verification' && bug.status !== 'reopened')) return []
+    return [{ bug, notification }]
+  })
+  const bugCommentNotifications: BugCommentNotification[] = data.notifications.flatMap((notification) => {
+    if (notification.kind !== 'test_bug_comment_added') return []
+    for (const bug of data.bugs) {
+      const comment = bug.comments.find((candidate) => candidate.id === notification.sourceId)
+      if (!comment) continue
+      if (bug.status === 'closed' || bug.status === 'duplicate' || bug.status === 'rejected') return []
+      return [{ bug, comment, notification }]
+    }
+    return []
+  })
   const planAssignmentNotifications: PlanAssignmentNotification[] = currentUserId
-    ? data.plans
-      .filter((plan) =>
-        plan.ownerUserId === currentUserId &&
-        plan.createdByUserId !== currentUserId &&
-        plan.status !== 'completed' &&
-        plan.status !== 'aborted',
-      )
-      .map((plan) => ({ plan }))
+    ? data.notifications.flatMap((notification) => {
+      if (notification.kind !== 'test_plan_assigned') return []
+      const plan = data.plans.find((candidate) => candidate.id === notification.sourceId)
+      if (
+        !plan ||
+        plan.ownerUserId !== currentUserId ||
+        plan.createdByUserId === currentUserId ||
+        plan.status === 'completed' ||
+        plan.status === 'aborted'
+      ) return []
+      return [{ notification, plan }]
+    })
     : []
-  const returnedBugUnreadCount = returnedBugs.filter((bug) => !readNotificationKeySet.has(getBugReturnNotificationKey(bug))).length
-  const planAssignmentUnreadCount = planAssignmentNotifications.filter(({ plan }) =>
-    !readNotificationKeySet.has(getPlanAssignmentNotificationKey(plan)),
+  const returnedBugUnreadCount = returnedBugs.filter(({ notification }) =>
+    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
+  const planAssignmentUnreadCount = planAssignmentNotifications.filter(({ notification }) =>
+    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
   ).length
   const bugCommentUnreadCount = bugCommentNotifications.filter(({ comment }) => !seenBugCommentIds.has(comment.id)).length
   const notificationTotalCount =
@@ -538,6 +576,30 @@ export function TestWorkbench({
     if (!plans.some((item) => item.id === selectedPlanId)) setSelectedPlanId(plans[0]?.id)
     if (!bugs.some((item) => item.id === selectedBugId)) setSelectedBugId(bugs[0]?.id)
   }, [bugs, cases, plans, selectedBugId, selectedCaseId, selectedPlanId])
+
+  useEffect(() => {
+    if (subjectDeleteDialogOpen || !subjectPendingDelete) return
+    const cleanup = window.setTimeout(() => {
+      setSubjectPendingDelete(undefined)
+    }, 180)
+    return () => window.clearTimeout(cleanup)
+  }, [subjectDeleteDialogOpen, subjectPendingDelete])
+
+  useEffect(() => {
+    if (caseDeleteDialogOpen || !casePendingDelete) return
+    const cleanup = window.setTimeout(() => {
+      setCasePendingDelete(undefined)
+    }, 180)
+    return () => window.clearTimeout(cleanup)
+  }, [caseDeleteDialogOpen, casePendingDelete])
+
+  useEffect(() => {
+    if (planDeleteDialogOpen || !planPendingDelete) return
+    const cleanup = window.setTimeout(() => {
+      setPlanPendingDelete(undefined)
+    }, 180)
+    return () => window.clearTimeout(cleanup)
+  }, [planDeleteDialogOpen, planPendingDelete])
 
   async function mutate(operation: () => Promise<TestWorkbenchData>) {
     setBusy(true)
@@ -704,6 +766,7 @@ export function TestWorkbench({
               <button className={tab === 'cases' ? 'active' : ''} onClick={() => setTab('cases')}><ClipboardText /><span className="test-nav-label">用例管理</span><span className="test-nav-count">{cases.length}</span></button>
               <button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}><ListChecks /><span className="test-nav-label">测试计划</span><span className="test-nav-count">{plans.length}</span></button>
               <button className={tab === 'bugs' ? 'active' : ''} onClick={() => setTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{bugs.length}</span></button>
+              <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => setTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
               <button className={tab === 'notifications' ? 'active' : ''} onClick={() => setTab('notifications')}>
                 <Bell />
                 <span className="test-nav-label">通知中心</span>
@@ -716,7 +779,7 @@ export function TestWorkbench({
               <section className="test-subject-browser" aria-label="测试对象">
                 <header className="test-subject-browser-header">
                   <span>测试对象</span>
-                  {!activeSpaceReadOnly ? <Button className="test-subject-add" size="icon" variant="ghost" aria-label="新建测试对象" title="新建测试对象" onClick={() => setSubjectDialogOpen(true)}><Plus /></Button> : null}
+                  {!activeSpaceReadOnly ? <Button className="test-subject-add" size="icon" variant="ghost" aria-label="新建测试对象" title="新建测试对象" onClick={() => { setEditingSubject(undefined); setSubjectDialogOpen(true) }}><Plus /></Button> : null}
                 </header>
                 <div className="test-subject-list">
                   {subjects.length ? subjects.map((subject) => (
@@ -730,15 +793,46 @@ export function TestWorkbench({
                         <strong>{subject.name}</strong>
                         <small>{[subject.versionLabel, subject.environment].filter(Boolean).join(' / ') || '未设置版本与环境'}</small>
                       </button>
-                      {subject.canDelete && !activeSpaceReadOnly ? (
-                        <Button
-                          className="test-subject-delete"
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`删除测试对象 ${subject.name}`}
-                          title="删除测试对象"
-                          onClick={() => setSubjectPendingDelete(subject)}
-                        ><Trash /></Button>
+                      {!activeSpaceReadOnly && (subject.canEdit || subject.canDelete) ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              className="test-subject-menu-trigger"
+                              size="icon"
+                              type="button"
+                              variant="ghost"
+                              aria-label={`测试对象 ${subject.name} 更多操作`}
+                              title="更多操作"
+                            >
+                              <DotsThreeVertical aria-hidden />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="test-subject-menu-content" sideOffset={8}>
+                            {subject.canEdit ? (
+                              <DropdownMenuItem
+                                className="test-subject-menu-item"
+                                onSelect={() => { setEditingSubject(subject); setSubjectDialogOpen(true) }}
+                              >
+                                <PencilSimple />
+                                编辑
+                              </DropdownMenuItem>
+                            ) : null}
+                            {subject.canEdit && subject.canDelete ? <DropdownMenuSeparator /> : null}
+                            {subject.canDelete ? (
+                              <DropdownMenuItem
+                                className="test-subject-menu-item"
+                                variant="destructive"
+                                onSelect={() => {
+                                  setSubjectPendingDelete(subject)
+                                  setSubjectDeleteDialogOpen(true)
+                                }}
+                              >
+                                <Trash />
+                                删除
+                              </DropdownMenuItem>
+                            ) : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       ) : null}
                     </article>
                   )) : <p className="test-subject-list-empty">暂无测试对象</p>}
@@ -752,6 +846,10 @@ export function TestWorkbench({
       <section className="test-workbench-content">
           {loading ? (
             <div className="test-workbench-loading">正在加载测试工作台...</div>
+          ) : tab === 'weekly_report' ? (
+            <div className="test-workbench-weekly-report">
+              <WeeklyReportWorkbench embedded refreshToken={refreshToken} />
+            </div>
           ) : tab === 'notifications' ? (
             <>
               <WorkspaceError message={error} />
@@ -766,16 +864,16 @@ export function TestWorkbench({
                 seenBugCommentIds={seenBugCommentIds}
                 onAcceptInvitation={(invitation) => void handleAcceptInvitation(invitation.spaceId)}
                 onDeclineInvitation={(invitation) => void handleDeclineInvitation(invitation.spaceId)}
-                onOpenBug={(bug, commentId) => {
-                  markNotificationAsRead(getBugReturnNotificationKey(bug))
+                onOpenBug={(bug, notification, commentId) => {
+                  markNotificationAsRead(getTestWorkbenchNotificationKey(notification))
                   markBugCommentAsSeen(commentId)
                   setSpaceId(bug.testSpaceId)
                   setSubjectId(bug.testSubjectId)
                   setSelectedBugId(bug.id)
                   setTab('bugs')
                 }}
-                onOpenPlan={(plan) => {
-                  markNotificationAsRead(getPlanAssignmentNotificationKey(plan))
+                onOpenPlan={(plan, notification) => {
+                  markNotificationAsRead(getTestWorkbenchNotificationKey(notification))
                   setSpaceId(plan.testSpaceId)
                   setSelectedPlanId(plan.id)
                   setTab('plans')
@@ -799,7 +897,7 @@ export function TestWorkbench({
               <h2>{activeSpaceReadOnly ? '暂无测试对象' : '先创建测试对象'}</h2>
               <p>{activeSpaceReadOnly ? '当前测试空间还没有测试对象。' : '测试对象可以是应用、服务或产品，也可以选择性关联现有项目。'}</p>
               {!activeSpaceReadOnly ? <div className="test-empty-actions">
-                <Button onClick={() => setSubjectDialogOpen(true)}><Plus /> 新建测试对象</Button>
+                <Button onClick={() => { setEditingSubject(undefined); setSubjectDialogOpen(true) }}><Plus /> 新建测试对象</Button>
               </div> : null}
             </div>
           ) : tab === 'cases' ? (
@@ -814,6 +912,10 @@ export function TestWorkbench({
                 onSelect={setSelectedCaseId}
                 onCreate={() => { setEditingCase(undefined); setCaseDialogOpen(true) }}
                 onCreateFolder={() => setFolderDialogOpen(true)}
+                onDelete={(testCase) => {
+                  setCasePendingDelete(testCase)
+                  setCaseDeleteDialogOpen(true)
+                }}
                 onEdit={(testCase) => { setEditingCase(testCase); setCaseDialogOpen(true) }}
                 onImport={() => setCaseImportDialogOpen(true)}
                 onArchive={(testCase) => void mutate(() => updateTestCase(testCase.testSpaceId, testCase.id, { caseKind: 'baseline', status: 'active' }))}
@@ -831,12 +933,16 @@ export function TestWorkbench({
                 selectedId={selectedPlanId}
                 onSelect={setSelectedPlanId}
                 onCreate={() => { setEditingPlan(undefined); setPlanDialogOpen(true) }}
-                onDelete={setPlanPendingDelete}
+                onDelete={(plan) => {
+                  setPlanPendingDelete(plan)
+                  setPlanDeleteDialogOpen(true)
+                }}
                 onEdit={(plan) => { setEditingPlan(plan); setPlanDialogOpen(true) }}
                 onRemoveCase={(plan, planCaseId) => void mutate(() => removeTestPlanCase(plan.testSpaceId, plan.id, planCaseId))}
                 onStatus={(plan, status) => void mutate(() => updateTestPlanStatus(plan.testSpaceId, plan.id, status))}
                 onResult={(planCaseId, result) => void mutate(() => updateTestPlanCase(spaceId!, planCaseId, { result }))}
                 onCreateBug={(plan, planCase) => {
+                  setEditingBug(undefined)
                   setBugSeed({
                     actualResult: planCase.resultNote,
                     environment: plan.environment,
@@ -861,7 +967,8 @@ export function TestWorkbench({
                 readOnly={activeSpaceReadOnly}
                 selectedId={selectedBugId}
                 onSelect={setSelectedBugId}
-                onCreate={() => { setBugSeed({ testSubjectId: subjectId }); setBugDialogOpen(true) }}
+                onCreate={() => { setEditingBug(undefined); setBugSeed({ testSubjectId: subjectId }); setBugDialogOpen(true) }}
+                onEdit={(bug) => { setEditingBug(bug); setBugSeed(bug); setBugDialogOpen(true) }}
                 onStatus={(bug, status) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))}
                 onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'assigned' : 'new' }))}
                 onComment={(bug, content) => mutate(() => addTestBugComment(bug.testSpaceId, bug.id, content))}
@@ -908,10 +1015,28 @@ export function TestWorkbench({
         }}
         onSubmit={() => void verifyInvitePassword()}
       />
-      <SubjectDialog busy={busy} open={subjectDialogOpen} onOpenChange={setSubjectDialogOpen} onSubmit={async (payload) => {
-        const saved = await mutate(() => createTestSubject(spaceId!, payload)); if (saved) setSubjectDialogOpen(false)
-      }} />
-      <Dialog open={Boolean(subjectPendingDelete)} onOpenChange={(nextOpen) => { if (!nextOpen) setSubjectPendingDelete(undefined) }}>
+      <SubjectDialog
+        busy={busy}
+        open={subjectDialogOpen}
+        subject={editingSubject}
+        onOpenChange={(nextOpen) => {
+          setSubjectDialogOpen(nextOpen)
+          if (!nextOpen) setEditingSubject(undefined)
+        }}
+        onSubmit={async (payload) => {
+          const saved = editingSubject
+            ? await mutate(() => updateTestSubject(spaceId!, editingSubject.id, payload))
+            : await mutate(() => createTestSubject(spaceId!, payload))
+          if (saved) setEditingSubject(undefined)
+          return saved
+        }}
+      />
+      <Dialog
+        open={subjectDeleteDialogOpen}
+        onOpenChange={(nextOpen) => {
+          setSubjectDeleteDialogOpen(nextOpen)
+        }}
+      >
         <DialogContent fixedHeader className="test-workbench-dialog">
           <DialogHeader>
             <DialogTitle>删除测试对象</DialogTitle>
@@ -920,7 +1045,7 @@ export function TestWorkbench({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setSubjectPendingDelete(undefined)}>取消</Button>
+            <Button type="button" variant="outline" onClick={() => setSubjectDeleteDialogOpen(false)}>取消</Button>
             <Button
               type="button"
               variant="destructive"
@@ -928,7 +1053,7 @@ export function TestWorkbench({
               onClick={async () => {
                 if (!subjectPendingDelete) return
                 const saved = await mutate(() => deleteTestSubject(subjectPendingDelete.testSpaceId, subjectPendingDelete.id))
-                if (saved) setSubjectPendingDelete(undefined)
+                if (saved) setSubjectDeleteDialogOpen(false)
               }}
             ><Trash /> 删除测试对象</Button>
           </DialogFooter>
@@ -960,6 +1085,29 @@ export function TestWorkbench({
           if (saved) setCaseDialogOpen(false)
         }}
       />
+      <Dialog open={caseDeleteDialogOpen} onOpenChange={setCaseDeleteDialogOpen}>
+        <DialogContent fixedHeader className="test-workbench-dialog">
+          <DialogHeader>
+            <DialogTitle>删除测试用例</DialogTitle>
+            <DialogDescription>
+              删除“{casePendingDelete?.title}”后，源用例将永久移除；已加入测试计划的执行快照继续保留。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCaseDeleteDialogOpen(false)}>取消</Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy || !casePendingDelete}
+              onClick={async () => {
+                if (!casePendingDelete) return
+                const saved = await mutate(() => deleteTestCase(casePendingDelete.testSpaceId, casePendingDelete.id))
+                if (saved) setCaseDeleteDialogOpen(false)
+              }}
+            ><Trash /> 删除测试用例</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ImportCasesDialog
         busy={busy}
         open={caseImportDialogOpen}
@@ -987,7 +1135,7 @@ export function TestWorkbench({
           if (saved) setPlanDialogOpen(false)
         }}
       />
-      <Dialog open={Boolean(planPendingDelete)} onOpenChange={(nextOpen) => { if (!nextOpen) setPlanPendingDelete(undefined) }}>
+      <Dialog open={planDeleteDialogOpen} onOpenChange={setPlanDeleteDialogOpen}>
         <DialogContent fixedHeader className="test-workbench-dialog">
           <DialogHeader>
             <DialogTitle>删除测试计划</DialogTitle>
@@ -996,7 +1144,7 @@ export function TestWorkbench({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPlanPendingDelete(undefined)}>取消</Button>
+            <Button type="button" variant="outline" onClick={() => setPlanDeleteDialogOpen(false)}>取消</Button>
             <Button
               type="button"
               variant="destructive"
@@ -1004,15 +1152,33 @@ export function TestWorkbench({
               onClick={async () => {
                 if (!planPendingDelete) return
                 const saved = await mutate(() => deleteTestPlan(planPendingDelete.testSpaceId, planPendingDelete.id))
-                if (saved) setPlanPendingDelete(undefined)
+                if (saved) setPlanDeleteDialogOpen(false)
               }}
             ><Trash /> 删除测试计划</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <BugDialog busy={busy} open={bugDialogOpen} seed={bugSeed} users={data.users} onOpenChange={setBugDialogOpen} onSubmit={async (payload) => {
-        const saved = await mutate(() => createTestBug(spaceId!, payload)); if (saved) { setBugDialogOpen(false); setTab('bugs') }
-      }} />
+      <BugDialog
+        busy={busy}
+        editing={Boolean(editingBug)}
+        open={bugDialogOpen}
+        seed={bugSeed}
+        users={data.users}
+        onOpenChange={(open) => {
+          setBugDialogOpen(open)
+          if (!open) setEditingBug(undefined)
+        }}
+        onSubmit={async (payload) => {
+          const saved = editingBug
+            ? await mutate(() => updateTestBug(editingBug.testSpaceId, editingBug.id, payload))
+            : await mutate(() => createTestBug(spaceId!, payload))
+          if (saved) {
+            setBugDialogOpen(false)
+            setEditingBug(undefined)
+            if (!editingBug) setTab('bugs')
+          }
+        }}
+      />
     </main>
   )
 }
@@ -1037,11 +1203,11 @@ function NotificationsView({
   invitations: TestSpaceInvitation[]
   onAcceptInvitation: (invitation: TestSpaceInvitation) => void
   onDeclineInvitation: (invitation: TestSpaceInvitation) => void
-  onOpenBug: (bug: TestBug, commentId?: number) => void
-  onOpenPlan: (plan: TestPlan) => void
+  onOpenBug: (bug: TestBug, notification: TestWorkbenchNotification, commentId?: number) => void
+  onOpenPlan: (plan: TestPlan, notification: TestWorkbenchNotification) => void
   planAssignmentNotifications: PlanAssignmentNotification[]
   readNotificationKeys: Set<string>
-  returnedBugs: TestBug[]
+  returnedBugs: BugReturnNotification[]
   seenBugCommentIds: Set<number>
 }) {
   const notificationItems = [
@@ -1052,30 +1218,33 @@ function NotificationsView({
       kind: 'invitation' as const,
       sortAt: Date.parse(invitation.createdAt),
     })),
-    ...returnedBugs.map((bug) => ({
+    ...returnedBugs.map(({ bug, notification }) => ({
       bug,
-      createdAt: bug.updatedAt,
+      createdAt: notification.createdAt,
       key: `bug-${bug.id}`,
       kind: 'bug_return' as const,
-      notificationKey: getBugReturnNotificationKey(bug),
-      sortAt: Date.parse(bug.updatedAt),
+      notification,
+      notificationKey: getTestWorkbenchNotificationKey(notification),
+      sortAt: Date.parse(notification.createdAt),
     })),
-    ...bugCommentNotifications.map(({ bug, comment }) => ({
+    ...bugCommentNotifications.map(({ bug, comment, notification }) => ({
       bug,
       comment,
-      createdAt: comment.updatedAt || comment.createdAt,
+      createdAt: notification.createdAt,
       key: `bug-comment-${comment.id}`,
       kind: 'bug_comment' as const,
-      notificationKey: `bug-comment:${comment.id}`,
-      sortAt: getBugCommentTimestamp(comment),
+      notification,
+      notificationKey: getTestWorkbenchNotificationKey(notification),
+      sortAt: getTimestampMs(notification.createdAt),
     })),
-    ...planAssignmentNotifications.map(({ plan }) => ({
-      createdAt: plan.updatedAt || plan.createdAt,
+    ...planAssignmentNotifications.map(({ notification, plan }) => ({
+      createdAt: notification.createdAt,
       key: `plan-assignment-${plan.id}`,
       kind: 'plan_assignment' as const,
-      notificationKey: getPlanAssignmentNotificationKey(plan),
+      notification,
+      notificationKey: getTestWorkbenchNotificationKey(notification),
       plan,
-      sortAt: getTimestampMs(plan.updatedAt || plan.createdAt),
+      sortAt: getTimestampMs(notification.createdAt),
     })),
   ].sort((left, right) => {
     const rightTime = Number.isNaN(right.sortAt) ? 0 : right.sortAt
@@ -1150,7 +1319,7 @@ function NotificationsView({
                       </div>
                     </div>
                     <div>
-                      <Button variant="outline" onClick={() => onOpenPlan(plan)}><ListChecks /> 查看计划</Button>
+                      <Button variant="outline" onClick={() => onOpenPlan(plan, item.notification)}><ListChecks /> 查看计划</Button>
                     </div>
                   </article>
                 )
@@ -1168,11 +1337,11 @@ function NotificationsView({
                       <div>
                         <strong>BUG-{bug.id} · {bug.title}</strong>
                         <p>{comment.authorName} 添加了协作备注，需要测试侧查看。</p>
-                        <small>{spaceName} · {subjectName} · {formatTimestamp(comment.updatedAt || comment.createdAt)}</small>
+                        <small>{spaceName} · {subjectName} · {formatTimestamp(item.createdAt)}</small>
                       </div>
                     </div>
                     <div>
-                      <Button variant="outline" onClick={() => onOpenBug(bug, comment.id)}><Bug /> 查看 Bug</Button>
+                      <Button variant="outline" onClick={() => onOpenBug(bug, item.notification, comment.id)}><Bug /> 查看 Bug</Button>
                     </div>
                   </article>
                 )
@@ -1185,11 +1354,11 @@ function NotificationsView({
                     <div>
                       <strong>BUG-{bug.id} · {bug.title}</strong>
                       <p>{bugStatusLabel[bug.status]}，需要测试侧回看。</p>
-                      <small>{spaceName} · {subjectName} · {formatTimestamp(bug.updatedAt)}</small>
+                      <small>{spaceName} · {subjectName} · {formatTimestamp(item.createdAt)}</small>
                     </div>
                   </div>
                   <div>
-                    <Button variant="outline" onClick={() => onOpenBug(bug)}><Bug /> 查看 Bug</Button>
+                    <Button variant="outline" onClick={() => onOpenBug(bug, item.notification)}><Bug /> 查看 Bug</Button>
                   </div>
                 </article>
               )
@@ -1208,7 +1377,7 @@ function NotificationsView({
   )
 }
 
-function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onEdit, onImport, onSelect }: {
+function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onDelete, onEdit, onImport, onSelect }: {
   cases: TestCase[]
   data: TestWorkbenchData
   readOnly: boolean
@@ -1216,6 +1385,7 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
   onArchive: (testCase: TestCase) => void
   onCreate: () => void
   onCreateFolder: () => void
+  onDelete: (testCase: TestCase) => void
   onEdit: (testCase: TestCase) => void
   onImport: () => void
   onSelect: (id: number) => void
@@ -1391,7 +1561,7 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
                     <strong>{data.folders.find((folder) => folder.id === selected.folderId)?.name || '未分类'}</strong>
                   </p>
                 </div>
-                {!readOnly ? <div><Button variant="outline" onClick={() => onEdit(selected)}>编辑</Button>{selected.caseKind !== 'baseline' ? <Button variant="destructive" onClick={() => onArchive(selected)}>归档为基线</Button> : null}</div> : null}
+                {!readOnly ? <div><Button variant="outline" onClick={() => onEdit(selected)}>编辑</Button>{selected.caseKind !== 'baseline' ? <Button variant="outline" onClick={() => onArchive(selected)}>归档为基线</Button> : null}{selected.canDelete ? <Button variant="destructive" onClick={() => onDelete(selected)}><Trash /> 删除</Button> : null}</div> : null}
               </div>
               <div className="test-detail-meta test-case-detail-meta"><span>分类 <strong>{caseKindLabel[selected.caseKind]}</strong></span><span>类型 <strong>{caseTypeLabel[selected.caseType]}</strong></span><span>等级 <strong>{caseLevelLabel[selected.priority]}</strong></span></div>
               {selected.customTags.length ? <div className="test-case-tags">{selected.customTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div> : null}
@@ -1580,7 +1750,7 @@ function PlanCaseDetailDialog({ onClose, planCase }: {
   )
 }
 
-function BugsView({ bugs, busy, data, onAssignee, onComment, onCreate, onDeleteComment, onSelect, onStatus, onUpdateComment, readOnly, selectedId }: {
+function BugsView({ bugs, busy, data, onAssignee, onComment, onCreate, onDeleteComment, onEdit, onSelect, onStatus, onUpdateComment, readOnly, selectedId }: {
   bugs: TestBug[]
   busy: boolean
   data: TestWorkbenchData
@@ -1588,6 +1758,7 @@ function BugsView({ bugs, busy, data, onAssignee, onComment, onCreate, onDeleteC
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onCreate: () => void
   onDeleteComment: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
+  onEdit: (bug: TestBug) => void
   onSelect: (id: number) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
   onUpdateComment: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
@@ -1600,22 +1771,23 @@ function BugsView({ bugs, busy, data, onAssignee, onComment, onCreate, onDeleteC
       <div className="test-module-toolbar"><div><span>缺陷闭环</span><h1>Bug 追踪</h1></div>{!readOnly ? <Button onClick={onCreate}><Plus /> 新建 Bug</Button> : null}</div>
       <div className="test-split-view">
         <div className="test-record-list">
-          {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{severityLabel[bug.severity]} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <p className="test-list-empty">当前测试对象还没有 Bug。</p>}
+          {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <p className="test-list-empty">当前测试对象还没有 Bug。</p>}
         </div>
         <div className="test-record-detail">
-          {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onStatus={onStatus} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
+          {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
         </div>
       </div>
     </div>
   )
 }
 
-function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onStatus, onUpdateComment, readOnly, users }: {
+function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, onStatus, onUpdateComment, readOnly, users }: {
   bug: TestBug
   busy: boolean
   onAssignee: (bug: TestBug, assigneeUserId?: number) => void
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
+  onEdit: (bug: TestBug) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
   readOnly: boolean
@@ -1623,7 +1795,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onStatus
 }) {
   const developers = users.filter((user) => user.roles.includes('developer'))
   return <>
-    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
+    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions">{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}<Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div></div>
     <div className="test-bug-controls"><Label>状态<Select value={bug.status} onValueChange={(value) => onStatus(bug, value as BugStatus)} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(bugStatusLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
     <div className="test-detail-meta"><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
@@ -1638,10 +1810,11 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onStatus
   </>
 }
 
-function BugCommentsSection({ bug, busy, currentUserId, onComment, onDeleteComment, onUpdateComment, placeholder }: {
+function BugCommentsSection({ bug, busy, currentUserId, mentionMembers, onComment, onDeleteComment, onUpdateComment, placeholder }: {
   bug: TestBug
   busy: boolean
   currentUserId?: number
+  mentionMembers?: MentionMember[]
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
@@ -1678,6 +1851,7 @@ function BugCommentsSection({ bug, busy, currentUserId, onComment, onDeleteComme
       >
         <BugEvidenceEditor
           label="添加评论"
+          mentionMembers={mentionMembers}
           value={comment}
           placeholder={placeholder}
           onChange={setComment}
@@ -1700,7 +1874,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment,
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(comment.content)
   const [uploading, setUploading] = useState(false)
-  const canManage = Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
+  const canManage = comment.kind !== 'transfer' && Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
     currentUserId != null && comment.authorUserId === currentUserId
   )))
   const canEdit = Boolean(onUpdateComment && canManage)
@@ -1718,6 +1892,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment,
       <div className="test-comment-header">
         <div className="test-comment-byline">
           <strong>{comment.authorName}</strong>
+          {comment.kind === 'transfer' ? <Badge variant="outline">转移记录</Badge> : null}
           <span aria-hidden="true">·</span>
           <time>{formatTimestamp(comment.createdAt)}{edited ? ` · 编辑于 ${formatTimestamp(comment.updatedAt)}` : ''}</time>
         </div>
@@ -1866,8 +2041,9 @@ function bugEvidenceFileType(file: File): BugEvidenceAttachment['type'] {
   return file.type.startsWith('video/') ? 'video' : 'image'
 }
 
-function BugEvidenceEditor({ label, onChange, onUploadingChange, placeholder, value }: {
+function BugEvidenceEditor({ label, mentionMembers, onChange, onUploadingChange, placeholder, value }: {
   label: string
+  mentionMembers?: MentionMember[]
   onChange: (value: string) => void
   onUploadingChange?: (uploading: boolean) => void
   placeholder: string
@@ -2035,12 +2211,12 @@ function BugEvidenceEditor({ label, onChange, onUploadingChange, placeholder, va
             })}
           </div>
         ) : null}
-        <Textarea
+        <MentionTextarea
           className="test-evidence-textarea"
+          members={mentionMembers}
           placeholder={placeholder}
           value={textDraft}
-          onChange={(event) => {
-            const nextText = event.target.value
+          onChange={(nextText) => {
             setTextDraft(nextText)
             updateEvidence(nextText, attachments)
           }}
@@ -2413,7 +2589,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
 
                   {isOwner ? <section className="test-space-invite-link-section">
                     <div className="test-space-admin-section-heading"><div><span>邀请链接</span><strong>{inviteLinkAccess === 'editor' ? '可编辑' : '只读'}</strong></div></div>
-                    <p>复制给测试工程师，对方登录并切换到测试工程师身份后即可加入。</p>
+                    <p>{selectedSpace.organizationId ? '复制给组织成员，对方登录并切换到测试工程师身份后即可加入。' : '复制给测试工程师，对方登录并切换到测试工程师身份后即可加入。'}</p>
                     <div className="test-space-invite-link-controls">
                       <Select value={String(inviteExpiresInMinutes)} onValueChange={(value) => { setInviteExpiresInMinutes(Number(value)); setInviteLinkStatus('') }}>
                         <SelectTrigger aria-label="邀请链接有效时长"><SelectValue /></SelectTrigger>
@@ -2481,17 +2657,53 @@ function SubjectDialog({
   onOpenChange,
   onSubmit,
   open,
+  subject,
 }: {
   busy: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (payload: { description: string; environment: string; name: string; versionLabel: string }) => void
+  onSubmit: (payload: { description: string; environment: string; name: string; versionLabel: string }) => Promise<boolean>
   open: boolean
+  subject?: TestSubject
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [versionLabel, setVersionLabel] = useState('')
   const [environment, setEnvironment] = useState('')
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent fixedHeader className="test-wide-dialog"><DialogHeader><DialogTitle>新建测试对象</DialogTitle><DialogDescription>测试对象独立存在，用于承载对象版本、环境和用例。</DialogDescription></DialogHeader><form className="test-dialog-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ description, environment, name, versionLabel }) }}><Label>名称<Input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></Label><Label>说明<Textarea value={description} onChange={(event) => setDescription(event.target.value)} /></Label><div className="test-form-grid"><Label>当前版本<Input value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} placeholder="v1.0.0" /></Label><Label>默认环境<Input value={environment} onChange={(event) => setEnvironment(event.target.value)} placeholder="测试环境" /></Label></div><DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={busy || !name.trim()}>创建</Button></DialogFooter></form></DialogContent></Dialog>
+  useEffect(() => {
+    if (!open) return
+    setName(subject?.name ?? '')
+    setDescription(subject?.description ?? '')
+    setVersionLabel(subject?.versionLabel ?? '')
+    setEnvironment(subject?.environment ?? '')
+  }, [open, subject?.description, subject?.environment, subject?.id, subject?.name, subject?.versionLabel])
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent fixedHeader className="test-wide-dialog">
+        <DialogHeader>
+          <DialogTitle>{subject ? '编辑测试对象' : '新建测试对象'}</DialogTitle>
+          <DialogDescription>测试对象独立存在，用于承载对象版本、环境和用例。</DialogDescription>
+        </DialogHeader>
+        <form className="test-dialog-form" onSubmit={async (event) => {
+          event.preventDefault()
+          if (!name.trim()) return
+          const saved = await onSubmit({ description, environment, name, versionLabel })
+          if (saved) onOpenChange(false)
+        }}>
+          <Label>名称<Input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></Label>
+          <Label>说明<Textarea value={description} onChange={(event) => setDescription(event.target.value)} /></Label>
+          <div className="test-form-grid">
+            <Label>当前版本<Input value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} placeholder="v1.0.0" /></Label>
+            <Label>默认环境<Input value={environment} onChange={(event) => setEnvironment(event.target.value)} placeholder="测试环境" /></Label>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button disabled={busy || !name.trim()}>{busy ? (subject ? '保存中...' : '创建中...') : (subject ? '保存' : '创建')}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function FolderDialog({
@@ -3156,19 +3368,33 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
   </Dialog>
 }
 
-function BugDialog({ busy, onOpenChange, onSubmit, open, seed, users }: { busy: boolean; onOpenChange: (open: boolean) => void; onSubmit: (payload: { actualResult: string; assigneeUserId?: number; environment: string; expectedResult: string; priority: Priority; reproductionSteps: string; severity: BugSeverity; testPlanCaseId?: number; testPlanId?: number; testSubjectId: number; title: string }) => void; open: boolean; seed: Partial<TestBug>; users: TestWorkbenchData['users'] }) {
-  return <BugDialogForm key={`${open}-${seed.testPlanCaseId ?? 'new'}`} {...{ busy, onOpenChange, onSubmit, open, seed, users }} />
+type BugDialogPayload = {
+  actualResult: string
+  assigneeUserId?: number
+  environment: string
+  expectedResult: string
+  priority: Priority
+  reproductionSteps: string
+  severity: BugSeverity
+  testPlanCaseId?: number
+  testPlanId?: number
+  testSubjectId: number
+  title: string
 }
 
-function BugDialogForm({ busy, onOpenChange, onSubmit, open, seed, users }: Parameters<typeof BugDialog>[0]) {
+function BugDialog({ busy, editing, onOpenChange, onSubmit, open, seed, users }: { busy: boolean; editing: boolean; onOpenChange: (open: boolean) => void; onSubmit: (payload: BugDialogPayload) => void; open: boolean; seed: Partial<TestBug>; users: TestWorkbenchData['users'] }) {
+  return <BugDialogForm key={`${open}-${editing ? seed.id : seed.testPlanCaseId ?? 'new'}`} {...{ busy, editing, onOpenChange, onSubmit, open, seed, users }} />
+}
+
+function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, users }: Parameters<typeof BugDialog>[0]) {
   const [title, setTitle] = useState(seed.title ?? '')
-  const [severity, setSeverity] = useState<BugSeverity>('major')
-  const [priority, setPriority] = useState<Priority>('medium')
+  const [severity, setSeverity] = useState<BugSeverity>(seed.severity ?? 'major')
+  const [priority, setPriority] = useState<Priority>(seed.priority ?? 'medium')
   const [environment, setEnvironment] = useState(seed.environment ?? '')
   const [reproductionSteps, setReproductionSteps] = useState(seed.reproductionSteps ?? '')
   const [expectedResult, setExpectedResult] = useState(seed.expectedResult ?? '')
   const [actualResult, setActualResult] = useState(seed.actualResult ?? '')
-  const [assigneeUserId, setAssigneeUserId] = useState('none')
+  const [assigneeUserId, setAssigneeUserId] = useState(seed.assigneeUserId ? String(seed.assigneeUserId) : 'none')
   const [reproductionUploading, setReproductionUploading] = useState(false)
   const [expectedUploading, setExpectedUploading] = useState(false)
   const [actualUploading, setActualUploading] = useState(false)
@@ -3178,8 +3404,8 @@ function BugDialogForm({ busy, onOpenChange, onSubmit, open, seed, users }: Para
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent fixedHeader className="test-wide-dialog">
         <DialogHeader>
-          <DialogTitle>创建 Bug</DialogTitle>
-          <DialogDescription>{seed.testPlanCaseId ? '已从失败用例带入执行上下文。' : '记录可复现、可分派、可验证的缺陷。'}</DialogDescription>
+          <DialogTitle>{editing ? '编辑 Bug' : '创建 Bug'}</DialogTitle>
+          <DialogDescription>{editing ? '仅 Bug 创建者可以修改缺陷信息。' : seed.testPlanCaseId ? '已从失败用例带入执行上下文。' : '记录可复现、可分派、可验证的缺陷。'}</DialogDescription>
         </DialogHeader>
         <form
           className="test-dialog-form"
@@ -3255,7 +3481,74 @@ function BugDialogForm({ busy, onOpenChange, onSubmit, open, seed, users }: Para
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
             <Button disabled={busy || evidenceUploading || !title.trim() || !seed.testSubjectId}>
-              {evidenceUploading ? '附件上传中...' : '创建 Bug'}
+              {evidenceUploading ? '附件上传中...' : editing ? '保存修改' : '创建 Bug'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function BugTransferDialog({ bug, busy, onOpenChange, onSubmit, open }: {
+  bug?: TestBug
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (bug: TestBug, assigneeUserId: number, reason: string) => Promise<boolean>
+  open: boolean
+}) {
+  const [assigneeUserId, setAssigneeUserId] = useState('')
+  const [reason, setReason] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setAssigneeUserId('')
+    setReason('')
+  }, [bug?.id, open])
+
+  const assigning = !bug?.assigneeUserId
+  const normalizedReason = reason.trim()
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent fixedHeader>
+        <DialogHeader>
+          <DialogTitle>{assigning ? '分配 Bug' : '转移 Bug'}</DialogTitle>
+          <DialogDescription>{bug ? `BUG-${bug.id} · ${bug.title}` : ''}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="test-dialog-form"
+          onSubmit={async (event) => {
+            event.preventDefault()
+            if (!bug || !assigneeUserId || (!assigning && !normalizedReason)) return
+            if (await onSubmit(bug, Number(assigneeUserId), normalizedReason)) onOpenChange(false)
+          }}
+        >
+          <Label>
+            新负责人
+            <Select value={assigneeUserId} onValueChange={setAssigneeUserId} disabled={busy}>
+              <SelectTrigger><SelectValue placeholder="选择组织成员" /></SelectTrigger>
+              <SelectContent>
+                {(bug?.transferCandidates ?? []).map((member) => (
+                  <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Label>
+          {!assigning ? (
+            <Label>
+              转移理由
+              <Textarea
+                autoFocus
+                maxLength={1000}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </Label>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button disabled={busy || !assigneeUserId || (!assigning && !normalizedReason)}>
+              {busy ? (assigning ? '分配中...' : '转移中...') : (assigning ? '确认分配' : '确认转移')}
             </Button>
           </DialogFooter>
         </form>
@@ -3266,32 +3559,75 @@ function BugDialogForm({ busy, onOpenChange, onSubmit, open, seed, users }: Para
 
 export function AssignedTestBugs({
   currentUserId,
+  initialBugId,
   embedded = false,
   onBugSeen,
   onBugsChange,
   onExit,
 }: {
   currentUserId?: number
+  initialBugId?: number | null
   embedded?: boolean
   onBugSeen?: (bug: TestBug) => void
   onBugsChange?: (bugs: TestBug[]) => void
   onExit?: () => void
 }) {
   const [bugs, setBugs] = useState<TestBug[]>([])
+  const [mentionMembers, setMentionMembers] = useState<MentionMember[]>([])
   const [selectedId, setSelectedId] = useState<number>()
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [transferBug, setTransferBug] = useState<TestBug>()
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const refreshInFlightRef = useRef(false)
 
   useEffect(() => {
     fetchAssignedTestBugs()
       .then((result) => {
         setBugs(result.bugs)
+        setMentionMembers(result.members ?? [])
         onBugsChange?.(result.bugs)
-        setSelectedId(result.bugs[0]?.id)
+        setSelectedId(initialBugId && result.bugs.some((bug) => bug.id === initialBugId)
+          ? initialBugId
+          : result.bugs[0]?.id)
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Bug 加载失败。'))
       .finally(() => setLoading(false))
+  }, [initialBugId, onBugsChange])
+
+  useEffect(() => {
+    let active = true
+    const refresh = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (refreshInFlightRef.current) return
+      refreshInFlightRef.current = true
+      fetchAssignedTestBugs()
+        .then((result) => {
+          if (!active) return
+          setBugs(result.bugs)
+          setMentionMembers(result.members ?? [])
+          onBugsChange?.(result.bugs)
+          setSelectedId((current) => (
+            current && result.bugs.some((bug) => bug.id === current)
+              ? current
+              : result.bugs[0]?.id
+          ))
+        })
+        .catch(() => undefined)
+        .then(() => {
+          refreshInFlightRef.current = false
+        })
+    }
+    const interval = window.setInterval(refresh, notificationRefreshIntervalMs)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [onBugsChange])
 
   const selected = useMemo(() => bugs.find((bug) => bug.id === selectedId), [bugs, selectedId])
@@ -3300,12 +3636,25 @@ export function AssignedTestBugs({
     if (selected) onBugSeen?.(selected)
   }, [onBugSeen, selected])
 
+  useEffect(() => {
+    if (transferDialogOpen || !transferBug) return
+    const cleanup = window.setTimeout(() => {
+      setTransferBug(undefined)
+    }, 180)
+    return () => window.clearTimeout(cleanup)
+  }, [transferBug, transferDialogOpen])
+
   async function mutate(operation: () => Promise<{ bugs: TestBug[] }>) {
     setBusy(true)
     setError('')
     try {
       const result = await operation()
       setBugs(result.bugs)
+      setSelectedId((current) => (
+        current && result.bugs.some((bug) => bug.id === current)
+          ? current
+          : result.bugs[0]?.id
+      ))
       onBugsChange?.(result.bugs)
       return true
     } catch (mutationError) {
@@ -3338,7 +3687,7 @@ export function AssignedTestBugs({
               <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(bug.id)}>
                 <div><code>BUG-{bug.id}</code><Badge variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
                 <strong>{bug.title}</strong>
-                <small>{severityLabel[bug.severity]} · {formatTimestamp(bug.updatedAt)}</small>
+                <small>{formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}</small>
               </button>
             ))}
           </div>
@@ -3346,8 +3695,21 @@ export function AssignedTestBugs({
             {selected ? (
               <>
                 <div className="test-detail-heading">
-                  <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2></div>
-                  <div>
+                  <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2><span className="test-bug-assignee">负责人：{selected.assigneeName || '未分配'}</span></div>
+                  <div className="test-detail-heading-actions">
+                    {selected.canTransfer && (selected.transferCandidates?.length ?? 0) > 0 ? (
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          setTransferBug(selected)
+                          setTransferDialogOpen(true)
+                        }}
+                      >
+                        {selected.assigneeUserId ? <ArrowsLeftRight /> : <UserPlus />}
+                        {selected.assigneeUserId ? '转移' : '分配'}
+                      </Button>
+                    ) : null}
                     {selected.canManage && (selected.status === 'assigned' || selected.status === 'reopened') ? (
                       <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'in_progress'))}>开始修复</Button>
                     ) : null}
@@ -3363,14 +3725,15 @@ export function AssignedTestBugs({
                   bug={selected}
                   busy={busy}
                   currentUserId={currentUserId}
+                  mentionMembers={selected.organizationMembers ?? mentionMembers}
                   placeholder="说明修复内容或提交版本，支持粘贴、拖入或上传图片和视频。"
-                  onComment={selected.canManage
+                  onComment={selected.canComment
                     ? (bug, content) => mutate(() => addAssignedTestBugComment(bug.id, content))
                     : undefined}
-                  onDeleteComment={selected.canManage
+                  onDeleteComment={selected.canComment
                     ? (bug, comment) => mutate(() => deleteAssignedTestBugComment(bug.id, comment.id))
                     : undefined}
-                  onUpdateComment={selected.canManage
+                  onUpdateComment={selected.canComment
                     ? (bug, comment, content) => mutate(() => updateAssignedTestBugComment(bug.id, comment.id, content))
                     : undefined}
                 />
@@ -3379,6 +3742,16 @@ export function AssignedTestBugs({
           </div>
         </div>
       )}
+      <BugTransferDialog
+        bug={transferBug}
+        busy={busy}
+        open={transferDialogOpen}
+        onOpenChange={setTransferDialogOpen}
+        onSubmit={(bug, assigneeUserId, reason) => mutate(() => transferAssignedTestBug(bug.id, {
+          assigneeUserId,
+          reason,
+        }))}
+      />
     </Root>
   )
 }

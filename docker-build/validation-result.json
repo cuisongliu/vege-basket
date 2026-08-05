@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-27T18:15:08+08:00",
+  "phase": "validation",
+  "outcome": "partial_success",
+  "container_startup": {
+    "status": "skipped",
+    "reason": "Starting server/index.ts applies schemaSql and no database-write authorization was granted.",
+    "all_containers_up": false,
+    "crash_detected": false
+  },
+  "migration": {
+    "applicable": true,
+    "orm": "raw-postgresql-schema",
+    "expected_count": null,
+    "actual_count": null,
+    "tables_exist": null,
+    "tables_verified": [],
+    "status": "skipped",
+    "verification_command": null
+  },
+  "http_health": {
+    "url": null,
+    "http_code": null,
+    "acceptable": null,
+    "notes": "Runtime HTTP validation was skipped with container startup."
+  },
+  "image_content": {
+    "status": "passed",
+    "verified_files": [
+      "/app/dist/index.html",
+      "/app/server/index.ts",
+      "/app/server/test-workbench.ts",
+      "/app/server/organizations.ts",
+      "/app/shared"
+    ],
+    "verified_features": [
+      "test-space organization selection client bundle",
+      "test-space organization assignment server validation"
+    ]
+  },
+  "remote_manifest": {
+    "status": "passed",
+    "platform": "linux/amd64",
+    "digest": "sha256:a59cabf4472e51ad7978efce00cbf897873cd947b7dbc2a568499be81372aef7"
+  },
+  "log_analysis": {
+    "error_count": 0,
+    "migration_errors": [],
+    "critical_errors": [],
+    "warnings": [
+      "Runtime log analysis was skipped because the container was not started."
+    ]
+  },
+  "checklist": {
+    "image_built": true,
+    "container_started": false,
+    "database_connected": false,
+    "migrations_executed": false,
+    "tables_created": false,
+    "http_valid_response": false,
+    "no_runtime_errors": null,
+    "healthcheck_passed": false
+  },
+  "summary": "The amd64 image was built, pushed, and inspected successfully; database-backed startup validation was intentionally skipped."
+}

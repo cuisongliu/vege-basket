@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import pg from 'pg'
 import type { QueryResultRow } from 'pg'
+import { registerDatabasePoolErrorHandler } from './database-pool-policy.ts'
 
 const { Pool } = pg
 
@@ -12,7 +13,11 @@ if (!databaseUrl) {
 
 export const pool = new Pool({
   connectionString: databaseUrl,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
 })
+
+registerDatabasePoolErrorHandler(pool)
 
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,

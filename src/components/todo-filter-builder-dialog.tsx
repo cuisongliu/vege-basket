@@ -151,7 +151,12 @@ function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
   if (field === 'title') return todo.title
   if (field === 'module') return todo.moduleId ? String(todo.moduleId) : ''
   if (field === 'assignee') return todo.assigneeUserId ? String(todo.assigneeUserId) : ''
-  if (field === 'watcher') return todo.watcherUserId ? String(todo.watcherUserId) : ''
+  if (field === 'watcher') {
+    if (Array.isArray(todo.watcherUserIds) && todo.watcherUserIds.length > 0) {
+      return todo.watcherUserIds.join(',')
+    }
+    return todo.watcherUserId ? String(todo.watcherUserId) : ''
+  }
   if (field === 'creator') return todo.createdByUserId ? String(todo.createdByUserId) : ''
   if (field === 'priority') return todo.priority
   if (field === 'done') return todo.done ? 'done' : 'open'
@@ -167,6 +172,22 @@ function matchesTodoFilterCondition(todo: Todo, condition: TodoFilterCondition) 
 
   if (normalized.operator === 'is_empty') return !fieldValue
   if (normalized.operator === 'is_not_empty') return Boolean(fieldValue)
+  if (normalized.field === 'watcher') {
+    const watcherIds = Array.isArray(todo.watcherUserIds) && todo.watcherUserIds.length > 0
+      ? todo.watcherUserIds.map(String)
+      : todo.watcherUserId
+        ? [String(todo.watcherUserId)]
+        : []
+    if (normalized.operator === 'equals') return watcherIds.includes(targetValue)
+    if (normalized.operator === 'not_equals') return !watcherIds.includes(targetValue)
+    if (normalized.operator === 'contains') {
+      return watcherIds.some((id) => id.includes(targetValue.trim()))
+    }
+    if (normalized.operator === 'not_contains') {
+      return !watcherIds.some((id) => id.includes(targetValue.trim()))
+    }
+    return true
+  }
   if (normalized.operator === 'contains') {
     return fieldValue.toLowerCase().includes(targetValue.trim().toLowerCase())
   }
@@ -382,6 +403,7 @@ export function TodoFilterBuilderDialog({
             <SelectItem value="confirmed">已确认</SelectItem>
             <SelectItem value="pending_review">待验收</SelectItem>
             <SelectItem value="rejected">已驳回</SelectItem>
+            <SelectItem value="acceptance_failed">验收未通过</SelectItem>
           </SelectContent>
         </Select>
       )

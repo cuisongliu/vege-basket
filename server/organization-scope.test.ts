@@ -5,7 +5,7 @@ import {
   testSpaceMembershipPresentSql,
 } from './organization-scope.ts'
 
-test('managed organization scope requires both occupational and resource administration', () => {
+test('managed organization scope requires resource administration membership', () => {
   const sql = managedOrganizationReadScopeSql('project.organization_id', '$2')
 
   assert.match(sql, /organization_admin_role\.role = 'organization_admin'/u)

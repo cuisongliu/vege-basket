@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-24T17:14:14+08:00",
+  "phase": "analysis",
+  "project": {
+    "language": "typescript",
+    "framework": "react-vite-express",
+    "framework_version": "React 19 / Vite 8 / Express 5",
+    "package_manager": "npm",
+    "package_manager_version": "11"
+  },
+  "package_manager_config": {
+    "lockfile_disabled": false,
+    "config_file": null,
+    "install_command": "npm ci"
+  },
+  "workspace": {
+    "enabled": false,
+    "type": null,
+    "config_file": null,
+    "packages": [],
+    "patches_dir": null,
+    "package_count": 1
+  },
+  "build": {
+    "command": "npm run build",
+    "resolved_command": "tsc -b && vite build",
+    "output_dir": "dist",
+    "standalone_mode": false,
+    "env_required": []
+  },
+  "run": {
+    "command": "node server/index.ts",
+    "entry_point": "server/index.ts",
+    "port": 8787,
+    "env_required": [
+      "DATABASE_URL",
+      "APP_ENCRYPTION_ACTIVE_KEY_ID",
+      "APP_ENCRYPTION_KEYS"
+    ]
+  },
+  "external_services": {
+    "database": {
+      "type": "postgres",
+      "image": "postgres:16-alpine",
+      "env_var": "DATABASE_URL",
+      "has_vector": false
+    },
+    "redis": {
+      "required": false
+    },
+    "s3": {
+      "required": false,
+      "optional_provider": "Alibaba OSS"
+    },
+    "search": {
+      "type": "none"
+    },
+    "message_queue": {
+      "type": "none"
+    }
+  },
+  "system_libs": [],
+  "migration_system": {
+    "detected": true,
+    "orm": "raw-postgresql-schema",
+    "migration_dir": "server/schema.ts",
+    "migration_count": 1,
+    "execution_timing": "runtime",
+    "execution_command": "server/index.ts applies schemaSql before listen",
+    "execution_env_var": "DATABASE_URL",
+    "standalone_with_orm": false,
+    "requires_separate_deps": false,
+    "warnings": [
+      "Runtime startup applies idempotent schema SQL and therefore requires explicit database-write authorization."
+    ]
+  },
+  "build_complexity": {
+    "original_build_script": "tsc -b && vite build",
+    "heavy_operations": [
+      {
+        "name": "type-check",
+        "essential": true,
+        "recommendation": "Keep in the image build"
+      }
+    ],
+    "workspace_package_count": 1,
+    "memory_risk": "low",
+    "docker_build_command": "npm run build",
+    "memory_limit": null,
+    "skipped_commands": []
+  },
+  "custom_cli": {
+    "detected": false
+  },
+  "native_modules": {
+    "rust_required": false
+  },
+  "complexity": "L2",
+  "max_iterations": 3,
+  "existing_docker": {
+    "has_dockerfile": true,
+    "has_compose": false,
+    "has_dockerignore": true
+  },
+  "warnings": [
+    "Container startup was not authorized because it would mutate the configured PostgreSQL database."
+  ],
+  "detection_steps_completed": 17
+}

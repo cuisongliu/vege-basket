@@ -131,6 +131,18 @@ export function createTestSubject(spaceId: number, payload: {
   })
 }
 
+export function updateTestSubject(spaceId: number, subjectId: number, payload: {
+  description?: string
+  environment?: string
+  name: string
+  versionLabel?: string
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects/${subjectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function deleteTestSubject(spaceId: number, subjectId: number) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects/${subjectId}`, {
     method: 'DELETE',
@@ -192,6 +204,12 @@ export function updateTestCase(spaceId: number, caseId: number, payload: Partial
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/cases/${caseId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTestCase(spaceId: number, caseId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/cases/${caseId}`, {
+    method: 'DELETE',
   })
 }
 
@@ -301,8 +319,15 @@ export function createTestBug(spaceId: number, payload: {
 }
 
 export function updateTestBug(spaceId: number, bugId: number, payload: {
+  actualResult?: string
   assigneeUserId?: number
+  environment?: string
+  expectedResult?: string
+  priority?: Priority
+  reproductionSteps?: string
+  severity?: BugSeverity
   status?: BugStatus
+  title?: string
 }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {
     method: 'PATCH',
@@ -331,7 +356,10 @@ export function deleteTestBugComment(spaceId: number, bugId: number, commentId: 
 }
 
 export function fetchAssignedTestBugs() {
-  return request<{ bugs: TestWorkbenchData['bugs'] }>('/api/test-bugs/assigned')
+  return request<{
+    bugs: TestWorkbenchData['bugs']
+    members: Array<{ id: number; name: string }>
+  }>('/api/test-bugs/assigned')
 }
 
 export function updateAssignedTestBug(bugId: number, status: BugStatus) {
@@ -341,22 +369,32 @@ export function updateAssignedTestBug(bugId: number, status: BugStatus) {
   })
 }
 
+export function transferAssignedTestBug(bugId: number, payload: { assigneeUserId: number; reason: string }) {
+  return request<{
+    bugs: TestWorkbenchData['bugs']
+    members: Array<{ id: number; name: string }>
+  }>(`/api/test-bugs/${bugId}/assigned/transfer`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function addAssignedTestBugComment(bugId: number, content: string) {
-  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments`, {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments`, {
     method: 'POST',
     body: JSON.stringify({ content }),
   })
 }
 
 export function updateAssignedTestBugComment(bugId: number, commentId: number, content: string) {
-  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
     method: 'PATCH',
     body: JSON.stringify({ content }),
   })
 }
 
 export function deleteAssignedTestBugComment(bugId: number, commentId: number) {
-  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
     method: 'DELETE',
   })
 }

@@ -121,6 +121,12 @@ export function TodoActivityPanel({ projectId }: { projectId: number }) {
                 icon: <XCircle size={18} weight="fill" />,
                 label: '已驳回',
               },
+              acceptance_failed: {
+                className: 'is-acceptance-failed',
+                description: '验收未通过这项待办',
+                icon: <XCircle size={18} weight="fill" />,
+                label: '验收未通过',
+              },
               reopened: {
                 className: 'is-reopened',
                 description: '将这项待办重新设为进行中',

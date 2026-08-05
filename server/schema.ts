@@ -55,12 +55,26 @@ create table if not exists image_sync_workflow_runs (
   completed_at timestamptz
 );
 
+-- The delivery persona was folded into developer. Preserve existing accounts by
+-- moving the legacy assignment before tightening the role constraint.
+insert into user_roles (user_id, role)
+select user_id, 'developer'
+from user_roles
+where role = 'delivery'
+on conflict do nothing;
+
+delete from user_roles where role = 'delivery';
+
+update sessions
+set active_role = 'developer'
+where active_role = 'delivery';
+
 alter table user_roles
   drop constraint if exists user_roles_role_check;
 
 alter table user_roles
   add constraint user_roles_role_check
-  check (role in ('developer', 'tester', 'delivery', 'organization_admin'));
+  check (role in ('developer', 'tester', 'organization_admin'));
 
 create table if not exists organizations (
   id bigserial primary key,
@@ -68,6 +82,10 @@ create table if not exists organizations (
   name text not null,
   name_lookup text not null,
   week_starts_on smallint not null default 1 check (week_starts_on between 1 and 7),
+  weekly_report_open_day smallint not null default 5,
+  weekly_report_open_time time not null default '00:00',
+  weekly_report_close_day smallint not null default 1,
+  weekly_report_close_time time not null default '23:59',
   feishu_tenant_key text not null default '',
   created_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -77,7 +95,11 @@ create table if not exists organizations (
 
 alter table organizations
   add column if not exists feishu_tenant_key text not null default '',
-  add column if not exists week_starts_on smallint not null default 1;
+  add column if not exists week_starts_on smallint not null default 1,
+  add column if not exists weekly_report_open_day smallint not null default 5,
+  add column if not exists weekly_report_open_time time not null default '00:00',
+  add column if not exists weekly_report_close_day smallint not null default 1,
+  add column if not exists weekly_report_close_time time not null default '23:59';
 
 do $$
 begin
@@ -90,6 +112,31 @@ begin
     alter table organizations
       add constraint organizations_week_starts_on_check
       check (week_starts_on between 1 and 7);
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'organizations_weekly_report_rule_days_check'
+      and conrelid = 'organizations'::regclass
+  ) then
+    alter table organizations
+      add constraint organizations_weekly_report_rule_days_check
+      check (
+        weekly_report_open_day between 1 and 7
+        and weekly_report_close_day between 1 and 7
+        and (
+          weekly_report_close_day < weekly_report_open_day
+          or (
+            weekly_report_close_day = weekly_report_open_day
+            and weekly_report_close_time < weekly_report_open_time
+          )
+        )
+      );
   end if;
 end
 $$;
@@ -132,6 +179,16 @@ create table if not exists organization_callback_events (
   received_at timestamptz not null default now()
 );
 
+create table if not exists organization_invite_links (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  created_by_user_id bigint references users(id) on delete set null,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
 create table if not exists organization_audit_events (
   id bigserial primary key,
   organization_id bigint not null references organizations(id) on delete cascade,
@@ -156,6 +213,90 @@ create table if not exists organization_weekly_reports (
   unique (organization_id, user_id, week_start)
 );
 
+alter table organization_weekly_reports
+  add column if not exists draft_content text not null default '',
+  add column if not exists draft_version integer not null default 1,
+  add column if not exists draft_source_mode text not null default 'manual';
+
+update organization_weekly_reports
+set draft_content = content
+where draft_content = '' and content <> '';
+
+do $$
+begin
+  alter table organization_weekly_reports
+    add constraint organization_weekly_reports_draft_source_mode_check
+    check (draft_source_mode in ('manual', 'ai'));
+exception
+  when duplicate_object then null;
+end $$;
+
+create table if not exists organization_weekly_report_revisions (
+  id bigserial primary key,
+  report_id bigint not null references organization_weekly_reports(id) on delete cascade,
+  revision_number integer not null check (revision_number > 0),
+  draft_version integer not null default 1 check (draft_version > 0),
+  content text not null,
+  source_mode text not null default 'manual' check (source_mode in ('manual', 'ai')),
+  submitted_by_user_id bigint references users(id) on delete set null,
+  submitted_at timestamptz not null default now(),
+  unique (report_id, revision_number),
+  unique (id, report_id)
+);
+
+alter table organization_weekly_report_revisions
+  add column if not exists draft_version integer not null default 1;
+
+alter table organization_weekly_reports
+  add column if not exists published_revision_id bigint
+    references organization_weekly_report_revisions(id) on delete set null;
+
+insert into organization_weekly_report_revisions (
+  report_id,
+  revision_number,
+  content,
+  source_mode,
+  submitted_by_user_id,
+  submitted_at
+)
+select report.id, 1, report.content, report.draft_source_mode, report.user_id,
+  coalesce(report.submitted_at, report.updated_at)
+from organization_weekly_reports report
+where report.status = 'submitted'
+  and not exists (
+    select 1 from organization_weekly_report_revisions revision
+    where revision.report_id = report.id
+  )
+on conflict (report_id, revision_number) do nothing;
+
+update organization_weekly_reports report
+set published_revision_id = revision.id
+from organization_weekly_report_revisions revision
+where revision.report_id = report.id
+  and report.status = 'submitted'
+  and report.published_revision_id is null
+  and revision.revision_number = (
+    select max(candidate.revision_number)
+    from organization_weekly_report_revisions candidate
+    where candidate.report_id = report.id
+  );
+
+create table if not exists organization_weekly_report_reminders (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  target_user_id bigint not null references users(id) on delete cascade,
+  requested_by_user_id bigint references users(id) on delete set null,
+  week_start date not null,
+  reminder_day date not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'sent', 'failed', 'skipped')),
+  last_error text not null default '',
+  delivered_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, target_user_id, week_start, reminder_day)
+);
+
 create table if not exists organization_weekly_summaries (
   id bigserial primary key,
   organization_id bigint not null references organizations(id) on delete cascade,
@@ -167,6 +308,13 @@ create table if not exists organization_weekly_summaries (
   updated_at timestamptz not null default now(),
   unique (organization_id, week_start)
 );
+
+-- Organization owners are also organization administrators. Keep this
+-- idempotent so existing organizations receive the same capability as new ones.
+insert into user_roles (user_id, role)
+select owner_user_id, 'organization_admin'
+from organizations
+on conflict (user_id, role) do nothing;
 
 insert into user_roles (user_id, role)
 select id, 'developer'
@@ -194,6 +342,17 @@ alter table projects
 
 alter table projects
   add column if not exists description_encrypted text;
+
+alter table projects
+  add column if not exists health_status text not null default 'on_track',
+  add column if not exists health_note_encrypted text;
+
+alter table projects
+  drop constraint if exists projects_health_status_check;
+
+alter table projects
+  add constraint projects_health_status_check
+  check (health_status in ('on_track', 'at_risk', 'off_track'));
 
 update projects
 set tags_encrypted = array_to_json(tags)::text
@@ -244,6 +403,63 @@ where expires_at is null;
 alter table project_invite_links
   alter column expires_at set not null;
 
+create table if not exists project_transfer_requests (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  requested_by_user_id bigint not null references users(id) on delete cascade,
+  target_user_id bigint not null references users(id) on delete cascade,
+  target_open_id text not null,
+  token_hash text not null unique,
+  status text not null default 'pending',
+  feishu_message_id text not null default '',
+  last_error text not null default '',
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '72 hours',
+  responded_by_user_id bigint references users(id) on delete set null,
+  responded_at timestamptz,
+  check (status in ('pending', 'accepted', 'declined', 'expired', 'revoked', 'delivery_failed'))
+);
+
+alter table project_transfer_requests
+  add column if not exists organization_id bigint references organizations(id) on delete cascade;
+
+alter table project_transfer_requests
+  add column if not exists requested_by_user_id bigint references users(id) on delete cascade;
+
+alter table project_transfer_requests
+  add column if not exists target_user_id bigint references users(id) on delete cascade;
+
+alter table project_transfer_requests
+  add column if not exists target_open_id text not null default '';
+
+alter table project_transfer_requests
+  add column if not exists token_hash text;
+
+alter table project_transfer_requests
+  add column if not exists status text not null default 'pending';
+
+alter table project_transfer_requests
+  add column if not exists feishu_message_id text not null default '';
+
+alter table project_transfer_requests
+  add column if not exists last_error text not null default '';
+
+alter table project_transfer_requests
+  add column if not exists expires_at timestamptz not null default now() + interval '72 hours';
+
+alter table project_transfer_requests
+  add column if not exists responded_by_user_id bigint references users(id) on delete set null;
+
+alter table project_transfer_requests
+  add column if not exists responded_at timestamptz;
+
+create table if not exists project_transfer_callback_events (
+  event_id text primary key,
+  transfer_request_id bigint not null references project_transfer_requests(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists journal_entries (
   id bigserial primary key,
   project_id bigint not null references projects(id) on delete cascade,
@@ -270,7 +486,7 @@ create table if not exists todos (
   priority text not null default 'medium',
   done boolean not null default false,
   confirmation_status text not null default 'confirmed'
-    check (confirmation_status in ('confirmed', 'pending_review', 'rejected')),
+    check (confirmation_status in ('confirmed', 'pending_review', 'rejected', 'acceptance_failed')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -318,6 +534,20 @@ alter table todos
   add column if not exists watched_by_user_id bigint references users(id) on delete set null,
   add column if not exists watched_at timestamptz;
 
+create table if not exists todo_watchers (
+  todo_id bigint not null references todos(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  watched_by_user_id bigint references users(id) on delete set null,
+  watched_at timestamptz not null default now(),
+  primary key (todo_id, user_id)
+);
+
+insert into todo_watchers (todo_id, user_id, watched_by_user_id, watched_at)
+select id, watcher_user_id, watched_by_user_id, coalesce(watched_at, now())
+from todos
+where watcher_user_id is not null
+on conflict (todo_id, user_id) do nothing;
+
 alter table todos
   add column if not exists reviewer_user_id bigint references users(id) on delete set null;
 
@@ -332,7 +562,65 @@ alter table todos
 
 alter table todos
   add constraint todos_confirmation_status_check
-  check (confirmation_status in ('confirmed', 'pending_review', 'rejected'));
+  check (confirmation_status in ('confirmed', 'pending_review', 'rejected', 'acceptance_failed'));
+
+create table if not exists project_milestones (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  title text not null,
+  acceptance_criteria text not null default '',
+  execution_note text not null default '',
+  baseline_date date not null,
+  target_date date not null,
+  responsible_user_id bigint references users(id) on delete set null,
+  status text not null default 'pending'
+    check (status in ('pending', 'in_review', 'achieved', 'cancelled')),
+  sort_order integer not null default 0,
+  created_by_user_id bigint references users(id) on delete set null,
+  updated_by_user_id bigint references users(id) on delete set null,
+  submitted_by_user_id bigint references users(id) on delete set null,
+  submitted_at timestamptz,
+  completed_by_user_id bigint references users(id) on delete set null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table project_milestones
+  drop constraint if exists project_milestones_status_check;
+
+alter table project_milestones
+  add constraint project_milestones_status_check
+  check (status in ('pending', 'in_review', 'achieved', 'cancelled'));
+
+create unique index if not exists idx_todos_id_project_id_unique
+  on todos(id, project_id);
+
+create unique index if not exists idx_project_milestones_id_project_id_unique
+  on project_milestones(id, project_id);
+
+create table if not exists project_milestone_todos (
+  milestone_id bigint not null,
+  todo_id bigint not null,
+  project_id bigint not null,
+  created_at timestamptz not null default now(),
+  primary key (milestone_id, todo_id),
+  foreign key (milestone_id, project_id)
+    references project_milestones(id, project_id) on delete cascade,
+  foreign key (todo_id, project_id)
+    references todos(id, project_id) on delete cascade
+);
+
+create table if not exists project_milestone_events (
+  id bigserial primary key,
+  milestone_id bigint not null references project_milestones(id) on delete cascade,
+  project_id bigint not null references projects(id) on delete cascade,
+  actor_user_id bigint references users(id) on delete set null,
+  event_type text not null
+    check (event_type in ('created', 'updated', 'submitted', 'achieved', 'reopened', 'cancelled')),
+  detail text not null default '',
+  created_at timestamptz not null default now()
+);
 
 alter table todos
   drop column if exists confirmed;
@@ -350,12 +638,19 @@ create table if not exists todo_activity_events (
   actor_user_id bigint references users(id) on delete set null,
   assignee_user_id bigint references users(id) on delete set null,
   event_type text not null
-    check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected')),
+    check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed')),
   title text not null,
   due_date date not null,
   priority text not null default 'medium',
   occurred_at timestamptz not null default now()
 );
+
+alter table todo_activity_events
+  drop constraint if exists todo_activity_events_event_type_check;
+
+alter table todo_activity_events
+  add constraint todo_activity_events_event_type_check
+  check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed'));
 
 create table if not exists risks (
   id bigserial primary key,
@@ -851,6 +1146,39 @@ alter table project_package_events
 create index if not exists idx_project_package_events_assignee
   on project_package_events (assignee_user_id, created_at desc);
 
+create unique index if not exists idx_project_package_events_id_project_id_unique
+  on project_package_events(id, project_id);
+
+create table if not exists organization_weekly_report_sources (
+  id bigserial primary key,
+  report_id bigint not null references organization_weekly_reports(id) on delete cascade,
+  revision_id bigint,
+  project_id bigint not null references projects(id) on delete cascade,
+  todo_id bigint,
+  package_event_id bigint,
+  milestone_id bigint,
+  created_at timestamptz not null default now(),
+  foreign key (revision_id, report_id)
+    references organization_weekly_report_revisions(id, report_id) on delete cascade,
+  foreign key (todo_id, project_id)
+    references todos(id, project_id) on delete cascade,
+  foreign key (package_event_id, project_id)
+    references project_package_events(id, project_id) on delete cascade,
+  foreign key (milestone_id, project_id)
+    references project_milestones(id, project_id) on delete cascade,
+  check (num_nonnulls(todo_id, package_event_id, milestone_id) = 1)
+);
+
+create unique index if not exists idx_organization_weekly_report_sources_identity
+  on organization_weekly_report_sources (
+    report_id,
+    coalesce(revision_id, 0),
+    project_id,
+    coalesce(todo_id, 0),
+    coalesce(package_event_id, 0),
+    coalesce(milestone_id, 0)
+  );
+
 create table if not exists project_package_groups (
   id bigserial primary key,
   project_package_event_id bigint not null references project_package_events(id) on delete cascade,
@@ -891,6 +1219,29 @@ create table if not exists project_package_operations (
   updated_at timestamptz not null default now()
 );
 
+-- Keep the package group and its parent event as an inseparable identity.
+-- The constraint is deliberately not validated so legacy rows can be cleaned
+-- up without blocking schema initialization; all new writes are checked.
+create unique index if not exists idx_project_package_groups_id_event_unique
+  on project_package_groups(id, project_package_event_id);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'project_package_operations_group_event_fkey'
+      and conrelid = 'project_package_operations'::regclass
+  ) then
+    alter table project_package_operations
+      add constraint project_package_operations_group_event_fkey
+      foreign key (project_package_group_id, project_package_event_id)
+      references project_package_groups(id, project_package_event_id)
+      on delete cascade
+      not valid;
+  end if;
+end $$;
+
 alter table project_package_operations
   add column if not exists completed boolean not null default false;
 
@@ -917,10 +1268,29 @@ create table if not exists todo_notes (
   todo_id bigint not null references todos(id) on delete cascade,
   author_user_id bigint references users(id) on delete set null,
   content text not null default '',
+  kind text not null default 'normal',
   source_operation_id bigint references project_package_operations(id) on delete cascade,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table todo_notes
+  add column if not exists kind text not null default 'normal';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'todo_notes_kind_check'
+      and conrelid = 'todo_notes'::regclass
+  ) then
+    alter table todo_notes
+      add constraint todo_notes_kind_check
+      check (kind in ('normal', 'acceptance'));
+  end if;
+end
+$$;
 
 create unique index if not exists idx_todo_notes_source_operation_unique
   on todo_notes(todo_id, source_operation_id)
@@ -932,6 +1302,14 @@ create table if not exists todo_note_mentions (
   mentioned_user_id bigint not null references users(id) on delete cascade,
   created_at timestamptz not null default now(),
   unique (todo_note_id, mentioned_user_id)
+);
+
+create table if not exists todo_mentions (
+  id bigserial primary key,
+  todo_id bigint not null references todos(id) on delete cascade,
+  mentioned_user_id bigint not null references users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (todo_id, mentioned_user_id)
 );
 
 create table if not exists test_spaces (
@@ -1254,7 +1632,15 @@ create table if not exists test_bug_comments (
 );
 
 alter table test_bug_comments
-  add column if not exists updated_at timestamptz;
+  add column if not exists updated_at timestamptz,
+  add column if not exists kind text not null default 'comment';
+
+alter table test_bug_comments
+  drop constraint if exists test_bug_comments_kind_check;
+
+alter table test_bug_comments
+  add constraint test_bug_comments_kind_check
+  check (kind in ('comment', 'transfer'));
 
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_projects_organization_id on projects(organization_id);
@@ -1265,6 +1651,11 @@ create index if not exists idx_organization_invitations_organization_id
 create unique index if not exists idx_organization_invitations_pending_target
   on organization_invitations(organization_id, target_email_lookup)
   where status = 'pending';
+create index if not exists idx_organization_invite_links_organization_id
+  on organization_invite_links(organization_id);
+create unique index if not exists idx_organization_invite_links_active_organization
+  on organization_invite_links(organization_id)
+  where revoked_at is null;
 create index if not exists idx_organization_weekly_reports_lookup
   on organization_weekly_reports(organization_id, week_start, status);
 create index if not exists idx_organization_audit_events_lookup
@@ -1283,6 +1674,16 @@ create index if not exists idx_project_invite_links_token on project_invite_link
 create unique index if not exists idx_project_invite_links_active_project
   on project_invite_links(project_id)
   where revoked_at is null;
+create index if not exists idx_project_transfer_requests_project_id
+  on project_transfer_requests(project_id, status, created_at desc);
+create index if not exists idx_project_transfer_requests_target_user_id
+  on project_transfer_requests(target_user_id, status, created_at desc);
+create unique index if not exists idx_project_transfer_requests_token_hash
+  on project_transfer_requests(token_hash)
+  where token_hash is not null;
+create unique index if not exists idx_project_transfer_requests_pending_project
+  on project_transfer_requests(project_id)
+  where status = 'pending';
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
 create index if not exists idx_user_roles_role on user_roles(role, user_id);
@@ -1297,7 +1698,14 @@ create index if not exists idx_todos_project_id on todos(project_id);
 create index if not exists idx_todos_collaborator_id on todos(collaborator_id);
 create index if not exists idx_todos_created_by_user_id on todos(created_by_user_id);
 create index if not exists idx_todos_assignee_user_id on todos(assignee_user_id);
+create index if not exists idx_project_milestones_project_order
+  on project_milestones(project_id, target_date, sort_order, id);
+create index if not exists idx_project_milestone_todos_project
+  on project_milestone_todos(project_id, milestone_id);
+create index if not exists idx_project_milestone_events_project_time
+  on project_milestone_events(project_id, created_at desc, id desc);
 create index if not exists idx_todos_watcher_user_id on todos(watcher_user_id);
+create index if not exists idx_todo_watchers_user_id on todo_watchers(user_id, watched_at desc, todo_id);
 create index if not exists idx_todos_reviewer_user_id on todos(reviewer_user_id);
 create index if not exists idx_todos_due_date on todos(due_date);
 create index if not exists idx_todos_project_module_id on todos(project_module_id);
@@ -1312,6 +1720,8 @@ create index if not exists idx_project_modules_project_id on project_modules(pro
 create index if not exists idx_todo_notes_todo_id on todo_notes(todo_id);
 create index if not exists idx_todo_notes_author_user_id on todo_notes(author_user_id);
 create index if not exists idx_todo_note_mentions_user_id on todo_note_mentions(mentioned_user_id);
+create index if not exists idx_todo_mentions_todo_id on todo_mentions(todo_id);
+create index if not exists idx_todo_mentions_user_id on todo_mentions(mentioned_user_id);
 create index if not exists idx_collaborators_user_id on collaborators(user_id);
 create index if not exists idx_collaborators_project_id on collaborators(project_id);
 create index if not exists idx_collaborators_name_lookup on collaborators(user_id, name_lookup);

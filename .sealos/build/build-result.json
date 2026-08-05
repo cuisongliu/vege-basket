@@ -3,19 +3,11 @@
   "registry": "ghcr",
   "build": {
     "image_name": "vege-basket",
-    "platform": "linux/amd64",
-    "started_at": "2026-07-27T18:13:25+08:00"
+    "started_at": "2026-08-04T13:45:38.990Z"
   },
   "push": {
-    "remote_image": "ghcr.io/felixqiu014-wq/vege-basket:20260727-224448",
-    "digest": "sha256:8809e86bf04f57bdd5c9e63a8d68b4185f3e09467e962c879cfb0bfb5da2c1b6",
-    "pushed_at": "2026-07-27T22:44:48+08:00"
+    "remote_image": "ghcr.io/felixqiu014-wq/vege-basket:20260804-214538",
+    "pushed_at": "2026-08-04T13:46:07.505Z"
   },
-  "validation": {
-    "dockerfile": "passed",
-    "remote_platform": "linux/amd64",
-    "runtime_files": "passed",
-    "runtime_startup": "skipped_database_write_not_authorized"
-  },
-  "finished_at": "2026-07-27T22:44:48+08:00"
+  "finished_at": "2026-08-04T13:46:07.505Z"
 }

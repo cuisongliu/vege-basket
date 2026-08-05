@@ -26,6 +26,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
   DialogContent,
@@ -245,20 +246,21 @@ export function ImageSyncWorkbench() {
             value={image}
             onChange={(event) => setImage(event.target.value)}
           />
-          <div className="image-sync-arch" role="group" aria-label="目标架构">
-            {(['amd64', 'arm64'] as const).map((value) => (
-              <button
-                aria-pressed={arch === value}
-                className={arch === value ? 'active' : ''}
-                key={value}
-                type="button"
-                onClick={() => setArch(value)}
-              >
-                {value}
-              </button>
-            ))}
-          </div>
-          <Button disabled={busy || hasActiveRun || !image.trim()} type="submit">
+          <Tabs
+            className="image-sync-arch"
+            value={arch}
+            onValueChange={(value) => setArch(value as ImageSyncArchitecture)}
+          >
+            <TabsList aria-label="目标架构">
+              <TabsTrigger value="amd64">amd64</TabsTrigger>
+              <TabsTrigger value="arm64">arm64</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Button
+            className="solid-button image-sync-submit-button"
+            disabled={busy || hasActiveRun || !image.trim()}
+            type="submit"
+          >
             {busy ? <SpinnerGap className="image-sync-spin" /> : <CloudArrowUp />}
             {hasActiveRun ? '已有任务执行中' : '开始同步'}
           </Button>
@@ -271,19 +273,19 @@ export function ImageSyncWorkbench() {
         <aside className="image-sync-list" aria-label="我的镜像同步任务">
           <div className="image-sync-pane-heading">
             <strong>我的任务</strong>
-            <div className="image-sync-filters" role="group" aria-label="任务状态筛选">
-              {(Object.keys(filterLabels) as ImageSyncFilter[]).map((value) => (
-                <button
-                  aria-pressed={filter === value}
-                  className={filter === value ? 'active' : ''}
-                  key={value}
-                  type="button"
-                  onClick={() => setFilter(value)}
-                >
-                  {filterLabels[value]} <span>{filterCounts[value]}</span>
-                </button>
-              ))}
-            </div>
+            <Tabs
+              className="image-sync-filters"
+              value={filter}
+              onValueChange={(value) => setFilter(value as ImageSyncFilter)}
+            >
+              <TabsList aria-label="任务状态筛选">
+                {(Object.keys(filterLabels) as ImageSyncFilter[]).map((value) => (
+                  <TabsTrigger key={value} value={value}>
+                    {filterLabels[value]} <span>{filterCounts[value]}</span>
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
           {loading ? <p className="image-sync-empty">正在读取任务...</p> : null}
           {!loading && filteredRuns.length === 0 ? <p className="image-sync-empty">当前筛选下暂无任务</p> : null}

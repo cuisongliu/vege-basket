@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  formatPackageMarketTimestamp,
   isAllowedPackageMarketObjectKey,
   listPackageMarketRules,
   normalizeOssEndpoint,
 } from './package-market.ts'
+
+test('formats package market timestamps in Shanghai time', () => {
+  assert.equal(
+    formatPackageMarketTimestamp('2026-08-02T22:36:00.000Z'),
+    '2026-08-03 06:36',
+  )
+})
 
 test('upgrades legacy Alibaba OSS HTTP endpoints to HTTPS', () => {
   assert.equal(

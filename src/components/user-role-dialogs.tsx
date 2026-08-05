@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Buildings, Check, Code, Flask, Truck, UsersThree } from '@phosphor-icons/react'
+import { ArrowRight, Buildings, Check, Code, Flask, UsersThree } from '@phosphor-icons/react'
 import {
   fetchManagedUsers,
   updateManagedUserRoles,
@@ -9,6 +9,7 @@ import {
 } from '@/api'
 import {
   getSwitchableUserRoles,
+  hasOrganizationAdminRole,
   userRoleLabel,
   type SwitchableUserRole,
 } from '@/user-roles'
@@ -23,26 +24,26 @@ import {
 } from '@/components/ui/dialog'
 
 const roleIcon: Record<UserRole, typeof Code> = {
-  delivery: Truck,
   developer: Code,
   organization_admin: Buildings,
   tester: Flask,
 }
 
 const roleDescription: Record<UserRole, string> = {
-  delivery: '项目工作区与交付协作',
   developer: '项目工作区与指派给我的 Bug',
-  organization_admin: '组织项目、测试空间、成员、任务与周报管理',
+  organization_admin: '组织项目、里程碑、成员、任务与周报管理',
   tester: '用例、测试计划与 Bug 追踪',
 }
 
 export function UserRoleSelectionDialog({
   busy,
+  onOpenOrganization,
   onSelect,
   open,
   user,
 }: {
   busy: boolean
+  onOpenOrganization: () => void
   onSelect: (role: SwitchableUserRole) => void
   open: boolean
   user: AuthUser
@@ -65,6 +66,16 @@ export function UserRoleSelectionDialog({
               </button>
             )
           })}
+          {hasOrganizationAdminRole(user.roles) ? (
+            <button disabled={busy} type="button" onClick={onOpenOrganization}>
+              <Buildings size={22} weight="duotone" />
+              <span>
+                <strong>{userRoleLabel.organization_admin}</strong>
+                <small>{roleDescription.organization_admin}</small>
+              </span>
+              <ArrowRight aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>

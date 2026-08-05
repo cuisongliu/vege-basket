@@ -232,21 +232,31 @@ function objectTime(object: OssObject) {
   return Number.isNaN(time) ? 0 : time
 }
 
-function formatTime(value?: string) {
+export function formatPackageMarketTimestamp(value?: string) {
   const date = value ? new Date(value) : null
   if (!date || Number.isNaN(date.getTime())) return 'unknown time'
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+    minute: '2-digit',
+    month: '2-digit',
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).formatToParts(date)
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}`
 }
 
 function versionLabel(item: { lastModified?: string; version: string }) {
   return item.lastModified
-    ? `${normalizeVersion(item.version)} · ${formatTime(item.lastModified)}`
+    ? `${normalizeVersion(item.version)} · ${formatPackageMarketTimestamp(item.lastModified)}`
     : normalizeVersion(item.version)
 }
 
 function formatCiLabel(item: { hash: string; lastModified?: string }) {
-  return `${formatTime(item.lastModified)} ${item.hash}`
+  return `${formatPackageMarketTimestamp(item.lastModified)} ${item.hash}`
 }
 
 function formatFileName(format: string, version: string, arch: string) {

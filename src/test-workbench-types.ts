@@ -77,6 +77,7 @@ export type TestSpaceInviteLink = {
 
 export type TestSubject = {
   canDelete: boolean
+  canEdit: boolean
   createdAt: string
   description: string
   environment: string
@@ -95,6 +96,7 @@ export type TestCaseFolder = {
 }
 
 export type TestCase = {
+  canDelete: boolean
   caseKind: TestCaseKind
   caseType: TestCaseType
   createdAt: string
@@ -155,18 +157,24 @@ export type TestBugComment = {
   content: string
   createdAt: string
   id: number
+  kind: 'comment' | 'transfer'
   updatedAt: string
 }
 
 export type TestBug = {
   actualResult: string
+  assigneeName?: string
   assigneeUserId?: number
+  canComment?: boolean
+  canEdit?: boolean
   canManage?: boolean
+  canTransfer?: boolean
   comments: TestBugComment[]
   createdAt: string
   environment: string
   expectedResult: string
   id: number
+  organizationMembers?: Array<{ id: number; name: string }>
   priority: Priority
   reporterUserId?: number
   reproductionSteps: string
@@ -177,6 +185,7 @@ export type TestBug = {
   testSpaceId: number
   testSubjectId?: number
   title: string
+  transferCandidates?: Array<{ id: number; name: string }>
   updatedAt: string
 }
 
@@ -187,10 +196,17 @@ export type TestWorkspaceUser = {
   username: string
 }
 
+export type TestWorkbenchNotification = {
+  createdAt: string
+  kind: 'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_comment_added'
+  sourceId: number
+}
+
 export type TestWorkbenchData = {
   bugs: TestBug[]
   cases: TestCase[]
   folders: TestCaseFolder[]
+  notifications: TestWorkbenchNotification[]
   planCases: TestPlanCase[]
   plans: TestPlan[]
   spaces: TestSpace[]

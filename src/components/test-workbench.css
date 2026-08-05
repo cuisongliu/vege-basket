@@ -375,6 +375,31 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.test-subject-list:hover,
+.test-subject-list:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
+}
+
+.test-subject-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.test-subject-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.test-subject-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.test-subject-list:hover::-webkit-scrollbar-thumb,
+.test-subject-list:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .test-subject-list > article {
@@ -383,7 +408,7 @@
   box-sizing: border-box;
   padding-right: 8px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 8px;
   align-items: center;
   border: 0;
@@ -404,10 +429,33 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: transform 120ms ease;
 }
 
 .test-subject-select:only-child {
   grid-column: 1 / -1;
+}
+
+.test-subject-select:active {
+  transform: scale(0.98);
+}
+
+.test-subject-menu-trigger[data-slot="button"][data-size="icon"] {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.test-subject-menu-trigger[data-slot="button"] {
+  border-color: transparent;
+}
+
+.test-subject-menu-trigger[data-slot="button"]:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
 }
 
 .test-subject-list > article:hover {
@@ -418,22 +466,41 @@
   background: var(--test-selection-bg);
 }
 
-.test-subject-list > article:active {
-  transform: scale(0.98);
-}
-
-.test-subject-delete[data-slot="button"][data-size="icon"] {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
-  padding: 0;
+.test-subject-menu-trigger {
   color: var(--muted-text);
 }
 
-.test-subject-delete:hover,
-.test-subject-delete:focus-visible {
-  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+.test-subject-menu-trigger:hover,
+.test-subject-menu-trigger:focus-visible {
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+  color: var(--foreground);
+}
+
+.test-subject-menu-content {
+  width: max-content;
+  min-width: 0;
+  max-width: 180px;
+}
+
+.test-subject-menu-content [data-slot="dropdown-menu-item"].test-subject-menu-item {
+  cursor: pointer;
+  justify-content: flex-start;
+  transition: background-color 160ms ease, box-shadow 160ms ease, color 160ms ease;
+}
+
+.test-subject-menu-content [data-slot="dropdown-menu-item"].test-subject-menu-item svg {
+  color: currentColor;
+}
+
+.test-subject-menu-content [data-slot="dropdown-menu-item"].test-subject-menu-item:hover,
+.test-subject-menu-content [data-slot="dropdown-menu-item"].test-subject-menu-item:focus-visible {
+  background: color-mix(in oklch, var(--test-selection-hover) 78%, var(--popover));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--test-selection-bg) 60%, transparent),
+    0 4px 12px color-mix(in oklch, var(--test-selection-bg) 24%, transparent);
+}
+
+.test-subject-menu-content [data-slot="dropdown-menu-item"][data-variant="destructive"] {
   color: var(--destructive);
 }
 
@@ -480,6 +547,23 @@
   min-height: 0;
   padding: 20px;
   overflow: auto;
+}
+
+.test-workbench-weekly-report {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 12px;
+}
+
+.test-workbench-weekly-report > .weekly-report-workbench {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 0;
+  min-height: 0;
 }
 
 .test-module-view {
@@ -582,6 +666,12 @@
 .test-detail-heading h2 {
   font-size: 19px;
   line-height: 1.4;
+}
+
+.test-bug-assignee {
+  color: var(--muted-text);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .test-case-folder {
@@ -886,6 +976,18 @@
   border-radius: 12px;
   background: var(--control-bg);
   transition: border-color 160ms ease, background 160ms ease;
+}
+
+.mention-textarea-shell {
+  position: relative;
+  display: block;
+}
+
+.mention-menu-inline {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
 }
 
 .test-evidence-composer:focus-within {
@@ -2639,11 +2741,37 @@
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.test-notification-list:hover,
+.test-notification-list:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
+}
+
+.test-notification-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.test-notification-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.test-notification-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.test-notification-list:hover::-webkit-scrollbar-thumb,
+.test-notification-list:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .test-notification-card {
   min-height: 76px;
-  padding: 12px 14px;
+  padding-block: 14px;
+  padding-inline: 14px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
@@ -2709,6 +2837,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 .test-notification-card strong {
@@ -2720,7 +2849,6 @@
   margin: 0;
   color: var(--body-text, var(--muted-text));
   font-size: 13px;
-  line-height: 1.45;
 }
 
 .test-notification-card small {
@@ -2793,7 +2921,9 @@
 
 .assigned-bugs-workspace > .test-inline-empty,
 .assigned-bugs-workspace > .test-list-empty {
-  min-height: 0;
+  min-height: 132px;
+  padding: 28px 24px;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -3072,6 +3202,16 @@
   background: var(--control-bg);
 }
 
+.role-selection-list > button:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--primary) 65%, transparent);
+  outline-offset: 2px;
+}
+
+.role-selection-list > button:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
 .role-selection-list span,
 .role-managed-user {
   min-width: 0;
@@ -3079,7 +3219,13 @@
   gap: 3px;
 }
 
-.role-selection-list small,
+.role-selection-list small {
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
 .role-managed-user small {
   overflow: hidden;
   color: var(--muted-text);

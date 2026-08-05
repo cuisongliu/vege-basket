@@ -1,4 +1,5 @@
 import {
+  Component,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -13,11 +14,11 @@ import {
   type Dispatch,
   type FormEvent,
   type ReactNode,
-  type ReactElement,
   type RefObject,
   type SetStateAction,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { MarkdownWysiwygEditor } from '@/components/markdown-wysiwyg-editor'
 import {
   parseTodoDeepLink,
   removeTodoDeepLink,
@@ -28,6 +29,10 @@ import {
   parseAiTodoBatchDeepLink,
   removeAiTodoBatchDeepLink,
 } from '@/ai-todo-deep-link'
+import {
+  parseWeeklyReportDeepLink,
+  removeWeeklyReportDeepLink,
+} from '../shared/weekly-report-deep-link'
 import {
   Archive,
   AddressBook,
@@ -111,9 +116,10 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  acceptOrganizationInviteLink,
+  acceptProjectInvitation,
   addProjectPackageItems,
   archiveDraft,
-  acceptProjectInvitation,
   createProjectModule,
   createDraft,
   createJournalEntry,
@@ -126,6 +132,7 @@ import {
   createSummary,
   createTodo,
   createTodoNote,
+  declineProjectInvitation,
   exportProjectPackageTimeline,
   fetchPackageMarketBaseDetail,
   fetchPackageMarketBaseReleaseVersions,
@@ -140,6 +147,9 @@ import {
   fetchAiStatus,
   fetchAiConversations,
   fetchAiConversationTurns,
+  fetchMyWork,
+  fetchOrganization,
+  fetchOrganizations,
   fetchTodoProposalBatch,
   fetchCurrentUser,
   fetchNotifications,
@@ -150,7 +160,7 @@ import {
   getAuthToken,
   getProjectInviteLink,
   inviteProjectMember,
-  markNotificationRead,
+  markAllNotificationsRead,
   loginAccount,
   registerAccount,
   clearAuthToken,
@@ -163,9 +173,10 @@ import {
   removeProjectModule,
   removeProjectMember,
   removeTodo,
+  requestProjectTransfer,
+  respondToProjectTransfer,
   acceptProjectInviteLink,
   resolveRiskFromJournal,
-  declineProjectInvitation,
   disconnectFeishuAccount,
   updateJournalEntry,
   updateProjectPackageEvent,
@@ -193,6 +204,7 @@ import {
   type UserRole,
   type WorkspaceData,
 } from './api'
+import type { OrganizationListItem, OrganizationMember } from './organization-types'
 import type {
   InboxItem,
   JournalVisibility,
@@ -221,7 +233,6 @@ import type {
   AiTurnOutcome,
   AiTurnRunResponse,
   Todo,
-  TodoNotification,
   TodoNote,
 } from './types'
 import { TodoActivityPanel } from './components/todo-activity-panel'
@@ -251,8 +262,8 @@ import {
 } from './components/project-package-workbench'
 import {
   removePackageEventNotification,
-  removeTodoNotifications,
   startNotificationRefreshSchedule,
+  workspaceRefreshIntervalMs,
 } from './notifications'
 import {
   buildAiClassificationContent,
@@ -276,6 +287,10 @@ import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
+import { MarkdownPreview } from './components/markdown-preview'
+import { WeeklyReportWorkbench } from './components/weekly-report-workbench'
+import { MyWorkWorkbench } from './components/my-work-workbench'
+import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import {
   ManageRolesMenuLabel,
   UserRoleManagementDialog,
@@ -292,18 +307,55 @@ import './App.css'
 const SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE = true
 const unresolvedAssignedBugStatuses = new Set<string>(['assigned', 'in_progress', 'reopened'])
 
+class TodoMarkdownEditorLoadBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch() {
+    // Keep the current project and draft in place when an editor error occurs.
+    // A full reload here loses the selected project and makes opening a todo
+    // appear to navigate to another project.
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="markdown-wysiwyg-loading is-error" role="alert">
+          <strong>编辑器加载失败</strong>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => this.setState({ failed: false })}
+          >
+            重试
+          </Button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 type View =
   | 'project'
   | 'inbox'
+  | 'my_work'
   | 'notifications'
   | 'organization'
+  | 'weekly_report'
   | 'package_market'
   | 'image_sync'
   | 'search'
   | 'ai'
   | 'testing'
   | 'assigned_bugs'
-type DetailEntrySource = 'project' | 'notifications'
+type DetailEntrySource = 'project' | 'notifications' | 'my_work'
 type DisplayAiAttachment = {
   id: number | string
   name: string
@@ -455,13 +507,18 @@ function formatAiMessageTime(value: string) {
     day: '2-digit',
   }).format(date)
 }
-type TodoUpdatePayload = Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId'> & {
+type TodoUpdatePayload = Omit<
+  Partial<Todo>,
+  'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'
+> & {
   assigneeUserId?: number | null
   createdAt?: string
+  acceptanceNote?: string
   moduleId?: number | null
   rejectionReason?: string
   reviewerUserId?: number | null
   watcherUserId?: number | null
+  watcherUserIds?: number[]
 }
 type AdaptivePageSizeOptions = {
   compact: boolean
@@ -509,13 +566,17 @@ type TodoFilterCondition = {
 
 const themeStorageKey = 'veges.theme'
 const viewStorageKey = 'veges.activeView.v1'
+const selectedProjectStorageKey = 'veges.selectedProject.v1'
 const todoCreateDraftStoragePrefix = 'veges.todoCreateDraft.v1'
+const todoFilterPreferenceStoragePrefix = 'veges.todoFilterPreference.v1'
 const assignedBugCommentReadStoragePrefix = 'veges.assignedBugCommentReadAt.v1'
 const appViews = [
   'project',
   'inbox',
+  'my_work',
   'notifications',
   'organization',
+  'weekly_report',
   'package_market',
   'image_sync',
   'search',
@@ -526,7 +587,7 @@ const appViews = [
 
 type TodoCreateDraftSnapshot = {
   assigneeUserId: number | null
-  watcherUserId: number | null
+  watcherUserIds: number[]
   reviewerUserId: number | null
   createdAt: string
   detail: string
@@ -541,6 +602,11 @@ function getInviteTokenFromUrl() {
   return new URLSearchParams(window.location.search).get('invite')?.trim() ?? ''
 }
 
+function getOrganizationInviteTokenFromUrl() {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get('organizationInvite')?.trim() ?? ''
+}
+
 function isAppView(value: unknown): value is View {
   return typeof value === 'string' && appViews.includes(value as View)
 }
@@ -549,9 +615,20 @@ function getInitialView(): View {
   if (typeof window === 'undefined') return 'search'
   try {
     const storedView = window.localStorage.getItem(viewStorageKey)
+    if (storedView === 'notifications') return 'my_work'
     return isAppView(storedView) ? storedView : 'search'
   } catch {
     return 'search'
+  }
+}
+
+function loadStoredSelectedProjectId(): number | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const parsed = Number(window.localStorage.getItem(selectedProjectStorageKey))
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+  } catch {
+    return null
   }
 }
 
@@ -585,6 +662,13 @@ function clearInviteTokenFromUrl() {
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
+function clearOrganizationInviteTokenFromUrl() {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  url.searchParams.delete('organizationInvite')
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
 function getTodoDeepLinkIdFromUrl() {
   if (typeof window === 'undefined') return null
   return parseTodoDeepLink(window.location.search).todoId
@@ -604,7 +688,7 @@ const todoNotesReadStoragePrefix = 'veges.todoNotesReadAt.v1'
 function getDefaultTodoCreateDraft(): TodoCreateDraftSnapshot {
   return {
     assigneeUserId: null,
-    watcherUserId: null,
+    watcherUserIds: [],
     reviewerUserId: null,
     createdAt: '',
     detail: '',
@@ -627,15 +711,51 @@ function normalizeNullableNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+function normalizeNumberArray(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => normalizeNullableNumber(entry))
+        .filter((entry): entry is number => entry != null && Number.isSafeInteger(entry) && entry > 0),
+    ),
+  )
+}
+
+function getTodoWatcherUserIds(todo?: Todo | null) {
+  if (!todo) return []
+  const ids = normalizeNumberArray(todo.watcherUserIds)
+  if (ids.length > 0) return ids
+  return todo.watcherUserId ? [todo.watcherUserId] : []
+}
+
+function getTodoWatcherNames(todo: Todo) {
+  const names = Array.isArray(todo.watcherNames)
+    ? todo.watcherNames.filter((name) => Boolean(name.trim()))
+    : []
+  if (names.length > 0) return names
+  return todo.watcherName ? [todo.watcherName] : []
+}
+
+function formatTodoWatcherNames(todo: Todo) {
+  const names = getTodoWatcherNames(todo)
+  if (names.length === 0) return ''
+  if (names.length <= 3) return names.map((name) => `@${name}`).join('、')
+  return `${names.slice(0, 3).map((name) => `@${name}`).join('、')} 等 ${names.length} 人`
+}
+
 function loadTodoCreateDraft(projectId: number, userId?: number) {
   if (typeof window === 'undefined') return getDefaultTodoCreateDraft()
   try {
     const raw = window.localStorage.getItem(getTodoCreateDraftStorageKey(projectId, userId))
     if (!raw) return getDefaultTodoCreateDraft()
     const parsed = JSON.parse(raw) as Partial<TodoCreateDraftSnapshot>
+    const legacyWatcherUserId = normalizeNullableNumber((parsed as { watcherUserId?: unknown }).watcherUserId)
     return {
       assigneeUserId: normalizeNullableNumber(parsed.assigneeUserId),
-      watcherUserId: normalizeNullableNumber(parsed.watcherUserId),
+      watcherUserIds: normalizeNumberArray(
+        parsed.watcherUserIds ?? (legacyWatcherUserId == null ? [] : [legacyWatcherUserId]),
+      ),
       reviewerUserId: normalizeNullableNumber(parsed.reviewerUserId),
       createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : '',
       detail: typeof parsed.detail === 'string' ? parsed.detail : '',
@@ -657,7 +777,7 @@ function isTodoCreateDraftEmpty(draft: TodoCreateDraftSnapshot) {
     draft.dueDate === today &&
     draft.priority === 'medium' &&
     draft.assigneeUserId == null &&
-    draft.watcherUserId == null &&
+    draft.watcherUserIds.length === 0 &&
     draft.reviewerUserId == null &&
     draft.moduleId == null
   )
@@ -898,6 +1018,7 @@ function useAdaptivePageSize({
 
 const today = getTodayStamp()
 const todoTitleMaxLength = 50
+const todoCode = (id: number) => `TD-${id}`
 
 const statusCopy: Record<ProjectStatus, string> = {
   active: '进行中',
@@ -916,6 +1037,89 @@ const todoConfirmationCopy: Record<Todo['confirmationStatus'], string> = {
   confirmed: '已确认',
   pending_review: '待验收',
   rejected: '已驳回',
+  acceptance_failed: '验收未通过',
+}
+
+type TodoAcceptanceDecision = 'passed' | 'failed'
+
+function TodoAcceptanceDialog({
+  open,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (decision: TodoAcceptanceDecision, note: string) => Promise<boolean> | boolean | void
+}) {
+  const [decision, setDecision] = useState<TodoAcceptanceDecision>('passed')
+  const [note, setNote] = useState('')
+  const normalizedNote = note.trim()
+
+  useEffect(() => {
+    if (open) {
+      setDecision('passed')
+      setNote('')
+    }
+  }, [open])
+
+  async function submit() {
+    if (decision === 'failed' && !normalizedNote) return
+    const saved = await onSubmit(decision, normalizedNote)
+    if (saved !== false) onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>验收待办</DialogTitle>
+          <DialogDescription>请选择验收结果，并补充验收备注。</DialogDescription>
+        </DialogHeader>
+        <div className="todo-acceptance-decision" role="radiogroup" aria-label="验收结果">
+          {([
+            ['passed', '通过'],
+            ['failed', '不通过'],
+          ] as const).map(([value, label]) => (
+            <label
+              className={decision === value ? 'todo-acceptance-choice is-selected' : 'todo-acceptance-choice'}
+              key={value}
+            >
+              <input
+                checked={decision === value}
+                name="todo-acceptance-decision"
+                type="radio"
+                value={value}
+                onChange={() => setDecision(value)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <Label className="todo-acceptance-note-field">
+          验收备注{decision === 'failed' ? '（必填）' : '（可选）'}
+          <Textarea
+            autoFocus={decision === 'failed'}
+            placeholder={decision === 'failed' ? '请填写未通过原因...' : '可补充验收说明...'}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+          />
+        </Label>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button
+            className={decision === 'failed' ? 'destructive-button' : 'solid-button'}
+            disabled={decision === 'failed' && !normalizedNote}
+            type="button"
+            onClick={() => { void submit() }}
+          >
+            提交验收
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function TodoConfirmSelect({
@@ -924,12 +1128,14 @@ function TodoConfirmSelect({
   disabled = false,
   onChange,
   onReject,
+  onRequestAcceptance,
 }: {
   done: boolean
   status: Todo['confirmationStatus']
   disabled?: boolean
   onChange: (status: Todo['confirmationStatus']) => void
   onReject: (reason: string) => void
+  onRequestAcceptance: () => void
 }) {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
@@ -941,14 +1147,11 @@ function TodoConfirmSelect({
       setRejectDialogOpen(true)
       return
     }
+    if (nextStatus === 'acceptance_failed' || (nextStatus === 'confirmed' && status === 'pending_review')) {
+      onRequestAcceptance()
+      return
+    }
     onChange(nextStatus)
-  }
-
-  function submitRejectReason() {
-    if (!normalizedRejectReason) return
-    onReject(normalizedRejectReason)
-    setRejectReason('')
-    setRejectDialogOpen(false)
   }
 
   if (done) {
@@ -973,43 +1176,38 @@ function TodoConfirmSelect({
           <SelectItem value="confirmed">{todoConfirmationCopy.confirmed}</SelectItem>
           <SelectItem value="pending_review">{todoConfirmationCopy.pending_review}</SelectItem>
           <SelectItem value="rejected">{todoConfirmationCopy.rejected}</SelectItem>
+          <SelectItem value="acceptance_failed">{todoConfirmationCopy.acceptance_failed}</SelectItem>
         </SelectContent>
       </Select>
       <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>填写驳回理由</DialogTitle>
-            <DialogDescription>
-              提交后，这条待办会被标记为已驳回，理由会保存到待办备注里。
-            </DialogDescription>
+            <DialogDescription>需求不合理时可以驳回，请说明驳回原因。</DialogDescription>
           </DialogHeader>
           <Label className="todo-reject-reason-field">
-            驳回理由
+            驳回理由（必填）
             <Textarea
               autoFocus
-              placeholder="请输入驳回原因..."
+              placeholder="请填写驳回原因..."
               value={rejectReason}
               onChange={(event) => setRejectReason(event.target.value)}
             />
           </Label>
           <DialogFooter>
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => {
-                setRejectReason('')
-                setRejectDialogOpen(false)
-              }}
-            >
+            <Button type="button" variant="outline" onClick={() => setRejectDialogOpen(false)}>
               取消
             </Button>
             <Button
               className="destructive-button"
-              type="button"
               disabled={!normalizedRejectReason}
-              onClick={submitRejectReason}
+              type="button"
+              onClick={() => {
+                onReject(normalizedRejectReason)
+                setRejectDialogOpen(false)
+              }}
             >
-              提交驳回
+              确认驳回
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1125,11 +1323,79 @@ function normalizeTodoFilterCondition(condition: TodoFilterCondition): TodoFilte
   return { ...condition, operator, value }
 }
 
+type TodoFilterPreference = {
+  conditions: TodoFilterCondition[]
+  join: TodoFilterJoin
+}
+
+function getTodoFilterPreferenceStorageKey(projectId: number, userId?: number) {
+  return `${todoFilterPreferenceStoragePrefix}.${userId ?? 'anonymous'}.${projectId}`
+}
+
+function isStoredTodoFilterCondition(value: unknown): value is TodoFilterCondition {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<TodoFilterCondition>
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.field !== 'string' ||
+    typeof candidate.operator !== 'string' ||
+    typeof candidate.value !== 'string'
+  ) return false
+  if (!todoFilterFields.includes(candidate.field as TodoFilterField)) return false
+  return todoFilterOperatorsByField[candidate.field as TodoFilterField].includes(
+    candidate.operator as TodoFilterOperator,
+  )
+}
+
+function loadTodoFilterPreference(projectId: number, userId?: number): TodoFilterPreference | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(getTodoFilterPreferenceStorageKey(projectId, userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as {
+      conditions?: unknown
+      join?: unknown
+      persist?: unknown
+      version?: unknown
+    }
+    if (parsed.version !== 1 || parsed.persist !== true || !Array.isArray(parsed.conditions)) return null
+    return {
+      conditions: parsed.conditions
+        .filter(isStoredTodoFilterCondition)
+        .map((condition) => normalizeTodoFilterCondition(condition)),
+      join: parsed.join === 'or' ? 'or' : 'and',
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveTodoFilterPreference(projectId: number, userId: number | undefined, preference: TodoFilterPreference) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      getTodoFilterPreferenceStorageKey(projectId, userId),
+      JSON.stringify({ ...preference, persist: true, version: 1 }),
+    )
+  } catch {
+    // Keep filtering usable when browser storage is unavailable.
+  }
+}
+
+function clearTodoFilterPreference(projectId: number, userId?: number) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(getTodoFilterPreferenceStorageKey(projectId, userId))
+  } catch {
+    // Keep filtering usable when browser storage is unavailable.
+  }
+}
+
 function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
   if (field === 'title') return todo.title
   if (field === 'module') return todo.moduleId ? String(todo.moduleId) : ''
   if (field === 'assignee') return todo.assigneeUserId ? String(todo.assigneeUserId) : ''
-  if (field === 'watcher') return todo.watcherUserId ? String(todo.watcherUserId) : ''
+  if (field === 'watcher') return getTodoWatcherUserIds(todo).join(',')
   if (field === 'creator') return todo.createdByUserId ? String(todo.createdByUserId) : ''
   if (field === 'priority') return todo.priority
   if (field === 'done') return todo.done ? 'done' : 'open'
@@ -1140,8 +1406,26 @@ function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
 
 function matchesTodoFilterCondition(todo: Todo, condition: TodoFilterCondition) {
   const normalized = normalizeTodoFilterCondition(condition)
-  const fieldValue = getTodoFilterFieldValue(todo, normalized.field)
   const targetValue = normalized.value
+  const fieldValue = getTodoFilterFieldValue(todo, normalized.field)
+
+  if (normalized.field === 'watcher') {
+    const watcherIds = getTodoWatcherUserIds(todo)
+    if (normalized.operator === 'is_empty') return watcherIds.length === 0
+    if (normalized.operator === 'is_not_empty') return watcherIds.length > 0
+    if (normalized.operator === 'contains') {
+      return watcherIds.some((id) => String(id).includes(targetValue.trim()))
+    }
+    if (normalized.operator === 'not_contains') {
+      return watcherIds.every((id) => !String(id).includes(targetValue.trim()))
+    }
+    if (normalized.operator === 'equals') {
+      return watcherIds.includes(Number(targetValue))
+    }
+    if (normalized.operator === 'not_equals') {
+      return !watcherIds.includes(Number(targetValue))
+    }
+  }
 
   if (normalized.operator === 'is_empty') return !fieldValue
   if (normalized.operator === 'is_not_empty') return Boolean(fieldValue)
@@ -1385,6 +1669,7 @@ const emptyNotifications: NotificationCenterData = {
   dueTomorrowTodos: [],
   noteMentions: [],
   invites: [],
+  projectTransfers: [],
 }
 
 const initialInbox: InboxItem[] = [
@@ -1444,6 +1729,9 @@ function App() {
   const [displayNameOnboardingError, setDisplayNameOnboardingError] = useState('')
   const [displayNameOnboardingBusy, setDisplayNameOnboardingBusy] = useState(false)
   const [inviteToken, setInviteToken] = useState(getInviteTokenFromUrl)
+  const [organizationInviteToken, setOrganizationInviteToken] = useState(
+    getOrganizationInviteTokenFromUrl,
+  )
   const [settledInviteToken, setSettledInviteToken] = useState('')
   const [invitePasswordChecking, setInvitePasswordChecking] = useState(false)
   const [invitePasswordDraft, setInvitePasswordDraft] = useState('')
@@ -1455,6 +1743,7 @@ function App() {
   const [todos, setTodos] = useState(initialTodos)
   const [memberships, setMemberships] = useState(initialMemberships)
   const [notifications, setNotifications] = useState(emptyNotifications)
+  const [openTodoCount, setOpenTodoCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
   const [assignedBugCommentReadAtByBugId, setAssignedBugCommentReadAtByBugId] = useState<Record<number, string>>(() =>
     loadAssignedBugCommentReadAt(authUser?.id),
@@ -1462,17 +1751,22 @@ function App() {
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
-  const [selectedProjectId, setSelectedProjectId] = useState(1)
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() =>
+    loadStoredSelectedProjectId(),
+  )
   const [pendingTodoDeepLinkId, setPendingTodoDeepLinkId] = useState(getTodoDeepLinkIdFromUrl)
   const [requestedAiTodoBatchId, setRequestedAiTodoBatchId] = useState<number | null>(() => {
     const parsed = parseAiTodoBatchDeepLink(window.location.search)
     return parsed.status === 'valid' ? parsed.batchId : null
   })
+  const [requestedWeeklyReport, setRequestedWeeklyReport] = useState(() => parseWeeklyReportDeepLink(window.location.search))
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
+  const [requestedAssignedBugId, setRequestedAssignedBugId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
   const [isProjectTodoDetailActive, setIsProjectTodoDetailActive] = useState(false)
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false)
+  const [workspaceRefreshVersion, setWorkspaceRefreshVersion] = useState(0)
   const [workspaceError, setWorkspaceError] = useState('')
   const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('journal')
   const [journalDraft, setJournalDraft] = useState('')
@@ -1483,7 +1777,7 @@ function App() {
   const [todoCreatedAt, setTodoCreatedAt] = useState('')
   const [todoPriority, setTodoPriority] = useState<Priority>('medium')
   const [todoAssigneeUserId, setTodoAssigneeUserId] = useState<number | null>(null)
-  const [todoWatcherUserId, setTodoWatcherUserId] = useState<number | null>(null)
+  const [todoWatcherUserIds, setTodoWatcherUserIds] = useState<number[]>([])
   const [todoReviewerUserId, setTodoReviewerUserId] = useState<number | null>(null)
   const [todoModuleId, setTodoModuleId] = useState<number | null>(null)
   const isLoadingTodoCreateDraftRef = useRef(false)
@@ -1513,7 +1807,13 @@ function App() {
   const [aiReconcileAttempt, setAiReconcileAttempt] = useState(0)
   const packageWorkbenchRef = useRef<ProjectPackageWorkbenchHandle>(null)
   const acceptingInviteTokenRef = useRef('')
+  const acceptingOrganizationInviteTokenRef = useRef('')
   const notificationRefreshRequestIdRef = useRef(0)
+  const notificationRefreshPromiseRef = useRef<Promise<NotificationCenterData | false> | null>(null)
+  const workspaceRefreshRequestIdRef = useRef(0)
+  const workspaceRefreshPromiseRef = useRef<Promise<boolean> | null>(null)
+  const workspaceHydratedRef = useRef(false)
+  const workspaceMutationEpochRef = useRef(0)
   const aiRequestIdRef = useRef(0)
   const authSessionGenerationRef = useRef(0)
   const aiHistoryRequestIdRef = useRef(0)
@@ -1628,6 +1928,10 @@ function App() {
     if (parseAiTodoBatchDeepLink(window.location.search).status === 'invalid') {
       window.history.replaceState({}, '', removeAiTodoBatchDeepLink(window.location))
     }
+    if (parseWeeklyReportDeepLink(window.location.search).status === 'invalid') {
+      const search = removeWeeklyReportDeepLink(window.location.search)
+      window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
+    }
   }, [])
 
   useEffect(() => {
@@ -1637,12 +1941,28 @@ function App() {
   }, [loggedIn, requestedAiTodoBatchId])
 
   useEffect(() => {
+    if (!loggedIn || requestedWeeklyReport.status !== 'valid') return
+    setView('weekly_report')
+    const search = removeWeeklyReportDeepLink(window.location.search)
+    window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
+  }, [loggedIn, requestedWeeklyReport])
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(viewStorageKey, view)
     } catch {
       // Keep navigation usable even when localStorage is unavailable.
     }
   }, [view])
+
+  useEffect(() => {
+    if (selectedProjectId == null) return
+    try {
+      window.localStorage.setItem(selectedProjectStorageKey, String(selectedProjectId))
+    } catch {
+      // Keep project navigation usable when localStorage is unavailable.
+    }
+  }, [selectedProjectId])
 
   useEffect(() => {
     if (!authUser) return
@@ -1693,8 +2013,14 @@ function App() {
       return next
     })
     setSelectedProjectId((current) => {
-      if (data.projects.some((project) => project.id === current)) return current
-      return data.projects[0]?.id ?? current
+      const preferredProjectId = current ?? loadStoredSelectedProjectId()
+      if (
+        preferredProjectId != null &&
+        data.projects.some((project) => project.id === preferredProjectId)
+      ) {
+        return preferredProjectId
+      }
+      return data.projects[0]?.id ?? null
     })
   }, [])
 
@@ -1729,18 +2055,77 @@ function App() {
   }, [applyWorkspace])
 
   const refreshNotifications = useCallback(async () => {
+    const existing = notificationRefreshPromiseRef.current
+    if (existing) return existing
+
     const requestId = notificationRefreshRequestIdRef.current + 1
     notificationRefreshRequestIdRef.current = requestId
-    try {
-      const result = await fetchNotifications()
-      if (notificationRefreshRequestIdRef.current === requestId) {
-        setNotifications(result.notifications)
+    const promise = (async () => {
+      try {
+        const result = await fetchNotifications()
+        if (notificationRefreshRequestIdRef.current === requestId) {
+          setNotifications(result.notifications)
+        }
+        return result.notifications
+      } catch {
+        return false
       }
-      return result.notifications
-    } catch {
-      return emptyNotifications
-    }
+    })()
+    notificationRefreshPromiseRef.current = promise
+    promise.then(
+      () => {
+        if (notificationRefreshPromiseRef.current === promise) {
+          notificationRefreshPromiseRef.current = null
+        }
+      },
+      () => {
+        if (notificationRefreshPromiseRef.current === promise) {
+          notificationRefreshPromiseRef.current = null
+        }
+      },
+    )
+    return promise
   }, [])
+
+  const refreshWorkspace = useCallback(async () => {
+    const existing = workspaceRefreshPromiseRef.current
+    if (existing) return existing
+
+    const requestId = workspaceRefreshRequestIdRef.current + 1
+    workspaceRefreshRequestIdRef.current = requestId
+    const sessionGeneration = authSessionGenerationRef.current
+    const mutationEpoch = workspaceMutationEpochRef.current
+    const promise = (async () => {
+      try {
+        const data = await fetchWorkspace()
+        if (
+          authSessionGenerationRef.current !== sessionGeneration ||
+          workspaceRefreshRequestIdRef.current !== requestId ||
+          workspaceMutationEpochRef.current !== mutationEpoch
+        ) return false
+        applyWorkspace(data)
+        setWorkspaceRefreshVersion((current) => current + 1)
+        return true
+      } catch {
+        // Background refresh is best-effort; the existing view remains usable.
+        return false
+      }
+    })()
+    workspaceRefreshPromiseRef.current = promise
+    promise.then(
+      () => {
+        if (workspaceRefreshPromiseRef.current === promise) {
+          workspaceRefreshPromiseRef.current = null
+        }
+      },
+      () => {
+        if (workspaceRefreshPromiseRef.current === promise) {
+          workspaceRefreshPromiseRef.current = null
+        }
+      },
+    )
+    return promise
+  }, [applyWorkspace])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -1764,6 +2149,9 @@ function App() {
       .catch(() => {
         if (authSessionGenerationRef.current !== sessionGeneration) return
         authSessionGenerationRef.current += 1
+        notificationRefreshPromiseRef.current = null
+        workspaceRefreshPromiseRef.current = null
+        workspaceHydratedRef.current = false
         clearAuthToken()
         setLoggedIn(false)
         setWorkspaceError('')
@@ -1951,12 +2339,38 @@ function App() {
         document.addEventListener('visibilitychange', listener)
         return () => document.removeEventListener('visibilitychange', listener)
       },
-      refresh: () => {
-        void refreshNotifications()
-      },
+      refresh: () => refreshNotifications().then((result) => result !== false),
       setInterval: (listener, delay) => window.setInterval(listener, delay),
     })
   }, [loggedIn, refreshNotifications])
+
+  useEffect(() => {
+    if (!loggedIn) return
+    return startNotificationRefreshSchedule({
+      clearInterval: (handle) => window.clearInterval(handle),
+      intervalMs: workspaceRefreshIntervalMs,
+      isVisible: () => document.visibilityState === 'visible',
+      onFocus: (listener) => {
+        window.addEventListener('focus', listener)
+        return () => window.removeEventListener('focus', listener)
+      },
+      onVisibilityChange: (listener) => {
+        document.addEventListener('visibilitychange', listener)
+        return () => document.removeEventListener('visibilitychange', listener)
+      },
+      refresh: () => refreshWorkspace(),
+      setInterval: (listener, delay) => window.setInterval(listener, delay),
+    })
+  }, [loggedIn, refreshWorkspace])
+
+  useEffect(() => {
+    if (!loggedIn || !workspaceLoaded) return
+    if (!workspaceHydratedRef.current) {
+      workspaceHydratedRef.current = true
+      return
+    }
+    void refreshWorkspace()
+  }, [loggedIn, view, workspaceLoaded, refreshWorkspace])
 
   useEffect(() => {
     setInvitePasswordDraft('')
@@ -2021,6 +2435,10 @@ function App() {
           setInviteToken('')
           clearInviteTokenFromUrl()
         }
+        if (organizationInviteToken) {
+          setOrganizationInviteToken('')
+          clearOrganizationInviteTokenFromUrl()
+        }
       } else {
         setAuthError(message || '飞书登录失败，请稍后重试。')
       }
@@ -2044,7 +2462,7 @@ function App() {
       url.hash = fragmentParams.toString()
     }
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
-  }, [inviteToken])
+  }, [inviteToken, organizationInviteToken])
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0]
@@ -2112,7 +2530,7 @@ function App() {
     setTodoCreatedAt(draft.createdAt)
     setTodoPriority(draft.priority)
     setTodoAssigneeUserId(draft.assigneeUserId)
-    setTodoWatcherUserId(draft.watcherUserId)
+    setTodoWatcherUserIds(draft.watcherUserIds)
     setTodoReviewerUserId(draft.reviewerUserId)
     setTodoModuleId(draft.moduleId)
   }, [authUser?.id, selectedProjectDraftId])
@@ -2125,7 +2543,7 @@ function App() {
     }
     saveTodoCreateDraft(selectedProjectDraftId, authUser?.id, {
       assigneeUserId: todoAssigneeUserId,
-      watcherUserId: todoWatcherUserId,
+      watcherUserIds: todoWatcherUserIds,
       reviewerUserId: todoReviewerUserId,
       createdAt: todoCreatedAt,
       detail: todoDetailDraft,
@@ -2138,7 +2556,7 @@ function App() {
     authUser?.id,
     selectedProjectDraftId,
     todoAssigneeUserId,
-    todoWatcherUserId,
+    todoWatcherUserIds,
     todoReviewerUserId,
     todoCreatedAt,
     todoDetailDraft,
@@ -2150,7 +2568,6 @@ function App() {
 
   useEffect(() => {
     if (!loggedIn || !selectedProject || projectDetailTab !== 'packages') return
-    if (projectPackageTimelines[selectedProject.id]) return
 
     fetchProjectPackageTimeline(selectedProject.id)
       .then((timeline) => {
@@ -2162,7 +2579,7 @@ function App() {
       .catch(() => {
         setWorkspaceError('安装升级时间线读取失败，请确认后端服务和 OSS 配置正常。')
       })
-  }, [loggedIn, projectDetailTab, projectPackageTimelines, selectedProject])
+  }, [loggedIn, projectDetailTab, selectedProject?.id, workspaceRefreshVersion])
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded || !authUser || !inviteToken) return
@@ -2194,6 +2611,26 @@ function App() {
     loggedIn,
     workspaceLoaded,
   ])
+
+  useEffect(() => {
+    if (!loggedIn || !workspaceLoaded || !authUser || !organizationInviteToken) return
+    if (acceptingOrganizationInviteTokenRef.current === organizationInviteToken) return
+
+    acceptingOrganizationInviteTokenRef.current = organizationInviteToken
+    acceptOrganizationInviteLink(organizationInviteToken)
+      .then(() => {
+        setWorkspaceError('')
+        setOrganizationInviteToken('')
+        clearOrganizationInviteTokenFromUrl()
+        setWorkspaceRefreshVersion((current) => current + 1)
+      })
+      .catch(() => {
+        setWorkspaceError('组织邀请链接无效或已失效。')
+      })
+      .finally(() => {
+        acceptingOrganizationInviteTokenRef.current = ''
+      })
+  }, [authUser, loggedIn, organizationInviteToken, workspaceLoaded])
 
   useEffect(() => {
     if (
@@ -2279,14 +2716,32 @@ function App() {
 
   const openNotificationCount = useMemo(
     () =>
-      notifications.invites.filter((item) => !item.dismissedAt).length +
-      notifications.assignedPackageEvents.filter((item) => !item.dismissedAt).length +
-      notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.done).length +
-      notifications.watchedTodos.filter((item) => !item.dismissedAt).length +
-      notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt).length +
-      notifications.noteMentions.filter((item) => !item.dismissedAt).length,
+      notifications.invites.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.projectTransfers.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.assignedPackageEvents.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.readAt && !item.done).length +
+      notifications.watchedTodos.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.noteMentions.filter((item) => !item.dismissedAt && !item.readAt).length,
     [notifications],
   )
+  useEffect(() => {
+    if (!loggedIn || !workspaceLoaded || !authUser?.id) {
+      setOpenTodoCount(0)
+      return
+    }
+    let active = true
+    void fetchMyWork({ kind: 'todo', limit: 500, status: 'open' })
+      .then((result) => {
+        if (active) setOpenTodoCount(result.items.length)
+      })
+      .catch(() => {
+        if (active) setOpenTodoCount(0)
+      })
+    return () => {
+      active = false
+    }
+  }, [authUser?.id, loggedIn, todos, workspaceLoaded])
   async function submitInvitePassword() {
     if (!inviteToken) return
     const password = invitePasswordDraft.trim()
@@ -2323,12 +2778,14 @@ function App() {
               password,
               inviteToken: inviteToken || undefined,
               invitePassword: activeInvitePassword,
+              organizationInviteToken: organizationInviteToken || undefined,
             })
           : await loginAccount({
               username,
               password,
               inviteToken: inviteToken || undefined,
               invitePassword: activeInvitePassword,
+              organizationInviteToken: organizationInviteToken || undefined,
             })
       setAuthToken(result.token)
       setAuthUser(result.user)
@@ -2345,11 +2802,15 @@ function App() {
         setInviteToken('')
         clearInviteTokenFromUrl()
       }
+      if (organizationInviteToken) {
+        setOrganizationInviteToken('')
+        clearOrganizationInviteTokenFromUrl()
+      }
       void refreshNotifications()
     } catch (error) {
       const message = error instanceof Error ? error.message : ''
-      if (mode === 'register' && message.includes('active project invite')) {
-        setAuthError('系统已启用共享 AI，请通过有效项目邀请或飞书登录创建账号。')
+      if (mode === 'register' && message.includes('active project or organization invite')) {
+        setAuthError('系统已启用共享 AI，请通过有效项目或组织邀请，也可以使用飞书登录创建账号。')
       } else {
         setAuthError(
           mode === 'register'
@@ -2372,6 +2833,7 @@ function App() {
       const result = await createFeishuOAuthUrl({
         inviteToken: inviteToken || undefined,
         invitePassword: activeInvitePassword,
+        organizationInviteToken: organizationInviteToken || undefined,
         returnTo,
       })
       window.location.href = result.url
@@ -2387,6 +2849,11 @@ function App() {
   function signOut() {
     authSessionGenerationRef.current += 1
     notificationRefreshRequestIdRef.current += 1
+    workspaceRefreshRequestIdRef.current += 1
+    notificationRefreshPromiseRef.current = null
+    workspaceRefreshPromiseRef.current = null
+    workspaceHydratedRef.current = false
+    workspaceMutationEpochRef.current += 1
     aiRequestIdRef.current += 1
     aiHistoryRequestIdRef.current += 1
     aiTurnsRequestIdRef.current += 1
@@ -2492,9 +2959,11 @@ function App() {
   }
 
   async function runMutation(operation: () => Promise<WorkspaceData>) {
+    workspaceMutationEpochRef.current += 1
     try {
       const data = await operation()
       applyWorkspace(data)
+      setWorkspaceRefreshVersion((current) => current + 1)
       void refreshNotifications()
       setWorkspaceError('')
       return data
@@ -2516,8 +2985,8 @@ function App() {
     setView('project')
   }
 
-  function selectNotificationTodo(projectId: number, todoId: number) {
-    setDetailEntrySource('notifications')
+  function selectMyWorkTodo(projectId: number, todoId: number) {
+    setDetailEntrySource('my_work')
     setRequestedTodoDetailId(todoId)
     setRequestedPackageEventId(null)
     setSelectedProjectId(projectId)
@@ -2526,8 +2995,8 @@ function App() {
     setView('project')
   }
 
-  function selectNotificationPackageEvent(projectId: number, eventId: number) {
-    setDetailEntrySource('notifications')
+  function selectMyWorkPackageEvent(projectId: number, eventId: number) {
+    setDetailEntrySource('my_work')
     setRequestedTodoDetailId(null)
     setRequestedPackageEventId(eventId)
     setSelectedProjectId(projectId)
@@ -2545,10 +3014,38 @@ function App() {
     void refreshNotifications()
   }
 
-  function openNotificationCenter() {
+  function returnToMyWork() {
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setIsProjectTodoDetailActive(false)
+    setDetailEntrySource('project')
+    setView('my_work')
+  }
+
+  async function openNotificationCenter() {
     setDetailEntrySource('project')
     setView('notifications')
-    void refreshNotifications()
+    const readAt = new Date().toISOString()
+    setNotifications((current) => ({
+      invites: current.invites.map((item) => ({ ...item, readAt })),
+      assignedPackageEvents: current.assignedPackageEvents.map((item) => ({ ...item, readAt })),
+      assignedTodos: current.assignedTodos.map((item) => ({ ...item, readAt })),
+      watchedTodos: current.watchedTodos.map((item) => ({ ...item, readAt })),
+      dueTomorrowTodos: current.dueTomorrowTodos.map((item) => ({ ...item, readAt })),
+      noteMentions: current.noteMentions.map((item) => ({ ...item, readAt })),
+      projectTransfers: current.projectTransfers.map((item) => ({ ...item, readAt })),
+    }))
+    try {
+      const result = await markAllNotificationsRead()
+      setNotifications(result.notifications)
+    } catch {
+      void refreshNotifications()
+    }
+  }
+
+  function openMyWork() {
+    setDetailEntrySource('project')
+    setView('my_work')
   }
 
   function changeNewProjectDialogOpen(open: boolean) {
@@ -2618,7 +3115,7 @@ function App() {
     setTodoCreatedAt('')
     setTodoPriority('medium')
     setTodoAssigneeUserId(null)
-    setTodoWatcherUserId(null)
+    setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
     setTodoModuleId(null)
     setView('project')
@@ -2746,7 +3243,7 @@ function App() {
     const data = await runMutation(() =>
       createTodo({
         assigneeUserId: todoAssigneeUserId ?? undefined,
-        watcherUserId: todoWatcherUserId ?? undefined,
+        watcherUserIds: todoWatcherUserIds,
         reviewerUserId: todoReviewerUserId ?? undefined,
         detail: todoDetailDraft,
         moduleId: todoModuleId ?? undefined,
@@ -2765,7 +3262,7 @@ function App() {
     setTodoCreatedAt('')
     setTodoPriority('medium')
     setTodoAssigneeUserId(null)
-    setTodoWatcherUserId(null)
+    setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
     setTodoModuleId(null)
   }
@@ -2781,33 +3278,9 @@ function App() {
     setTodoCreatedAt('')
     setTodoPriority('medium')
     setTodoAssigneeUserId(null)
-    setTodoWatcherUserId(null)
+    setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
     setTodoModuleId(null)
-  }
-
-  async function toggleTodo(todoId: number) {
-    const todo = todos.find((item) => item.id === todoId)
-    if (!todo) return
-    const project = projects.find((item) => item.id === todo.projectId)
-    const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
-    const canReviewTodo = authUser?.id != null && effectiveReviewerUserId === authUser.id
-    const canCompleteTodo = canReviewTodo && (
-      todo.reviewerUserId == null || todo.confirmationStatus === 'pending_review' || todo.done
-    )
-    if (!canCompleteTodo && !todo.done) {
-      const data = await runMutation(() => updateTodo(todoId, { confirmationStatus: 'pending_review' }))
-      if (data) {
-        setNotifications((current) => removeTodoNotifications(current, todoId))
-      }
-      return
-    }
-    if (!canCompleteTodo) return
-    const completed = !todo.done
-    const data = await runMutation(() => updateTodo(todoId, { done: completed }))
-    if (data && completed) {
-      setNotifications((current) => removeTodoNotifications(current, todoId))
-    }
   }
 
   async function updateTodoDetails(todoId: number, payload: TodoUpdatePayload) {
@@ -2827,33 +3300,34 @@ function App() {
       const result = await acceptProjectInvitation(membershipId)
       applyWorkspace(result.workspace)
       setNotifications(result.notifications)
+      setWorkspaceRefreshVersion((current) => current + 1)
       setWorkspaceError('')
     } catch {
       setWorkspaceError('邀请处理失败，请稍后再试。')
     }
   }
 
-  async function declineInvitation(membershipId: number) {
+  async function ignoreInvitation(membershipId: number) {
     try {
       const result = await declineProjectInvitation(membershipId)
       applyWorkspace(result.workspace)
       setNotifications(result.notifications)
+      setWorkspaceRefreshVersion((current) => current + 1)
       setWorkspaceError('')
     } catch {
       setWorkspaceError('邀请处理失败，请稍后再试。')
     }
   }
 
-  async function dismissNotification(
-    kind: 'project_invite' | 'assigned_todo' | 'watched_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
-    sourceId: number,
-  ) {
+  async function respondProjectTransfer(transferId: number, action: 'accept' | 'decline') {
     try {
-      const result = await markNotificationRead(kind, sourceId, true)
+      const result = await respondToProjectTransfer(transferId, action)
+      applyWorkspace(result.workspace)
       setNotifications(result.notifications)
+      setWorkspaceRefreshVersion((current) => current + 1)
       setWorkspaceError('')
     } catch {
-      setWorkspaceError('通知状态更新失败，请稍后再试。')
+      setWorkspaceError('项目转移处理失败，请刷新后重试。')
     }
   }
 
@@ -3099,10 +3573,10 @@ function App() {
     }
   }
 
-  async function exportInstallTimeline() {
+  async function exportInstallTimeline(eventId?: number) {
     if (!selectedProject) return { fileName: '项目时间线.md', markdown: '' }
     try {
-      const result = await exportProjectPackageTimeline(selectedProject.id)
+      const result = await exportProjectPackageTimeline(selectedProject.id, eventId)
       setWorkspaceError('')
       return result
     } catch {
@@ -3897,6 +4371,7 @@ ${packageTimelineText}`
     return (
         <LoginScreen
           error={authError}
+          hasOrganizationInvite={Boolean(organizationInviteToken)}
           hasProjectInvite={Boolean(inviteToken)}
           invitePasswordChecking={invitePasswordChecking}
           invitePasswordDraft={invitePasswordDraft}
@@ -3925,6 +4400,10 @@ ${packageTimelineText}`
       busy={roleSelectionBusy}
       open={roleSelectionOpen}
       user={authUser}
+      onOpenOrganization={() => {
+        setRoleSelectionOpen(false)
+        setView('organization')
+      }}
       onSelect={(role) => void changeActiveUserRole(role)}
     />
   ) : null
@@ -3947,6 +4426,7 @@ ${packageTimelineText}`
           )}
           currentUserId={authUser.id}
           projects={projects.map((project) => ({ id: project.id, name: project.name }))}
+          refreshToken={workspaceRefreshVersion}
         />
       </>
     )
@@ -3965,58 +4445,71 @@ ${packageTimelineText}`
               <p className="eyebrow">Veges</p>
               <h1>项目篮子</h1>
             </div>
+            <button className="sidebar-notifications-button" type="button" aria-label="消息" title="消息" onClick={openNotificationCenter}>
+              <Bell size={18} weight="duotone" />
+              {openNotificationCount > 0 ? <span className="sidebar-notifications-dot" aria-hidden /> : null}
+            </button>
           </div>
           <nav className="nav-list">
-            <NavButton active={view === 'search'} onClick={() => setView('search')}>
-              <Target size={18} weight="duotone" /> 项目篮子
-            </NavButton>
-            <NavButton active={view === 'notifications'} onClick={openNotificationCenter}>
-              <Bell size={18} weight="duotone" /> 通知中心
-              {openNotificationCount > 0 && (
-                <Badge className="nav-badge">{openNotificationCount}</Badge>
-              )}
-            </NavButton>
-            {canNavigateToDeveloperBugs ? (
-              <NavButton
-                active={view === 'assigned_bugs'}
-                onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
-              >
-                <Bug size={18} weight="duotone" /> Bug 工作台
-                {assignedBugCount > 0 && (
-                  <Badge className="nav-badge">{assignedBugCount}</Badge>
+            <NavGroup label="日常工作" id="nav-group-daily">
+              <NavButton active={view === 'search'} onClick={() => setView('search')}>
+                <Target size={18} weight="duotone" /> 项目篮子
+              </NavButton>
+              <NavButton active={view === 'my_work'} onClick={openMyWork}>
+                <ListChecks size={18} weight="duotone" /> 我的待办
+                {openTodoCount > 0 && (
+                  <Badge className="nav-badge">{openTodoCount}</Badge>
                 )}
               </NavButton>
-            ) : null}
-            <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-              <Tray size={18} weight="duotone" /> 草稿箱
-            </NavButton>
-            <NavButton
-              active={view === 'ai'}
-              onClick={() => {
-                setAiMobilePane(getDefaultAiPane())
-                setView('ai')
-              }}
-            >
-              <Sparkle size={18} weight="duotone" /> Veges AI
-            </NavButton>
-            <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
-              <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
-            </NavButton>
-            <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
-              <CloudArrowUp size={18} weight="duotone" /> 镜像同步
-            </NavButton>
-            {isOrganizationAdmin ? (
-              <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
-                <Buildings size={18} weight="duotone" /> 组织管理
+              <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
+                <Tray size={18} weight="duotone" /> 草稿箱
               </NavButton>
-            ) : null}
-            {canNavigateToTestWorkbench ? (
+              <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
+                <FileText size={18} weight="duotone" /> 周报管理
+              </NavButton>
               <NavButton
-                active={view === 'testing'}
-                onClick={() => void changeActiveUserRole('tester', 'testing')}
+                active={view === 'ai'}
+                onClick={() => {
+                  setAiMobilePane(getDefaultAiPane())
+                  setView('ai')
+                }}
               >
-                <Flask size={18} weight="duotone" /> 测试工作台
+                <Sparkle size={18} weight="duotone" /> Veges AI
               </NavButton>
+            </NavGroup>
+            <NavGroup label="协作与交付" id="nav-group-delivery">
+              {canNavigateToDeveloperBugs ? (
+                <NavButton
+                  active={view === 'assigned_bugs'}
+                  onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
+                >
+                  <Bug size={18} weight="duotone" /> Bug 工作台
+                  {assignedBugCount > 0 && (
+                    <Badge className="nav-badge">{assignedBugCount}</Badge>
+                  )}
+                </NavButton>
+              ) : null}
+              {canNavigateToTestWorkbench ? (
+                <NavButton
+                  active={view === 'testing'}
+                  onClick={() => void changeActiveUserRole('tester', 'testing')}
+                >
+                  <Flask size={18} weight="duotone" /> 测试工作台
+                </NavButton>
+              ) : null}
+              <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
+                <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
+              </NavButton>
+              <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
+                <CloudArrowUp size={18} weight="duotone" /> 镜像同步
+              </NavButton>
+            </NavGroup>
+            {isOrganizationAdmin ? (
+              <NavGroup label="组织与治理" id="nav-group-organization">
+                <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
+                  <Buildings size={18} weight="duotone" /> 组织管理
+                </NavButton>
+              </NavGroup>
             ) : null}
           </nav>
           <AccountMenu
@@ -4148,7 +4641,9 @@ ${packageTimelineText}`
 
       <section className={view === 'project'
         ? 'workspace cockpit-workspace'
-        : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync'
+        : view === 'weekly_report'
+          ? 'workspace embedded-module-workspace weekly-report-shell'
+          : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync'
           ? 'workspace embedded-module-workspace'
           : 'workspace'}>
         {!(view === 'project' && isProjectTodoDetailActive) ? (
@@ -4157,21 +4652,27 @@ ${packageTimelineText}`
               <div className="topbar-title-row">
                 {view === 'project' && (
                   <Button
-                    className={detailEntrySource === 'notifications'
+                    className={detailEntrySource !== 'project'
                       ? 'ghost-button summary-back-button'
                       : 'detail-back-button'}
                     type="button"
-                    variant={detailEntrySource === 'notifications' ? 'outline' : 'ghost'}
-                    size={detailEntrySource === 'notifications' ? 'sm' : 'icon'}
+                    variant={detailEntrySource !== 'project' ? 'outline' : 'ghost'}
+                    size={detailEntrySource !== 'project' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
-                      ? '返回通知中心'
+                      ? '返回消息'
+                      : detailEntrySource === 'my_work' ? '返回我的待办'
                       : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
-                      ? '返回通知中心'
+                      ? '返回消息'
+                      : detailEntrySource === 'my_work' ? '返回我的待办'
                       : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
                         returnToNotifications()
+                        return
+                      }
+                      if (detailEntrySource === 'my_work') {
+                        returnToMyWork()
                         return
                       }
                       if (projectDetailTab !== 'journal') {
@@ -4182,7 +4683,7 @@ ${packageTimelineText}`
                     }}
                   >
                     <ArrowLeft size={18} />
-                    {detailEntrySource === 'notifications' ? '返回' : null}
+                    {detailEntrySource !== 'project' ? '返回' : null}
                   </Button>
                 )}
                 <h2>{getViewTitle(view, selectedProject?.name ?? '项目篮子')}</h2>
@@ -4193,7 +4694,9 @@ ${packageTimelineText}`
             </div>
             <div
               className={view === 'project' ? 'topbar-actions project-topbar-actions' : 'topbar-actions'}
-              id={view === 'organization' ? 'organization-topbar-actions' : undefined}
+              id={view === 'organization'
+                ? 'organization-topbar-actions'
+                : view === 'weekly_report' ? 'weekly-report-topbar-actions' : undefined}
             >
               {view === 'project' && projectDetailTab === 'packages' ? (
                 <>
@@ -4304,7 +4807,7 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  {view !== 'ai' && view !== 'organization' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' ? (
+                  {view !== 'ai' && view !== 'organization' && view !== 'weekly_report' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' ? (
                     <Button
                       className="ghost-button"
                       variant="outline"
@@ -4372,7 +4875,7 @@ ${packageTimelineText}`
           <ProjectDetail
             key={selectedProject.id}
             initialTodoId={requestedTodoDetailId}
-            notificationDetailActive={detailEntrySource === 'notifications'}
+            notificationDetailActive={detailEntrySource !== 'project'}
             journalDraft={journalDraft}
             packageTimeline={projectPackageTimelines[selectedProject.id] ?? null}
             packageWorkbenchRef={packageWorkbenchRef}
@@ -4392,7 +4895,7 @@ ${packageTimelineText}`
             onInstallLoadMarketVersions={loadPackageMarketVersions}
             onInstallSelectPackages={addInstallItems}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
-            onReturnToNotifications={returnToNotifications}
+            onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
             onUpdateInstallEvent={updateInstallEvent}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
@@ -4407,7 +4910,7 @@ ${packageTimelineText}`
             onUpdateTodoNote={editTodoNote}
             onTodoCreateDraftClear={clearTodoCreateDraftState}
             onTodoAssigneeChange={setTodoAssigneeUserId}
-            onTodoWatcherChange={setTodoWatcherUserId}
+            onTodoWatcherChange={setTodoWatcherUserIds}
             onTodoReviewerChange={setTodoReviewerUserId}
             onTodoCreatedAtChange={setTodoCreatedAt}
             onTodoDueDateChange={setTodoDueDate}
@@ -4421,7 +4924,7 @@ ${packageTimelineText}`
             projects={projects}
             projectTodos={projectTodos}
             todoAssigneeUserId={todoAssigneeUserId}
-            todoWatcherUserId={todoWatcherUserId}
+            todoWatcherUserIds={todoWatcherUserIds}
             todoReviewerUserId={todoReviewerUserId}
             todoCreatedAt={todoCreatedAt}
             todoDueDate={todoDueDate}
@@ -4457,16 +4960,26 @@ ${packageTimelineText}`
           />
         )}
 
+        {view === 'my_work' && (
+          <MyWorkWorkbench
+            projects={projects}
+            refreshToken={workspaceRefreshVersion}
+            onTodoClick={selectMyWorkTodo}
+            onDeliveryClick={selectMyWorkPackageEvent}
+            onBugClick={(bugId) => {
+              setRequestedAssignedBugId(bugId)
+              void changeActiveUserRole('developer', 'assigned_bugs')
+            }}
+            onMilestoneClick={selectProject}
+          />
+        )}
+
         {view === 'notifications' && (
           <NotificationCenterView
-            currentUserId={authUser?.id}
             notifications={notifications}
             onAcceptInvitation={acceptInvitation}
-            onDeclineInvitation={declineInvitation}
-            onDismissNotification={dismissNotification}
-            onPackageEventClick={selectNotificationPackageEvent}
-            onTodoClick={selectNotificationTodo}
-            onToggleTodo={toggleTodo}
+            onIgnoreInvitation={ignoreInvitation}
+            onRespondProjectTransfer={respondProjectTransfer}
           />
         )}
 
@@ -4491,12 +5004,30 @@ ${packageTimelineText}`
         )}
 
         {view === 'organization' && authUser ? (
-          <OrganizationWorkbench currentUser={authUser} />
+          <OrganizationWorkbench currentUser={authUser} refreshToken={workspaceRefreshVersion} />
+        ) : null}
+
+        {view === 'weekly_report' ? (
+          <WeeklyReportWorkbench
+            initialOrganizationId={requestedWeeklyReport.status === 'valid'
+              ? requestedWeeklyReport.organizationId
+              : null}
+            initialWeekStart={requestedWeeklyReport.status === 'valid'
+              ? requestedWeeklyReport.weekStart
+              : null}
+            refreshToken={workspaceRefreshVersion}
+            onInitialContextConsumed={() => setRequestedWeeklyReport({
+              organizationId: null,
+              status: 'absent',
+              weekStart: null,
+            })}
+          />
         ) : null}
 
         {view === 'assigned_bugs' && canShowDeveloperAssignedBugs ? (
           <AssignedTestBugs
             currentUserId={authUser?.id}
+            initialBugId={requestedAssignedBugId}
             embedded
             onBugSeen={markAssignedBugCommentsRead}
             onBugsChange={updateAssignedBugCount}
@@ -4577,6 +5108,7 @@ function WorkspaceBootScreen() {
 
 function LoginScreen({
   error,
+  hasOrganizationInvite,
   hasProjectInvite,
   invitePasswordChecking,
   invitePasswordDraft,
@@ -4590,6 +5122,7 @@ function LoginScreen({
   onSignIn,
 }: {
   error: string
+  hasOrganizationInvite: boolean
   hasProjectInvite: boolean
   invitePasswordChecking: boolean
   invitePasswordDraft: string
@@ -4672,7 +5205,7 @@ function LoginScreen({
         >
           <div className="login-form-heading">
             <strong>{mode === 'register' ? '注册账号' : '登录'}</strong>
-            <span>{mode === 'register' ? '设置用户名和密码后进入项目。' : '优先使用飞书，也可以用用户名和密码继续。'}</span>
+            <span>{mode === 'register' ? '设置用户名和密码后进入工作区。' : '优先使用飞书，也可以用用户名和密码继续。'}</span>
           </div>
           {hasProjectInvite && (
             <div className="login-invite-note">
@@ -4684,6 +5217,12 @@ function LoginScreen({
               </span>
             </div>
           )}
+          {!hasProjectInvite && hasOrganizationInvite ? (
+            <div className="login-invite-note">
+              <LinkSimple size={16} />
+              <span>检测到组织邀请链接，注册或登录后会自动加入组织。</span>
+            </div>
+          ) : null}
           {shouldGateInvitePassword ? (
             <div className="invite-password-gate">
               <Label>
@@ -4785,9 +5324,9 @@ function LoginScreen({
                     <button className="inline-text-button" type="button" onClick={() => switchMode('login')}>
                       返回登录
                     </button>
-                    。{hasProjectInvite
-                      ? '注册后会创建个人工作区并加入受邀项目，密码会加密保存。'
-                      : '共享 AI 环境下，密码注册需要项目邀请；也可以使用公司飞书账号继续。'}
+                    。{hasProjectInvite || hasOrganizationInvite
+                      ? `注册后会创建个人工作区并加入受邀${hasProjectInvite ? '项目' : '组织'}，密码会加密保存。`
+                      : '共享 AI 环境下，密码注册需要项目或组织邀请；也可以使用公司飞书账号继续。'}
                   </>
                 )
               : (
@@ -4826,6 +5365,23 @@ function NavButton({
     >
       {children}
     </Button>
+  )
+}
+
+function NavGroup({
+  children,
+  id,
+  label,
+}: {
+  children: ReactNode
+  id: string
+  label: string
+}) {
+  return (
+    <div className="nav-group" role="group" aria-labelledby={id}>
+      <div className="nav-group-label" id={id}>{label}</div>
+      {children}
+    </div>
   )
 }
 
@@ -5127,7 +5683,7 @@ function ProjectDetail({
   projects,
   projectTodos,
   todoAssigneeUserId,
-  todoWatcherUserId,
+  todoWatcherUserIds,
   todoReviewerUserId,
   todoCreatedAt,
   todoDueDate,
@@ -5142,7 +5698,7 @@ function ProjectDetail({
   packageTimeline: ProjectPackageTimeline | null
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
-  onAddTodo: () => void
+  onAddTodo: (projectId: number) => void | Promise<void>
   onCreateInstallEvent: (payload: {
     assigneeUserId: number
     deliveryDate: string
@@ -5249,7 +5805,7 @@ function ProjectDetail({
   onUpdateTodoNote: (todoId: number, noteId: number, content: string) => void
   onTodoCreateDraftClear: (projectId?: number) => void
   onTodoAssigneeChange: (id: number | null) => void
-  onTodoWatcherChange: (id: number | null) => void
+  onTodoWatcherChange: (ids: number[]) => void
   onTodoReviewerChange: (id: number | null) => void
   onTodoCreatedAtChange: (value: string) => void
   onTodoDueDateChange: (value: string) => void
@@ -5265,7 +5821,7 @@ function ProjectDetail({
   projects: Project[]
   projectTodos: Todo[]
   todoAssigneeUserId: number | null
-  todoWatcherUserId: number | null
+  todoWatcherUserIds: number[]
   todoReviewerUserId: number | null
   todoCreatedAt: string
   todoDueDate: string
@@ -5319,7 +5875,7 @@ function ProjectDetail({
       todoDueDate !== today ||
       todoPriority !== 'medium' ||
       todoAssigneeUserId != null ||
-      todoWatcherUserId != null ||
+      todoWatcherUserIds.length > 0 ||
       todoReviewerUserId != null ||
       todoModuleId != null,
   )
@@ -5362,7 +5918,7 @@ function ProjectDetail({
 
   async function handleAddTodo() {
     const hasDraft = Boolean(todoDraft.trim())
-    await Promise.resolve(onAddTodo())
+    await Promise.resolve(onAddTodo(project.id))
     if (hasDraft) {
       closeTodoCreateDialog()
     }
@@ -5692,7 +6248,7 @@ function ProjectDetail({
               {isTodoCreateDialogOpen ? (
                 <TodoEditorDialog
                   assigneeUserId={todoAssigneeUserId}
-                  watcherUserId={todoWatcherUserId}
+                  watcherUserIds={todoWatcherUserIds}
                   reviewerUserId={todoReviewerUserId}
                   createdAt={todoCreatedAt}
                   detail={todoDetailDraft}
@@ -5708,7 +6264,7 @@ function ProjectDetail({
                   submitDisabled={!todoDraft.trim()}
                   title={todoDraft}
                   onAssigneeUserIdChange={onTodoAssigneeChange}
-                  onWatcherUserIdChange={onTodoWatcherChange}
+                  onWatcherUserIdsChange={onTodoWatcherChange}
                   onReviewerUserIdChange={onTodoReviewerChange}
                   clearDisabled={!hasTodoCreateDraft}
                   onClear={() => onTodoCreateDraftClear(project.id)}
@@ -5726,7 +6282,7 @@ function ProjectDetail({
                 />
               ) : (
                 <TodoList
-                  key={`project-todos-${project.id}-${project.accessRole}`}
+                  key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
                   currentUserId={currentUser?.id}
                   detailBackLabel={notificationDetailActive ? '返回' : undefined}
                   initialTodoId={initialTodoId}
@@ -6210,6 +6766,7 @@ function ProjectActionsMenu({
   onDeleteProject,
   onEditDescriptionClick,
   onRenameClick,
+  onTransferClick,
   projectName,
 }: {
   exportProject: () => void
@@ -6218,6 +6775,7 @@ function ProjectActionsMenu({
   onDeleteProject: () => void
   onEditDescriptionClick: () => void
   onRenameClick: () => void
+  onTransferClick: () => void
   projectName: string
 }) {
   return (
@@ -6239,6 +6797,9 @@ function ProjectActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onEditDescriptionClick}>
           <NotePencil /> 编辑简介
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onTransferClick}>
+          <UserSwitch /> 项目转移
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={exportProject}>
           <DownloadSimple /> 导出项目
@@ -6270,540 +6831,188 @@ function ProjectActionsMenu({
 }
 
 function NotificationCenterView({
-  currentUserId,
   notifications,
   onAcceptInvitation,
-  onDeclineInvitation,
-  onDismissNotification,
-  onPackageEventClick,
-  onTodoClick,
-  onToggleTodo,
+  onIgnoreInvitation,
+  onRespondProjectTransfer,
 }: {
-  currentUserId?: number
   notifications: NotificationCenterData
-  onAcceptInvitation: (membershipId: number) => void
-  onDeclineInvitation: (membershipId: number) => void
-  onDismissNotification: (
-    kind: 'project_invite' | 'assigned_todo' | 'watched_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
-    sourceId: number,
-  ) => void
-  onPackageEventClick: (projectId: number, eventId: number) => void
-  onTodoClick: (projectId: number, todoId: number) => void
-  onToggleTodo: (todoId: number) => void
+  onAcceptInvitation: (membershipId: number) => Promise<void>
+  onIgnoreInvitation: (membershipId: number) => Promise<void>
+  onRespondProjectTransfer: (transferId: number, action: 'accept' | 'decline') => Promise<void>
 }) {
-  type NotificationFilter =
-    | 'all'
-    | 'invites'
-    | 'assignedTodos'
-    | 'watchedTodos'
-    | 'assignedPackageEvents'
-    | 'dueTomorrowTodos'
-    | 'noteMentions'
-  const [notificationFilter, setNotificationFilter] = useState<NotificationFilter>('all')
-  const [notificationProjectFilter, setNotificationProjectFilter] = useState('all')
-  const sortNotificationTime = useCallback((item: {
-    assignedAt?: string
-    createdAt?: string
-    dueDate?: string
-    sortAt?: string
-  }) => {
-    const fallback = item.sortAt ?? item.assignedAt ?? item.createdAt ?? item.dueDate ?? ''
-    const parsed = Date.parse(fallback)
-    return Number.isNaN(parsed) ? 0 : parsed
-  }, [])
-  const sortNotificationsNewestFirst = useCallback(
-    <T extends {
-      assignedAt?: string
-      createdAt?: string
-      dueDate?: string
-      sortAt?: string
-    }>(items: T[]) =>
-      items
-        .slice()
-        .sort((left, right) => {
-          const rightTime = sortNotificationTime(right)
-          const leftTime = sortNotificationTime(left)
-          if (rightTime !== leftTime) return rightTime - leftTime
-          return 0
-        }),
-    [sortNotificationTime],
-  )
-  const visibleInvites = sortNotificationsNewestFirst(
-    notifications.invites.filter((item) => !item.dismissedAt),
-  )
-  const visibleAssignedPackageEvents = sortNotificationsNewestFirst(
-    notifications.assignedPackageEvents.filter((item) => !item.dismissedAt),
-  )
-  const visibleAssignedTodos = sortNotificationsNewestFirst(
-    notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.done),
-  )
-  const visibleWatchedTodos = sortNotificationsNewestFirst(
-    notifications.watchedTodos.filter((item) => !item.dismissedAt),
-  )
-  const visibleDueTomorrowTodos = sortNotificationsNewestFirst(
-    notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt),
-  )
-  const visibleNoteMentions = sortNotificationsNewestFirst(
-    notifications.noteMentions.filter((item) => !item.dismissedAt),
-  )
-  const notificationProjectOptions = useMemo(() => {
-    const map = new Map<number, string>()
-    for (const item of [
-      ...visibleInvites,
-      ...visibleAssignedPackageEvents,
-      ...visibleAssignedTodos,
-      ...visibleWatchedTodos,
-      ...visibleDueTomorrowTodos,
-      ...visibleNoteMentions,
-    ]) {
-      if (!map.has(item.projectId)) {
-        map.set(item.projectId, item.projectName)
+  type NotificationFeedItem = {
+    id: string
+    inviteId?: number
+    inviteProjectName?: string
+    transferId?: number
+    transferProjectName?: string
+    message: string
+    sortAt: number
+    time?: string
+  }
+
+  const [processingItemId, setProcessingItemId] = useState<string | null>(null)
+
+  const items = useMemo<NotificationFeedItem[]>(() => {
+    const sortTime = (item: { assignedAt?: string; createdAt?: string; dueDate?: string; sortAt?: string }) => {
+      const value = item.sortAt ?? item.assignedAt ?? item.createdAt ?? item.dueDate ?? ''
+      const parsed = Date.parse(value)
+      return Number.isNaN(parsed) ? 0 : parsed
+    }
+    const result: NotificationFeedItem[] = []
+    const visible = <T extends { dismissedAt?: string }>(entries: T[]) => entries.filter((entry) => !entry.dismissedAt)
+
+    for (const invite of visible(notifications.invites)) {
+      result.push({
+        id: `project-invite-${invite.id}`,
+        inviteId: invite.id,
+        inviteProjectName: invite.projectName,
+        message: `${invite.invitedByName} 邀请你加入项目「${invite.projectName}」。`,
+        sortAt: sortTime(invite),
+        time: invite.createdAt,
+      })
+    }
+    for (const transfer of visible(notifications.projectTransfers)) {
+      result.push({
+        id: `project-transfer-${transfer.id}`,
+        message: `${transfer.requestedByName} 想将项目「${transfer.projectName}」转移给你（共同组织：${transfer.organizationName}）。`,
+        sortAt: sortTime(transfer),
+        time: transfer.createdAt,
+        transferId: transfer.id,
+        transferProjectName: transfer.projectName,
+      })
+    }
+    for (const todo of visible(notifications.assignedTodos)) {
+      result.push({
+        id: `assigned-todo-${todo.id}`,
+        message: `${todo.assignedByName ?? '有人'} 在「${todo.projectName}」中为你添加了一条待办「${todo.title}」，请及时前往待办列表查看。`,
+        sortAt: sortTime(todo),
+        time: todo.assignedAt,
+      })
+    }
+    for (const todo of visible(notifications.watchedTodos)) {
+      result.push({
+        id: `watched-todo-${todo.id}`,
+        message: `${todo.watchedByName ?? '有人'} 在「${todo.projectName}」中关注了待办「${todo.title}」。`,
+        sortAt: sortTime(todo),
+        time: todo.watchedAt,
+      })
+    }
+    for (const event of visible(notifications.assignedPackageEvents)) {
+      result.push({
+        id: `package-event-${event.id}`,
+        message: `${event.assignedByName ?? '有人'} 在「${event.projectName}」中为你安排了交付事件「${event.title}」，请及时查看。`,
+        sortAt: sortTime(event),
+        time: event.assignedAt,
+      })
+    }
+    for (const todo of visible(notifications.dueTomorrowTodos)) {
+      result.push({
+        id: `due-tomorrow-${todo.id}`,
+        message: `「${todo.projectName}」中的待办「${todo.title}」将于 ${todo.dueDate} 到期，请及时处理。`,
+        sortAt: sortTime(todo),
+        time: todo.dueDate,
+      })
+    }
+    for (const note of visible(notifications.noteMentions)) {
+      result.push({
+        id: `note-mention-${note.noteId ?? note.id}`,
+        message: `${note.noteAuthorName ?? '有人'} 在「${note.projectName}」的待办「${note.title}」备注中提到了你${note.notePreview ? `：“${note.notePreview}”` : '。'}`,
+        sortAt: sortTime(note),
+        time: note.createdAt,
+      })
+    }
+
+    return result.sort((left, right) => right.sortAt - left.sortAt)
+  }, [notifications])
+
+  async function handleInvitation(inviteId: number, action: 'accept' | 'ignore') {
+    if (processingItemId !== null) return
+    setProcessingItemId(`invite:${inviteId}`)
+    try {
+      if (action === 'accept') {
+        await onAcceptInvitation(inviteId)
+      } else {
+        await onIgnoreInvitation(inviteId)
       }
+    } finally {
+      setProcessingItemId(null)
     }
-    return [...map.entries()]
-      .map(([id, name]) => ({ id, name }))
-      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-  }, [
-    visibleAssignedPackageEvents,
-    visibleAssignedTodos,
-    visibleWatchedTodos,
-    visibleDueTomorrowTodos,
-    visibleInvites,
-    visibleNoteMentions,
-  ])
-  useEffect(() => {
-    if (
-      notificationProjectFilter !== 'all' &&
-      !notificationProjectOptions.some((item) => String(item.id) === notificationProjectFilter)
-    ) {
-      setNotificationProjectFilter('all')
-    }
-  }, [notificationProjectFilter, notificationProjectOptions])
-  const matchesNotificationProject = useCallback(
-    (projectId: number) =>
-      notificationProjectFilter === 'all' || String(projectId) === notificationProjectFilter,
-    [notificationProjectFilter],
-  )
-  const filteredInvites = visibleInvites.filter((item) => matchesNotificationProject(item.projectId))
-  const filteredAssignedPackageEvents = visibleAssignedPackageEvents.filter((item) =>
-    matchesNotificationProject(item.projectId),
-  )
-  const filteredAssignedTodos = visibleAssignedTodos.filter((item) =>
-    matchesNotificationProject(item.projectId),
-  )
-  const filteredWatchedTodos = visibleWatchedTodos.filter((item) =>
-    matchesNotificationProject(item.projectId),
-  )
-  const filteredDueTomorrowTodos = visibleDueTomorrowTodos.filter((item) =>
-    matchesNotificationProject(item.projectId),
-  )
-  const filteredNoteMentions = visibleNoteMentions.filter((item) =>
-    matchesNotificationProject(item.projectId),
-  )
-  const isEmpty =
-    visibleInvites.length === 0 &&
-    visibleAssignedPackageEvents.length === 0 &&
-    visibleAssignedTodos.length === 0 &&
-    visibleWatchedTodos.length === 0 &&
-    visibleDueTomorrowTodos.length === 0 &&
-    visibleNoteMentions.length === 0
-  const showInvites = notificationFilter === 'all' || notificationFilter === 'invites'
-  const showAssignedTodos = notificationFilter === 'all' || notificationFilter === 'assignedTodos'
-  const showWatchedTodos = notificationFilter === 'all' || notificationFilter === 'watchedTodos'
-  const showAssignedPackageEvents =
-    notificationFilter === 'all' || notificationFilter === 'assignedPackageEvents'
-  const showDueTomorrowTodos = notificationFilter === 'all' || notificationFilter === 'dueTomorrowTodos'
-  const showNoteMentions = notificationFilter === 'all' || notificationFilter === 'noteMentions'
-  const filteredEmpty =
-    (showInvites ? filteredInvites.length : 0) +
-      (showAssignedTodos ? filteredAssignedTodos.length : 0) +
-      (showWatchedTodos ? filteredWatchedTodos.length : 0) +
-      (showAssignedPackageEvents ? filteredAssignedPackageEvents.length : 0) +
-      (showDueTomorrowTodos ? filteredDueTomorrowTodos.length : 0) +
-      (showNoteMentions ? filteredNoteMentions.length : 0) ===
-    0
-  const toggleNotificationFilter = (filter: Exclude<NotificationFilter, 'all'>) => {
-    setNotificationFilter((current) => (current === filter ? 'all' : filter))
   }
 
-  type NotificationSectionBlock = {
-    createdAt: number
-    key: string
-    node: ReactElement
-  }
-  const sectionBlocks: Array<NotificationSectionBlock | null> = [
-    showInvites && filteredInvites.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredInvites[0]),
-          key: 'invites',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                项目邀请
-                <span className="notification-kind">邀请</span>
-              </h3>
-              <div className="notification-list">
-                {filteredInvites.map((invite) => (
-                  <article className="notification-item" key={invite.id}>
-                    <div>
-                      <strong>{invite.projectName}</strong>
-                      <p>{invite.invitedByName} 邀请你加入项目。</p>
-                      <small>{invite.createdAt}</small>
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => onDeclineInvitation(invite.id)}
-                      >
-                        拒绝
-                      </Button>
-                      <Button className="solid-button" type="button" onClick={() => onAcceptInvitation(invite.id)}>
-                        接受
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-    showAssignedTodos && filteredAssignedTodos.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredAssignedTodos[0]),
-          key: 'assignedTodos',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                指派给我
-                <span className="notification-kind">待办</span>
-              </h3>
-              <div className="notification-list">
-                {filteredAssignedTodos.map((todo) => (
-                  <article className="notification-item" key={todo.id}>
-                    <div>
-                      <strong>{todo.title}</strong>
-                      <p className="notification-meta-line">
-                        {renderTodoNotificationProjectMeta(todo, ` · 截止 ${todo.dueDate}`)}
-                        {todo.assignedByName ? ` · ${todo.assignedByName} 指派` : ''}
-                        <span className={`notification-priority ${todo.priority}`}>
-                          {priorityCopy[todo.priority]}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => onTodoClick(todo.projectId, todo.id)}
-                      >
-                        查看待办
-                      </Button>
-                      <Button
-                        className="solid-button"
-                        type="button"
-                        disabled={!currentUserId}
-                        onClick={() => onToggleTodo(todo.id)}
-                      >
-                        提交验收
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-    showWatchedTodos && filteredWatchedTodos.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredWatchedTodos[0]),
-          key: 'watchedTodos',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                我关注的待办
-                <span className="notification-kind">关注</span>
-              </h3>
-              <div className="notification-list">
-                {filteredWatchedTodos.map((todo) => (
-                  <article className="notification-item" key={todo.id}>
-                    <div>
-                      <strong>{todo.title}</strong>
-                      <p className="notification-meta-line">
-                        {renderTodoNotificationProjectMeta(todo, ` · 截止 ${todo.dueDate}`)}
-                        {todo.watchedByName ? ` · ${todo.watchedByName} 添加关注` : ''}
-                        <span className={`notification-priority ${todo.priority}`}>
-                          {priorityCopy[todo.priority]}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => onDismissNotification('watched_todo', todo.id)}
-                      >
-                        知道了
-                      </Button>
-                      <Button className="solid-button" type="button" onClick={() => onTodoClick(todo.projectId, todo.id)}>
-                        查看待办
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-    showAssignedPackageEvents && filteredAssignedPackageEvents.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredAssignedPackageEvents[0]),
-          key: 'assignedPackageEvents',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                指派给我的交付事件
-                <span className="notification-kind">事件</span>
-              </h3>
-              <div className="notification-list">
-                {filteredAssignedPackageEvents.map((event) => (
-                  <article className="notification-item" key={event.id}>
-                    <div>
-                      <strong>{event.title}</strong>
-                      <p className="notification-meta-line">
-                        {event.projectName} · {event.eventType === 'init' ? '初始化安装' : '升级'}
-                        {event.assignedByName ? ` · ${event.assignedByName} 指派` : ''}
-                        <span className={`notification-priority ${event.eventStatus === 'delivered' ? 'low' : 'medium'}`}>
-                          {event.eventStatus === 'delivered'
-                            ? '已交付'
-                            : event.eventStatus === 'delivering'
-                              ? '交付中'
-                              : '草稿'}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => onPackageEventClick(event.projectId, event.id)}
-                      >
-                        查看交付事件
-                      </Button>
-                      <Button
-                        className="solid-button"
-                        type="button"
-                        onClick={() => onDismissNotification('package_event_assigned', event.id)}
-                      >
-                        知道了
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-    showDueTomorrowTodos && filteredDueTomorrowTodos.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredDueTomorrowTodos[0]),
-          key: 'dueTomorrowTodos',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                明日到期
-                <span className="notification-kind">提醒</span>
-              </h3>
-              <div className="notification-list">
-                {filteredDueTomorrowTodos.map((todo) => (
-                  <article className="notification-item" key={todo.id}>
-                    <div>
-                      <strong>{todo.title}</strong>
-                      <p className="notification-meta-line">
-                        {renderTodoNotificationProjectMeta(todo, ' · 明天截止')}
-                        <span className={`notification-priority ${todo.priority}`}>
-                          {priorityCopy[todo.priority]}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => onDismissNotification('todo_due_tomorrow', todo.id)}
-                      >
-                        忽略
-                      </Button>
-                      <Button className="solid-button" type="button" onClick={() => onTodoClick(todo.projectId, todo.id)}>
-                        查看待办
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-    showNoteMentions && filteredNoteMentions.length > 0
-      ? {
-          createdAt: sortNotificationTime(filteredNoteMentions[0]),
-          key: 'noteMentions',
-          node: (
-            <section className="notification-section">
-              <h3 className="notification-section-title">
-                备注提及我
-                <span className="notification-kind">备注</span>
-              </h3>
-              <div className="notification-list">
-                {filteredNoteMentions.map((note) => (
-                  <article className="notification-item" key={`note-${note.noteId}`}>
-                    <div>
-                      <div className="notification-title-line">
-                        <strong>{note.title}</strong>
-                        <p className="notification-meta-line">
-                          {renderTodoNotificationProjectMeta(note, '')}
-                          {note.noteAuthorName ? ` · ${note.noteAuthorName} 提及了你` : ''}
-                          <span className={`notification-priority ${note.priority}`}>
-                            {priorityCopy[note.priority]}
-                          </span>
-                        </p>
-                      </div>
-                      {note.notePreview ? <p>{note.notePreview}</p> : null}
-                      {note.createdAt ? <small>{note.createdAt}</small> : null}
-                    </div>
-                    <div className="notification-actions">
-                      <Button
-                        className="ghost-button"
-                        type="button"
-                        variant="outline"
-                        onClick={() => note.noteId && onDismissNotification('todo_note_mention', note.noteId)}
-                      >
-                        忽略
-                      </Button>
-                      <Button className="solid-button" type="button" onClick={() => onTodoClick(note.projectId, note.id)}>
-                        查看待办
-                      </Button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ),
-        }
-      : null,
-  ]
-  const sortedSectionBlocks = (sectionBlocks.filter((section) => section !== null) as NotificationSectionBlock[])
-    .sort((left, right) => right.createdAt - left.createdAt)
-
-  function renderTodoNotificationProjectMeta(todo: TodoNotification, suffix: string) {
-    return (
-      <>
-        {todo.projectName}
-        {todo.moduleName ? (
-          <Badge className="todo-module-badge notification-module-badge">{todo.moduleName}</Badge>
-        ) : null}
-        {suffix}
-      </>
-    )
+  async function handleProjectTransfer(transferId: number, action: 'accept' | 'decline') {
+    if (processingItemId !== null) return
+    setProcessingItemId(`transfer:${transferId}`)
+    try {
+      await onRespondProjectTransfer(transferId, action)
+    } finally {
+      setProcessingItemId(null)
+    }
   }
 
   return (
     <Card className="panel notification-center-panel">
-      <div className="current-todos-header">
-        <PanelTitle icon={<Bell size={18} />} title="通知中心" />
-        <div className="current-todos-metrics notification-center-toolbar" aria-label="通知统计">
-          <Select value={notificationProjectFilter} onValueChange={setNotificationProjectFilter}>
-            <SelectTrigger className="notification-project-filter" aria-label="按项目筛选通知">
-              <SelectValue placeholder="全部项目" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部项目</SelectItem>
-              {notificationProjectOptions.map((project) => (
-                <SelectItem key={project.id} value={String(project.id)}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <button
-            className={notificationFilter === 'invites' ? 'todo-metric active' : 'todo-metric'}
-            type="button"
-            aria-pressed={notificationFilter === 'invites'}
-            onClick={() => toggleNotificationFilter('invites')}
-          >
-            <strong>{filteredInvites.length}</strong>
-            邀请
-          </button>
-          <button
-            className={notificationFilter === 'assignedTodos' ? 'todo-metric active' : 'todo-metric'}
-            type="button"
-            aria-pressed={notificationFilter === 'assignedTodos'}
-            onClick={() => toggleNotificationFilter('assignedTodos')}
-          >
-            <strong>{filteredAssignedTodos.length}</strong>
-            指派
-          </button>
-          <button
-            className={notificationFilter === 'watchedTodos' ? 'todo-metric active' : 'todo-metric'}
-            type="button"
-            aria-pressed={notificationFilter === 'watchedTodos'}
-            onClick={() => toggleNotificationFilter('watchedTodos')}
-          >
-            <strong>{filteredWatchedTodos.length}</strong>
-            关注
-          </button>
-          <button
-            className={
-              notificationFilter === 'assignedPackageEvents' ? 'todo-metric active' : 'todo-metric'
-            }
-            type="button"
-            aria-pressed={notificationFilter === 'assignedPackageEvents'}
-            onClick={() => toggleNotificationFilter('assignedPackageEvents')}
-          >
-            <strong>{filteredAssignedPackageEvents.length}</strong>
-            交付事件
-          </button>
-          <button
-            className={notificationFilter === 'dueTomorrowTodos' ? 'todo-metric active' : 'todo-metric'}
-            type="button"
-            aria-pressed={notificationFilter === 'dueTomorrowTodos'}
-            onClick={() => toggleNotificationFilter('dueTomorrowTodos')}
-          >
-            <strong>{filteredDueTomorrowTodos.length}</strong>
-            明日到期
-          </button>
-          <button
-            className={notificationFilter === 'noteMentions' ? 'todo-metric active' : 'todo-metric'}
-            type="button"
-            aria-pressed={notificationFilter === 'noteMentions'}
-            onClick={() => toggleNotificationFilter('noteMentions')}
-          >
-            <strong>{filteredNoteMentions.length}</strong>
-            备注提及
-          </button>
-        </div>
-      </div>
-
-      {isEmpty || filteredEmpty ? (
-        <p className="empty-state">
-          {isEmpty ? '暂时没有需要处理的通知。' : '没有符合筛选条件的通知。'}
-        </p>
-      ) : (
-        <div className="notification-sections">
-          {sortedSectionBlocks.map((section) => (
-            <div key={section.key}>{section.node}</div>
+      {items.length > 0 ? (
+        <div className="notification-feed" aria-label="通知列表">
+          {items.map((item) => (
+            <article
+              className={`notification-feed-item${item.inviteId || item.transferId ? ' has-actions' : ''}`}
+              key={item.id}
+            >
+              <span className="notification-feed-dot" aria-hidden />
+              <div className="notification-feed-content">
+                <p>{item.message}</p>
+                {item.time ? <time>{item.time}</time> : null}
+              </div>
+              {item.inviteId ? (
+                <div className="notification-feed-actions">
+                  <Button
+                    aria-label={`忽略加入项目「${item.inviteProjectName}」的邀请`}
+                    disabled={processingItemId !== null}
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleInvitation(item.inviteId!, 'ignore')}
+                  >
+                    忽略
+                  </Button>
+                  <Button
+                    aria-label={`同意加入项目「${item.inviteProjectName}」的邀请`}
+                    className="solid-button"
+                    disabled={processingItemId !== null}
+                    type="button"
+                    onClick={() => void handleInvitation(item.inviteId!, 'accept')}
+                  >
+                    同意
+                  </Button>
+                </div>
+              ) : item.transferId ? (
+                <div className="notification-feed-actions">
+                  <Button
+                    aria-label={`拒绝项目「${item.transferProjectName}」的转移申请`}
+                    disabled={processingItemId !== null}
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleProjectTransfer(item.transferId!, 'decline')}
+                  >
+                    拒绝
+                  </Button>
+                  <Button
+                    aria-label={`同意项目「${item.transferProjectName}」的转移申请`}
+                    className="solid-button"
+                    disabled={processingItemId !== null}
+                    type="button"
+                    onClick={() => void handleProjectTransfer(item.transferId!, 'accept')}
+                  >
+                    同意
+                  </Button>
+                </div>
+              ) : null}
+            </article>
           ))}
         </div>
+      ) : (
+        <p className="empty-state">暂时没有新的通知。</p>
       )}
     </Card>
   )
@@ -6866,23 +7075,24 @@ function normalizeTodoDetailImages(images: TodoDetailImageAttachment[]) {
 }
 
 function parseTodoDetailContent(content: string) {
+  const normalizedContent = stripMarkdownLinksToText(content)
   const images: TodoDetailImageAttachment[] = []
   const textParts: string[] = []
   let lastIndex = 0
-  let match: RegExpExecArray | null = todoDetailImagePattern.exec(content)
+  let match: RegExpExecArray | null = todoDetailImagePattern.exec(normalizedContent)
 
   while (match) {
-    textParts.push(content.slice(lastIndex, match.index))
+    textParts.push(normalizedContent.slice(lastIndex, match.index))
     images.push({
       alt: match[1] ?? '',
       src: match[2] ?? '',
       uploading: false,
     })
     lastIndex = todoDetailImagePattern.lastIndex
-    match = todoDetailImagePattern.exec(content)
+    match = todoDetailImagePattern.exec(normalizedContent)
   }
 
-  textParts.push(content.slice(lastIndex))
+  textParts.push(normalizedContent.slice(lastIndex))
   todoDetailImagePattern.lastIndex = 0
 
   return {
@@ -6894,14 +7104,15 @@ function parseTodoDetailContent(content: string) {
 }
 
 function serializeTodoDetailContent(text: string, images: TodoDetailImageAttachment[]) {
+  const normalizedText = stripMarkdownLinksToText(text)
   const normalizedImages = normalizeTodoDetailImages(images)
-  const hasText = text.trim().length > 0
+  const hasText = normalizedText.trim().length > 0
   const imageMarkdown = normalizedImages
     .map((image) => `![${image.alt}](${image.src})`)
     .join('\n\n')
 
-  if (hasText && imageMarkdown) return `${text}\n\n${imageMarkdown}`
-  return hasText ? text : imageMarkdown
+  if (hasText && imageMarkdown) return `${normalizedText}\n\n${imageMarkdown}`
+  return hasText ? normalizedText : imageMarkdown
 }
 
 function getTodoContentIndicators(todo: Todo) {
@@ -6916,21 +7127,14 @@ function getTodoContentIndicators(todo: Todo) {
   return { imageCount, infoCount }
 }
 
-async function pasteImagesIntoTodoDetail(
-  event: ClipboardEvent<HTMLTextAreaElement>,
+async function uploadImagesIntoTodoDetail(
+  imageFiles: File[],
   getCurrentValue: () => string,
   onChange: (value: string) => void,
   setUploadingImageSrcs?: Dispatch<SetStateAction<string[]>>,
 ) {
-  const imageFiles = Array.from(event.clipboardData.items)
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
   if (imageFiles.length === 0) return
 
-  event.preventDefault()
-  const textarea = event.currentTarget
-  const selectionStart = textarea.selectionStart ?? textarea.value.length
   const currentContent = parseTodoDetailContent(getCurrentValue())
   const pendingImages = imageFiles.map((file, index) => ({
     alt: file.name || `粘贴图片 ${currentContent.images.length + index + 1}`,
@@ -6944,10 +7148,6 @@ async function pasteImagesIntoTodoDetail(
     currentContent.text,
     [...currentContent.images, ...pendingImages],
   ))
-  window.requestAnimationFrame(() => {
-    textarea.focus()
-    textarea.setSelectionRange(selectionStart, selectionStart)
-  })
 
   try {
     const uploads = await Promise.all(imageFiles.map(uploadTodoImage))
@@ -6984,6 +7184,34 @@ async function pasteImagesIntoTodoDetail(
   }
 }
 
+async function pasteImagesIntoTodoDetail(
+  event: ClipboardEvent<HTMLTextAreaElement>,
+  getCurrentValue: () => string,
+  onChange: (value: string) => void,
+  setUploadingImageSrcs?: Dispatch<SetStateAction<string[]>>,
+) {
+  const imageFiles = Array.from(event.clipboardData.items)
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+  if (imageFiles.length === 0) return
+
+  event.preventDefault()
+  const textarea = event.currentTarget
+  const selectionStart = textarea.selectionStart ?? textarea.value.length
+  const upload = uploadImagesIntoTodoDetail(
+    imageFiles,
+    getCurrentValue,
+    onChange,
+    setUploadingImageSrcs,
+  )
+  window.requestAnimationFrame(() => {
+    textarea.focus()
+    textarea.setSelectionRange(selectionStart, selectionStart)
+  })
+  await upload
+}
+
 function TodoDetailEditor({
   onChange,
   value,
@@ -6992,10 +7220,8 @@ function TodoDetailEditor({
   value: string
 }) {
   const { images, text } = useMemo(() => parseTodoDetailContent(value), [value])
-  const [textDraft, setTextDraft] = useState(text)
   const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
   const [uploadingImageSrcs, setUploadingImageSrcs] = useState<string[]>([])
-  const lastSerializedValueRef = useRef<string | null>(null)
   const latestValueRef = useRef(value)
   const previewImage = previewImageIndex == null ? null : images[previewImageIndex] ?? null
   const uploadingImageSrcSet = useMemo(() => new Set(uploadingImageSrcs), [uploadingImageSrcs])
@@ -7006,11 +7232,6 @@ function TodoDetailEditor({
   }, [value])
 
   useEffect(() => {
-    if (lastSerializedValueRef.current === value) return
-    setTextDraft(text)
-  }, [text, value])
-
-  useEffect(() => {
     if (previewImageIndex != null && !images[previewImageIndex]) {
       setPreviewImageIndex(null)
     }
@@ -7018,7 +7239,6 @@ function TodoDetailEditor({
 
   function commitValue(nextValue: string) {
     latestValueRef.current = nextValue
-    lastSerializedValueRef.current = nextValue
     onChange(nextValue)
   }
 
@@ -7026,9 +7246,14 @@ function TodoDetailEditor({
     commitValue(serializeTodoDetailContent(nextText, nextImages))
   }
 
-  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    await pasteImagesIntoTodoDetail(
-      event,
+  function updateTodoText(nextText: string) {
+    const latestImages = parseTodoDetailContent(latestValueRef.current).images
+    updateTodoDetail(nextText, latestImages)
+  }
+
+  async function handlePasteImages(imageFiles: File[]) {
+    await uploadImagesIntoTodoDetail(
+      imageFiles,
       () => latestValueRef.current,
       commitValue,
       setUploadingImageSrcs,
@@ -7059,7 +7284,7 @@ function TodoDetailEditor({
                     className="todo-detail-attachment-remove"
                     type="button"
                     onClick={() => updateTodoDetail(
-                      textDraft,
+                      text,
                       images.filter((_, imageIndex) => imageIndex !== index),
                     )}
                   >
@@ -7070,19 +7295,17 @@ function TodoDetailEditor({
             })}
           </div>
         ) : null}
-        <Textarea
-          className="todo-detail-textarea"
-          placeholder="补充背景、目标、交付标准，支持直接粘贴图片。"
-          value={textDraft}
-          onChange={(event) => {
-            const nextText = event.target.value
-            setTextDraft(nextText)
-            updateTodoDetail(nextText, images)
-          }}
-          onPaste={(event) => {
-            void handlePaste(event)
-          }}
-        />
+        <TodoMarkdownEditorLoadBoundary>
+          <MarkdownWysiwygEditor
+            ariaLabel="待办详情"
+            placeholder="补充背景、目标、交付标准，支持 Markdown 和直接粘贴图片。"
+            value={text}
+            onChange={updateTodoText}
+            onPasteImages={(files) => {
+              void handlePasteImages(files)
+            }}
+          />
+        </TodoMarkdownEditorLoadBoundary>
       </div>
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
         if (!open) setPreviewImageIndex(null)
@@ -7177,11 +7400,13 @@ function TodoDetailViewer({
 }
 
 function TodoNoteComposer({
+  action,
   members,
   onChange,
   placeholder,
   value,
 }: {
+  action?: ReactNode
   members?: Array<{ id: number; name: string }>
   onChange: (value: string) => void
   placeholder?: string
@@ -7278,6 +7503,7 @@ function TodoNoteComposer({
             void handlePaste(event)
           }}
         />
+        {action}
       </div>
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
         if (!open) setPreviewImageIndex(null)
@@ -7663,6 +7889,86 @@ function ProjectMemberPicker({
           ))}
         </SelectContent>
       </Select>
+    </span>
+  )
+}
+
+function ProjectMemberMultiPicker({
+  disabled = false,
+  emptyLabel = '未关注',
+  label = '待办关注人',
+  members,
+  onChange,
+  values,
+}: {
+  disabled?: boolean
+  emptyLabel?: string
+  label?: string
+  members: Array<{ id: number; name: string }>
+  onChange: (ids: number[]) => void
+  values: number[]
+}) {
+  const selectedIds = normalizeNumberArray(values)
+  const selectedIdSet = new Set(selectedIds)
+  const selectedMembers = members.filter((member) => selectedIdSet.has(member.id))
+  const selectedLabel = selectedMembers.length === 0
+    ? emptyLabel
+    : selectedMembers.length <= 3
+      ? selectedMembers.map((member) => `@${member.name}`).join('、')
+      : `${selectedMembers.slice(0, 3).map((member) => `@${member.name}`).join('、')} 等 ${selectedMembers.length} 人`
+
+  function toggleMember(memberId: number) {
+    const nextIds = selectedIdSet.has(memberId)
+      ? selectedIds.filter((id) => id !== memberId)
+      : [...selectedIds, memberId]
+    onChange(nextIds)
+  }
+
+  return (
+    <span className="member-picker member-multi-picker">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label={label}
+            className="member-multi-trigger"
+            disabled={disabled}
+            type="button"
+            variant="outline"
+          >
+            <span>{selectedLabel}</span>
+            <CaretDown size={14} />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="member-multi-menu">
+          <DropdownMenuItem
+            className={selectedMembers.length === 0 ? 'member-multi-item selected' : 'member-multi-item'}
+            onSelect={(event) => {
+              event.preventDefault()
+              onChange([])
+            }}
+          >
+            <span className="member-multi-check">{selectedMembers.length === 0 ? <Check size={14} /> : null}</span>
+            {emptyLabel}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {members.map((member) => {
+            const selected = selectedIdSet.has(member.id)
+            return (
+              <DropdownMenuItem
+                className={selected ? 'member-multi-item selected' : 'member-multi-item'}
+                key={member.id}
+                onSelect={(event) => {
+                  event.preventDefault()
+                  toggleMember(member.id)
+                }}
+              >
+                <span className="member-multi-check">{selected ? <Check size={14} /> : null}</span>
+                @{member.name}
+              </DropdownMenuItem>
+            )
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </span>
   )
 }
@@ -8085,6 +8391,16 @@ function SearchView({
   const [projectNameDraft, setProjectNameDraft] = useState('')
   const [editingDescriptionProject, setEditingDescriptionProject] = useState<Project | null>(null)
   const [projectDescriptionDraft, setProjectDescriptionDraft] = useState('')
+  const [transferringProject, setTransferringProject] = useState<Project | null>(null)
+  const [transferOrganizations, setTransferOrganizations] = useState<OrganizationListItem[]>([])
+  const [transferOrganizationId, setTransferOrganizationId] = useState('')
+  const [transferCandidates, setTransferCandidates] = useState<OrganizationMember[]>([])
+  const [transferTargetUserId, setTransferTargetUserId] = useState('')
+  const [transferLoading, setTransferLoading] = useState(false)
+  const [transferSubmitting, setTransferSubmitting] = useState(false)
+  const [transferError, setTransferError] = useState('')
+  const [transferSuccess, setTransferSuccess] = useState('')
+  const transferLoadRequestIdRef = useRef(0)
 
   function openRenameDialog(project: Project) {
     setProjectNameDraft(project.name)
@@ -8094,6 +8410,104 @@ function SearchView({
   function openDescriptionDialog(project: Project) {
     setProjectDescriptionDraft(project.description)
     setEditingDescriptionProject(project)
+  }
+
+  async function loadTransferOrganizationMembers(project: Project, organizationId: number) {
+    setTransferOrganizationId(String(organizationId))
+    setTransferCandidates([])
+    setTransferTargetUserId('')
+    setTransferError('')
+    setTransferSuccess('')
+    const requestId = transferLoadRequestIdRef.current + 1
+    transferLoadRequestIdRef.current = requestId
+    setTransferLoading(true)
+    try {
+      const organization = await fetchOrganization(organizationId)
+      if (transferLoadRequestIdRef.current !== requestId) return
+      const candidates = organization.members.filter((member) => member.id !== project.ownerUserId)
+      setTransferCandidates(candidates)
+      setTransferTargetUserId(candidates[0] ? String(candidates[0].id) : '')
+      setTransferError(candidates.length ? '' : '这个组织中没有可接收项目的其他成员。')
+    } catch (error) {
+      if (transferLoadRequestIdRef.current !== requestId) return
+      setTransferError(formatApiErrorDiagnostic(error, '组织成员加载失败，请稍后重试。'))
+    } finally {
+      if (transferLoadRequestIdRef.current === requestId) setTransferLoading(false)
+    }
+  }
+
+  async function openTransferDialog(project: Project) {
+    setTransferringProject(project)
+    setTransferOrganizations([])
+    setTransferOrganizationId('')
+    setTransferCandidates([])
+    setTransferTargetUserId('')
+    setTransferError('')
+    setTransferSuccess('')
+    const requestId = transferLoadRequestIdRef.current + 1
+    transferLoadRequestIdRef.current = requestId
+    setTransferLoading(true)
+    try {
+      const result = await fetchOrganizations()
+      if (transferLoadRequestIdRef.current !== requestId) return
+      const organizations = result.organizations.filter(
+        (organization) => Number.isSafeInteger(organization.id) && organization.id > 0,
+      )
+      setTransferOrganizations(organizations)
+      if (organizations.length === 0) {
+        setTransferError('你当前未加入任何组织，无法转移项目。')
+        return
+      }
+      const organization = organizations.find((item) => item.id === project.organizationId)
+        ?? organizations[0]
+      await loadTransferOrganizationMembers(project, organization.id)
+    } catch (error) {
+      if (transferLoadRequestIdRef.current !== requestId) return
+      setTransferError(formatApiErrorDiagnostic(error, '共同组织加载失败，请稍后重试。'))
+    } finally {
+      if (transferLoadRequestIdRef.current === requestId) setTransferLoading(false)
+    }
+  }
+
+  async function submitProjectTransfer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!transferringProject || !transferOrganizationId || !transferTargetUserId) return
+    const organizationId = Number(transferOrganizationId)
+    const targetUserId = Number(transferTargetUserId)
+    if (
+      !Number.isSafeInteger(organizationId) || organizationId <= 0 ||
+      !Number.isSafeInteger(targetUserId) || targetUserId <= 0
+    ) return
+    const target = transferCandidates.find((member) => member.id === targetUserId)
+    setTransferSubmitting(true)
+    setTransferError('')
+    setTransferSuccess('')
+    try {
+      await requestProjectTransfer(transferringProject.id, { organizationId, targetUserId })
+      setTransferSuccess(
+        target
+          ? `已向 ${target.displayName} 发送项目转移申请，对方可在通知中心确认。`
+          : '已发送项目转移申请，对方可在通知中心确认。',
+      )
+    } catch (error) {
+      setTransferError(formatApiErrorDiagnostic(error, '项目转移申请发送失败，请稍后重试。'))
+    } finally {
+      setTransferSubmitting(false)
+    }
+  }
+
+  function closeTransferDialog(open: boolean) {
+    if (open) return
+    transferLoadRequestIdRef.current += 1
+    setTransferringProject(null)
+    setTransferOrganizations([])
+    setTransferOrganizationId('')
+    setTransferCandidates([])
+    setTransferTargetUserId('')
+    setTransferLoading(false)
+    setTransferSubmitting(false)
+    setTransferError('')
+    setTransferSuccess('')
   }
 
   return (
@@ -8193,6 +8607,7 @@ function SearchView({
                   onDeleteProject={() => onDeleteProject(project.id)}
                   onEditDescriptionClick={() => openDescriptionDialog(project)}
                   onRenameClick={() => openRenameDialog(project)}
+                  onTransferClick={() => void openTransferDialog(project)}
                   projectName={project.name}
                 />
               </div>
@@ -8285,6 +8700,93 @@ function SearchView({
                 取消
               </Button>
               <Button type="submit">保存简介</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(transferringProject)}
+        onOpenChange={closeTransferDialog}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>项目转移</DialogTitle>
+            <DialogDescription>
+              选择你与新 Owner 共同加入的组织及成员。对方在通知中心同意后，项目归属权才会转移。
+            </DialogDescription>
+          </DialogHeader>
+          <form className="new-project-dialog-form" onSubmit={(event) => void submitProjectTransfer(event)}>
+            <Label>
+              共同组织
+              <Select
+                value={transferOrganizationId}
+                onValueChange={(value) => {
+                  if (!transferringProject || !value.trim()) return
+                  const organizationId = Number(value)
+                  if (!Number.isSafeInteger(organizationId) || organizationId <= 0) return
+                  void loadTransferOrganizationMembers(transferringProject, organizationId)
+                }}
+                disabled={transferLoading || transferSubmitting || transferOrganizations.length === 0}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={transferLoading ? '正在加载组织...' : '选择共同组织'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {transferOrganizations.map((organization) => (
+                    <SelectItem key={organization.id} value={String(organization.id)}>
+                      {organization.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Label>
+            <Label>
+              新 Owner
+              <Select
+                value={transferTargetUserId}
+                onValueChange={(value) => {
+                  setTransferTargetUserId(value)
+                  setTransferSuccess('')
+                  setTransferError('')
+                }}
+                disabled={transferLoading || transferSubmitting || transferCandidates.length === 0}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={transferLoading ? '正在加载组织成员...' : '选择成员'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {transferCandidates.map((member) => (
+                    <SelectItem key={member.id} value={String(member.id)}>
+                      {member.displayName === member.username
+                        ? member.displayName
+                        : `${member.displayName}（${member.username}）`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Label>
+            {transferError ? <p className="form-error" role="alert">{transferError}</p> : null}
+            {transferSuccess ? <p className="form-success">{transferSuccess}</p> : null}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => closeTransferDialog(false)}
+              >
+                关闭
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  transferLoading ||
+                  transferSubmitting ||
+                  Boolean(transferSuccess) ||
+                  !transferOrganizationId ||
+                  !transferTargetUserId
+                }
+              >
+                {transferSubmitting ? '发送中...' : '发送转移申请'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -9641,218 +10143,43 @@ function SummaryDocumentDetail({
   )
 }
 
-function MarkdownPreview({
-  compact = false,
-  content,
-}: {
-  compact?: boolean
-  content: string
-}) {
-  const lines = content.split('\n')
-  const blocks: ReactNode[] = []
-  let index = 0
-  let nextOrderedListStart = 1
-  let canContinueOrderedList = false
-
-  function resetOrderedListSequence() {
-    nextOrderedListStart = 1
-    canContinueOrderedList = false
-  }
-
-  function parseTableCells(text: string) {
-    if (!text.startsWith('|') || !text.endsWith('|')) return null
-    const cells = text
-      .slice(1, -1)
-      .split('|')
-      .map((cell) => cell.trim())
-      .filter(Boolean)
-    return cells.length >= 2 ? cells : null
-  }
-
-  function isMarkdownTableDivider(text: string) {
-    return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(text)
-  }
-
-  function parseInline(text: string) {
-    const parts: ReactNode[] = []
-    const tokenPattern = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*/g
-    let lastIndex = 0
-    let match: RegExpExecArray | null = tokenPattern.exec(text)
-
-    while (match) {
-      if (match.index > lastIndex) {
-        parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
-      }
-      if (match[1] !== undefined && match[2] !== undefined) {
-        parts.push(
-          <img
-            key={`image-${match.index}`}
-            src={match[2]}
-            alt={match[1] || '图片'}
-            loading="lazy"
-          />,
-        )
-      } else if (match[3] !== undefined && match[4] !== undefined) {
-        parts.push(
-          <a
-            key={`link-${match.index}`}
-            href={match[4]}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {match[3]}
-          </a>,
-        )
-      } else if (match[5] !== undefined) {
-        parts.push(<strong key={`bold-${match.index}`}>{match[5]}</strong>)
-      }
-      lastIndex = tokenPattern.lastIndex
-      match = tokenPattern.exec(text)
-    }
-
-    if (lastIndex < text.length) {
-      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>)
-    }
-
-    return parts.length > 0 ? parts : [<span key="text-empty">{text}</span>]
-  }
-
-  function renderHeading(level: number, text: string, key: number) {
-    if (level <= 1) return <h3 key={key}>{parseInline(text)}</h3>
-    if (level === 2) return <h4 key={key}>{parseInline(text)}</h4>
-    return <h5 key={key}>{parseInline(text)}</h5>
-  }
-
-  while (index < lines.length) {
-    const text = lines[index].trim()
-
-    if (!text) {
-      index += 1
-      continue
-    }
-
-    if (/^---+$/.test(text)) {
-      blocks.push(<hr key={index} />)
-      index += 1
-      resetOrderedListSequence()
-      continue
-    }
-
-    const heading = text.match(/^(#{1,6})\s+(.+)$/)
-    if (heading) {
-      blocks.push(renderHeading(heading[1].length, heading[2], index))
-      index += 1
-      resetOrderedListSequence()
-      continue
-    }
-
-    const tableCells = parseTableCells(text)
-    if (tableCells) {
-      const tableItems: ReactNode[] = []
-      while (index < lines.length) {
-        const rowText = lines[index].trim()
-        if (!rowText) {
-          index += 1
-          continue
-        }
-        if (isMarkdownTableDivider(rowText)) {
-          index += 1
-          continue
-        }
-        const rowCells = parseTableCells(rowText)
-        if (!rowCells) break
-        const item = rowCells.length >= 3
-          ? `${rowCells[0]}：${rowCells[1]}；${rowCells.slice(2).join('；')}`
-          : rowCells.join('：')
-        tableItems.push(<li key={index}>{parseInline(item)}</li>)
-        index += 1
-      }
-      blocks.push(<ul key={`table-${index}`}>{tableItems}</ul>)
-      resetOrderedListSequence()
-      continue
-    }
-
-    if (/^[-*]\s+/.test(text)) {
-      const items: ReactNode[] = []
-      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-        const item = lines[index].trim().replace(/^[-*]\s+/, '')
-        items.push(<li key={index}>{parseInline(item)}</li>)
-        index += 1
-      }
-      blocks.push(<ul key={`ul-${index}`}>{items}</ul>)
-      continue
-    }
-
-    const orderedListMatch = text.match(/^(\d+)[.)]\s+/)
-    if (orderedListMatch) {
-      const items: ReactNode[] = []
-      const sourceStart = Number(orderedListMatch[1])
-      const listStart = canContinueOrderedList && sourceStart === 1 ? nextOrderedListStart : sourceStart
-      while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) {
-        const item = lines[index].trim().replace(/^\d+[.)]\s+/, '')
-        items.push(<li key={index}>{parseInline(item)}</li>)
-        index += 1
-      }
-      blocks.push(
-        <ol key={`ol-${index}`} start={listStart}>
-          {items}
-        </ol>,
-      )
-      nextOrderedListStart = listStart + items.length
-      canContinueOrderedList = true
-      continue
-    }
-
-    if (/^[^：:]{2,12}[：:]/.test(text)) {
-      const [title, ...rest] = text.split(/[：:]/)
-      blocks.push(
-        <section className="markdown-section" key={index}>
-          <h4>{parseInline(title)}</h4>
-          {rest.join('：').trim() && <p>{parseInline(rest.join('：').trim())}</p>}
-        </section>,
-      )
-      index += 1
-      resetOrderedListSequence()
-      continue
-    }
-
-    blocks.push(<p key={index}>{parseInline(text)}</p>)
-    index += 1
-    resetOrderedListSequence()
-  }
-
-  return <div className={compact ? 'markdown-preview compact' : 'markdown-preview'}>{blocks}</div>
-}
-
 function TodoFilterBuilderDialog({
   assigneeOptions,
   conditions,
   creatorOptions,
+  defaultConditions,
+  defaultJoin,
   join,
   moduleOptions,
   watcherOptions,
   onApply,
   open,
   onOpenChange,
+  persistFilters,
 }: {
   assigneeOptions: Array<{ id: number; name: string }>
   conditions: TodoFilterCondition[]
   creatorOptions: Array<{ id: number; name: string }>
+  defaultConditions: TodoFilterCondition[]
+  defaultJoin: TodoFilterJoin
   join: TodoFilterJoin
   moduleOptions: Array<{ id: number; name: string }>
   watcherOptions: Array<{ id: number; name: string }>
-  onApply: (next: { conditions: TodoFilterCondition[]; join: TodoFilterJoin }) => void
+  onApply: (next: { conditions: TodoFilterCondition[]; join: TodoFilterJoin; persist: boolean }) => void
+  persistFilters: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const [draftJoin, setDraftJoin] = useState<TodoFilterJoin>(join)
   const [draftConditions, setDraftConditions] = useState<TodoFilterCondition[]>(conditions)
+  const [draftPersistFilters, setDraftPersistFilters] = useState(persistFilters)
 
   useEffect(() => {
     if (!open) return
     setDraftJoin(join)
-    setDraftConditions(conditions.length > 0 ? conditions : [createTodoFilterCondition()])
-  }, [conditions, join, open])
+    setDraftConditions(conditions.length > 0 || persistFilters ? conditions : [createTodoFilterCondition()])
+    setDraftPersistFilters(persistFilters)
+  }, [conditions, join, open, persistFilters])
 
   function updateCondition(id: string, patch: Partial<TodoFilterCondition>) {
     setDraftConditions((current) =>
@@ -9884,6 +10211,16 @@ function TodoFilterBuilderDialog({
         )
       }),
       join: draftJoin,
+      persist: draftPersistFilters,
+    })
+    onOpenChange(false)
+  }
+
+  function restoreDefaultFilters() {
+    onApply({
+      conditions: defaultConditions,
+      join: defaultJoin,
+      persist: false,
     })
     onOpenChange(false)
   }
@@ -10003,6 +10340,7 @@ function TodoFilterBuilderDialog({
             <SelectItem value="confirmed">已确认</SelectItem>
             <SelectItem value="pending_review">待验收</SelectItem>
             <SelectItem value="rejected">已驳回</SelectItem>
+            <SelectItem value="acceptance_failed">验收未通过</SelectItem>
           </SelectContent>
         </Select>
       )
@@ -10145,6 +10483,26 @@ function TodoFilterBuilderDialog({
         >
           <Plus size={14} /> 添加条件
         </Button>
+        <div className="todo-filter-persistence-row">
+          <label className="todo-filter-persistence-toggle">
+            <input
+              type="checkbox"
+              checked={draftPersistFilters}
+              onChange={(event) => setDraftPersistFilters(event.target.checked)}
+            />
+            <span>返回项目列表时依然保存当前筛选</span>
+          </label>
+          {draftPersistFilters ? (
+            <Button
+              className="todo-filter-restore-button"
+              type="button"
+              variant="outline"
+              onClick={restoreDefaultFilters}
+            >
+              <ClockCounterClockwise size={14} /> 恢复默认筛选
+            </Button>
+          ) : null}
+        </div>
         <DialogFooter>
           <Button
             className="ghost-button"
@@ -10186,7 +10544,7 @@ function TodoNotesPanel({
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
   const [editingDrafts, setEditingDrafts] = useState<Record<number, string>>({})
   const notes = useMemo(
-    () => [...todo.notes].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+    () => [...todo.notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [todo.notes],
   )
 
@@ -10215,9 +10573,28 @@ function TodoNotesPanel({
       <div className="todo-notes-panel-header">
         <div>
           <strong>待办备注</strong>
-          <small>记录确认结果、进展说明和需要同步的补充信息。</small>
         </div>
         <span className="todo-notes-panel-count">{notes.length} 条</span>
+      </div>
+      <div className="todo-note-composer-pane">
+        <div className="todo-note-create">
+          <TodoNoteComposer
+            action={(
+              <Button
+                className="todo-note-submit"
+                type="button"
+                disabled={!draft.trim()}
+                onClick={saveNewNote}
+              >
+                添加备注
+              </Button>
+            )}
+            members={members}
+            placeholder="记录确认结果、未完成原因或其他补充说明..."
+            value={draft}
+            onChange={setDraft}
+          />
+        </div>
       </div>
       <div className="todo-notes-list">
         {notes.length === 0 ? (
@@ -10235,6 +10612,9 @@ function TodoNotesPanel({
                     <div className="todo-note-card-heading">
                       <strong>{note.authorName}</strong>
                       <span>{note.createdAt}</span>
+                      {note.kind === 'acceptance' ? (
+                        <span className="todo-note-kind acceptance">验收备注</span>
+                      ) : null}
                     </div>
                   </div>
                   {canEdit ? (
@@ -10284,30 +10664,223 @@ function TodoNotesPanel({
           })
         )}
       </div>
-      <Label className="todo-note-create">
-        新增备注
-        <TodoNoteComposer
-          members={members}
-          placeholder="记录确认结果、未完成原因或其他补充说明..."
-          value={draft}
-          onChange={setDraft}
-        />
-      </Label>
-      <div className="todo-note-panel-actions">
-        <Button type="button" disabled={!draft.trim()} onClick={saveNewNote}>
-          添加备注
-        </Button>
-      </div>
     </section>
+  )
+}
+
+function TodoPropertiesPanel({
+  assigneeUserId,
+  canEdit,
+  canRespondToTodo,
+  createdAt,
+  dueDate,
+  members,
+  moduleId,
+  modules,
+  onAssigneeUserIdChange,
+  onCreatedAtChange,
+  onDueDateChange,
+  onInlineUpdate,
+  onModuleIdChange,
+  onPriorityChange,
+  onReject,
+  onRequestAcceptance,
+  onReviewerUserIdChange,
+  onWatcherUserIdsChange,
+  priority,
+  project,
+  reviewerUserId,
+  todo,
+  watcherUserIds,
+}: {
+  assigneeUserId: number | null
+  canEdit: boolean
+  canRespondToTodo: boolean
+  createdAt: string
+  dueDate: string
+  members: Array<{ id: number; name: string }>
+  moduleId: number | null
+  modules: ProjectModule[]
+  onAssigneeUserIdChange: (value: number | null) => void
+  onCreatedAtChange: (value: string) => void
+  onDueDateChange: (value: string) => void
+  onInlineUpdate: (payload: TodoUpdatePayload) => void
+  onModuleIdChange: (value: number | null) => void
+  onPriorityChange: (value: Priority) => void
+  onReject: (reason: string) => void
+  onRequestAcceptance: () => void
+  onReviewerUserIdChange: (value: number | null) => void
+  onWatcherUserIdsChange: (value: number[]) => void
+  priority: Priority
+  project: Project
+  reviewerUserId: number | null
+  todo: Todo
+  watcherUserIds: number[]
+}) {
+  const creatorName = todo.creatorName ?? project.ownerName
+
+  function updateDueDate(value: string) {
+    onDueDateChange(value)
+    onInlineUpdate({ dueDate: value })
+  }
+
+  function updateCreatedAt(value: string) {
+    onCreatedAtChange(value)
+    onInlineUpdate({ createdAt: value })
+  }
+
+  function updatePriority(value: Priority) {
+    onPriorityChange(value)
+    onInlineUpdate({ priority: value })
+  }
+
+  function updateModule(value: number | null) {
+    onModuleIdChange(value)
+    onInlineUpdate({ moduleId: value })
+  }
+
+  function updateAssignee(value: number | null) {
+    onAssigneeUserIdChange(value)
+    onInlineUpdate({ assigneeUserId: value })
+  }
+
+  function updateWatchers(value: number[]) {
+    onWatcherUserIdsChange(value)
+    onInlineUpdate({ watcherUserIds: value })
+  }
+
+  function updateReviewer(value: number | null) {
+    onReviewerUserIdChange(value)
+    onInlineUpdate({ reviewerUserId: value })
+  }
+
+  return (
+    <aside className="todo-properties-panel" aria-label="待办属性">
+      <div className="todo-properties-heading">
+        <div>
+          <span className="todo-properties-kicker">属性</span>
+          <strong>待办信息</strong>
+        </div>
+        {canEdit ? <span className="todo-properties-editable">可直接编辑</span> : null}
+      </div>
+      <div className="todo-properties-list">
+        <div className="todo-property-row">
+          <span>项目</span>
+          <strong>{project.name}</strong>
+        </div>
+        <div className="todo-property-row">
+          <span>状态</span>
+          <strong>{todo.done ? '已完成' : '未完成'}</strong>
+        </div>
+        <div className="todo-property-row">
+          <span>截止日期</span>
+          <JournalDatePicker
+            ariaLabel="待办截止日期"
+            className="todo-property-control"
+            datesWithEntries={[]}
+            disabled={!canEdit}
+            value={dueDate}
+            onChange={updateDueDate}
+          />
+        </div>
+        <div className="todo-property-row">
+          <span>优先级</span>
+          <Select disabled={!canEdit} value={priority} onValueChange={(value) => updatePriority(value as Priority)}>
+            <SelectTrigger aria-label="待办优先级" className="todo-property-control">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="high">高优先级</SelectItem>
+              <SelectItem value="medium">中优先级</SelectItem>
+              <SelectItem value="low">低优先级</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="todo-property-row">
+          <span>所属模块</span>
+          <ProjectModulePicker
+            disabled={!canEdit}
+            modules={modules}
+            value={moduleId}
+            onChange={updateModule}
+          />
+        </div>
+        <div className="todo-property-row">
+          <span>负责人</span>
+          <ProjectMemberPicker
+            disabled={!canEdit}
+            members={members}
+            value={assigneeUserId}
+            onChange={updateAssignee}
+          />
+        </div>
+        <div className="todo-property-row">
+          <span>关注人</span>
+          <ProjectMemberMultiPicker
+            disabled={!canEdit}
+            emptyLabel="未关注"
+            label="待办关注人"
+            members={members}
+            values={watcherUserIds}
+            onChange={updateWatchers}
+          />
+        </div>
+        <div className="todo-property-row">
+          <span>验收人</span>
+          <ProjectMemberPicker
+            disabled={!canEdit}
+            emptyLabel="待办创建人"
+            label="指定验收人"
+            members={members}
+            value={reviewerUserId}
+            onChange={updateReviewer}
+          />
+        </div>
+        <div className="todo-property-row">
+          <span>创建人</span>
+          <strong>{creatorName}</strong>
+        </div>
+        <div className="todo-property-row">
+          <span>创建时间</span>
+          {canEdit ? (
+            <JournalDatePicker
+              ariaLabel="待办创建日期"
+              className="todo-property-control"
+              datesWithEntries={[]}
+              value={createdAt}
+              onChange={updateCreatedAt}
+            />
+          ) : <strong>{createdAt}</strong>}
+        </div>
+        <div className="todo-property-row">
+          <span>验收状态</span>
+          <TodoConfirmSelect
+            done={todo.done}
+            status={todo.confirmationStatus}
+            disabled={!canRespondToTodo}
+            onChange={(confirmationStatus) => onInlineUpdate({ confirmationStatus })}
+            onReject={onReject}
+            onRequestAcceptance={onRequestAcceptance}
+          />
+        </div>
+        {todo.done && todo.completedAt ? (
+          <div className="todo-property-row">
+            <span>完成信息</span>
+            <strong>{todo.completedByName ?? '项目成员'} · {todo.completedAt.slice(0, 16)}</strong>
+          </div>
+        ) : null}
+      </div>
+    </aside>
   )
 }
 
 function TodoEditorDialog({
   assigneeUserId,
-  watcherUserId,
+  watcherUserIds,
   reviewerUserId,
   backLabel = '返回待办列表',
   canEdit = false,
+  canRespondToTodo = false,
   canCreateModule = false,
   clearDisabled = false,
   createdAt,
@@ -10318,7 +10891,7 @@ function TodoEditorDialog({
   moduleId,
   modules,
   onAssigneeUserIdChange,
-  onWatcherUserIdChange,
+  onWatcherUserIdsChange,
   onReviewerUserIdChange,
   onBack,
   onCancelEdit,
@@ -10331,10 +10904,13 @@ function TodoEditorDialog({
   onModuleIdChange,
   onOpenChange,
   onPriorityChange,
+  onReject,
+  onRequestAcceptance,
   onStartEdit,
   onSubmit,
   onTitleChange,
   onUpdateTodoNote,
+  onInlineUpdate,
   open,
   priority,
   project,
@@ -10345,10 +10921,11 @@ function TodoEditorDialog({
   dueDate,
 }: {
   assigneeUserId: number | null
-  watcherUserId: number | null
+  watcherUserIds: number[]
   reviewerUserId: number | null
   backLabel?: string
   canEdit?: boolean
+  canRespondToTodo?: boolean
   canCreateModule?: boolean
   clearDisabled?: boolean
   createdAt: string
@@ -10359,7 +10936,7 @@ function TodoEditorDialog({
   moduleId: number | null
   modules: ProjectModule[]
   onAssigneeUserIdChange: (value: number | null) => void
-  onWatcherUserIdChange: (value: number | null) => void
+  onWatcherUserIdsChange: (value: number[]) => void
   onReviewerUserIdChange: (value: number | null) => void
   onBack?: () => void
   onCancelEdit?: () => void
@@ -10372,10 +10949,13 @@ function TodoEditorDialog({
   onModuleIdChange: (value: number | null) => void
   onOpenChange: (open: boolean) => void
   onPriorityChange: (value: Priority) => void
+  onReject?: (reason: string) => void
+  onRequestAcceptance?: () => void
   onStartEdit?: () => void
   onSubmit: () => void
   onTitleChange: (value: string) => void
   onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
+  onInlineUpdate?: (payload: TodoUpdatePayload) => void
   open: boolean
   priority: Priority
   project: Project
@@ -10388,20 +10968,15 @@ function TodoEditorDialog({
   const isCreateMode = mode === 'create'
   const isDetailMode = mode === 'detail'
   const editing = isCreateMode || isEditing
+  const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
-  const selectedAssigneeName = members.find((item) => item.id === assigneeUserId)?.name ?? '未指派'
-  const selectedWatcherName = members.find((item) => item.id === watcherUserId)?.name ?? '未关注'
-  const creatorName = todo?.creatorName ?? project.ownerName
-  const selectedReviewerName = members.find((item) => item.id === reviewerUserId)?.name ?? creatorName
   const showNotesSidebar = Boolean(
-    isDetailMode && !editing && todo && onCreateTodoNote && onUpdateTodoNote,
+    isDetailMode && todo && onCreateTodoNote && onUpdateTodoNote,
   )
   const statusLabel = todo?.done ? '已完成' : '未完成'
-  const confirmLabel = todo ? todoConfirmationCopy[todo.confirmationStatus] : '已确认'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
   const titleCharacterCount = Array.from(title).length
-
   if (!open) {
     return null
   }
@@ -10426,6 +11001,7 @@ function TodoEditorDialog({
         <section className="todo-detail-overview">
           <div className="todo-detail-overview-main">
             <div className="todo-detail-page-summary">
+              {todo ? <code className="todo-code todo-detail-code">{todoCode(todo.id)}</code> : null}
               <div className="todo-detail-page-title-row">
                 <h3 className="todo-detail-page-title">{title}</h3>
                 <div className="todo-detail-page-badges">
@@ -10440,47 +11016,12 @@ function TodoEditorDialog({
                   </span>
                 </div>
               </div>
-              <div className="todo-detail-page-summary-row">
-                <div className="todo-detail-page-info">
-                  <span>{project.name}</span>
-                  <span>截止 {dueDate}</span>
-                  <span>{selectedAssigneeName === '未指派' ? selectedAssigneeName : `@${selectedAssigneeName}`}</span>
-                  <span>{selectedWatcherName === '未关注' ? selectedWatcherName : `关注 @${selectedWatcherName}`}</span>
-                  <span>验收 @{selectedReviewerName}</span>
-                  <span>{creatorName} 创建</span>
-                  <span>{confirmLabel}</span>
-                </div>
-                {todo?.done && todo.completedAt ? (
-                  <p className="todo-completion-meta">
-                    由 {todo.completedByName ?? '项目成员'} 于 {todo.completedAt.slice(0, 16)} 完成
-                  </p>
-                ) : null}
-              </div>
             </div>
-          </div>
-          <div className="todo-detail-overview-actions">
-            <span
-              className="todo-detail-edit-button-wrap"
-            >
-              <Button
-                className="solid-button todo-detail-edit-button"
-                type="button"
-                disabled={!canEdit}
-                onClick={onStartEdit}
-              >
-                编辑待办
-              </Button>
-              {!canEdit ? (
-                <span className="todo-detail-edit-tooltip" role="tooltip">
-                  非待办创建者不支持编辑待办
-                </span>
-              ) : null}
-            </span>
           </div>
         </section>
       ) : null}
       <div className="todo-editor-main">
-        {editing ? (
+        {isCreateMode ? (
           <>
             <Label>
               待办标题
@@ -10563,12 +11104,12 @@ function TodoEditorDialog({
               </Label>
               <Label className="todo-inline-field-half">
                 关注人
-                <ProjectMemberPicker
+                <ProjectMemberMultiPicker
                   emptyLabel="未关注"
                   label="待办关注人"
                   members={members}
-                  value={watcherUserId}
-                  onChange={onWatcherUserIdChange}
+                  values={watcherUserIds}
+                  onChange={onWatcherUserIdsChange}
                 />
               </Label>
               <Label className="todo-inline-field-half">
@@ -10597,17 +11138,72 @@ function TodoEditorDialog({
             </div>
             <div className="todo-editor-detail-field">
               <span className="todo-editor-field-label">待办详情</span>
-              <TodoDetailEditor value={detail} onChange={onDetailChange} />
-              <small className="todo-detail-hint">
-                支持直接粘贴图片，图片会显示在输入区上方。
-              </small>
+              <TodoDetailEditor
+                value={detail}
+                onChange={onDetailChange}
+              />
             </div>
+          </>
+        ) : isDetailEditing ? (
+          <>
+            <section className="todo-detail-block todo-detail-block-editing">
+              <div className="todo-detail-section-header todo-detail-editing-header">
+                {todo ? <code className="todo-code todo-detail-code">{todoCode(todo.id)}</code> : null}
+                <Label className="todo-detail-title-editor">
+                  待办标题
+                  <div className="todo-title-input-wrap">
+                    <MentionInput
+                      autoFocus
+                      members={members}
+                      maxLength={todoTitleMaxLength}
+                      placeholder="给这条待办起一个清晰的标题..."
+                      value={title}
+                      onChange={onTitleChange}
+                    />
+                    <span
+                      aria-live="polite"
+                      className={titleCharacterCount > todoTitleMaxLength
+                        ? 'todo-title-counter over-limit'
+                        : 'todo-title-counter'}
+                    >
+                      {titleCharacterCount}/{todoTitleMaxLength}
+                    </span>
+                  </div>
+                </Label>
+              </div>
+              <div className="todo-editor-detail-field">
+                <span className="todo-editor-field-label">待办详情</span>
+                <TodoDetailEditor
+                  value={detail}
+                  onChange={onDetailChange}
+                />
+              </div>
+            </section>
+            {showNotesSidebar && todo && onCreateTodoNote && onUpdateTodoNote ? (
+              <TodoNotesPanel
+                currentUserId={currentUserId}
+                members={members}
+                onCreateNote={onCreateTodoNote}
+                onUpdateNote={onUpdateTodoNote}
+                todo={todo}
+              />
+            ) : null}
           </>
         ) : (
           <>
             <section className="todo-detail-block">
               <div className="todo-detail-section-header">
                 <span className="todo-detail-section-label">待办详情</span>
+                {canEdit ? (
+                  <Button
+                    className="ghost-button todo-detail-inline-edit"
+                    type="button"
+                    variant="outline"
+                    onClick={onStartEdit}
+                  >
+                    编辑
+                  </Button>
+                ) : null}
               </div>
               {detail.trim() ? (
                 <div className="todo-detail-rendered">
@@ -10617,19 +11213,46 @@ function TodoEditorDialog({
                 <div className="todo-detail-empty">暂无详情</div>
               )}
             </section>
+            {showNotesSidebar && todo && onCreateTodoNote && onUpdateTodoNote ? (
+              <TodoNotesPanel
+                currentUserId={currentUserId}
+                members={members}
+                onCreateNote={onCreateTodoNote}
+                onUpdateNote={onUpdateTodoNote}
+                todo={todo}
+              />
+            ) : null}
           </>
         )}
       </div>
-      {showNotesSidebar && todo && onCreateTodoNote && onUpdateTodoNote ? (
-        <aside className="todo-editor-sidebar">
-          <TodoNotesPanel
-            currentUserId={currentUserId}
+      {isDetailMode && todo ? (
+        <div className="todo-editor-sidebar">
+          <TodoPropertiesPanel
+            assigneeUserId={assigneeUserId}
+            canEdit={canEdit}
+            canRespondToTodo={canRespondToTodo}
+            createdAt={createdAt}
+            dueDate={dueDate}
             members={members}
-            onCreateNote={onCreateTodoNote}
-            onUpdateNote={onUpdateTodoNote}
+            moduleId={moduleId}
+            modules={modules}
+            onAssigneeUserIdChange={onAssigneeUserIdChange}
+            onCreatedAtChange={onCreatedAtChange}
+            onDueDateChange={onDueDateChange}
+            onInlineUpdate={onInlineUpdate ?? (() => undefined)}
+            onModuleIdChange={onModuleIdChange}
+            onPriorityChange={onPriorityChange}
+            onReject={onReject ?? (() => undefined)}
+            onRequestAcceptance={onRequestAcceptance ?? (() => undefined)}
+            onReviewerUserIdChange={onReviewerUserIdChange}
+            onWatcherUserIdsChange={onWatcherUserIdsChange}
+            priority={priority}
+            project={project}
+            reviewerUserId={reviewerUserId}
             todo={todo}
+            watcherUserIds={watcherUserIds}
           />
-        </aside>
+        </div>
       ) : null}
       {showFooterActions || Boolean(isCreateMode && onClear) ? (
         <DialogFooter className="todo-editor-footer">
@@ -10725,7 +11348,7 @@ function TodoList({
   onDeleteTodo?: (id: number) => void
   onDetailModeChange?: (active: boolean) => void
   onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
-  onUpdateTodo?: (id: number, payload: TodoUpdatePayload) => void
+  onUpdateTodo?: (id: number, payload: TodoUpdatePayload) => Promise<boolean> | void
   memberships: ProjectMembership[]
   project: Project
   projects: Project[]
@@ -10735,6 +11358,10 @@ function TodoList({
     () => getDefaultProjectTodoFilterState(project, currentUserId),
     [currentUserId, project],
   )
+  const storedTodoFilterPreference = useMemo(
+    () => loadTodoFilterPreference(project.id, currentUserId),
+    [currentUserId, project.id],
+  )
   const initialTodo = initialTodoId == null
     ? null
     : todos.find((todo) => todo.id === initialTodoId) ?? null
@@ -10742,9 +11369,15 @@ function TodoList({
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
 	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
 	  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
-	  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(defaultTodoFilterState.join)
+	  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
+	  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(
+    storedTodoFilterPreference?.join ?? defaultTodoFilterState.join,
+  )
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>(() =>
-    defaultTodoFilterState.conditions,
+    storedTodoFilterPreference?.conditions ?? defaultTodoFilterState.conditions,
+  )
+  const [todoFilterPersistenceEnabled, setTodoFilterPersistenceEnabled] = useState(
+    Boolean(storedTodoFilterPreference),
   )
   const [editingTodoId, setEditingTodoId] = useState<number | null>(initialTodo?.id ?? null)
   const [todoEditDraft, setTodoEditDraft] = useState(initialTodo?.title ?? '')
@@ -10755,8 +11388,8 @@ function TodoList({
   const [todoEditAssigneeUserId, setTodoEditAssigneeUserId] = useState<number | null>(
     initialTodo?.assigneeUserId ?? null,
   )
-  const [todoEditWatcherUserId, setTodoEditWatcherUserId] = useState<number | null>(
-    initialTodo?.watcherUserId ?? null,
+  const [todoEditWatcherUserIds, setTodoEditWatcherUserIds] = useState<number[]>(
+    getTodoWatcherUserIds(initialTodo),
   )
   const [todoEditReviewerUserId, setTodoEditReviewerUserId] = useState<number | null>(
     initialTodo?.reviewerUserId ?? null,
@@ -10829,9 +11462,10 @@ function TodoList({
     return sortedTodos.filter((todo) => {
       const matchesSearch = !query || [
         todo.title,
+        todoCode(todo.id),
         todo.moduleName ?? '',
         todo.assigneeName ?? '',
-        todo.watcherName ?? '',
+        getTodoWatcherNames(todo).join(' '),
         todo.creatorName ?? '',
         todo.priority,
         priorityCopy[todo.priority],
@@ -10858,6 +11492,24 @@ function TodoList({
   const filterSummary = activeFilterCount > 0
     ? `已筛选 ${activeFilterCount} 条件`
     : '筛选'
+
+  function applyTodoFilterState(next: {
+    conditions: TodoFilterCondition[]
+    join: TodoFilterJoin
+    persist: boolean
+  }) {
+    setTodoFilterConditions(next.conditions)
+    setTodoFilterJoin(next.join)
+    setTodoFilterPersistenceEnabled(next.persist)
+    if (next.persist) {
+      saveTodoFilterPreference(project.id, currentUserId, {
+        conditions: next.conditions,
+        join: next.join,
+      })
+    } else {
+      clearTodoFilterPreference(project.id, currentUserId)
+    }
+  }
   const editingTodo = editingTodoId
     ? sortedTodos.find((todo) => todo.id === editingTodoId) ?? null
     : null
@@ -10867,6 +11519,10 @@ function TodoList({
   const editingProjectMembers = editingProject
     ? getProjectAssignableUsers(editingProject, memberships)
     : []
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects],
+  )
   const editingCanManageTodo = Boolean(
     editingTodo &&
       editingProject &&
@@ -10874,10 +11530,7 @@ function TodoList({
       currentUserId != null &&
       editingTodo.createdByUserId === currentUserId,
   )
-  const projectById = useMemo(
-    () => new Map(projects.map((project) => [project.id, project])),
-    [projects],
-  )
+  const editingCanRespondToTodo = editingTodo ? canRespondToTodo(editingTodo) : false
 
   function canManageTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
@@ -10906,14 +11559,20 @@ function TodoList({
   function canToggleTodoDone(todo: Todo) {
     const project = projectById.get(todo.projectId)
     const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
-    const isReviewer = currentUserId != null && effectiveReviewerUserId === currentUserId
+    const isTodoCreator = currentUserId != null && (
+      todo.createdByUserId === currentUserId ||
+      (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
+    )
+    const isReviewer = currentUserId != null && (
+      isTodoCreator || effectiveReviewerUserId === currentUserId
+    )
     return (
-      isReviewer && (
+      (isTodoCreator || isReviewer && (
         todo.reviewerUserId == null ||
         todo.confirmationStatus === 'pending_review' ||
         todo.done
-      )
-    ) && todo.confirmationStatus !== 'rejected'
+      ))
+    ) && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
   }
 
   function canUseTodoCheckbox(todo: Todo) {
@@ -10937,6 +11596,10 @@ function TodoList({
 
   function handleTodoCheckboxClick(todo: Todo) {
     if (canToggleTodoDone(todo)) {
+      if (!todo.done && todo.confirmationStatus === 'pending_review') {
+        setTodoAcceptanceTarget(todo)
+        return
+      }
       onUpdateTodo?.(todo.id, { done: !todo.done })
       return
     }
@@ -10953,7 +11616,7 @@ function TodoList({
     setTodoEditDueDate(today)
     setTodoEditPriority('medium')
     setTodoEditAssigneeUserId(null)
-    setTodoEditWatcherUserId(null)
+    setTodoEditWatcherUserIds([])
     setTodoEditReviewerUserId(null)
     setTodoEditModuleId(null)
     setIsTodoDetailEditing(false)
@@ -10966,7 +11629,7 @@ function TodoList({
     setTodoEditDueDate(todo.dueDate)
     setTodoEditPriority(todo.priority)
     setTodoEditAssigneeUserId(todo.assigneeUserId ?? null)
-    setTodoEditWatcherUserId(todo.watcherUserId ?? null)
+    setTodoEditWatcherUserIds(getTodoWatcherUserIds(todo))
     setTodoEditReviewerUserId(todo.reviewerUserId ?? null)
     setTodoEditModuleId(todo.moduleId ?? null)
   }
@@ -10984,25 +11647,26 @@ function TodoList({
     setIsTodoDetailEditing(false)
   }
 
-  function saveTodoEdit() {
+  async function saveTodoEdit() {
     if (!editingTodo || !editingProject || !editingCanManageTodo || !onUpdateTodo) return
     const nextTitle = stripTodoMentions(
       todoEditDraft,
       getProjectMentionOptions(editingProject.id, projects, memberships),
     ).trim()
     if (!nextTitle) return
-    onUpdateTodo?.(editingTodo.id, {
+    const updated = await onUpdateTodo(editingTodo.id, {
       detail: todoEditDetail,
       title: nextTitle,
       createdAt: todoEditCreatedAt,
       dueDate: todoEditDueDate,
       priority: todoEditPriority,
       assigneeUserId: todoEditAssigneeUserId,
-      watcherUserId: todoEditWatcherUserId,
+      watcherUserIds: todoEditWatcherUserIds,
       reviewerUserId: todoEditReviewerUserId,
       moduleId: todoEditModuleId,
     })
-    closeEditDialog()
+    if (updated === false) return
+    setIsTodoDetailEditing(false)
   }
 
   if (editingProject && editingTodo) {
@@ -11011,9 +11675,25 @@ function TodoList({
         className={compact ? 'todo-list-shell compact todo-detail-shell' : 'todo-list-shell todo-detail-shell'}
         ref={containerRef}
       >
+        <TodoAcceptanceDialog
+          open={Boolean(todoAcceptanceTarget)}
+          onOpenChange={(open) => {
+            if (!open) setTodoAcceptanceTarget(null)
+          }}
+          onSubmit={async (decision, note) => {
+            if (!todoAcceptanceTarget || !onUpdateTodo) return false
+            const passed = decision === 'passed'
+            const saved = await onUpdateTodo(todoAcceptanceTarget.id, {
+              done: passed,
+              confirmationStatus: passed ? 'confirmed' : 'acceptance_failed',
+              ...(passed ? {} : { acceptanceNote: note }),
+            })
+            return saved !== false
+          }}
+        />
         <TodoEditorDialog
           assigneeUserId={todoEditAssigneeUserId}
-          watcherUserId={todoEditWatcherUserId}
+          watcherUserIds={todoEditWatcherUserIds}
           reviewerUserId={todoEditReviewerUserId}
           backLabel={detailBackLabel}
           createdAt={todoEditCreatedAt}
@@ -11027,13 +11707,14 @@ function TodoList({
           priority={todoEditPriority}
           project={editingProject}
           canEdit={editingCanManageTodo}
+          canRespondToTodo={editingCanRespondToTodo}
           currentUserId={currentUserId}
           isEditing={isTodoDetailEditing}
           submitDisabled={!todoEditDraft.trim()}
           title={todoEditDraft}
           todo={editingTodo}
           onAssigneeUserIdChange={setTodoEditAssigneeUserId}
-          onWatcherUserIdChange={setTodoEditWatcherUserId}
+          onWatcherUserIdsChange={setTodoEditWatcherUserIds}
           onReviewerUserIdChange={setTodoEditReviewerUserId}
           onBack={onDetailBack}
           onCancelEdit={cancelTodoEdit}
@@ -11046,9 +11727,22 @@ function TodoList({
             if (!open) closeEditDialog()
           }}
           onPriorityChange={setTodoEditPriority}
+          onReject={(rejectionReason) => {
+            void onUpdateTodo?.(editingTodo.id, {
+              confirmationStatus: 'rejected',
+              rejectionReason,
+            })
+          }}
+          onRequestAcceptance={() => {
+            if (canToggleTodoDone(editingTodo)) setTodoAcceptanceTarget(editingTodo)
+          }}
           onStartEdit={() => setIsTodoDetailEditing(true)}
           onSubmit={saveTodoEdit}
           onTitleChange={setTodoEditDraft}
+          onInlineUpdate={(payload) => {
+            if ((!editingCanManageTodo && !editingCanRespondToTodo) || !onUpdateTodo) return
+            onUpdateTodo(editingTodo.id, payload)
+          }}
           onUpdateTodoNote={onUpdateTodoNote}
         />
       </div>
@@ -11062,7 +11756,7 @@ function TodoList({
           <MagnifyingGlass size={14} />
           <Input
             aria-label="搜索待办"
-            placeholder="搜索待办..."
+            placeholder="搜索编号、标题或待办信息..."
             value={todoSearchQuery}
             onChange={(event) => setTodoSearchQuery(event.target.value)}
           />
@@ -11082,8 +11776,11 @@ function TodoList({
             type="button"
             variant="ghost"
             onClick={() => {
-              setTodoFilterConditions([])
-              setTodoFilterJoin('and')
+              applyTodoFilterState({
+                conditions: [],
+                join: 'and',
+                persist: todoFilterPersistenceEnabled,
+              })
             }}
           >
             清除
@@ -11093,15 +11790,15 @@ function TodoList({
           assigneeOptions={assigneeFilterOptions.assignees}
           conditions={todoFilterConditions}
           creatorOptions={creatorFilterOptions}
+          defaultConditions={defaultTodoFilterState.conditions}
+          defaultJoin={defaultTodoFilterState.join}
           join={todoFilterJoin}
           moduleOptions={moduleFilterOptions.modules}
           watcherOptions={watcherFilterOptions}
           open={todoFilterDialogOpen}
           onOpenChange={setTodoFilterDialogOpen}
-          onApply={({ conditions: nextConditions, join: nextJoin }) => {
-            setTodoFilterConditions(nextConditions)
-            setTodoFilterJoin(nextJoin)
-          }}
+          persistFilters={todoFilterPersistenceEnabled}
+          onApply={applyTodoFilterState}
         />
       </div>
       <Dialog
@@ -11139,6 +11836,22 @@ function TodoList({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <TodoAcceptanceDialog
+        open={Boolean(todoAcceptanceTarget)}
+        onOpenChange={(open) => {
+          if (!open) setTodoAcceptanceTarget(null)
+        }}
+        onSubmit={async (decision, note) => {
+          if (!todoAcceptanceTarget || !onUpdateTodo) return false
+          const passed = decision === 'passed'
+          const saved = await onUpdateTodo(todoAcceptanceTarget.id, {
+            done: passed,
+            confirmationStatus: passed ? 'confirmed' : 'acceptance_failed',
+            ...(passed ? {} : { acceptanceNote: note }),
+          })
+          return saved !== false
+        }}
+      />
       {sortedTodos.length === 0 ? (
         <p className="empty-state">暂时没有待办。</p>
       ) : filteredTodos.length === 0 ? (
@@ -11183,6 +11896,7 @@ function TodoList({
                 </button>
                 <button className="todo-main" type="button" onClick={() => openTodoEditDialog(todo)}>
                   <span className="todo-title-row">
+                    <code className="todo-code">{todoCode(todo.id)}</code>
                     <strong>{todo.title}</strong>
                   </span>
                   <small>
@@ -11195,8 +11909,10 @@ function TodoList({
                     {todo.assigneeName && (
                       <span className="todo-assignee-inline">@{todo.assigneeName}</span>
                     )}
-                    {todo.watcherName && (
-                      <span className="todo-watcher-inline">关注 @{todo.watcherName}</span>
+                    {getTodoWatcherNames(todo).length > 0 && (
+                      <span className="todo-watcher-inline">
+                        {formatTodoWatcherNames(todo)}
+                      </span>
                     )}
                   </small>
                 </button>
@@ -11259,6 +11975,9 @@ function TodoList({
                         rejectionReason,
                       })
                     }
+                    onRequestAcceptance={() => {
+                      if (canToggleTodoDone(todo)) setTodoAcceptanceTarget(todo)
+                    }}
                   />
                   {rowCanManageTodo ? (
                     <span className="todo-delete-slot">
@@ -11354,10 +12073,12 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
+  if (view === 'my_work') return '我的待办'
   if (view === 'notifications') return '通知中心'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'
   if (view === 'organization') return '组织管理'
+  if (view === 'weekly_report') return '周报管理'
   if (view === 'package_market') return '安装包市场'
   if (view === 'image_sync') return '镜像同步'
   if (view === 'testing') return '测试工作台'

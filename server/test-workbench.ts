@@ -11,11 +11,15 @@ import {
 import { requireActiveRole } from './roles.ts'
 import { parseTestCaseCsv } from './test-case-import.ts'
 import {
+  canDeleteTestCase,
   canDeleteTestSubject,
+  canEditTestBug,
+  canEditTestSubject,
   canDeveloperSetBugStatus,
   canManageTestPlan,
   canRemoveTestPlanCase,
   isBugStatus,
+  isBugSeverity,
   isTestCaseStatus,
   isTestPlanStatus,
   isTestResult,
@@ -29,21 +33,72 @@ type TestSpaceAccess = 'owner' | 'editor' | 'viewer'
 type TestSpaceMembershipStatus = 'pending' | 'active' | 'declined'
 type TestSpaceAccessRow = { access_level: TestSpaceAccess }
 type TestCaseKind = 'functional' | 'baseline'
+type TestWorkbenchNotificationKind =
+  | 'test_plan_assigned'
+  | 'test_bug_status_changed'
+  | 'test_bug_comment_added'
 
 const router = Router()
 
 export type TestBugAssignedEvent = {
   actorUserId: number
   assigneeUserId: number
+  assignmentKind: 'assigned' | 'created' | 'transferred'
   bugId: number
+  transferReason?: string
+}
+
+export type TestPlanAssignedEvent = {
+  actorUserId: number
+  ownerUserId: number
+  planId: number
+}
+
+export type TestBugStatusChangedEvent = {
+  actorUserId: number
+  bugId: number
+  nextStatus: BugStatus
+  previousStatus: BugStatus
+}
+
+export type TestBugCommentAddedEvent = {
+  actorUserId: number
+  bugId: number
+  commentId: number
+  mentionedUserIds?: number[]
+}
+
+export type TestCaseChangedEvent = {
+  actorUserId: number
+  caseId: number
+}
+
+export type TestExecutionResultChangedEvent = {
+  actorUserId: number
+  planCaseId: number
 }
 
 let onTestBugAssigned: (event: TestBugAssignedEvent) => void = () => {}
+let onTestPlanAssigned: (event: TestPlanAssignedEvent) => void = () => {}
+let onTestBugStatusChanged: (event: TestBugStatusChangedEvent) => void = () => {}
+let onTestBugCommentAdded: (event: TestBugCommentAddedEvent) => void = () => {}
+let onTestCaseChanged: (event: TestCaseChangedEvent) => void = () => {}
+let onTestExecutionResultChanged: (event: TestExecutionResultChangedEvent) => void = () => {}
 
 export function configureTestWorkbenchNotifications(handlers: {
   onTestBugAssigned: (event: TestBugAssignedEvent) => void
+  onTestPlanAssigned: (event: TestPlanAssignedEvent) => void
+  onTestBugStatusChanged: (event: TestBugStatusChangedEvent) => void
+  onTestBugCommentAdded: (event: TestBugCommentAddedEvent) => void
+  onTestCaseChanged: (event: TestCaseChangedEvent) => void
+  onTestExecutionResultChanged: (event: TestExecutionResultChangedEvent) => void
 }) {
   onTestBugAssigned = handlers.onTestBugAssigned
+  onTestPlanAssigned = handlers.onTestPlanAssigned
+  onTestBugStatusChanged = handlers.onTestBugStatusChanged
+  onTestBugCommentAdded = handlers.onTestBugCommentAdded
+  onTestCaseChanged = handlers.onTestCaseChanged
+  onTestExecutionResultChanged = handlers.onTestExecutionResultChanged
 }
 
 function text(value: unknown, maxLength: number) {
@@ -53,6 +108,26 @@ function text(value: unknown, maxLength: number) {
 function positiveId(value: unknown) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+async function resolveOrganizationMentionUserIds(organizationId: number | null, content: string) {
+  if (!organizationId) return []
+  const names = Array.from(content.matchAll(/@([^\s@]+)/gu))
+    .map((match) => match[1]?.trim())
+    .filter((name): name is string => Boolean(name))
+  if (names.length === 0) return []
+  const result = await query<{ id: string }>(
+    `
+    select distinct u.id
+    from organization_memberships membership
+    join users u on u.id = membership.user_id
+    where membership.organization_id = $1
+      and membership.status = 'active'
+      and lower(coalesce(nullif(u.display_name, ''), u.email)) = any($2::text[])
+    `,
+    [organizationId, names.map((name) => name.toLocaleLowerCase())],
+  )
+  return result.rows.map((row) => Number(row.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
 }
 
 function inviteExpiresInMinutes(value: unknown) {
@@ -439,7 +514,19 @@ async function getOrCreateCaseFolder(
 }
 
 async function getTestWorkbench(userId: number) {
-  const [spaces, subjects, folders, cases, plans, planSubjects, planCases, bugs, comments, users] = await Promise.all([
+  const [
+    spaces,
+    subjects,
+    folders,
+    cases,
+    plans,
+    planSubjects,
+    planCases,
+    bugs,
+    comments,
+    users,
+    notifications,
+  ] = await Promise.all([
     query<{
       access_level: TestSpaceAccess
       created_at: Date
@@ -495,6 +582,7 @@ async function getTestWorkbench(userId: number) {
       case_type: string
       case_kind: TestCaseKind
       created_at: Date
+      created_by_user_id: string | null
       custom_tags: string
       expected_result: string
       folder_id: string | null
@@ -626,6 +714,7 @@ async function getTestWorkbench(userId: number) {
       content: string
       created_at: Date
       id: string
+      kind: string
       test_bug_id: string
       updated_at: Date | null
     }>(
@@ -680,6 +769,35 @@ async function getTestWorkbench(userId: number) {
       `,
       [userId],
     ),
+    query<{
+      created_at: Date
+      kind: TestWorkbenchNotificationKind
+      source_id: string
+    }>(
+      `
+      select delivery.kind,
+             delivery.source_id,
+             coalesce(
+               max(delivery.created_at) filter (where delivery.channel = 'in_app'),
+               min(delivery.created_at) filter (where delivery.channel = 'feishu')
+             ) as created_at
+      from notification_deliveries delivery
+      where delivery.user_id = $1
+        and delivery.kind in (
+          'test_plan_assigned',
+          'test_bug_status_changed',
+          'test_bug_comment_added'
+        )
+        and (
+          (delivery.channel = 'in_app' and delivery.status = 'sent')
+          or delivery.channel = 'feishu'
+        )
+      group by delivery.kind, delivery.source_id
+      order by created_at desc, delivery.source_id desc
+      limit 200
+      `,
+      [userId],
+    ),
   ])
 
   const commentsByBug = new Map<number, Array<Record<string, unknown>>>()
@@ -690,10 +808,13 @@ async function getTestWorkbench(userId: number) {
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.author_user_id ? Number(row.author_user_id) === userId : false,
+        canEdit: row.kind !== 'transfer' && row.author_user_id
+          ? Number(row.author_user_id) === userId
+          : false,
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
+        kind: row.kind === 'transfer' ? 'transfer' : 'comment',
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
@@ -708,6 +829,7 @@ async function getTestWorkbench(userId: number) {
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+      canEdit: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
       comments: commentsByBug.get(Number(row.id)) ?? [],
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
@@ -726,6 +848,7 @@ async function getTestWorkbench(userId: number) {
       updatedAt: row.updated_at.toISOString(),
     })),
     cases: cases.rows.map((row) => ({
+      canDelete: canDeleteTestCase(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
       caseType: row.case_type,
       caseKind: row.case_kind,
       createdAt: row.created_at.toISOString(),
@@ -751,6 +874,11 @@ async function getTestWorkbench(userId: number) {
       name: decryptText(row.name),
       testSpaceId: Number(row.test_space_id),
       testSubjectId: Number(row.test_subject_id),
+    })),
+    notifications: notifications.rows.map((row) => ({
+      createdAt: row.created_at.toISOString(),
+      kind: row.kind,
+      sourceId: Number(row.source_id),
     })),
     planCases: planCases.rows.map((row) => ({
       executedAt: row.executed_at?.toISOString(),
@@ -794,6 +922,7 @@ async function getTestWorkbench(userId: number) {
     })),
     subjects: subjects.rows.map((row) => ({
       canDelete: canDeleteTestSubject(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
+      canEdit: canEditTestSubject(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
       createdAt: row.created_at.toISOString(),
       description: decryptText(row.description),
       environment: decryptText(row.environment),
@@ -1177,11 +1306,6 @@ router.post('/test-spaces/:spaceId/invite-link', asyncRoute(async (request, resp
       response.status(404).json({ error: 'Test space not found' })
       return
     }
-    if (space.rows[0].organization_id) {
-      await client.query('rollback')
-      response.status(409).json({ error: 'Organization test spaces do not use public invite links' })
-      return
-    }
     await client.query(
       `update test_space_invite_links set revoked_at = now() where test_space_id = $1 and revoked_at is null`,
       [spaceId],
@@ -1299,9 +1423,12 @@ router.post('/test-space-invite-links/:token/accept', asyncRoute(async (request,
       response.status(404).json({ error: 'Test space not found' })
       return
     }
-    if (space.rows[0].organization_id) {
+    const organizationId = space.rows[0].organization_id
+      ? Number(space.rows[0].organization_id)
+      : null
+    if (organizationId && !(await lockActiveOrganizationMembership(client, organizationId, session.userId))) {
       await client.query('rollback')
-      response.status(409).json({ error: 'Organization test spaces do not use public invite links' })
+      response.status(403).json({ error: 'Organization test space invites require active organization membership' })
       return
     }
     const invite = await client.query<{
@@ -1385,6 +1512,74 @@ router.post('/test-spaces/:spaceId/subjects', asyncRoute(async (request, respons
     ],
   )
   response.status(201).json(await getTestWorkbench(session.userId))
+}))
+
+router.patch('/test-spaces/:spaceId/subjects/:subjectId', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const subjectId = positiveId(request.params.subjectId)
+  if (!subjectId) {
+    response.status(400).json({ error: 'Valid test subject is required' })
+    return
+  }
+  if (!(await requireSpaceAccess(response, spaceId, session.userId))) return
+  const name = text(request.body.name, 100)
+  if (!name) {
+    response.status(400).json({ error: 'Test subject name is required' })
+    return
+  }
+  const subject = await query<{ created_by_user_id: string | null }>(
+    'select created_by_user_id from test_subjects where id = $1 and test_space_id = $2',
+    [subjectId, spaceId],
+  )
+  if (!subject.rows[0]) {
+    response.status(404).json({ error: 'Test subject not found' })
+    return
+  }
+  const createdByUserId = subject.rows[0].created_by_user_id
+    ? Number(subject.rows[0].created_by_user_id)
+    : null
+  if (!canEditTestSubject(createdByUserId, session.userId)) {
+    response.status(403).json({ error: 'Only the test subject creator can edit it' })
+    return
+  }
+  try {
+    const updated = await query(
+      `
+      update test_subjects
+      set name = $1,
+        name_lookup = $2,
+        description = $3,
+        version_label = $4,
+        environment = $5,
+        updated_at = now()
+      where id = $6 and test_space_id = $7 and created_by_user_id = $8
+      returning id
+      `,
+      [
+        encryptText(name),
+        blindIndex(name),
+        encryptText(text(request.body.description, 2000)),
+        encryptText(text(request.body.versionLabel, 80)),
+        encryptText(text(request.body.environment, 160)),
+        subjectId,
+        spaceId,
+        session.userId,
+      ],
+    )
+    if (!updated.rows[0]) {
+      response.status(409).json({ error: 'Test subject ownership changed; refresh and try again' })
+      return
+    }
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as { code?: string }).code === '23505') {
+      response.status(409).json({ error: 'Test subject name already exists in this test space' })
+      return
+    }
+    throw error
+  }
+  response.json(await getTestWorkbench(session.userId))
 }))
 
 router.delete('/test-spaces/:spaceId/subjects/:subjectId', asyncRoute(async (request, response) => {
@@ -1671,6 +1866,7 @@ router.patch('/test-spaces/:spaceId/cases/:caseId', asyncRoute(async (request, r
     case_kind: TestCaseKind
     case_type: string
     custom_tags: string
+    created_by_user_id: string | null
     expected_result: string
     folder_id: string | null
     preconditions: string
@@ -1680,7 +1876,7 @@ router.patch('/test-spaces/:spaceId/cases/:caseId', asyncRoute(async (request, r
     steps: string
     test_subject_id: string
     title: string
-  }>('select title, preconditions, steps, expected_result, remarks, status, folder_id, priority, case_type, case_kind, custom_tags, test_subject_id from test_cases where id = $1 and test_space_id = $2', [caseId, spaceId])
+  }>('select title, preconditions, steps, expected_result, remarks, status, folder_id, priority, case_type, case_kind, custom_tags, test_subject_id, created_by_user_id from test_cases where id = $1 and test_space_id = $2', [caseId, spaceId])
   if (!current.rows[0]) {
     response.status(404).json({ error: 'Test case not found' })
     return
@@ -1756,6 +1952,47 @@ router.patch('/test-spaces/:spaceId/cases/:caseId', asyncRoute(async (request, r
     throw error
   } finally {
     client.release()
+  }
+  if (row.created_by_user_id && Number(row.created_by_user_id) !== session.userId) {
+    onTestCaseChanged({ actorUserId: session.userId, caseId })
+  }
+  response.json(await getTestWorkbench(session.userId))
+}))
+
+router.delete('/test-spaces/:spaceId/cases/:caseId', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const caseId = positiveId(request.params.caseId)
+  if (!caseId) {
+    response.status(400).json({ error: 'Valid test case is required' })
+    return
+  }
+  if (!(await requireSpaceAccess(response, spaceId, session.userId, true))) return
+  const testCase = await query<{ created_by_user_id: string | null }>(
+    'select created_by_user_id from test_cases where id = $1 and test_space_id = $2',
+    [caseId, spaceId],
+  )
+  if (!testCase.rows[0]) {
+    response.status(404).json({ error: 'Test case not found' })
+    return
+  }
+  const createdByUserId = testCase.rows[0].created_by_user_id
+    ? Number(testCase.rows[0].created_by_user_id)
+    : null
+  if (!canDeleteTestCase(createdByUserId, session.userId)) {
+    response.status(403).json({ error: 'Only the test case creator can delete it' })
+    return
+  }
+  const deleted = await query(
+    `delete from test_cases
+     where id = $1 and test_space_id = $2 and created_by_user_id = $3
+     returning id`,
+    [caseId, spaceId, session.userId],
+  )
+  if (!deleted.rows[0]) {
+    response.status(409).json({ error: 'Test case ownership changed; refresh and try again' })
+    return
   }
   response.json(await getTestWorkbench(session.userId))
 }))
@@ -1871,6 +2108,9 @@ router.post('/test-spaces/:spaceId/plans', asyncRoute(async (request, response) 
       )
     }
     await client.query('commit')
+    if (ownerUserId && ownerUserId !== session.userId) {
+      onTestPlanAssigned({ actorUserId: session.userId, ownerUserId, planId })
+    }
   } catch (error) {
     await client.query('rollback')
     throw error
@@ -1911,8 +2151,12 @@ router.patch('/test-spaces/:spaceId/plans/:planId/details', asyncRoute(async (re
     return
   }
   if (!(await requireSpaceAccess(response, spaceId, session.userId))) return
-  const plan = await query<{ created_by_user_id: string | null; test_subject_id: string }>(
-    'select created_by_user_id, test_subject_id from test_plans where id = $1 and test_space_id = $2',
+  const plan = await query<{
+    created_by_user_id: string | null
+    owner_user_id: string | null
+    test_subject_id: string
+  }>(
+    'select created_by_user_id, owner_user_id, test_subject_id from test_plans where id = $1 and test_space_id = $2',
     [planId, spaceId],
   )
   if (!plan.rows[0]) {
@@ -1921,6 +2165,9 @@ router.patch('/test-spaces/:spaceId/plans/:planId/details', asyncRoute(async (re
   }
   const createdByUserId = plan.rows[0].created_by_user_id
     ? Number(plan.rows[0].created_by_user_id)
+    : null
+  const previousOwnerUserId = plan.rows[0].owner_user_id
+    ? Number(plan.rows[0].owner_user_id)
     : null
   if (!canManageTestPlan(createdByUserId, session.userId)) {
     response.status(403).json({ error: 'Only the test plan creator can edit it' })
@@ -2042,6 +2289,9 @@ router.patch('/test-spaces/:spaceId/plans/:planId/details', asyncRoute(async (re
     throw error
   } finally {
     client.release()
+  }
+  if (ownerUserId && ownerUserId !== session.userId && ownerUserId !== previousOwnerUserId) {
+    onTestPlanAssigned({ actorUserId: session.userId, ownerUserId, planId })
   }
   response.json(await getTestWorkbench(session.userId))
 }))
@@ -2177,6 +2427,7 @@ router.patch('/test-spaces/:spaceId/plan-cases/:planCaseId', asyncRoute(async (r
       [Number(updated.rows[0].test_plan_id)],
     )
     await client.query('commit')
+    onTestExecutionResultChanged({ actorUserId: session.userId, planCaseId })
   } catch (error) {
     await client.query('rollback')
     throw error
@@ -2279,6 +2530,7 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
     onTestBugAssigned({
       actorUserId: session.userId,
       assigneeUserId,
+      assignmentKind: 'created',
       bugId: Number(insertedBug.rows[0].id),
     })
   }
@@ -2291,29 +2543,87 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
   const spaceId = positiveId(request.params.spaceId)
   const bugId = positiveId(request.params.bugId)
   if (!(await requireSpaceAccess(response, spaceId, session.userId, true)) || !bugId) return
-  const current = await query<{ assignee_user_id: string | null; status: BugStatus }>(
-    'select status, assignee_user_id from test_bugs where id = $1 and test_space_id = $2',
+  const current = await query<{
+    actual_result: string
+    assignee_user_id: string | null
+    environment: string
+    expected_result: string
+    priority: string
+    reporter_user_id: string | null
+    reproduction_steps: string
+    severity: string
+    status: BugStatus
+    title: string
+  }>(
+    `select status, assignee_user_id, reporter_user_id, title, severity, priority,
+            environment, reproduction_steps, expected_result, actual_result
+       from test_bugs where id = $1 and test_space_id = $2`,
     [bugId, spaceId],
   )
   if (!current.rows[0]) {
     response.status(404).json({ error: 'Bug not found' })
     return
   }
+  const currentBug = current.rows[0]
+  const hasDetailEdit = [
+    'title',
+    'severity',
+    'priority',
+    'environment',
+    'reproductionSteps',
+    'expectedResult',
+    'actualResult',
+  ].some((field) => request.body[field] !== undefined)
+  const reporterUserId = currentBug.reporter_user_id ? Number(currentBug.reporter_user_id) : null
+  if (hasDetailEdit && !canEditTestBug(reporterUserId, session.userId)) {
+    response.status(403).json({ error: 'Only the Bug creator can edit its details' })
+    return
+  }
+  const title = request.body.title === undefined ? currentBug.title : text(request.body.title, 160)
+  if (request.body.title !== undefined && !title) {
+    response.status(400).json({ error: 'Bug title is required' })
+    return
+  }
+  const severity = request.body.severity === undefined
+    ? currentBug.severity
+    : (isBugSeverity(request.body.severity) ? request.body.severity : null)
+  const priority = request.body.priority === undefined
+    ? currentBug.priority
+    : (['high', 'medium', 'low'].includes(request.body.priority) ? request.body.priority : null)
+  if (!severity || !priority) {
+    response.status(400).json({ error: 'Bug severity or priority is invalid' })
+    return
+  }
   const status = isBugStatus(request.body.status) ? request.body.status : current.rows[0].status
   const assigneeUserId = request.body.assigneeUserId === undefined
-    ? current.rows[0].assignee_user_id
+    ? currentBug.assignee_user_id
     : positiveId(request.body.assigneeUserId)
   const normalizedAssigneeUserId = assigneeUserId ? Number(assigneeUserId) : null
-  const previousAssigneeUserId = current.rows[0].assignee_user_id
-    ? Number(current.rows[0].assignee_user_id)
+  const previousAssigneeUserId = currentBug.assignee_user_id
+    ? Number(currentBug.assignee_user_id)
     : null
   if (!(await userCanBeAssignedInSpace(normalizedAssigneeUserId, spaceId!, 'developer'))) {
     response.status(400).json({ error: 'Bug assignee must be a developer in this test space' })
     return
   }
   await query(
-    `update test_bugs set status = $1, assignee_user_id = $2, updated_at = now() where id = $3 and test_space_id = $4`,
-    [status, normalizedAssigneeUserId, bugId, spaceId],
+    `update test_bugs set title = $1, severity = $2, priority = $3, environment = $4,
+            reproduction_steps = $5, expected_result = $6, actual_result = $7,
+            status = $8, assignee_user_id = $9, updated_at = now()
+       where id = $10 and test_space_id = $11`,
+    [
+      request.body.title === undefined ? currentBug.title : encryptText(title),
+      severity,
+      priority,
+      request.body.environment === undefined ? currentBug.environment : encryptText(text(request.body.environment, 500)),
+      request.body.reproductionSteps === undefined ? currentBug.reproduction_steps : encryptText(text(request.body.reproductionSteps, 10000)),
+      request.body.expectedResult === undefined ? currentBug.expected_result : encryptText(text(request.body.expectedResult, 10000)),
+      request.body.actualResult === undefined ? currentBug.actual_result : encryptText(text(request.body.actualResult, 10000)),
+      status,
+      normalizedAssigneeUserId,
+      bugId,
+      spaceId,
+    ],
   )
   if (
     normalizedAssigneeUserId &&
@@ -2322,7 +2632,19 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
     onTestBugAssigned({
       actorUserId: session.userId,
       assigneeUserId: normalizedAssigneeUserId,
+      assignmentKind: 'assigned',
       bugId,
+    })
+  }
+  if (
+    status !== currentBug.status &&
+    (status === 'pending_verification' || status === 'reopened')
+  ) {
+    onTestBugStatusChanged({
+      actorUserId: session.userId,
+      bugId,
+      nextStatus: status,
+      previousStatus: currentBug.status,
     })
   }
   response.json(await getTestWorkbench(session.userId))
@@ -2344,10 +2666,17 @@ router.post('/test-spaces/:spaceId/bugs/:bugId/comments', asyncRoute(async (requ
     response.status(404).json({ error: 'Bug not found' })
     return
   }
-  await query(
-    'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3)',
+  const insertedComment = await query<{ id: string }>(
+    'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3) returning id',
     [bugId, session.userId, encryptText(content)],
   )
+  if (insertedComment.rows[0]) {
+    onTestBugCommentAdded({
+      actorUserId: session.userId,
+      bugId,
+      commentId: Number(insertedComment.rows[0].id),
+    })
+  }
   response.status(201).json(await getTestWorkbench(session.userId))
 }))
 
@@ -2374,6 +2703,7 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRoute
        and b.id = $3
        and b.test_space_id = $4
        and c.author_user_id = $5
+       and c.kind = 'comment'
      returning c.id
     `,
     [encryptText(content), commentId, bugId, spaceId, session.userId],
@@ -2401,6 +2731,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
        and b.id = $2
        and b.test_space_id = $3
        and c.author_user_id = $4
+       and c.kind = 'comment'
      returning c.id
     `,
     [commentId, bugId, spaceId, session.userId],
@@ -2415,6 +2746,8 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
 async function getAssignedBugs(userId: number) {
   const bugs = await query<{
     actual_result: string
+    assignee_display_name: string | null
+    assignee_email: string | null
     assignee_user_id: string | null
     created_at: Date
     environment: string
@@ -2427,13 +2760,19 @@ async function getAssignedBugs(userId: number) {
     test_space_id: string
     title: string
     updated_at: Date
+    organization_id: string | null
+    organization_admin_access: boolean
   }>(
     `
     select b.id, b.test_space_id, b.assignee_user_id, b.title, b.severity, b.priority,
       b.status, b.environment, b.reproduction_steps, b.expected_result, b.actual_result,
-      b.created_at, b.updated_at
+      b.created_at, b.updated_at,
+      space.organization_id as organization_id,
+      assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+      ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
+    left join users assignee on assignee.id = b.assignee_user_id
     where (
       b.assignee_user_id = $1 and b.status not in ('closed', 'rejected', 'duplicate')
     ) or ${managedOrganizationReadScopeSql('space.organization_id')}
@@ -2446,14 +2785,18 @@ async function getAssignedBugs(userId: number) {
     author_email: string | null
     author_user_id: string | null
     assignee_user_id: string | null
+    organization_admin_access: boolean
     content: string
     created_at: Date
     id: string
+    kind: string
     test_bug_id: string
     updated_at: Date | null
   }>(
     `
-    select c.*, b.assignee_user_id, u.email as author_email, u.display_name as author_display_name
+    select c.*, b.assignee_user_id,
+      ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access,
+      u.email as author_email, u.display_name as author_display_name
     from test_bug_comments c
     join test_bugs b on b.id = c.test_bug_id
     join test_spaces space on space.id = b.test_space_id
@@ -2473,40 +2816,248 @@ async function getAssignedBugs(userId: number) {
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.author_user_id
-          ? Number(row.author_user_id) === userId && Number(row.assignee_user_id) === userId
+        canEdit: row.kind !== 'transfer' && row.author_user_id
+          ? Number(row.author_user_id) === userId && (
+            Number(row.assignee_user_id) === userId || row.organization_admin_access
+          )
           : false,
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
+        kind: row.kind === 'transfer' ? 'transfer' : 'comment',
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
   }
+  const organizationIds = Array.from(new Set(
+    bugs.rows
+      .map((row) => row.organization_id ? Number(row.organization_id) : null)
+      .filter((id): id is number => id != null && Number.isSafeInteger(id) && id > 0),
+  ))
+  const members = organizationIds.length > 0
+    ? await query<{ id: string; name: string; organization_id: string }>(
+      `
+      select distinct membership.organization_id, u.id,
+        coalesce(nullif(u.display_name, ''), u.email) as name
+      from organization_memberships membership
+      join users u on u.id = membership.user_id
+      where membership.organization_id = any($2::bigint[])
+        and membership.status = 'active'
+        and exists(
+          select 1
+          from user_roles organization_admin_role
+          where organization_admin_role.user_id = $1
+            and organization_admin_role.role = 'organization_admin'
+        )
+      order by membership.organization_id, name, u.id
+      `,
+      [userId, organizationIds],
+    )
+    : { rows: [] as Array<{ id: string; name: string; organization_id: string }> }
+  const membersByOrganization = new Map<number, Array<{ id: number; name: string }>>()
+  for (const row of members.rows) {
+    const organizationId = Number(row.organization_id)
+    membersByOrganization.set(organizationId, [
+      ...(membersByOrganization.get(organizationId) ?? []),
+      { id: Number(row.id), name: row.name },
+    ])
+  }
+  const transferCandidates = organizationIds.length > 0
+    ? await query<{ id: string; name: string; organization_id: string }>(
+      `
+      select distinct membership.organization_id, u.id,
+        coalesce(nullif(u.display_name, ''), u.email) as name
+      from organization_memberships membership
+      join users u on u.id = membership.user_id
+      where membership.organization_id = any($1::bigint[])
+        and membership.status = 'active'
+        and exists(
+          select 1
+          from user_roles eligible_role
+          where eligible_role.user_id = membership.user_id
+            and eligible_role.role in ('developer', 'organization_admin')
+        )
+      order by membership.organization_id, name, u.id
+      `,
+      [organizationIds],
+    )
+    : { rows: [] as Array<{ id: string; name: string; organization_id: string }> }
+  const transferCandidatesByOrganization = new Map<number, Array<{ id: number; name: string }>>()
+  for (const row of transferCandidates.rows) {
+    const organizationId = Number(row.organization_id)
+    transferCandidatesByOrganization.set(organizationId, [
+      ...(transferCandidatesByOrganization.get(organizationId) ?? []),
+      { id: Number(row.id), name: row.name },
+    ])
+  }
   return {
+    members: [],
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
+      assigneeName: row.assignee_display_name || row.assignee_email || undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+      canComment: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
       canManage: Number(row.assignee_user_id) === userId,
+      canTransfer: (Number(row.assignee_user_id) === userId || (
+        !row.assignee_user_id && row.organization_admin_access
+      )) &&
+        Boolean(row.organization_id) &&
+        !['closed', 'rejected', 'duplicate'].includes(row.status),
       comments: commentsByBug.get(Number(row.id)) ?? [],
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
       expectedResult: decryptText(row.expected_result),
       id: Number(row.id),
+      organizationMembers: row.organization_id
+        ? membersByOrganization.get(Number(row.organization_id)) ?? []
+        : [],
       priority: row.priority,
       reproductionSteps: decryptText(row.reproduction_steps),
       severity: row.severity,
       status: row.status,
       testSpaceId: Number(row.test_space_id),
       title: decryptText(row.title),
+      transferCandidates: row.organization_id
+        ? (transferCandidatesByOrganization.get(Number(row.organization_id)) ?? [])
+          .filter((member) => !row.assignee_user_id || member.id !== Number(row.assignee_user_id))
+        : [],
       updatedAt: row.updated_at.toISOString(),
     })),
   }
 }
 
+async function getAssignedBugCommentAccess(userId: number, bugId: number) {
+  const result = await query<{
+    assignee_user_id: string | null
+    organization_id: string | null
+    organization_admin_access: boolean
+  }>(
+    `
+    select b.assignee_user_id, space.organization_id,
+      ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
+    from test_bugs b
+    join test_spaces space on space.id = b.test_space_id
+    where b.id = $2
+      and (b.assignee_user_id = $1 or ${managedOrganizationReadScopeSql('space.organization_id')})
+    limit 1
+    `,
+    [userId, bugId],
+  )
+  return result.rows[0] ?? null
+}
+
 router.get('/test-bugs/assigned', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  response.json(await getAssignedBugs(session.userId))
+}))
+
+router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'developer')
+  if (!session) return
+  const bugId = positiveId(request.params.bugId)
+  const assigneeUserId = positiveId(request.body.assigneeUserId)
+  const reason = String(request.body.reason ?? '').trim()
+  if (!bugId || !assigneeUserId || reason.length > 1000) {
+    response.status(400).json({ error: 'Valid Bug, assignee, and transfer reason are required' })
+    return
+  }
+
+  const transfer = await transaction(async (client) => {
+    const lockedBug = await client.query<{
+      assignee_display_name: string | null
+      assignee_email: string | null
+      assignee_user_id: string | null
+      organization_id: string | null
+      organization_admin_access: boolean
+      status: BugStatus
+    }>(
+      `
+      select b.assignee_user_id, b.status, space.organization_id,
+        ${managedOrganizationReadScopeSql('space.organization_id', '$2')} as organization_admin_access,
+        assignee.display_name as assignee_display_name,
+        assignee.email as assignee_email
+      from test_bugs b
+      join test_spaces space on space.id = b.test_space_id
+      left join users assignee on assignee.id = b.assignee_user_id
+      where b.id = $1
+      for update of b
+      `,
+      [bugId, session.userId],
+    )
+    const bug = lockedBug.rows[0]
+    if (!bug) {
+      throw Object.assign(new Error('Assigned Bug not found'), { status: 404 })
+    }
+    const assigningUnassignedBug = !bug.assignee_user_id
+    if (assigningUnassignedBug && !bug.organization_admin_access) {
+      throw Object.assign(new Error('Assigned Bug not found'), { status: 404 })
+    }
+    if (!assigningUnassignedBug && Number(bug.assignee_user_id) !== session.userId) {
+      throw Object.assign(new Error('Assigned Bug not found'), { status: 404 })
+    }
+    if (!assigningUnassignedBug && (assigneeUserId === session.userId || !reason)) {
+      throw Object.assign(new Error('Bug transfer requires another assignee and a reason'), { status: 400 })
+    }
+    if (!bug.organization_id) {
+      throw Object.assign(new Error('Only organization Bugs can be transferred'), { status: 409 })
+    }
+    if (['closed', 'rejected', 'duplicate'].includes(bug.status)) {
+      throw Object.assign(new Error('Terminal Bugs cannot be transferred'), { status: 409 })
+    }
+
+    const target = await client.query<{ display_name: string | null; email: string; id: string }>(
+      `
+      select u.id, u.email, u.display_name
+      from organization_memberships membership
+      join users u on u.id = membership.user_id
+      join user_roles eligible_role
+        on eligible_role.user_id = membership.user_id
+       and eligible_role.role in ('developer', 'organization_admin')
+      where membership.organization_id = $1
+        and membership.user_id = $2
+        and membership.status = 'active'
+      limit 1
+      for share of membership, eligible_role
+      `,
+      [Number(bug.organization_id), assigneeUserId],
+    )
+    const nextAssignee = target.rows[0]
+    if (!nextAssignee) {
+      throw Object.assign(new Error('Bug assignee must be an active organization developer'), { status: 400 })
+    }
+
+    await client.query(
+      `update test_bugs
+       set assignee_user_id = $1, status = 'assigned', updated_at = now()
+       where id = $2`,
+      [assigneeUserId, bugId],
+    )
+    if (!assigningUnassignedBug) {
+      const previousAssigneeName = bug.assignee_display_name || bug.assignee_email || '未知成员'
+      const nextAssigneeName = nextAssignee.display_name || nextAssignee.email
+      const transferComment = [
+        `将 Bug 从「${previousAssigneeName}」转移给「${nextAssigneeName}」。`,
+        '',
+        `转移理由：${reason}`,
+      ].join('\n')
+      await client.query(
+        `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
+         values ($1, $2, $3, 'transfer')`,
+        [bugId, session.userId, encryptText(transferComment)],
+      )
+    }
+
+    return { assigneeUserId, assigningUnassignedBug }
+  })
+
+  onTestBugAssigned({
+    actorUserId: session.userId,
+    assigneeUserId: transfer.assigneeUserId,
+    assignmentKind: transfer.assigningUnassignedBug ? 'assigned' : 'transferred',
+    bugId,
+    transferReason: transfer.assigningUnassignedBug ? undefined : reason,
+  })
   response.json(await getAssignedBugs(session.userId))
 }))
 
@@ -2535,6 +3086,14 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     bugId,
     session.userId,
   ])
+  if (request.body.status === 'pending_verification' || request.body.status === 'reopened') {
+    onTestBugStatusChanged({
+      actorUserId: session.userId,
+      bugId,
+      nextStatus: request.body.status,
+      previousStatus: current.rows[0].status,
+    })
+  }
   response.json(await getAssignedBugs(session.userId))
 }))
 
@@ -2547,15 +3106,29 @@ router.post('/test-bugs/:bugId/assigned/comments', asyncRoute(async (request, re
     response.status(400).json({ error: 'Bug and comment are required' })
     return
   }
-  const bug = await query('select id from test_bugs where id = $1 and assignee_user_id = $2', [bugId, session.userId])
-  if (!bug.rows[0]) {
+  const bug = await getAssignedBugCommentAccess(session.userId, bugId)
+  if (!bug) {
     response.status(404).json({ error: 'Assigned bug not found' })
     return
   }
-  await query(
-    'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3)',
+  const mentionedUserIds = bug.organization_admin_access
+    ? await resolveOrganizationMentionUserIds(
+      bug.organization_id ? Number(bug.organization_id) : null,
+      content,
+    )
+    : []
+  const insertedComment = await query<{ id: string }>(
+    'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3) returning id',
     [bugId, session.userId, encryptText(content)],
   )
+  if (insertedComment.rows[0]) {
+    onTestBugCommentAdded({
+      actorUserId: session.userId,
+      bugId,
+      commentId: Number(insertedComment.rows[0].id),
+      mentionedUserIds,
+    })
+  }
   response.status(201).json(await getAssignedBugs(session.userId))
 }))
 
@@ -2575,11 +3148,13 @@ router.patch('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async 
        set content = $1,
            updated_at = now()
       from test_bugs b
+      join test_spaces space on space.id = b.test_space_id
      where c.id = $2
        and c.test_bug_id = b.id
        and b.id = $3
-       and b.assignee_user_id = $4
+       and (b.assignee_user_id = $4 or ${managedOrganizationReadScopeSql('space.organization_id', '$4')})
        and c.author_user_id = $4
+       and c.kind = 'comment'
      returning c.id
     `,
     [encryptText(content), commentId, bugId, session.userId],
@@ -2604,11 +3179,13 @@ router.delete('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async
     `
     delete from test_bug_comments c
      using test_bugs b
+     join test_spaces space on space.id = b.test_space_id
      where c.id = $1
        and c.test_bug_id = b.id
        and b.id = $2
-       and b.assignee_user_id = $3
+       and (b.assignee_user_id = $3 or ${managedOrganizationReadScopeSql('space.organization_id', '$3')})
        and c.author_user_id = $3
+       and c.kind = 'comment'
      returning c.id
     `,
     [commentId, bugId, session.userId],

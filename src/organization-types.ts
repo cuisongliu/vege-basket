@@ -1,6 +1,13 @@
 import type { UserRole } from './api'
+import type { ProjectMembership } from './types'
+import type { WeeklyReportRules } from '../shared/weekly-report-availability'
+
+export type { WeeklyReportRules } from '../shared/weekly-report-availability'
 
 export type OrganizationAccessRole = 'owner' | 'admin' | 'member'
+export type OrganizationProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
+export type OrganizationProjectHealthStatus = 'on_track' | 'at_risk' | 'off_track'
+export type OrganizationProjectMilestoneStatus = 'pending' | 'in_review' | 'achieved' | 'cancelled'
 
 export type OrganizationListItem = {
   accessRole: OrganizationAccessRole
@@ -12,6 +19,7 @@ export type OrganizationListItem = {
 export type OrganizationMember = {
   accessRole: OrganizationAccessRole
   displayName: string
+  feishuBound: boolean
   id: number
   joinedAt: string
   roles: UserRole[]
@@ -19,12 +27,37 @@ export type OrganizationMember = {
 }
 
 export type OrganizationProject = {
+  healthNote: string
+  healthStatus: OrganizationProjectHealthStatus
   id: number
+  memberships: ProjectMembership[]
+  milestones: OrganizationProjectMilestone[]
   name: string
   openTodoCount: number
   ownerName: string
-  status: string
+  ownerUserId: number
+  status: OrganizationProjectStatus
   todoCount: number
+  updatedAt: string
+}
+
+export type OrganizationProjectMilestone = {
+  acceptanceCriteria: string
+  baselineDate: string
+  completedAt?: string
+  createdAt: string
+  executionNote: string
+  id: number
+  linkedTodos: Array<{
+    done: boolean
+    id: number
+    title: string
+  }>
+  responsibleName: string
+  responsibleUserId?: number
+  status: OrganizationProjectMilestoneStatus
+  targetDate: string
+  title: string
   updatedAt: string
 }
 
@@ -65,11 +98,72 @@ export type OrganizationWeeklySummary = {
   weekStart: string
 }
 
+export type WeeklyReportSourceKind = 'delivery' | 'milestone' | 'todo'
+
+export type WeeklyReportSourceRef = {
+  id: number
+  kind: WeeklyReportSourceKind
+  projectId: number
+}
+
+export type WeeklyReportSourceCandidate = WeeklyReportSourceRef & {
+  date: string
+  projectName: string
+  relatedToMe: boolean
+  status: string
+  title: string
+}
+
+export type PersonalWeeklyReport = {
+  content: string
+  draftVersion: number
+  publishedContent: string
+  publishedRevision: number | null
+  sourceMode: 'ai' | 'manual'
+  sources: WeeklyReportSourceRef[]
+  state: 'draft' | 'empty' | 'modified' | 'submitted'
+  submittedAt: string | null
+  weekStart: string
+}
+
+export type PersonalWeeklyReportListItem = {
+  publishedRevision: number | null
+  sourceCount: number
+  state: Exclude<PersonalWeeklyReport['state'], 'empty'>
+  submittedAt: string | null
+  updatedAt: string
+  weekStart: string
+}
+
+export type PersonalWeeklyReportList = {
+  items: PersonalWeeklyReportListItem[]
+  limit: number
+  offset: number
+  total: number
+}
+
+export type WeeklyReportCollectionMember = {
+  content: string
+  feishuBound: boolean
+  memberName: string
+  revision: number | null
+  state: PersonalWeeklyReport['state']
+  submittedAt: string | null
+  userId: number
+}
+
+export type WeeklyReportCollection = {
+  members: WeeklyReportCollectionMember[]
+  weekStart: string
+}
+
 export type OrganizationDetail = {
   accessRole: OrganizationAccessRole
   attachableProjects: Array<{ id: number; name: string; status: string }>
   attachableTestSpaces: Array<{ id: number; name: string }>
   canManage: boolean
+  canManageProjects: boolean
+  canManageWeeklyReports: boolean
   createdAt: string
   id: number
   invitations: Array<{
@@ -87,5 +181,6 @@ export type OrganizationDetail = {
   summaries: OrganizationWeeklySummary[]
   tasks: OrganizationTask[]
   testSpaces: OrganizationTestSpace[]
+  weeklyReportRules: WeeklyReportRules
   weekStartsOn: number
 }

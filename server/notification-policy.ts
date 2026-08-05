@@ -16,6 +16,22 @@ export function hasTodoWatcherChanged(
   return nextWatcherUserId !== undefined && nextWatcherUserId !== previousWatcherUserId
 }
 
+export function hasTodoWatchersChanged(
+  previousWatcherUserIds: number[],
+  nextWatcherUserIds: number[] | null | undefined,
+) {
+  if (nextWatcherUserIds == null) return false
+  if (previousWatcherUserIds.length !== nextWatcherUserIds.length) return true
+  return previousWatcherUserIds.some((userId, index) => userId !== nextWatcherUserIds[index])
+}
+
+export function hasTodoAssigneeChanged(
+  previousAssigneeUserId: number | null,
+  nextAssigneeUserId: number | null | undefined,
+) {
+  return nextAssigneeUserId !== undefined && nextAssigneeUserId !== previousAssigneeUserId
+}
+
 export function resolveTodoReviewerUserId(
   reviewerUserId: number | null,
   creatorUserId: number | null,
@@ -31,7 +47,8 @@ export function canUserReviewTodo(params: {
   userId: number
 }) {
   const { creatorUserId, projectOwnerUserId, reviewerUserId, userId } = params
-  return userId === resolveTodoReviewerUserId(reviewerUserId, creatorUserId, projectOwnerUserId)
+  return userId === creatorUserId ||
+    userId === resolveTodoReviewerUserId(reviewerUserId, creatorUserId, projectOwnerUserId)
 }
 
 export function resolveTodoNoteRecipientUserIds(params: {
@@ -39,10 +56,12 @@ export function resolveTodoNoteRecipientUserIds(params: {
   creatorUserId: number
   mentionedUserIds: number[]
   watcherUserId: number | null
+  watcherUserIds?: number[]
 }) {
   return Array.from(new Set([
     params.creatorUserId,
     ...(params.watcherUserId == null ? [] : [params.watcherUserId]),
+    ...(params.watcherUserIds ?? []),
     ...params.mentionedUserIds,
   ]))
     .filter((userId) => Number.isSafeInteger(userId) && userId > 0 && userId !== params.authorUserId)

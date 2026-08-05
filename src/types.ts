@@ -1,6 +1,6 @@
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
-export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected'
+export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 
@@ -62,6 +62,8 @@ export type Todo = {
   assigneeName?: string
   watcherUserId?: number
   watcherName?: string
+  watcherUserIds?: number[]
+  watcherNames?: string[]
   reviewerUserId?: number
   reviewerName?: string
   assignedByUserId?: number
@@ -94,6 +96,7 @@ export type TodoNote = {
   authorUserId?: number
   authorName: string
   content: string
+  kind?: 'normal' | 'acceptance'
   createdAt: string
   updatedAt: string
   sourceOperationId?: number
@@ -122,6 +125,16 @@ export type ProjectInviteNotification = NotificationState & {
   projectName: string
   invitedByName: string
   createdAt: string
+}
+
+export type ProjectTransferNotification = NotificationState & {
+  id: number
+  projectId: number
+  projectName: string
+  organizationName: string
+  requestedByName: string
+  createdAt: string
+  expiresAt: string
 }
 
 export type TodoNotification = NotificationState & {
@@ -163,6 +176,7 @@ export type NotificationCenterData = {
   dueTomorrowTodos: TodoNotification[]
   noteMentions: TodoNotification[]
   invites: ProjectInviteNotification[]
+  projectTransfers: ProjectTransferNotification[]
 }
 
 export type InboxItem = {
@@ -226,7 +240,7 @@ export type TodoActivityEvent = {
   id: number
   todoId?: number
   projectId: number
-  eventType: 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected'
+  eventType: 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed'
   todoTitle: string
   actorUserId?: number
   actorName: string
@@ -277,6 +291,8 @@ export type ProjectPackageItem = {
 }
 
 export type ProjectPackageOperation = {
+  eventId: number
+  groupId: number | null
   id: number
   kind: ProjectPackageOperationKind
   status: ProjectPackageOperationStatus
@@ -374,6 +390,7 @@ export type Project = {
   description: string
   ownerName: string
   ownerUserId: number
+  organizationId?: number | null
   readOnly?: boolean
   status: ProjectStatus
   feishuChatEnabled?: boolean

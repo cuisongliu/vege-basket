@@ -61,6 +61,7 @@ import {
   type TodoFilterJoin,
 } from '@/components/todo-filter-builder-dialog'
 import { PackageEventFilterBuilderDialog } from '@/components/package-event-filter-builder-dialog'
+import { claimMarkdownEditorRecovery } from './markdown-editor-recovery'
 import {
   matchesPackageEventFilterConditions,
   type PackageEventFilterCondition,
@@ -123,7 +124,7 @@ type PackageWorkbenchProps = {
   onDeleteEvent: (eventId: number) => Promise<void>
   onDeleteGroup: (groupId: number) => Promise<void>
   onDeleteOperation: (operationId: number) => Promise<void>
-  onExportTimeline: () => Promise<{ fileName: string; markdown: string }>
+  onExportTimeline: (eventId?: number) => Promise<{ fileName: string; markdown: string }>
   onLoadPackageMarketDetail: (payload: {
     arch: string
     channel: PackageMarketChannel
@@ -186,21 +187,32 @@ const MarkdownWysiwygEditor = lazy(() =>
   })),
 )
 
-class MarkdownEditorLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false }
+class MarkdownEditorLoadBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean; retrying: boolean }
+> {
+  state = { failed: false, retrying: false }
 
   static getDerivedStateFromError() {
     return { failed: true }
+  }
+
+  componentDidCatch() {
+    if (!claimMarkdownEditorRecovery()) return
+    this.setState({ failed: true, retrying: true })
+    window.setTimeout(() => window.location.reload(), 0)
   }
 
   render() {
     if (this.state.failed) {
       return (
         <div className="markdown-wysiwyg-loading is-error" role="alert">
-          <strong>编辑器加载失败</strong>
-          <Button type="button" variant="outline" onClick={() => window.location.reload()}>
-            刷新页面
-          </Button>
+          <strong>{this.state.retrying ? '正在恢复编辑器…' : '编辑器加载失败'}</strong>
+          {!this.state.retrying ? (
+            <Button type="button" variant="outline" onClick={() => window.location.reload()}>
+              刷新页面
+            </Button>
+          ) : null}
         </div>
       )
     }
@@ -222,6 +234,8 @@ type PendingOperationTarget =
       operation?: ProjectPackageOperation | null
     }
   | null
+
+type TimelineExportScope = 'current' | 'all'
 
 type PackageMarketDetailContext = {
   arch: 'amd64' | 'arm64'
@@ -390,11 +404,16 @@ function todoDialogMeta(todo: Todo, done: boolean) {
 }
 
 function todoSearchMeta(todo: Todo) {
+  const watcherNames = Array.isArray(todo.watcherNames) && todo.watcherNames.length > 0
+    ? todo.watcherNames
+    : todo.watcherName
+      ? [todo.watcherName]
+      : []
   return [
     todo.title,
     todo.moduleName ?? '',
     todo.assigneeName ?? '',
-    todo.watcherName ?? '',
+    watcherNames.join(' '),
     todo.creatorName ?? '',
     todo.priority,
     todo.createdAt,
@@ -1243,6 +1262,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>('and')
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>([])
   const [todoPickerOpen, setTodoPickerOpen] = useState(false)
+  const [exportScopeDialogOpen, setExportScopeDialogOpen] = useState(false)
+  const [exportScope, setExportScope] = useState<TimelineExportScope>('current')
   const [exportPreviewOpen, setExportPreviewOpen] = useState(false)
   const [exportEditorReady, setExportEditorReady] = useState(false)
   const [exportFileName, setExportFileName] = useState('')
@@ -1402,8 +1423,24 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const todoDialogWatcherOptions = useMemo(() => {
     const watchers = new Map<number, string>()
     for (const todo of selectableTodos) {
-      if (todo.watcherUserId && todo.watcherName) {
-        watchers.set(todo.watcherUserId, todo.watcherName)
+      const watcherIds = Array.isArray(todo.watcherUserIds) && todo.watcherUserIds.length > 0
+        ? todo.watcherUserIds
+        : todo.watcherUserId
+          ? [todo.watcherUserId]
+          : []
+      const watcherNames = Array.isArray(todo.watcherNames) && todo.watcherNames.length > 0
+        ? todo.watcherNames
+        : todo.watcherName
+          ? [todo.watcherName]
+          : []
+      watcherIds.forEach((watcherId, index) => {
+        const watcherName = watcherNames[index]
+        if (watcherName) {
+          watchers.set(watcherId, watcherName)
+        }
+      })
+      if (watcherIds.length > 0 && watcherNames.length === 0 && todo.watcherName) {
+        watchers.set(watcherIds[0], todo.watcherName)
       }
     }
     return Array.from(watchers, ([id, name]) => ({ id, name }))
@@ -1438,6 +1475,22 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     selectedEvent?.groups.find((group) => group.id === selectedGroupId) ??
     selectedEvent?.groups[0] ??
     null
+
+  useEffect(() => {
+    const nextEvent =
+      visibleEvents.find((event) => event.id === selectedEventId) ?? visibleEvents[0] ?? null
+    const nextGroup =
+      nextEvent?.groups.find((group) => group.id === selectedGroupId) ??
+      nextEvent?.groups[0] ??
+      null
+    if (nextEvent?.id !== selectedEventId) {
+      setSelectedEventId(nextEvent?.id ?? null)
+    }
+    if (nextGroup?.id !== selectedGroupId) {
+      setSelectedGroupId(nextGroup?.id ?? null)
+    }
+  }, [selectedEventId, selectedGroupId, visibleEvents])
+
   const selectedEventObjectKeys = useMemo(
     () => new Set(selectedEvent?.groups.flatMap((group) => group.items.map((item) => item.objectKey)) ?? []),
     [selectedEvent],
@@ -1816,18 +1869,25 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }
 
   function openOperationDialog(target: PendingOperationTarget, kind: ProjectPackageOperationKind) {
+    const normalizedTarget = target?.operation
+      ? {
+          ...target,
+          eventId: target.operation.eventId,
+          groupId: target.operation.groupId,
+        }
+      : target
     setOperationEditorReady(false)
-    setPendingOperationTarget(target)
-    setOperationKind(target?.operation?.kind ?? kind)
+    setPendingOperationTarget(normalizedTarget)
+    setOperationKind(normalizedTarget?.operation?.kind ?? kind)
     setOperationTitle(
-      target?.operation
+      normalizedTarget?.operation
         ? getProjectPackageOperationTitle(
-            target.operation,
-            target.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
+            normalizedTarget.operation,
+            normalizedTarget.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
           )
-        : target?.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
+        : normalizedTarget?.defaultTitle ?? (kind === 'document' ? '操作文档' : '操作事件'),
     )
-    setOperationContent(target?.operation?.content ?? '')
+    setOperationContent(normalizedTarget?.operation?.content ?? '')
     setOperationDialogOpen(true)
   }
 
@@ -2023,10 +2083,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }
   }
 
-  async function handleExport() {
+  function openExportScopeDialog() {
+    setExportScope(selectedEvent ? 'current' : 'all')
+    setExportScopeDialogOpen(true)
+  }
+
+  async function handleExport(scope: TimelineExportScope) {
+    const eventId = scope === 'current' ? selectedEvent?.id : undefined
+    if (scope === 'current' && eventId == null) return
+    setExportScopeDialogOpen(false)
     setBusyAction('export')
     try {
-      const result = await onExportTimeline()
+      const result = await onExportTimeline(eventId)
       setExportEditorReady(false)
       setExportFileName(result.fileName)
       setExportContent(result.markdown)
@@ -2096,7 +2164,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   useImperativeHandle(ref, () => ({
     exportTimeline: () => {
-      void handleExport()
+      openExportScopeDialog()
     },
     openPackageMarket,
     selectEvent: (eventId: number) => {
@@ -2753,6 +2821,57 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               }
             >
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exportScopeDialogOpen} onOpenChange={setExportScopeDialogOpen}>
+        <DialogContent className="package-export-scope-dialog">
+          <DialogHeader>
+            <DialogTitle>导出时间线</DialogTitle>
+            <DialogDescription>
+              选择需要导出的时间线范围，确认后可以在预览中继续编辑内容。
+            </DialogDescription>
+          </DialogHeader>
+          <fieldset className="package-export-scope-options">
+            <legend>导出范围</legend>
+            <label className={exportScope === 'current' ? 'package-export-scope-option active' : 'package-export-scope-option'}>
+              <input
+                checked={exportScope === 'current'}
+                disabled={!selectedEvent}
+                name="timeline-export-scope"
+                type="radio"
+                value="current"
+                onChange={() => setExportScope('current')}
+              />
+              <span>
+                <strong>导出当前事件时间线</strong>
+                <small>
+                  {selectedEvent ? `仅导出「${selectedEvent.title}」及其操作文档、安装包记录。` : '当前没有可导出的交付事件。'}
+                </small>
+              </span>
+            </label>
+            <label className={exportScope === 'all' ? 'package-export-scope-option active' : 'package-export-scope-option'}>
+              <input
+                checked={exportScope === 'all'}
+                name="timeline-export-scope"
+                type="radio"
+                value="all"
+                onChange={() => setExportScope('all')}
+              />
+              <span>
+                <strong>导出完整事件线</strong>
+                <small>导出当前项目下的全部交付事件和时间线记录。</small>
+              </span>
+            </label>
+          </fieldset>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={() => setExportScopeDialogOpen(false)}>
+              取消
+            </Button>
+            <Button type="button" onClick={() => void handleExport(exportScope)}>
+              继续导出
             </Button>
           </DialogFooter>
         </DialogContent>

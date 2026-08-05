@@ -2,9 +2,9 @@ import type express from 'express'
 import { Router } from 'express'
 import { pool, query } from './db.ts'
 
-export const userRoles = ['developer', 'tester', 'delivery', 'organization_admin'] as const
+export const userRoles = ['developer', 'tester', 'organization_admin'] as const
 export type UserRole = (typeof userRoles)[number]
-export const switchableUserRoles = ['developer', 'tester', 'delivery'] as const
+export const switchableUserRoles = ['developer', 'tester'] as const
 export type SwitchableUserRole = (typeof switchableUserRoles)[number]
 
 type SessionRoleRow = {

@@ -5,7 +5,7 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
 | HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts` |
 | Database schema | `server/schema.ts` |
@@ -18,6 +18,7 @@
 | AI conversations and turn lifecycle | `server/ai-conversations.ts`, `server/ai-conversation-store.ts`, `server/ai-turn-stream.ts` |
 | AI reply document conversion | `server/ai-turn-document.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
+| Personal weekly reports and reminders | `server/weekly-reports.ts`, `shared/weekly-report-deep-link.ts`, `src/components/weekly-report-workbench.tsx` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
 | GitHub image sync workflow | `server/image-sync-workflows.ts` |
@@ -53,8 +54,9 @@ Core and AI controls:
 
 AI provider URL, key, and model are deployment-level environment variables shared by all
 authenticated users. There is no user-level AI settings table or API. With all three
-provider variables configured, password registration requires an active project invite;
-Feishu OAuth remains the internal identity path. The rate limiter is replica-local, so a
+provider variables configured, password registration requires an active project or
+organization invite. Feishu OAuth remains the
+internal identity path. The rate limiter is replica-local, so a
 future multi-replica deployment needs a shared quota or upstream budget policy.
 
 Feishu integration:
@@ -88,6 +90,10 @@ same transactional confirmation path as the browser. Candidates with a recognize
 no recognized project become structured todo drafts; the remaining candidates become todos in
 the same transaction. `进入 Veges 编辑` uses
 `APP_PUBLIC_URL/?aiTodoBatch=<id>` and survives authentication before opening the review.
+Weekly-report reminders use the same validated root origin with
+`?weeklyReportOrg=<organization-id>&weekStart=<YYYY-MM-DD>`. The browser preserves the link
+through authentication, opens the shared weekly-report workbench only after membership checks,
+and removes only those two query parameters.
 
 OSS and package market:
 
@@ -125,7 +131,7 @@ families are:
 | --- | --- |
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
-| Workspace | `GET /api/workspace`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Workspace | `GET /api/workspace`, `GET /api/my-work`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
@@ -135,10 +141,11 @@ families are:
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
-| Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, member invitations, resource attachment, task overview, weekly reports, and weekly summaries |
-| Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases, CSV case preview/import, creator-managed plan details/cases/deletion, executions, bugs, comments, and author-owned comment edits/deletions |
+| Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, and weekly summaries |
+| Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, the shared four-section editor/AI template, cursor-position source insertion, draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
+| Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, bugs, comments, and author-owned comment edits/deletions |
 | Test-space collaboration | `GET /api/test-spaces/settings`, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
-| Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
+| Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, `POST /api/test-bugs/:bugId/assigned/transfer`, organization-admin assignment of unassigned Bugs with a direct Feishu notification to the new assignee, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
@@ -147,6 +154,9 @@ must remain bound to the authorized project ID.
 ## Data And Status Contracts
 
 - Project status: `active`, `paused`, `completed`, `archived`.
+- Project health: `on_track`, `at_risk`, `off_track`.
+- Project milestone: `pending`, `in_review`, `achieved`, `cancelled`; overdue and due-soon
+  are derived from `targetDate` rather than persisted states.
 - Todo priority: `high`, `medium`, `low`.
 - Todo confirmation: `confirmed`, `pending_review`, `rejected`.
 - Todo activity event: `created`, `assigned`, `confirmed`, `rejected`, `completed`, `reopened`.
@@ -158,6 +168,12 @@ must remain bound to the authorized project ID.
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
 - Image sync run: `dispatching`, `queued`, `in_progress`, `completed`, `failed`; GitHub's terminal result remains in the separate `conclusion` field.
 - Image sync filtering maps `completed/success` to success, active statuses to running, and every other terminal state to failure. Successful DTOs expose tar and MD5 `oss://` URIs derived from the server-side bucket, GitHub Run UTC date, image safe base, and architecture; these are object identifiers rather than signed public download URLs.
+- Personal weekly-report state: `draft`, `submitted`, `modified`; the detail endpoint may
+  additionally return `empty` before a draft exists. The personal index returns metadata only,
+  newest week first, with `limit` and `offset` pagination. One organization member has at most
+  one report record for each normalized organization week.
+- Organization weekly-report collection omits the reserved `admin` username from member rows,
+  submission counts, and reminder targets.
 - Todo responses expose an optional single watcher through `watcherUserId` and
   `watcherName`. `POST /api/todos` and `PATCH /api/todos/:todoId` accept
   `watcherUserId`; a non-null watcher must be the project owner or an active project
@@ -182,19 +198,23 @@ must remain bound to the authorized project ID.
 - Package operation status: `pending`, `success`, `failed`.
 - Package market channel: `release`, `ci`.
 - Supported todo images and test-workbench evidence attachments: PNG, JPEG, WebP, GIF images; MP4, WebM, and QuickTime videos.
-- Account roles: `developer`, `tester`, `delivery`, `organization_admin`. The first three
+- Account roles: `developer`, `tester`, `organization_admin`. `developer` and `tester`
   are switchable session personas. `organization_admin` is additive, is not shown in the
-  role switcher, and allows the account to assume any of the three business personas.
+  role switcher, and allows the account to assume either business persona.
   System administrators assign it through user role management.
 - Organization access: `owner`, `admin`, `member`. System administrators create
   organizations; organization owners and administrators rename or delete organizations
-  and manage organization membership. Deletion requires the exact organization name,
+  and manage organization membership. They may add an existing account directly or create
+  an expiring browser invite link; link acceptance activates ordinary member access without
+  a Feishu callback. Deletion requires the exact organization name,
   detaches projects and test spaces, and removes organization-only records.
   Accounts assigned `organization_admin` always see the organization management entry.
   If they also have active `owner` or `admin` membership in an organization, they receive
-  read-only access to all attached projects and project records, test spaces and test
-  records, and Bugs and comments. Project, test-space, plan, case, and Bug mutation still
-  requires the corresponding original resource permission.
+  access to all attached projects and project records, test spaces and test records, and
+  Bugs and comments. That dual authorization may update attached project lifecycle status,
+  health notes, and milestones. Project deletion, membership, integrations, ordinary project
+  content, test-space, plan, case, and Bug mutation still require the corresponding original
+  resource permission.
 - Projects and test spaces remain personal while `organization_id` is null. Test-space
   creation and owner updates accept a nullable `organizationId` selected from the owner's
   active organization memberships. Moving a test space into or between organizations is
@@ -216,6 +236,9 @@ must remain bound to the authorized project ID.
 - Test-case folders/modules are scoped to one test subject. Test-space owners and editors
   can create, rename, and delete folders; deleting a folder clears `folder_id` on its
   current cases and does not delete cases or immutable plan snapshots.
+- Test-case deletion requires test-space write access and is limited to the account that
+  created the case. It permanently removes the source case, while existing test-plan
+  execution snapshots remain and their nullable `test_case_id` is cleared.
 - Test-case CSV import accepts UTF-8 `text/csv` at
   `POST /api/test-spaces/:spaceId/cases/import?testSubjectId=:id`; add `preview=true` for
   validation-only preview. Required headers are `用例名称`, `所属模块`, `前置条件`,
@@ -238,8 +261,18 @@ must remain bound to the authorized project ID.
   continues to read and update only Bugs assigned to that account. An organization
   administrator may read every Bug in an organization they manage, including terminal
   Bugs, but may use the assigned-Bug mutation routes only for Bugs assigned to them.
+- The current assignee may transfer a non-terminal organization Bug to another active
+  organization member with the developer or organization-administrator role. Transfer
+  requires a non-empty reason of at most 1000 characters, resets the Bug to `assigned`,
+  and writes the old assignee, new assignee, and encrypted reason as an immutable
+  `transfer` entry in the Bug collaboration record in the same transaction.
+- An organization administrator who manages the owning organization may assign an
+  unassigned non-terminal Bug from the Bug workbench to any active organization developer,
+  including themselves. Initial assignment does not require a transfer reason or create a
+  transfer collaboration entry.
 - Creating or reassigning a Bug to a developer schedules a personal Feishu card for the
-  new assignee. When that Bug belongs to a test plan whose `projectId` still resolves to a
+  new assignee. Transfer cards include the transfer reason. When that Bug belongs to a
+  test plan whose `projectId` still resolves to a
   project, the same assignment is also sent to the configured project chat and mentions
   the assignee. Bugs without a project-linked plan never target a group chat. Status-only
   edits and unchanged assignees do not redeliver the assignment notification.
@@ -403,6 +436,13 @@ supported durations when generating a link. Invite links may optionally require 
 password; the server stores only a bcrypt hash and requires the password during login,
 registration, Feishu sign-in, or explicit invite acceptance. Expired, revoked, or
 password-mismatched tokens are rejected during invite acceptance.
+
+Organization invite links use the same supported durations and default to 10 minutes.
+Organization owners and administrators generate them from organization member management.
+The browser carries the token through password login, password registration, or Feishu
+OAuth and activates ordinary organization membership after authentication. Each newly
+generated link revokes the previous active link for that organization; raw tokens are
+returned only at creation and stored as SHA-256 hashes.
 
 Package-item batch failures additionally return `code`, `requestId`, and `details`.
 `details.phase` is one of `validate_object_keys`, `persist_package_items`, or

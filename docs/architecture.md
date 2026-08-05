@@ -68,7 +68,12 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   deterministic digest formatting, trusted application links, run leases, retries, and
   Feishu delivery.
 - `server/organizations.ts`: organization membership, organization-wide read models,
-  resource attachment, weekly reports, and Feishu-confirmed organization invitations.
+  resource attachment, weekly reports, direct member admission, expiring browser invite
+  links, and legacy Feishu-confirmed organization invitations.
+- `server/weekly-reports.ts`, `shared/weekly-report-deep-link.ts`: personal weekly-report
+  index metadata, drafts, immutable submitted revisions, authorized work-source links,
+  organization collection status, AI draft generation, Feishu reminder delivery, and
+  authenticated browser deep links.
 - `server/roles.ts`, `server/organization-scope.ts`, `server/test-workbench.ts`:
   session-scoped business personas, additive organization-administrator capability,
   and resource-scoped read/write authorization boundaries.
@@ -92,16 +97,20 @@ must resolve `getProjectAccess(projectId, userId)` before reading or mutating ne
 owner-only actions add an explicit role check.
 
 `organization_admin` is an additive account capability rather than a session persona.
-It allows the account to assume the developer, tester, or delivery persona. When that
+It allows the account to assume the developer or tester persona. When that
 account is also an active organization owner or administrator, read routes may expose all
 projects, test spaces, Bugs, comments, and related records attached to that organization.
-This organization scope is read-only: mutations continue to use direct project access,
-test-space membership, creator ownership, or Bug assignment checks.
+That dual authorization also permits project-governance mutations for lifecycle status,
+health, and milestones. Other project mutations continue to use direct project access;
+test-space and Bug mutations continue to require membership, creator ownership, or Bug
+assignment checks.
 
 `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` form one deployment-level provider
 configuration. Users never submit or read AI credentials. When that shared provider is
-configured, password registration requires an active project invite; Feishu OAuth can
-still create or link an internal user. AI calls pass both per-user and application-replica
+configured, password registration requires an active project or organization invite;
+Feishu OAuth can still create or link an internal user. An active organization invite
+link also adds the authenticated account to that organization. AI calls
+pass both per-user and application-replica
 sliding-window limits.
 
 Veges AI conversations are private to the authenticated user and persist in PostgreSQL.
@@ -192,6 +201,17 @@ partial unique index makes retries and concurrent requests return the same docum
 project daily and weekly summaries keep their automatic document behavior; workspace reviews and
 todo extraction do not become documents implicitly.
 
+Personal organization weekly reports use a separate draft-and-publish lifecycle. Editing a
+submitted report changes only its encrypted draft; organization management continues to read the
+latest immutable submitted revision until the member confirms another submission. AI generation
+uses only organization-scoped sources the current user may read and never submits a report
+automatically. A genuinely empty editor presents a shared two-item Markdown template; each item has
+the ordered `本周进展`, `风险问题`, and `下周计划` fields and is not persisted until the user changes
+the draft. AI generation uses the same item-based contract. Selected work sources insert at the active editor selection;
+when the selection is inside a heading, insertion occurs immediately below that heading.
+Organization collection and reminder actions require both owner/admin organization
+membership and the additive `organization_admin` role.
+
 External entry points have separate trust boundaries:
 
 - Feishu event callbacks require `FEISHU_VERIFICATION_TOKEN`, including challenge
@@ -219,13 +239,15 @@ External entry points have separate trust boundaries:
 The schema is normalized around these groups:
 
 - Identity: `users`, `sessions`.
-- Account roles: `user_roles`; `sessions.active_role` stores a switchable developer,
-  tester, or delivery persona. `organization_admin` remains an additive assignment.
+- Account roles: `user_roles`; `sessions.active_role` stores a switchable developer or
+  tester persona. `organization_admin` remains an additive assignment.
 - Organizations: `organizations`, `organization_memberships`, organization invitations,
-  callback replay records, audit events, weekly reports, and weekly summaries. Organization
-  access does not replace resource write permissions. Active organization owners and
+  expiring `organization_invite_links`, callback replay records, audit events, weekly reports,
+  and weekly summaries. Organization
+  access does not replace general resource write permissions. Active organization owners and
   administrators with the `organization_admin` account role receive organization-scoped
-  read access without becoming project or test-space members. Each organization stores one
+  read access and may govern attached project status, health, and milestones without becoming
+  project or test-space members. Each organization stores one
   weekday-based week-start preference, from Monday through Sunday; member reports and
   administrator summaries derive the current seven-day period from that shared setting.
 - Projects and collaboration: `projects`, `project_memberships`,
@@ -236,6 +258,8 @@ The schema is normalized around these groups:
   The progress JSONB remains backward-compatible with the original job array while new writes
   use `{ jobs, runCreatedAt }` so artifact paths retain the GitHub Run UTC date. Failed-record
   cleanup deletes only the authenticated owner's local row and never calls GitHub or OSS deletion.
+  Project health fields, `project_milestones`, their todo links, and milestone audit events
+  are also stored with the project collaboration data.
 - Project knowledge: `journal_entries`, `todos`, `project_modules`,
   `todo_activity_events`, `todo_notes`, `todo_note_mentions`, `risks`, `draft_items`,
   `summaries`, `ai_todo_proposal_batches`, `ai_todo_proposals`. Draft items distinguish
@@ -312,7 +336,7 @@ Test-space names, test-subject descriptions, case content, plan metadata, bug ev
 and bug comments use the same encrypted-text envelope.
 Organization names, invitation email addresses, audit details, member weekly reports,
 and generated organization summaries also use encrypted-text envelopes. Invitation
-action secrets are stored only as SHA-256 hashes.
+action secrets and organization invite-link tokens are stored only as SHA-256 hashes.
 Identity keys, status fields, timestamps, object keys, and relationship IDs remain
 queryable metadata.
 

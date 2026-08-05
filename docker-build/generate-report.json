@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-24T17:14:14+08:00",
+  "phase": "generate",
+  "files_generated": [],
+  "template_used": "existing Dockerfile",
+  "key_decisions": [
+    {
+      "decision": "reuse_existing_multistage_build",
+      "rationale": "The repository Dockerfile passed validation and already produces the required production runtime."
+    },
+    {
+      "decision": "skip_runtime_startup",
+      "rationale": "Starting the image requires a database and would perform writes that were not authorized for this packaging request."
+    }
+  ],
+  "base_image": "node:24-alpine",
+  "build_stages": [
+    "deps",
+    "build",
+    "runtime"
+  ],
+  "exposed_port": 8787,
+  "non_root_user": "node",
+  "env_vars": {
+    "build_time": [],
+    "runtime_required": [
+      "DATABASE_URL",
+      "APP_ENCRYPTION_ACTIVE_KEY_ID",
+      "APP_ENCRYPTION_KEYS"
+    ],
+    "runtime_optional": [
+      {
+        "name": "PORT",
+        "default": "8787",
+        "optional": true
+      }
+    ]
+  },
+  "compose_services": [],
+  "validation_checklist": {
+    "fixed_base_image_version": true,
+    "multi_stage_build": true,
+    "non_root_user": true,
+    "expose_matches_detected_port": true,
+    "healthcheck_present": false,
+    "dockerignore_excludes_sensitive": true
+  }
+}

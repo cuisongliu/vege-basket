@@ -41,6 +41,8 @@ export type ProjectPackageOperation = {
   completed: boolean
   content: string
   createdAt: string
+  eventId: number
+  groupId: number | null
   id: number
   kind: ProjectPackageOperationKind
   label: string
@@ -438,7 +440,17 @@ async function findOperationMeta(operationId: number, projectId: number, client?
            o.completed
     from project_package_operations o
     join project_package_events e on e.id = o.project_package_event_id
-    where o.id = $1 and e.project_id = $2
+    where o.id = $1
+      and e.project_id = $2
+      and (
+        o.project_package_group_id is null
+        or exists (
+          select 1
+          from project_package_groups g
+          where g.id = o.project_package_group_id
+            and g.project_package_event_id = o.project_package_event_id
+        )
+      )
   `
   const result = client
     ? await client.query<{
@@ -992,56 +1004,65 @@ function buildProjectPackageTimelineMarkdown(
   }
 
   timeline.events.forEach((event, eventIndex) => {
-    const createdAt = formatExportDateTime(event.createdAt)
     if (eventIndex > 0) {
       lines.push('', '---', '')
     }
-    lines.push(
-      '',
-      `## ${createdAt}`,
-      '',
-      `### ${textValue(event.title, '未命名事件')}`,
-      '',
-      `- 交付人：${textValue(event.assigneeName, '未指派')}`,
-      '',
-      '### 1. 操作文档',
-      '',
-    )
-    if (event.operations.length === 0) {
-      lines.push('暂无操作文档。', '')
-    } else {
-      let operationHeadingIndex = 1
-      event.operations.forEach((operation) => {
-        const relatedTodoDetails = relatedTodoDetailsByOperation.get(operation.id) ?? []
-        const headingNumber = `1.${operationHeadingIndex}`
-        const relatedTodoHeadingNumber = relatedTodoDetails.length > 0
-          ? `1.${operationHeadingIndex + 1}`
-          : undefined
-        lines.push(
-          ...buildOperationMarkdown(
-            operation,
-            relatedTodoDetails,
-            '####',
-            {
-              headingNumber,
-              relatedTodoHeadingNumber,
-            },
-          ),
-          '',
-        )
-        operationHeadingIndex += relatedTodoDetails.length > 0 ? 2 : 1
-      })
-    }
+    lines.push(...buildProjectPackageEventMarkdown(event, relatedTodoDetailsByOperation))
+  })
 
-    if (event.groups.length === 0) {
-      lines.push('暂无安装包。', '')
-      return
-    }
+  return `${lines.join('\n')}\n`
+}
 
-    event.groups
-      .slice()
-      .sort((left, right) => left.packageName.localeCompare(right.packageName, 'zh-CN'))
-      .forEach((group, groupIndex) => {
+function buildProjectPackageEventMarkdown(
+  event: ProjectPackageEvent,
+  relatedTodoDetailsByOperation: Map<number, OperationRelatedTodoExportDetail[]>,
+) {
+  const lines: string[] = [
+    '',
+    `## ${formatExportDateTime(event.createdAt)}`,
+    '',
+    `### ${textValue(event.title, '未命名事件')}`,
+    '',
+    `- 交付人：${textValue(event.assigneeName, '未指派')}`,
+    '',
+    '### 1. 操作文档',
+    '',
+  ]
+  if (event.operations.length === 0) {
+    lines.push('暂无操作文档。', '')
+  } else {
+    let operationHeadingIndex = 1
+    event.operations.forEach((operation) => {
+      const relatedTodoDetails = relatedTodoDetailsByOperation.get(operation.id) ?? []
+      const headingNumber = `1.${operationHeadingIndex}`
+      const relatedTodoHeadingNumber = relatedTodoDetails.length > 0
+        ? `1.${operationHeadingIndex + 1}`
+        : undefined
+      lines.push(
+        ...buildOperationMarkdown(
+          operation,
+          relatedTodoDetails,
+          '####',
+          {
+            headingNumber,
+            relatedTodoHeadingNumber,
+          },
+        ),
+        '',
+      )
+      operationHeadingIndex += relatedTodoDetails.length > 0 ? 2 : 1
+    })
+  }
+
+  if (event.groups.length === 0) {
+    lines.push('暂无安装包。', '')
+    return lines
+  }
+
+  event.groups
+    .slice()
+    .sort((left, right) => left.packageName.localeCompare(right.packageName, 'zh-CN'))
+    .forEach((group, groupIndex) => {
       lines.push(
         ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, {
           headingLevel: '###',
@@ -1050,9 +1071,7 @@ function buildProjectPackageTimelineMarkdown(
         '',
       )
     })
-  })
-
-  return `${lines.join('\n')}\n`
+  return lines
 }
 
 export async function getProjectPackageTimeline(projectId: number) {
@@ -1130,6 +1149,15 @@ export async function getProjectPackageTimeline(projectId: number) {
       from project_package_operations o
       join project_package_events e on e.id = o.project_package_event_id
       where e.project_id = $1
+        and (
+          o.project_package_group_id is null
+          or exists (
+            select 1
+            from project_package_groups g
+            where g.id = o.project_package_group_id
+              and g.project_package_event_id = o.project_package_event_id
+          )
+        )
       order by o.created_at asc, o.id asc
       `,
       [projectId],
@@ -1151,6 +1179,7 @@ export async function getProjectPackageTimeline(projectId: number) {
 
   const groupsByEvent = new Map<number, ProjectPackageGroup[]>()
   const groupMap = new Map<number, ProjectPackageGroup>()
+  const groupEventById = new Map<number, number>()
   for (const row of groupsResult.rows) {
     const group: ProjectPackageGroup = {
       id: Number(row.id),
@@ -1163,6 +1192,7 @@ export async function getProjectPackageTimeline(projectId: number) {
     groups.push(group)
     groupsByEvent.set(eventId, groups)
     groupMap.set(group.id, group)
+    groupEventById.set(group.id, eventId)
   }
 
   for (const row of itemsResult.rows) {
@@ -1202,6 +1232,8 @@ export async function getProjectPackageTimeline(projectId: number) {
   for (const row of operationsResult.rows) {
     const operation: ProjectPackageOperation = {
       id: Number(row.id),
+      eventId: Number(row.project_package_event_id),
+      groupId: row.project_package_group_id == null ? null : Number(row.project_package_group_id),
       kind: row.kind,
       title: decryptText(row.title),
       label: row.label,
@@ -1215,8 +1247,14 @@ export async function getProjectPackageTimeline(projectId: number) {
       updatedAt: formatDateTime(row.updated_at),
     }
     if (row.project_package_group_id) {
-      const group = groupMap.get(Number(row.project_package_group_id))
-      group?.operations.push(operation)
+      const groupId = Number(row.project_package_group_id)
+      const group = groupMap.get(groupId)
+      // Keep the event and package relationship together. Legacy rows can
+      // contain mismatched IDs; never surface such a document under another
+      // package's timeline.
+      if (group && groupEventById.get(groupId) === operation.eventId) {
+        group.operations.push(operation)
+      }
     } else {
       const eventId = Number(row.project_package_event_id)
       const operations = eventOperationsByEvent.get(eventId) ?? []
@@ -1649,7 +1687,7 @@ export async function getProjectPackageItemObjectKey(params: {
   return result.rows[0]?.object_key ?? ''
 }
 
-export async function exportProjectPackageTimeline(projectId: number) {
+export async function exportProjectPackageTimeline(projectId: number, eventId?: number) {
   const projectResult = await query<{
     owner_display_name: string
     owner_email: string
@@ -1711,14 +1749,26 @@ export async function exportProjectPackageTimeline(projectId: number) {
   }
   const projectName = decryptText(project.project_name)
   const ownerName = project.owner_display_name || project.owner_email.split('@')[0] || project.owner_email
-  const markdown = buildProjectPackageTimelineMarkdown(
-    projectName,
-    ownerName,
-    timeline,
-    relatedTodoDetailsByOperation,
-  )
+  const selectedEvent = eventId == null
+    ? null
+    : timeline.events.find((event) => event.id === eventId) ?? null
+  if (eventId != null && !selectedEvent) throw new Error('Event not found')
+  const markdown = selectedEvent
+    ? [
+      `# ${textValue(projectName, '未命名项目')} · ${textValue(selectedEvent.title, '未命名事件')} 时间线`,
+      ...buildProjectPackageEventMarkdown(selectedEvent, relatedTodoDetailsByOperation),
+      '',
+    ].join('\n')
+    : buildProjectPackageTimelineMarkdown(
+      projectName,
+      ownerName,
+      timeline,
+      relatedTodoDetailsByOperation,
+    )
   const timestamp = formatExportDateTimeForFileName(new Date())
-  const fileName = sanitizeExportFileName(`${projectName}-项目时间线-${timestamp}.md`)
+  const fileName = sanitizeExportFileName(
+    `${projectName}-${selectedEvent ? selectedEvent.title : '项目'}时间线-${timestamp}.md`,
+  )
 
   return { fileName, markdown }
 }

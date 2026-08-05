@@ -23,6 +23,9 @@ export type TestSpaceAccess = (typeof testSpaceAccessLevels)[number]
 export type TestSpaceMembershipStatus = (typeof testSpaceMembershipStatuses)[number]
 export type BugStatus = (typeof bugStatuses)[number]
 
+export const bugSeverities = ['blocker', 'critical', 'major', 'minor', 'trivial'] as const
+export type BugSeverity = (typeof bugSeverities)[number]
+
 export function isTestCaseStatus(value: unknown): value is TestCaseStatus {
   return testCaseStatuses.includes(value as TestCaseStatus)
 }
@@ -37,6 +40,14 @@ export function isTestResult(value: unknown): value is TestResult {
 
 export function isBugStatus(value: unknown): value is BugStatus {
   return bugStatuses.includes(value as BugStatus)
+}
+
+export function isBugSeverity(value: unknown): value is BugSeverity {
+  return bugSeverities.includes(value as BugSeverity)
+}
+
+export function canEditTestBug(reporterUserId: number | null, userId: number) {
+  return reporterUserId === userId
 }
 
 export function isTestSpaceMembershipStatus(value: unknown): value is TestSpaceMembershipStatus {
@@ -62,7 +73,15 @@ export function parseOptionalTestSpaceOrganizationId(value: unknown):
     : { valid: false }
 }
 
+export function canEditTestSubject(createdByUserId: number | null, userId: number) {
+  return createdByUserId === userId
+}
+
 export function canDeleteTestSubject(createdByUserId: number | null, userId: number) {
+  return canEditTestSubject(createdByUserId, userId)
+}
+
+export function canDeleteTestCase(createdByUserId: number | null, userId: number) {
   return createdByUserId === userId
 }
 

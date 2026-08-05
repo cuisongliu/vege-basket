@@ -26,11 +26,12 @@ historical product context; current code and these operational docs take precede
   response shapes.
 - Keep occupational roles separate from resource permissions. Test and Bug workbenches
   require the active `tester` or `developer` persona. An assigned `organization_admin`
-  role may assume any business persona and receives read-only access to projects, test
-  spaces, and Bugs only in organizations where the account has active `owner` or `admin`
-  membership. Resource mutations still require the original project membership,
-  test-space access, creator, or Bug-assignee permission. System-administrator access
-  comes only from `VEGES_ADMIN_USERNAMES`, not from an occupational role.
+  role may assume any business persona. In organizations where the account also has active
+  `owner` or `admin` membership, it may govern attached project lifecycle status, health,
+  and milestones, and receives organization-scoped read access to projects, test spaces,
+  and Bugs. Other resource mutations still require the original project membership,
+  test-space access, creator, or Bug-assignee permission. System-administrator access comes
+  only from `VEGES_ADMIN_USERNAMES`, not from an occupational role.
 - Keep document editors on the existing Markdown string contract. When registering
   `CodeBlockLowlight`, disable StarterKit's plain code block, preserve fenced-language
   metadata, highlight only an explicit supported language, and normalize link marks to

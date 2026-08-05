@@ -4,17 +4,30 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   canManageOrganization,
+  canManageOrganizationProjects,
+  canManageOrganizationWeeklyReports,
   hashOrganizationInviteToken,
   isFreshFeishuTimestamp,
   matchesOrganizationDeleteConfirmation,
   normalizeOrganizationName,
+  normalizeOrganizationProjectHealthStatus,
+  normalizeOrganizationProjectStatus,
   normalizeOrganizationWeekStart,
   normalizeOrganizationWeekStartsOn,
+  normalizeProjectMilestoneDate,
+  normalizeProjectMilestoneStatus,
   verifyFeishuCardSignature,
 } from './organization-policy.ts'
 import { isSystemAdmin } from './roles.ts'
 
 const organizationsSource = readFileSync(new URL('./organizations.ts', import.meta.url), 'utf8')
+const appSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
+const organizationWorkbenchSource = readFileSync(
+  new URL('../src/components/organization-workbench.tsx', import.meta.url),
+  'utf8',
+)
+const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
 
 test('system administrator access requires an explicit username configuration', () => {
   const previous = process.env.VEGES_ADMIN_USERNAMES
@@ -31,11 +44,98 @@ test('system administrator access requires an explicit username configuration', 
   }
 })
 
-test('organization administrators are separate from ordinary members', () => {
-  assert.equal(canManageOrganization('owner'), true)
-  assert.equal(canManageOrganization('admin'), true)
-  assert.equal(canManageOrganization('member'), false)
-  assert.equal(canManageOrganization(null), false)
+test('organization administrators are account roles independent of membership access role', () => {
+  assert.equal(canManageOrganization('owner', ['organization_admin']), true)
+  assert.equal(canManageOrganization('admin', ['organization_admin']), true)
+  assert.equal(canManageOrganization('member', ['organization_admin']), true)
+  assert.equal(canManageOrganization('admin', ['developer']), false)
+  assert.equal(canManageOrganization(null, ['organization_admin']), false)
+})
+
+test('organization project governance requires both account and organization authority', () => {
+  assert.equal(canManageOrganizationProjects('owner', ['organization_admin']), true)
+  assert.equal(canManageOrganizationProjects('admin', ['organization_admin', 'developer']), true)
+  assert.equal(canManageOrganizationProjects('member', ['organization_admin']), true)
+  assert.equal(canManageOrganizationProjects('admin', ['developer']), false)
+})
+
+test('new organization owners are provisioned as organization administrators', () => {
+  const routeStart = organizationsSource.indexOf("router.post('/admin/organizations'")
+  const routeEnd = organizationsSource.indexOf("router.get('/organizations/:organizationId'", routeStart)
+  const routeSource = organizationsSource.slice(routeStart, routeEnd)
+
+  assert.match(routeSource, /insert into user_roles \(user_id, role\)[\s\S]+organization_admin/u)
+  assert.match(routeSource, /on conflict \(user_id, role\) do nothing/u)
+  assert.match(schemaSource, /select owner_user_id, 'organization_admin'[\s\S]+from organizations/u)
+})
+
+test('weekly report collection management only requires organization administrator role', () => {
+  assert.equal(canManageOrganizationWeeklyReports('member', ['organization_admin']), true)
+  assert.equal(canManageOrganizationWeeklyReports('owner', ['organization_admin']), true)
+  assert.equal(canManageOrganizationWeeklyReports('admin', ['developer']), false)
+  assert.equal(canManageOrganizationWeeklyReports(null, ['organization_admin']), false)
+})
+
+test('organization project governance values are strict and bounded', () => {
+  assert.equal(normalizeOrganizationProjectStatus('active'), 'active')
+  assert.equal(normalizeOrganizationProjectStatus('planning'), null)
+  assert.equal(normalizeOrganizationProjectHealthStatus('at_risk'), 'at_risk')
+  assert.equal(normalizeOrganizationProjectHealthStatus('warning'), null)
+  assert.equal(normalizeProjectMilestoneStatus('in_review'), 'in_review')
+  assert.equal(normalizeProjectMilestoneStatus('overdue'), null)
+  assert.equal(normalizeProjectMilestoneDate('2026-08-15'), '2026-08-15')
+  assert.equal(normalizeProjectMilestoneDate('2026-02-30'), null)
+})
+
+test('project governance mutations retain organization-admin checks', () => {
+  const governedLockStart = organizationsSource.indexOf('async function lockGovernedProject')
+  const governedLockEnd = organizationsSource.indexOf('async function lockManagedOrganization', governedLockStart)
+  const governedLockSource = organizationsSource.slice(governedLockStart, governedLockEnd)
+  assert.match(governedLockSource, /membership\.status = 'active'/u)
+  assert.match(governedLockSource, /role\.role = 'organization_admin'/u)
+  assert.doesNotMatch(governedLockSource, /membership\.access_role in \('owner', 'admin'\)/u)
+  assert.match(
+    organizationsSource,
+    /where p\.organization_id = \$1 and p\.id = \$2[\s\S]+for update of p, membership, role/u,
+  )
+  assert.match(organizationsSource, /project\.milestone_created/u)
+  assert.match(organizationsSource, /project\.milestone_updated/u)
+  assert.match(
+    organizationsSource,
+    /milestones\/:milestoneId\/status[\s\S]+project\.milestone_status_updated/u,
+  )
+  assert.match(organizationsSource, /requestedStatus \?\? normalizeProjectMilestoneStatus\(milestone\.status\)/u)
+})
+
+test('organization administrators add active organization members directly to projects', () => {
+  const routeStart = organizationsSource.indexOf(
+    "router.post('/organizations/:organizationId/projects/:projectId/members'",
+  )
+  const routeEnd = organizationsSource.indexOf(
+    "router.delete('/organizations/:organizationId/projects/:projectId/members/:membershipId'",
+    routeStart,
+  )
+  const routeSource = organizationsSource.slice(routeStart, routeEnd)
+
+  assert.ok(routeStart >= 0)
+  assert.ok(routeEnd > routeStart)
+  assert.match(routeSource, /positiveId\(request\.body\?\.userId\)/u)
+  assert.match(routeSource, /membership\.status = 'active'[\s\S]+for update of membership, member/u)
+  assert.match(routeSource, /status = 'active'[\s\S]+accepted_at = now\(\)/u)
+  assert.match(routeSource, /'member', 'active', now\(\)/u)
+  assert.match(routeSource, /'project\.member_added'/u)
+  assert.doesNotMatch(routeSource, /status = 'pending'/u)
+  assert.doesNotMatch(routeSource, /project\.member_invited/u)
+})
+
+test('organization project member management selects from the organization roster', () => {
+  assert.match(apiSource, /addOrganizationProjectMember\([\s\S]+JSON\.stringify\(\{ userId \}\)/u)
+  assert.match(organizationWorkbenchSource, /detail\.members\.filter/u)
+  assert.match(organizationWorkbenchSource, /选择组织成员/u)
+  assert.match(organizationWorkbenchSource, /无需对方确认/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /输入组织成员用户名邀请/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /项目邀请链接/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /getProjectInviteLink/u)
 })
 
 test('organization names are trimmed and limited to 80 characters', () => {
@@ -95,6 +195,88 @@ test('organization invite tokens are stored as one-way hashes', () => {
   const token = 'invite-token'
   assert.notEqual(hashOrganizationInviteToken(token), token)
   assert.equal(hashOrganizationInviteToken(token), hashOrganizationInviteToken(token))
+})
+
+test('organization invite links are revocable, expiring, and stored as hashes', () => {
+  assert.match(schemaSource, /create table if not exists organization_invite_links/u)
+  assert.match(schemaSource, /token_hash text not null unique/u)
+  assert.match(schemaSource, /expires_at timestamptz not null/u)
+  assert.match(
+    schemaSource,
+    /create unique index if not exists idx_organization_invite_links_active_organization[\s\S]+where revoked_at is null/u,
+  )
+
+  const routeStart = organizationsSource.indexOf(
+    "router.post('/organizations/:organizationId/invite-link'",
+  )
+  const routeEnd = organizationsSource.indexOf(
+    "router.get('/organization-invite-links/:token'",
+    routeStart,
+  )
+  const routeSource = organizationsSource.slice(routeStart, routeEnd)
+  assert.ok(routeStart >= 0)
+  assert.ok(routeEnd > routeStart)
+  assert.match(routeSource, /requireOrganizationAdmin/u)
+  assert.match(routeSource, /lockManagedOrganization/u)
+  assert.match(routeSource, /hashOrganizationInviteToken\(token\)/u)
+  assert.match(routeSource, /set revoked_at = now\(\)/u)
+})
+
+test('organization invite acceptance locks the link and activates membership', () => {
+  const helperStart = organizationsSource.indexOf(
+    'export async function acceptOrganizationInviteTokenWithClient',
+  )
+  const helperEnd = organizationsSource.indexOf(
+    'async function getOrganizationWeekStartsOn',
+    helperStart,
+  )
+  const helperSource = organizationsSource.slice(helperStart, helperEnd)
+  assert.ok(helperStart >= 0)
+  assert.ok(helperEnd > helperStart)
+  assert.match(helperSource, /link\.token_hash = \$1/u)
+  assert.match(helperSource, /link\.expires_at > now\(\)/u)
+  assert.match(helperSource, /for update of link, organization/u)
+  assert.match(helperSource, /on conflict \(organization_id, user_id\) do update/u)
+  assert.match(helperSource, /status = 'active'/u)
+  assert.match(helperSource, /member\.joined_by_link/u)
+})
+
+test('organization invitation UI uses direct add and browser invite links', () => {
+  assert.match(organizationWorkbenchSource, /邀请成员/u)
+  assert.match(organizationWorkbenchSource, /inviteOrganizationMemberByUsername/u)
+  assert.match(organizationWorkbenchSource, /createOrganizationInviteLink/u)
+  assert.match(organizationWorkbenchSource, /organizationInvite/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /发送飞书邀请/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /飞书邮箱/u)
+  assert.doesNotMatch(organizationWorkbenchSource, /inviteOrganizationMember\(/u)
+})
+
+test('organization invite tokens flow through password and Feishu sign-in', () => {
+  assert.match(appSource, /organizationInviteToken: request\.body\.organizationInviteToken/u)
+  assert.match(
+    appSource,
+    /await acceptOrganizationInviteToken\(userId, request\.body\.organizationInviteToken\)/u,
+  )
+  assert.match(appSource, /state\.organizationInviteToken/u)
+  assert.match(
+    appSource,
+    /Password registration requires an active project or organization invite/u,
+  )
+})
+
+test('Feishu organization invitations map lookup and duplicate errors explicitly', () => {
+  const routeStart = organizationsSource.indexOf("router.post('/organizations/:organizationId/invitations'")
+  const routeEnd = organizationsSource.indexOf("router.post('/organizations/:organizationId/username-invitations'", routeStart)
+  const routeSource = organizationsSource.slice(routeStart, routeEnd)
+
+  assert.notEqual(routeStart, -1)
+  assert.notEqual(routeEnd, -1)
+  assert.match(routeSource, /normalizedEmail\(request\.body\?\.email\)/u)
+  assert.match(routeSource, /try \{\s*openId = await dependencies\.resolveFeishuOpenIdByEmail\(email\)/u)
+  assert.match(routeSource, /response\.status\(mappedError\.status\)\.json\(\{ error: mappedError\.message \}\)/u)
+  assert.match(routeSource, /email: maskedEmail\(email\)/u)
+  assert.match(routeSource, /databaseErrorCode\(error\) === '23505'/u)
+  assert.match(routeSource, /已有待处理的组织邀请/u)
 })
 
 test('Feishu card signatures validate the raw request body', () => {

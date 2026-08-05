@@ -2,9 +2,11 @@ import {
   forwardRef,
   useEffect,
   useId,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type ComponentPropsWithoutRef,
   type FormEvent,
   type ReactNode,
@@ -55,13 +57,19 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import { clearMarkdownEditorRecovery } from './markdown-editor-recovery'
 
 type MarkdownWysiwygEditorProps = {
   ariaLabel: string
   onChange: (markdown: string) => void
+  onPasteImages?: (files: File[]) => void
   onReady?: () => void
   placeholder?: string
   value: string
+}
+
+export type MarkdownWysiwygEditorHandle = {
+  insertMarkdownAtCursor: (markdown: string) => boolean
 }
 
 type ToolbarButtonProps = Omit<ComponentPropsWithoutRef<'button'>, 'children'> & {
@@ -267,13 +275,17 @@ function ToolbarSeparator() {
   return <span className="markdown-wysiwyg-toolbar-separator" aria-hidden="true" />
 }
 
-export function MarkdownWysiwygEditor({
-  ariaLabel,
-  onChange,
-  onReady,
-  placeholder = '开始输入内容…',
-  value,
-}: MarkdownWysiwygEditorProps) {
+export const MarkdownWysiwygEditor = forwardRef<
+  MarkdownWysiwygEditorHandle,
+  MarkdownWysiwygEditorProps
+>(function MarkdownWysiwygEditor({
+    ariaLabel,
+    onChange,
+    onPasteImages,
+    onReady,
+    placeholder = '开始输入内容…',
+    value,
+  }, ref) {
   const onChangeRef = useRef(onChange)
   const onReadyRef = useRef(onReady)
   const lastEmittedMarkdownRef = useRef(value)
@@ -333,6 +345,7 @@ export function MarkdownWysiwygEditor({
     extensions,
     immediatelyRender: true,
     onCreate: ({ editor: currentEditor }) => {
+      clearMarkdownEditorRecovery()
       const markdown = currentEditor.getMarkdown()
       lastEmittedMarkdownRef.current = markdown
       if (markdown !== value) onChangeRef.current(markdown)
@@ -347,26 +360,47 @@ export function MarkdownWysiwygEditor({
   })
   const toolbarState = useEditorState({
     editor,
-    selector: ({ editor: currentEditor }) => ({
-      blockquote: currentEditor.isActive('blockquote'),
-      bold: currentEditor.isActive('bold'),
-      bulletList: currentEditor.isActive('bulletList'),
-      canRedo: currentEditor.can().chain().redo().run(),
-      canUndo: currentEditor.can().chain().undo().run(),
-      code: currentEditor.isActive('code'),
-      codeBlock: currentEditor.isActive('codeBlock'),
-      codeBlockLanguage: String(currentEditor.getAttributes('codeBlock').language ?? ''),
-      heading: ([1, 2, 3, 4, 5, 6] as HeadingLevel[]).find((level) =>
-        currentEditor.isActive('heading', { level }),
-      ),
-      highlight: currentEditor.isActive('highlight'),
-      italic: currentEditor.isActive('italic'),
-      link: currentEditor.isActive('link'),
-      orderedList: currentEditor.isActive('orderedList'),
-      strike: currentEditor.isActive('strike'),
-      table: currentEditor.isActive('table'),
-    }),
+    selector: ({ editor: currentEditor }) => {
+      if (!currentEditor) return null
+
+      return {
+        blockquote: currentEditor.isActive('blockquote'),
+        bold: currentEditor.isActive('bold'),
+        bulletList: currentEditor.isActive('bulletList'),
+        canRedo: currentEditor.can().chain().redo().run(),
+        canUndo: currentEditor.can().chain().undo().run(),
+        code: currentEditor.isActive('code'),
+        codeBlock: currentEditor.isActive('codeBlock'),
+        codeBlockLanguage: String(currentEditor.getAttributes('codeBlock').language ?? ''),
+        heading: ([1, 2, 3, 4, 5, 6] as HeadingLevel[]).find((level) =>
+          currentEditor.isActive('heading', { level }),
+        ),
+        highlight: currentEditor.isActive('highlight'),
+        italic: currentEditor.isActive('italic'),
+        link: currentEditor.isActive('link'),
+        orderedList: currentEditor.isActive('orderedList'),
+        strike: currentEditor.isActive('strike'),
+        table: currentEditor.isActive('table'),
+      }
+    },
   })
+  const safeToolbarState = toolbarState ?? {
+    blockquote: false,
+    bold: false,
+    bulletList: false,
+    canRedo: false,
+    canUndo: false,
+    code: false,
+    codeBlock: false,
+    codeBlockLanguage: '',
+    heading: undefined,
+    highlight: false,
+    italic: false,
+    link: false,
+    orderedList: false,
+    strike: false,
+    table: false,
+  }
 
   useEffect(() => {
     onChangeRef.current = onChange
@@ -376,12 +410,31 @@ export function MarkdownWysiwygEditor({
     onReadyRef.current = onReady
   }, [onReady])
 
+  useImperativeHandle(ref, () => ({
+    insertMarkdownAtCursor(markdown: string) {
+      if (!editor || !markdown.trim()) return false
+      const chain = editor.chain().focus()
+      if (editor.isActive('heading')) {
+        const { $from } = editor.state.selection
+        return chain.insertContentAt(
+          $from.after($from.depth),
+          markdown,
+          { contentType: 'markdown', updateSelection: true },
+        ).scrollIntoView().run()
+      }
+      return chain.insertContent(markdown, {
+        contentType: 'markdown',
+        updateSelection: true,
+      }).scrollIntoView().run()
+    },
+  }), [editor])
+
   useEffect(() => {
     if (!initialValueHandledRef.current) {
       initialValueHandledRef.current = true
       return
     }
-    if (value === lastEmittedMarkdownRef.current || value === editor.getMarkdown()) return
+    if (!editor || value === lastEmittedMarkdownRef.current || value === editor.getMarkdown()) return
     editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
     const markdown = editor.getMarkdown()
     lastEmittedMarkdownRef.current = markdown
@@ -446,18 +499,31 @@ export function MarkdownWysiwygEditor({
     handleLinkEditorOpenChange(false)
   }
 
-  const currentBlockLabel = toolbarState.heading
-    ? headingOptions.find((option) => option.value === toolbarState.heading)?.label ?? '标题'
-    : toolbarState.codeBlock
+  function handlePasteCapture(event: ClipboardEvent<HTMLDivElement>) {
+    if (!onPasteImages) return
+    const imageFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+    if (imageFiles.length === 0) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    onPasteImages(imageFiles)
+  }
+
+  const currentBlockLabel = safeToolbarState.heading
+    ? headingOptions.find((option) => option.value === safeToolbarState.heading)?.label ?? '标题'
+    : safeToolbarState.codeBlock
       ? '代码块'
       : '正文'
-  const currentCodeLanguage = normalizeSyntaxLanguage(toolbarState.codeBlockLanguage)
+  const currentCodeLanguage = normalizeSyntaxLanguage(safeToolbarState.codeBlockLanguage)
   const currentCodeLanguageKnown =
     currentCodeLanguage === '' || registeredSyntaxLanguages.includes(currentCodeLanguage)
-  const currentCodeLanguageLabel = getSyntaxLanguageLabel(toolbarState.codeBlockLanguage)
+  const currentCodeLanguageLabel = getSyntaxLanguageLabel(safeToolbarState.codeBlockLanguage)
 
   function renderSyntaxLanguageOption(option: SyntaxLanguageOption) {
-    const selected = toolbarState.codeBlock && currentCodeLanguage === option.value
+    const selected = safeToolbarState.codeBlock && currentCodeLanguage === option.value
 
     return (
       <DropdownMenuItem
@@ -473,8 +539,12 @@ export function MarkdownWysiwygEditor({
     )
   }
 
+  if (!editor) {
+    return <div className="markdown-wysiwyg-loading" role="status">正在加载编辑器…</div>
+  }
+
   return (
-    <div className="markdown-wysiwyg-editor">
+    <div className="markdown-wysiwyg-editor" onPasteCapture={handlePasteCapture}>
       <div className="markdown-wysiwyg-toolbar" role="toolbar" aria-label={`${ariaLabel}格式工具`}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -499,28 +569,28 @@ export function MarkdownWysiwygEditor({
         <ToolbarSeparator />
         <ToolbarButton
           label="粗体"
-          active={toolbarState.bold}
+          active={safeToolbarState.bold}
           onClick={() => editor.chain().focus().toggleBold().run()}
         >
           <TextB size={17} weight="bold" />
         </ToolbarButton>
         <ToolbarButton
           label="斜体"
-          active={toolbarState.italic}
+          active={safeToolbarState.italic}
           onClick={() => editor.chain().focus().toggleItalic().run()}
         >
           <TextItalic size={17} />
         </ToolbarButton>
         <ToolbarButton
           label="删除线"
-          active={toolbarState.strike}
+          active={safeToolbarState.strike}
           onClick={() => editor.chain().focus().toggleStrike().run()}
         >
           <TextStrikethrough size={17} />
         </ToolbarButton>
         <ToolbarButton
           label="高亮"
-          active={toolbarState.highlight}
+          active={safeToolbarState.highlight}
           onClick={() => editor.chain().focus().toggleHighlight().run()}
         >
           <Highlighter size={17} />
@@ -529,7 +599,7 @@ export function MarkdownWysiwygEditor({
           <PopoverTrigger asChild>
             <ToolbarButton
               label="链接"
-              active={toolbarState.link}
+              active={safeToolbarState.link}
               onPointerDown={() => {
                 if (!linkEditorOpen) prepareLinkEditor()
               }}
@@ -597,28 +667,28 @@ export function MarkdownWysiwygEditor({
         <ToolbarSeparator />
         <ToolbarButton
           label="无序列表"
-          active={toolbarState.bulletList}
+          active={safeToolbarState.bulletList}
           onClick={() => editor.chain().focus().toggleBulletList().run()}
         >
           <ListBullets size={17} />
         </ToolbarButton>
         <ToolbarButton
           label="有序列表"
-          active={toolbarState.orderedList}
+          active={safeToolbarState.orderedList}
           onClick={() => editor.chain().focus().toggleOrderedList().run()}
         >
           <ListNumbers size={17} />
         </ToolbarButton>
         <ToolbarButton
           label="引用"
-          active={toolbarState.blockquote}
+          active={safeToolbarState.blockquote}
           onClick={() => editor.chain().focus().toggleBlockquote().run()}
         >
           <Quotes size={17} />
         </ToolbarButton>
         <ToolbarButton
           label="行内代码"
-          active={toolbarState.code}
+          active={safeToolbarState.code}
           onClick={() => editor.chain().focus().toggleCode().run()}
         >
           <Code size={17} />
@@ -629,25 +699,25 @@ export function MarkdownWysiwygEditor({
               type="button"
               className={cn(
                 'markdown-wysiwyg-tool markdown-wysiwyg-code-trigger',
-                toolbarState.codeBlock && 'is-active',
+                safeToolbarState.codeBlock && 'is-active',
               )}
               aria-label={
-                toolbarState.codeBlock
+                safeToolbarState.codeBlock
                   ? `代码块，当前语言：${currentCodeLanguageLabel}`
                   : '插入代码块并选择语言'
               }
-              aria-pressed={toolbarState.codeBlock}
-              data-tooltip={toolbarState.codeBlock ? currentCodeLanguageLabel : '代码块'}
+              aria-pressed={safeToolbarState.codeBlock}
+              data-tooltip={safeToolbarState.codeBlock ? currentCodeLanguageLabel : '代码块'}
             >
               <CodeBlock size={17} />
               <CaretDown className="markdown-wysiwyg-code-trigger-caret" size={10} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="markdown-wysiwyg-code-menu">
-            {toolbarState.codeBlock && !currentCodeLanguageKnown ? (
+            {safeToolbarState.codeBlock && !currentCodeLanguageKnown ? (
               <>
                 <DropdownMenuItem disabled>
-                  未知语言：{toolbarState.codeBlockLanguage}
+                  未知语言：{safeToolbarState.codeBlockLanguage}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>
@@ -655,7 +725,7 @@ export function MarkdownWysiwygEditor({
             {preferredSyntaxLanguageOptions.map(renderSyntaxLanguageOption)}
             <DropdownMenuSeparator />
             {otherSyntaxLanguageOptions.map(renderSyntaxLanguageOption)}
-            {toolbarState.codeBlock ? (
+            {safeToolbarState.codeBlock ? (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => editor.chain().focus().toggleCodeBlock().run()}>
@@ -676,16 +746,16 @@ export function MarkdownWysiwygEditor({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className={cn('markdown-wysiwyg-tool', toolbarState.table && 'is-active')}
+              className={cn('markdown-wysiwyg-tool', safeToolbarState.table && 'is-active')}
               aria-label="表格"
-              aria-pressed={toolbarState.table}
+              aria-pressed={safeToolbarState.table}
               data-tooltip="表格"
             >
               <Table size={17} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            {!toolbarState.table ? (
+            {!safeToolbarState.table ? (
               <DropdownMenuItem
                 onSelect={() => editor.chain().focus().insertTable({ cols: 3, rows: 3, withHeaderRow: true }).run()}
               >
@@ -718,14 +788,14 @@ export function MarkdownWysiwygEditor({
         <span className="markdown-wysiwyg-history-tools">
           <ToolbarButton
             label="撤销"
-            disabled={!toolbarState.canUndo}
+            disabled={!safeToolbarState.canUndo}
             onClick={() => editor.chain().focus().undo().run()}
           >
             <ArrowCounterClockwise size={17} />
           </ToolbarButton>
           <ToolbarButton
             label="重做"
-            disabled={!toolbarState.canRedo}
+            disabled={!safeToolbarState.canRedo}
             onClick={() => editor.chain().focus().redo().run()}
           >
             <ArrowClockwise size={17} />
@@ -737,4 +807,4 @@ export function MarkdownWysiwygEditor({
       <EditorContent editor={editor} className="markdown-wysiwyg-canvas" />
     </div>
   )
-}
+})

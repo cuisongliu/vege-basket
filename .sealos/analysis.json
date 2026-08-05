@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-15T08:05:43Z",
+  "generated_at": "2026-07-31T09:14:43Z",
   "project": {
     "github_url": "git@github.com:felixqiu014-wq/vege-basket.git",
     "work_dir": "/Users/felixqiu/Documents/vege-basket",
@@ -125,5 +125,5 @@
   },
   "has_dockerfile": true,
   "complexity_tier": "L2",
-  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260715-220116"
+  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260804-210029"
 }

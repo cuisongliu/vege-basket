@@ -45,7 +45,17 @@ import type {
   OrganizationAccessRole,
   OrganizationDetail,
   OrganizationListItem,
+  OrganizationProjectHealthStatus,
+  OrganizationProjectMilestoneStatus,
+  OrganizationProjectStatus,
+  PersonalWeeklyReport,
+  PersonalWeeklyReportList,
+  WeeklyReportCollection,
+  WeeklyReportRules,
+  WeeklyReportSourceCandidate,
+  WeeklyReportSourceRef,
 } from './organization-types'
+import type { MyWorkData, MyWorkFilters } from './my-work-types'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
 export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
@@ -83,7 +93,7 @@ export type AuthUser = {
   username: string
 }
 
-export type UserRole = 'developer' | 'tester' | 'delivery' | 'organization_admin'
+export type UserRole = 'developer' | 'tester' | 'organization_admin'
 
 export type ManagedUser = {
   displayName: string
@@ -103,6 +113,12 @@ export type ProjectInviteLinkResponse = {
   expiresAt: string
   expiresInMinutes: number
   passwordRequired: boolean
+  token: string
+}
+
+export type OrganizationInviteLinkResponse = {
+  expiresAt: string
+  expiresInMinutes: number
   token: string
 }
 
@@ -360,6 +376,26 @@ export function fetchNotifications() {
   return request<NotificationResponse>('/api/notifications')
 }
 
+export function markAllNotificationsRead() {
+  return request<NotificationResponse>('/api/notifications/read-all', {
+    method: 'PATCH',
+  })
+}
+
+export function fetchMyWork(filters: MyWorkFilters = {}) {
+  const params = new URLSearchParams()
+  if (filters.cursor) params.set('cursor', filters.cursor)
+  if (filters.kind) params.set('kind', filters.kind)
+  if (filters.projectId) params.set('projectId', String(filters.projectId))
+  if (filters.creator) params.set('creator', filters.creator)
+  if (filters.q) params.set('q', filters.q)
+  if (filters.status) params.set('status', filters.status)
+  if (filters.sort) params.set('sort', filters.sort)
+  if (filters.limit) params.set('limit', String(filters.limit))
+  const query = params.toString()
+  return request<MyWorkData>(`/api/my-work${query ? `?${query}` : ''}`)
+}
+
 export function fetchCurrentUser() {
   return request<{ user: AuthUser; workspace: WorkspaceData }>('/api/auth/me')
 }
@@ -367,6 +403,7 @@ export function fetchCurrentUser() {
 export function registerAccount(payload: {
   invitePassword?: string
   inviteToken?: string
+  organizationInviteToken?: string
   password: string
   username: string
 }) {
@@ -379,6 +416,7 @@ export function registerAccount(payload: {
 export function loginAccount(payload: {
   invitePassword?: string
   inviteToken?: string
+  organizationInviteToken?: string
   password: string
   username: string
 }) {
@@ -444,6 +482,16 @@ export function updateOrganizationWeekStart(organizationId: number, weekStartsOn
   })
 }
 
+export function updateOrganizationWeeklyReportRules(
+  organizationId: number,
+  payload: { weekStartsOn: number; weeklyReportRules: WeeklyReportRules },
+) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/weekly-report-rules`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function deleteOrganization(organizationId: number, confirmationName: string) {
   return request<{
     deleted: true
@@ -455,18 +503,37 @@ export function deleteOrganization(organizationId: number, confirmationName: str
   })
 }
 
-export function inviteOrganizationMember(organizationId: number, email: string) {
-  return request<OrganizationDetail>(`/api/organizations/${organizationId}/invitations`, {
-    method: 'POST',
-    body: JSON.stringify({ email }),
-  })
-}
-
 export function inviteOrganizationMemberByUsername(organizationId: number, username: string) {
   return request<OrganizationDetail>(`/api/organizations/${organizationId}/username-invitations`, {
     method: 'POST',
     body: JSON.stringify({ username }),
   })
+}
+
+export function createOrganizationInviteLink(
+  organizationId: number,
+  expiresInMinutes: number,
+) {
+  return request<OrganizationInviteLinkResponse>(
+    `/api/organizations/${organizationId}/invite-link`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ expiresInMinutes }),
+    },
+  )
+}
+
+export function fetchOrganizationInviteLinkInfo(token: string) {
+  return request<{ expiresAt: string; organizationName: string; valid: true }>(
+    `/api/organization-invite-links/${encodeURIComponent(token)}`,
+  )
+}
+
+export function acceptOrganizationInviteLink(token: string) {
+  return request<{ ok: true; organizationId: number }>(
+    `/api/organization-invite-links/${encodeURIComponent(token)}/accept`,
+    { method: 'POST' },
+  )
 }
 
 export function updateOrganizationMemberRole(
@@ -490,6 +557,88 @@ export function attachProjectToOrganization(organizationId: number, projectId: n
   return request<OrganizationDetail>(`/api/organizations/${organizationId}/projects/${projectId}`, {
     method: 'POST',
   })
+}
+
+export function addOrganizationProjectMember(
+  organizationId: number,
+  projectId: number,
+  userId: number,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/members`,
+    { method: 'POST', body: JSON.stringify({ userId }) },
+  )
+}
+
+export function removeOrganizationProjectMember(
+  organizationId: number,
+  projectId: number,
+  membershipId: number,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/members/${membershipId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function updateOrganizationProjectGovernance(
+  organizationId: number,
+  projectId: number,
+  payload: Partial<{
+    healthNote: string
+    healthStatus: OrganizationProjectHealthStatus
+    status: OrganizationProjectStatus
+  }>,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/governance`,
+    { method: 'PATCH', body: JSON.stringify(payload) },
+  )
+}
+
+export type OrganizationProjectMilestonePayload = {
+  acceptanceCriteria: string
+  executionNote: string
+  linkedTodoIds: number[]
+  responsibleUserId: number | null
+  status?: OrganizationProjectMilestoneStatus
+  targetDate: string
+  title: string
+}
+
+export function createOrganizationProjectMilestone(
+  organizationId: number,
+  projectId: number,
+  payload: OrganizationProjectMilestonePayload,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/milestones`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+export function updateOrganizationProjectMilestone(
+  organizationId: number,
+  projectId: number,
+  milestoneId: number,
+  payload: OrganizationProjectMilestonePayload,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/milestones/${milestoneId}`,
+    { method: 'PATCH', body: JSON.stringify(payload) },
+  )
+}
+
+export function updateOrganizationProjectMilestoneStatus(
+  organizationId: number,
+  projectId: number,
+  milestoneId: number,
+  status: OrganizationProjectMilestoneStatus,
+) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/projects/${projectId}/milestones/${milestoneId}/status`,
+    { method: 'PATCH', body: JSON.stringify({ status }) },
+  )
 }
 
 export function attachTestSpaceToOrganization(organizationId: number, spaceId: number) {
@@ -516,9 +665,86 @@ export function generateOrganizationWeeklySummary(organizationId: number, weekSt
   )
 }
 
+export function fetchPersonalWeeklyReport(organizationId: number, weekStart: string) {
+  return request<PersonalWeeklyReport>(`/api/weekly-reports/${organizationId}/${weekStart}`)
+}
+
+export function fetchPersonalWeeklyReports(
+  organizationId: number,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const query = new URLSearchParams({
+    limit: String(options.limit ?? 10),
+    offset: String(options.offset ?? 0),
+  })
+  return request<PersonalWeeklyReportList>(`/api/weekly-reports/${organizationId}?${query}`)
+}
+
+export function fetchWeeklyReportSources(organizationId: number, weekStart: string) {
+  return request<{ sources: WeeklyReportSourceCandidate[] }>(
+    `/api/weekly-reports/${organizationId}/${weekStart}/sources`,
+  )
+}
+
+export function savePersonalWeeklyReportDraft(
+  organizationId: number,
+  weekStart: string,
+  payload: {
+    content: string
+    expectedVersion: number
+    sourceMode: 'ai' | 'manual'
+    sources: WeeklyReportSourceRef[]
+  },
+) {
+  return request<PersonalWeeklyReport>(
+    `/api/weekly-reports/${organizationId}/${weekStart}/draft`,
+    { body: JSON.stringify(payload), method: 'PUT' },
+  )
+}
+
+export function generatePersonalWeeklyReport(
+  organizationId: number,
+  weekStart: string,
+  payload: { expectedVersion: number; sources: WeeklyReportSourceRef[] },
+) {
+  return request<PersonalWeeklyReport>(
+    `/api/weekly-reports/${organizationId}/${weekStart}/generate`,
+    { body: JSON.stringify(payload), method: 'POST' },
+  )
+}
+
+export function submitPersonalWeeklyReport(
+  organizationId: number,
+  weekStart: string,
+  expectedVersion: number,
+) {
+  return request<PersonalWeeklyReport>(
+    `/api/weekly-reports/${organizationId}/${weekStart}/submit`,
+    { body: JSON.stringify({ expectedVersion }), method: 'POST' },
+  )
+}
+
+export function fetchWeeklyReportCollection(organizationId: number, weekStart: string) {
+  return request<WeeklyReportCollection>(
+    `/api/organizations/${organizationId}/weekly-report-collection/${weekStart}`,
+  )
+}
+
+export function remindWeeklyReportMembers(
+  organizationId: number,
+  weekStart: string,
+  userIds: number[],
+) {
+  return request<{ failed: number; sent: number; skipped: number }>(
+    `/api/organizations/${organizationId}/weekly-report-reminders/${weekStart}`,
+    { body: JSON.stringify({ userIds }), method: 'POST' },
+  )
+}
+
 export function createFeishuOAuthUrl(payload: {
   invitePassword?: string
   inviteToken?: string
+  organizationInviteToken?: string
   returnTo: string
 }) {
   return request<{ url: string }>('/api/auth/feishu/oauth/url', {
@@ -547,7 +773,7 @@ export function fetchAiStatus() {
   return request<AiStatus>('/api/ai/status')
 }
 
-export function createProject(payload: { name: string; tags: string[] }) {
+export function createProject(payload: { name: string; organizationId?: number; tags: string[] }) {
   return request<WorkspaceData>('/api/projects', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -585,6 +811,29 @@ export function updateProjectFeishuSettings(
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
+}
+
+export function requestProjectTransfer(
+  projectId: number,
+  payload: { organizationId: number; targetUserId: number },
+) {
+  return request<{ ok: true; transferId: number }>(`/api/projects/${projectId}/transfer`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function respondToProjectTransfer(
+  transferId: number,
+  action: 'accept' | 'decline',
+) {
+  return request<NotificationResponse & { workspace: WorkspaceData }>(
+    `/api/project-transfers/${transferId}/respond`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    },
+  )
 }
 
 export function removeProject(projectId: number) {
@@ -691,6 +940,7 @@ export const uploadWorkbenchAttachment = uploadTodoImage
 export function createTodo(payload: {
   assigneeUserId?: number
   watcherUserId?: number
+  watcherUserIds?: number[]
   reviewerUserId?: number
   createdAt?: string
   detail?: string
@@ -786,13 +1036,15 @@ export function markNotificationRead(
 
 export function updateTodo(
   todoId: number,
-  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId'> & {
+  payload: Omit<Partial<Todo>, 'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'> & {
     assigneeUserId?: number | null
     createdAt?: string
+    acceptanceNote?: string
     moduleId?: number | null
     rejectionReason?: string
     reviewerUserId?: number | null
     watcherUserId?: number | null
+    watcherUserIds?: number[]
   },
 ) {
   return request<WorkspaceData>(`/api/todos/${todoId}`, {
@@ -1132,9 +1384,10 @@ export function removeProjectPackageOperation(projectId: number, operationId: nu
   )
 }
 
-export function exportProjectPackageTimeline(projectId: number) {
+export function exportProjectPackageTimeline(projectId: number, eventId?: number) {
+  const query = eventId == null ? '' : `?eventId=${encodeURIComponent(String(eventId))}`
   return request<{ fileName: string; markdown: string }>(
-    `/api/projects/${projectId}/package-timeline/export`,
+    `/api/projects/${projectId}/package-timeline/export${query}`,
   )
 }
 

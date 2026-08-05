@@ -1,14 +1,74 @@
 import crypto from 'node:crypto'
+import {
+  normalizeWeeklyReportRules,
+  type WeeklyReportRules,
+} from '../shared/weekly-report-availability.ts'
+
+export { normalizeWeeklyReportRules }
+export type { WeeklyReportRules }
 
 export const organizationAccessRoles = ['owner', 'admin', 'member'] as const
 export type OrganizationAccessRole = (typeof organizationAccessRoles)[number]
+
+export const organizationProjectStatuses = ['active', 'paused', 'completed', 'archived'] as const
+export type OrganizationProjectStatus = (typeof organizationProjectStatuses)[number]
+
+export const organizationProjectHealthStatuses = ['on_track', 'at_risk', 'off_track'] as const
+export type OrganizationProjectHealthStatus = (typeof organizationProjectHealthStatuses)[number]
+
+export const projectMilestoneStatuses = ['pending', 'in_review', 'achieved', 'cancelled'] as const
+export type ProjectMilestoneStatus = (typeof projectMilestoneStatuses)[number]
 
 export function isOrganizationAccessRole(value: unknown): value is OrganizationAccessRole {
   return organizationAccessRoles.includes(value as OrganizationAccessRole)
 }
 
-export function canManageOrganization(role: OrganizationAccessRole | null) {
-  return role === 'owner' || role === 'admin'
+export function canManageOrganization(
+  role: OrganizationAccessRole | null,
+  assignedRoles: readonly string[] = [],
+) {
+  return role !== null && assignedRoles.includes('organization_admin')
+}
+
+export function canManageOrganizationProjects(
+  role: OrganizationAccessRole | null,
+  assignedRoles: readonly string[],
+) {
+  return canManageOrganization(role, assignedRoles)
+}
+
+export function canManageOrganizationWeeklyReports(
+  role: OrganizationAccessRole | null,
+  assignedRoles: readonly string[],
+) {
+  return canManageOrganization(role, assignedRoles)
+}
+
+export function normalizeOrganizationProjectStatus(value: unknown) {
+  return organizationProjectStatuses.includes(value as OrganizationProjectStatus)
+    ? value as OrganizationProjectStatus
+    : null
+}
+
+export function normalizeOrganizationProjectHealthStatus(value: unknown) {
+  return organizationProjectHealthStatuses.includes(value as OrganizationProjectHealthStatus)
+    ? value as OrganizationProjectHealthStatus
+    : null
+}
+
+export function normalizeProjectMilestoneStatus(value: unknown) {
+  return projectMilestoneStatuses.includes(value as ProjectMilestoneStatus)
+    ? value as ProjectMilestoneStatus
+    : null
+}
+
+export function normalizeProjectMilestoneDate(value: unknown) {
+  const raw = String(value ?? '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
+  const date = new Date(`${raw}T00:00:00Z`)
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === raw
+    ? raw
+    : null
 }
 
 export function normalizeOrganizationName(value: unknown) {
@@ -44,6 +104,10 @@ export function normalizeOrganizationWeekStart(value: unknown, weekStartsOn = 1)
 }
 
 export function hashOrganizationInviteToken(token: string) {
+  return crypto.createHash('sha256').update(token).digest('base64url')
+}
+
+export function hashProjectTransferToken(token: string) {
   return crypto.createHash('sha256').update(token).digest('base64url')
 }
 

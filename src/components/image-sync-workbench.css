@@ -22,28 +22,35 @@
   align-items: center;
 }
 
-.image-sync-arch {
-  display: grid;
-  grid-template-columns: repeat(2, 76px);
+.image-sync-submit-button {
   height: 36px;
-  padding: 2px;
+}
+
+.image-sync-arch {
+  width: 168px;
+}
+
+.image-sync-arch [data-slot='tabs-list'] {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-bottom: 8px;
   border: 1px solid var(--line);
   background: var(--control-bg);
 }
 
-.image-sync-arch button {
-  border: 0;
-  background: transparent;
+.image-sync-arch [data-slot='tabs-trigger'] {
   color: var(--muted-text);
   font-family: var(--font-mono);
   font-size: 12px;
-  cursor: pointer;
 }
 
-.image-sync-arch button.active {
+.image-sync-arch [data-slot='tabs-trigger'][data-state='active'] {
   background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+  color: var(--brand);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
 }
 
 .image-sync-error,
@@ -76,36 +83,40 @@
   top: 0;
   z-index: 1;
   display: grid;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
 }
 
 .image-sync-filters {
+  width: 100%;
+}
+
+.image-sync-filters [data-slot='tabs-list'] {
   display: grid;
+  width: 100%;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 2px;
+  padding-top: 4px;
+  padding-bottom: 4px;
   border: 1px solid var(--line);
   background: var(--control-bg);
 }
 
-.image-sync-filters button {
+.image-sync-filters [data-slot='tabs-trigger'] {
   min-width: 0;
-  height: 30px;
   padding: 0 4px;
-  border: 0;
-  background: transparent;
   color: var(--muted-text);
   font-size: 11px;
-  cursor: pointer;
   white-space: nowrap;
 }
 
-.image-sync-filters button.active {
+.image-sync-filters [data-slot='tabs-trigger'][data-state='active'] {
   background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 10%);
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--line));
+  color: var(--brand);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
 }
 
 .image-sync-filters span {
@@ -356,7 +367,7 @@
   }
 
   .image-sync-arch {
-    grid-template-columns: repeat(2, 1fr);
+    width: 100%;
   }
 
   .image-sync-layout {
