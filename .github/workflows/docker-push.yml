@@ -1,0 +1,117 @@
+# main 分支推送后自动构建并推送 amd64/arm64 镜像，再合并为同一个镜像。
+
+name: 构建并推送 Docker 镜像
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: docker-push-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 校验
+    runs-on: ubuntu-latest
+    # 测试导入的服务模块要求配置 DATABASE_URL；占位值只用于允许只读单元测试导入，不会连接数据库。
+    env:
+      DATABASE_URL: postgresql://veges-ci:veges-ci@127.0.0.1:5432/veges_ci
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 安装 Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: 代码检查
+        run: npm run lint
+      - name: 运行测试
+        run: npm test
+
+  build-push-amd64:
+    name: 构建并推送 amd64 镜像
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 登录 GHCR
+        run: |
+          docker login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+      - name: 构建并推送 amd64 镜像
+        run: |
+          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          IMAGE_TAG="main-${GITHUB_SHA:0:12}"
+          docker build -t "$IMAGE_REPO:$IMAGE_TAG-amd64" .
+          docker push "$IMAGE_REPO:$IMAGE_TAG-amd64"
+
+  build-push-arm64:
+    name: 构建并推送 arm64 镜像
+    needs: verify
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 登录 GHCR
+        run: |
+          docker login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+      - name: 构建并推送 arm64 镜像
+        run: |
+          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          IMAGE_TAG="main-${GITHUB_SHA:0:12}"
+          docker build -t "$IMAGE_REPO:$IMAGE_TAG-arm64" .
+          docker push "$IMAGE_REPO:$IMAGE_TAG-arm64"
+
+  merge-manifest:
+    name: 合并镜像
+    needs:
+      - build-push-amd64
+      - build-push-arm64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 登录 GHCR
+        run: |
+          docker login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+      - name: 合并 amd64/arm64 镜像
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
+        run: |
+          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          IMAGE_TAG="main-${GITHUB_SHA:0:12}"
+          docker manifest create \
+            "$IMAGE_REPO:$IMAGE_TAG" \
+            "$IMAGE_REPO:$IMAGE_TAG-amd64" \
+            "$IMAGE_REPO:$IMAGE_TAG-arm64"
+          docker manifest annotate "$IMAGE_REPO:$IMAGE_TAG" "$IMAGE_REPO:$IMAGE_TAG-amd64" --os linux --arch amd64
+          docker manifest annotate "$IMAGE_REPO:$IMAGE_TAG" "$IMAGE_REPO:$IMAGE_TAG-arm64" --os linux --arch arm64
+          docker manifest push "$IMAGE_REPO:$IMAGE_TAG"
+      - name: 验证合并镜像
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
+        run: |
+          IMAGE_REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          IMAGE_TAG="main-${GITHUB_SHA:0:12}"
+          docker manifest inspect "$IMAGE_REPO:$IMAGE_TAG" >/dev/null

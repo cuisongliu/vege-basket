@@ -23,6 +23,7 @@
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
 | GitHub image sync workflow | `server/image-sync-workflows.ts`, external `sealos-pro/.github/workflows/sync-images-tar-oss.yml` |
 | Container runtime | `Dockerfile` |
+| Docker CI 工作流 | `.github/workflows/docker-pr.yml`, `.github/workflows/docker-push.yml` |
 | Sealos install surface | `.sealos/template/index.yaml` |
 
 ## Environment Variables
@@ -117,10 +118,12 @@ should use the `PACKAGE_MARKET_*` names.
 
 ## Deployment Inputs
 
-The Sealos template requires `VEGES_IMAGE` to be an immutable `linux/amd64` image tag or
-digest built from the revision being deployed. The Deployment annotation, application
-container, and todo-digest CronJob all consume this single value so the API and worker
-cannot silently run different source revisions.
+`main` 分支推送后，`.github/workflows/docker-push.yml` 会自动构建并推送
+`ghcr.io/<仓库>/vege-basket:main-<12位sha>-amd64` 与
+`ghcr.io/<仓库>/vege-basket:main-<12位sha>-arm64`，再用 `docker manifest` 合并为
+`ghcr.io/<仓库>/vege-basket:main-<12位sha>`。Sealos 模板要求 `VEGES_IMAGE` 使用
+由当前源码构建的不可变合并镜像标签或分架构标签/摘要；Deployment 注解、应用容器和
+待办日报 CronJob 共用这一个值，避免 API 与 worker 静默运行不同源码版本。
 
 ## HTTP API Families
 
