@@ -8,9 +8,7 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
+permissions: write-all
 
 concurrency:
   group: docker-push-${{ github.ref }}
