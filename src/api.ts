@@ -1030,7 +1030,7 @@ export function declineProjectInvitation(membershipId: number) {
 }
 
 export function markNotificationRead(
-  kind: 'project_invite' | 'assigned_todo' | 'watched_todo' | 'package_event_assigned' | 'todo_due_tomorrow' | 'todo_note_mention',
+  kind: 'project_invite' | 'assigned_todo' | 'watched_todo' | 'package_event_assigned' | 'package_event_comment_added' | 'todo_due_tomorrow' | 'todo_note_mention',
   sourceId: number,
   dismiss = false,
 ) {
@@ -1291,6 +1291,42 @@ export function completeProjectPackageEvent(projectId: number, eventId: number) 
   return request<ProjectPackageTimeline>(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/complete`,
     { method: 'POST' },
+  )
+}
+
+export function addPackageEventComment(projectId: number, eventId: number, content: string) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/comments`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    },
+  )
+}
+
+export function updatePackageEventComment(
+  projectId: number,
+  eventId: number,
+  commentId: number,
+  content: string,
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    },
+  )
+}
+
+export function deletePackageEventComment(
+  projectId: number,
+  eventId: number,
+  commentId: number,
+) {
+  return request<ProjectPackageTimeline>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
+    { method: 'DELETE' },
   )
 }
 

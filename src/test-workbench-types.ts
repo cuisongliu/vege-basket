@@ -10,6 +10,7 @@ export type BugSeverity = 'blocker' | 'critical' | 'major' | 'minor' | 'trivial'
 export type BugStatus =
   | 'new'
   | 'confirmed'
+  | 'pending_confirmation'
   | 'assigned'
   | 'in_progress'
   | 'pending_verification'
@@ -157,7 +158,7 @@ export type TestBugComment = {
   content: string
   createdAt: string
   id: number
-  kind: 'comment' | 'transfer'
+  kind: 'comment' | 'transfer' | 'reject'
   updatedAt: string
 }
 
@@ -202,7 +203,17 @@ export type TestWorkspaceUser = {
 
 export type TestWorkbenchNotification = {
   createdAt: string
-  kind: 'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_comment_added'
+  kind: 'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_rejected' | 'test_bug_comment_added'
+  sourceId: number
+} | {
+  authorName: string
+  commentPreview: string
+  createdAt: string
+  eventId: number
+  eventTitle: string
+  kind: 'package_event_comment_added'
+  projectId: number
+  projectName: string
   sourceId: number
 }
 

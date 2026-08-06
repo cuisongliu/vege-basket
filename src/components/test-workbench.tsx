@@ -96,6 +96,7 @@ import {
   previewTestCaseImport,
   removeTestPlanCase,
   removeTestSpaceMember,
+  rejectAssignedTestBug,
   transferAssignedTestBug,
   updateTestSpace,
   updateAssignedTestBugComment,
@@ -188,6 +189,7 @@ const bugStatusLabel: Record<BugStatus, string> = {
   duplicate: '重复 Bug',
   in_progress: '修复中',
   new: '待确认',
+  pending_confirmation: '待确定',
   pending_verification: '待验证',
   rejected: '已拒绝',
   reopened: '重新打开',
@@ -218,6 +220,7 @@ const emptyTestSpaceSettings: TestSpaceSettings = { invitations: [], organizatio
 const testSpaceInviteParam = 'testSpaceInvite'
 const seenBugCommentStoragePrefix = 'veges.testWorkbench.seenBugComments.v1'
 const readNotificationStoragePrefix = 'veges.testWorkbench.readNotifications.v1'
+const assignedBugSpaceStoragePrefix = 'veges.assignedBugs.testSpace.v1'
 
 type BugCommentNotification = {
   bug: TestBug
@@ -301,6 +304,16 @@ function writeReadNotificationKeys(currentUserId: number | undefined, keys: Set<
   window.localStorage.setItem(storageKey, JSON.stringify(Array.from(keys)))
 }
 
+function getAssignedBugSpaceStorageKey(currentUserId?: number) {
+  return currentUserId ? `${assignedBugSpaceStoragePrefix}.${currentUserId}` : assignedBugSpaceStoragePrefix
+}
+
+function readAssignedBugSpaceId(currentUserId?: number) {
+  if (typeof window === 'undefined') return undefined
+  const value = Number(window.localStorage.getItem(getAssignedBugSpaceStorageKey(currentUserId)))
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
 function getTestWorkbenchNotificationKey(notification: TestWorkbenchNotification) {
   return `${notification.kind}:${notification.sourceId}:${notification.createdAt}`
 }
@@ -351,6 +364,10 @@ export function TestWorkbench({
   const [selectedCaseId, setSelectedCaseId] = useState<number>()
   const [selectedPlanId, setSelectedPlanId] = useState<number>()
   const [selectedBugId, setSelectedBugId] = useState<number>()
+  const [bugFilterDialogOpen, setBugFilterDialogOpen] = useState(false)
+  const [bugFilterJoin, setBugFilterJoin] = useState<BugFilterJoin>('and')
+  const [bugFilterConditions, setBugFilterConditions] = useState<BugFilterCondition[]>([])
+  const [bugSearchQuery, setBugSearchQuery] = useState('')
   const [spaceSwitcherOpen, setSpaceSwitcherOpen] = useState(false)
   const [spaceAdministrationOpen, setSpaceAdministrationOpen] = useState(false)
   const [spaceCreateOpen, setSpaceCreateOpen] = useState(false)
@@ -516,10 +533,45 @@ export function TestWorkbench({
   const bugs = data.bugs.filter(
     (bug) => bug.testSpaceId === spaceId && (!subjectId || bug.testSubjectId === subjectId),
   )
+  const normalizedBugSearchQuery = bugSearchQuery.trim().toLocaleLowerCase('zh-CN')
+  const filteredBugs = useMemo(() => bugs.filter((bug) => {
+    if (!matchesBugFilterConditions(bug, bugFilterConditions, bugFilterJoin)) return false
+    if (!normalizedBugSearchQuery) return true
+    return [
+      `bug-${bug.id}`,
+      bug.title,
+      bug.environment,
+      bug.testSubjectName,
+      bug.testPlanName,
+      bug.reporterName,
+      bug.assigneeName,
+    ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedBugSearchQuery))
+  }), [bugFilterConditions, bugFilterJoin, bugs, normalizedBugSearchQuery])
+  const bugFilterOptions = useMemo<BugFilterOptions>(() => ({
+    assignees: uniqueBugFilterOptions(bugs, (bug) => bug.assigneeUserId && bug.assigneeName
+      ? { label: bug.assigneeName, value: String(bug.assigneeUserId) }
+      : undefined),
+    plans: uniqueBugFilterOptions(bugs, (bug) => bug.testPlanId && bug.testPlanName
+      ? { label: bug.testPlanName, value: String(bug.testPlanId) }
+      : undefined),
+    reporters: uniqueBugFilterOptions(bugs, (bug) => bug.reporterUserId && bug.reporterName
+      ? { label: bug.reporterName, value: String(bug.reporterUserId) }
+      : undefined),
+    spaces: [],
+    subjects: uniqueBugFilterOptions(bugs, (bug) => bug.testSubjectId && bug.testSubjectName
+      ? { label: bug.testSubjectName, value: String(bug.testSubjectId) }
+      : undefined),
+  }), [bugs])
   const returnedBugs: BugReturnNotification[] = data.notifications.flatMap((notification) => {
     if (notification.kind !== 'test_bug_status_changed') return []
     const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
     if (!bug || (bug.status !== 'pending_verification' && bug.status !== 'reopened')) return []
+    return [{ bug, notification }]
+  })
+  const rejectedBugNotifications: BugReturnNotification[] = data.notifications.flatMap((notification) => {
+    if (notification.kind !== 'test_bug_rejected') return []
+    const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
+    if (!bug || bug.status !== 'rejected') return []
     return [{ bug, notification }]
   })
   const bugCommentNotifications: BugCommentNotification[] = data.notifications.flatMap((notification) => {
@@ -546,23 +598,29 @@ export function TestWorkbench({
       return [{ notification, plan }]
     })
     : []
+  const packageEventCommentNotifications = data.notifications.filter(
+    (notification) => notification.kind === 'package_event_comment_added',
+  )
   const returnedBugUnreadCount = returnedBugs.filter(({ notification }) =>
+    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
+  const rejectedBugUnreadCount = rejectedBugNotifications.filter(({ notification }) =>
     !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
   ).length
   const planAssignmentUnreadCount = planAssignmentNotifications.filter(({ notification }) =>
     !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
   ).length
   const bugCommentUnreadCount = bugCommentNotifications.filter(({ comment }) => !seenBugCommentIds.has(comment.id)).length
-  const notificationTotalCount =
-    spaceSettings.invitations.length +
-    returnedBugs.length +
-    bugCommentNotifications.length +
-    planAssignmentNotifications.length
+  const packageEventCommentUnreadCount = packageEventCommentNotifications.filter((notification) =>
+    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
   const notificationUnreadCount =
     spaceSettings.invitations.length +
     returnedBugUnreadCount +
+    rejectedBugUnreadCount +
     bugCommentUnreadCount +
-    planAssignmentUnreadCount
+    planAssignmentUnreadCount +
+    packageEventCommentUnreadCount
 
   function markBugCommentAsSeen(commentId?: number) {
     if (!commentId || !currentUserId) return
@@ -599,8 +657,8 @@ export function TestWorkbench({
   useEffect(() => {
     if (!cases.some((item) => item.id === selectedCaseId)) setSelectedCaseId(cases[0]?.id)
     if (!plans.some((item) => item.id === selectedPlanId)) setSelectedPlanId(plans[0]?.id)
-    if (!bugs.some((item) => item.id === selectedBugId)) setSelectedBugId(bugs[0]?.id)
-  }, [bugs, cases, plans, selectedBugId, selectedCaseId, selectedPlanId])
+    if (!filteredBugs.some((item) => item.id === selectedBugId)) setSelectedBugId(filteredBugs[0]?.id)
+  }, [bugs, cases, filteredBugs, plans, selectedBugId, selectedCaseId, selectedPlanId])
 
   useEffect(() => {
     if (subjectDeleteDialogOpen || !subjectPendingDelete) return
@@ -743,6 +801,16 @@ export function TestWorkbench({
               <h1>测试工作台</h1>
             </div>
           </div>
+          <button
+            className="sidebar-notifications-button"
+            type="button"
+            aria-label="通知中心"
+            title="通知中心"
+            onClick={() => setTab('notifications')}
+          >
+            <Bell size={18} weight="duotone" />
+            {notificationUnreadCount > 0 ? <span className="sidebar-notifications-dot" aria-hidden /> : null}
+          </button>
         </div>
         <div className="test-space-switcher">
           <Select
@@ -792,13 +860,6 @@ export function TestWorkbench({
               <button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}><ListChecks /><span className="test-nav-label">测试计划</span><span className="test-nav-count">{plans.length}</span></button>
               <button className={tab === 'bugs' ? 'active' : ''} onClick={() => setTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{bugs.length}</span></button>
               <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => setTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
-              <button className={tab === 'notifications' ? 'active' : ''} onClick={() => setTab('notifications')}>
-                <Bell />
-                <span className="test-nav-label">通知中心</span>
-                <span className={notificationUnreadCount > 0 ? 'test-nav-count unread' : 'test-nav-count'}>
-                  {notificationUnreadCount > 0 ? notificationUnreadCount : notificationTotalCount}
-                </span>
-              </button>
             </nav>
             {activeSpace ? (
               <section className="test-subject-browser" aria-label="测试对象">
@@ -885,6 +946,7 @@ export function TestWorkbench({
                 invitations={spaceSettings.invitations}
                 planAssignmentNotifications={planAssignmentNotifications}
                 readNotificationKeys={readNotificationKeySet}
+                rejectedBugNotifications={rejectedBugNotifications}
                 returnedBugs={returnedBugs}
                 seenBugCommentIds={seenBugCommentIds}
                 onAcceptInvitation={(invitation) => void handleAcceptInvitation(invitation.spaceId)}
@@ -903,6 +965,7 @@ export function TestWorkbench({
                   setSelectedPlanId(plan.id)
                   setTab('plans')
                 }}
+                onMarkNotificationRead={(notification) => markNotificationAsRead(getTestWorkbenchNotificationKey(notification))}
               />
             </>
           ) : data.spaces.length === 0 ? (
@@ -986,16 +1049,21 @@ export function TestWorkbench({
             <>
               <WorkspaceError message={error} />
               <BugsView
-                bugs={bugs}
+                bugs={filteredBugs}
                 busy={busy}
                 data={data}
+                filterConditions={bugFilterConditions}
+                onFilterOpenChange={setBugFilterDialogOpen}
+                onFilterClear={() => setBugFilterConditions([])}
+                searchQuery={bugSearchQuery}
+                onSearchQueryChange={setBugSearchQuery}
                 readOnly={activeSpaceReadOnly}
                 selectedId={selectedBugId}
                 onSelect={setSelectedBugId}
                 onCreate={() => { setEditingBug(undefined); setBugSeed({ testSubjectId: subjectId }); setBugDialogOpen(true) }}
                 onEdit={(bug) => { setEditingBug(bug); setBugSeed(bug); setBugDialogOpen(true) }}
                 onStatus={(bug, status) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))}
-                onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'assigned' : 'new' }))}
+                onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'pending_confirmation' : 'new' }))}
                 onComment={(bug, content) => mutate(() => addTestBugComment(bug.testSpaceId, bug.id, content))}
                 onUpdateComment={(bug, comment, content) => mutate(() => updateTestBugComment(bug.testSpaceId, bug.id, comment.id, content))}
                 onDeleteComment={(bug, comment) => mutate(() => deleteTestBugComment(bug.testSpaceId, bug.id, comment.id))}
@@ -1015,6 +1083,18 @@ export function TestWorkbench({
         onWorkbenchChange={async () => {
           await refreshWorkbench()
           await refreshSpaceSettings()
+        }}
+      />
+      <BugFilterBuilderDialog
+        conditions={bugFilterConditions}
+        includeTestSpace={false}
+        join={bugFilterJoin}
+        open={bugFilterDialogOpen}
+        options={bugFilterOptions}
+        onOpenChange={setBugFilterDialogOpen}
+        onApply={(next) => {
+          setBugFilterConditions(next.conditions)
+          setBugFilterJoin(next.join)
         }}
       />
       <TestSpaceCreateDialog
@@ -1217,8 +1297,10 @@ function NotificationsView({
   onDeclineInvitation,
   onOpenBug,
   onOpenPlan,
+  onMarkNotificationRead,
   planAssignmentNotifications,
   readNotificationKeys,
+  rejectedBugNotifications,
   returnedBugs,
   seenBugCommentIds,
 }: {
@@ -1230,8 +1312,10 @@ function NotificationsView({
   onDeclineInvitation: (invitation: TestSpaceInvitation) => void
   onOpenBug: (bug: TestBug, notification: TestWorkbenchNotification, commentId?: number) => void
   onOpenPlan: (plan: TestPlan, notification: TestWorkbenchNotification) => void
+  onMarkNotificationRead: (notification: TestWorkbenchNotification) => void
   planAssignmentNotifications: PlanAssignmentNotification[]
   readNotificationKeys: Set<string>
+  rejectedBugNotifications: BugReturnNotification[]
   returnedBugs: BugReturnNotification[]
   seenBugCommentIds: Set<number>
 }) {
@@ -1248,6 +1332,15 @@ function NotificationsView({
       createdAt: notification.createdAt,
       key: `bug-${bug.id}`,
       kind: 'bug_return' as const,
+      notification,
+      notificationKey: getTestWorkbenchNotificationKey(notification),
+      sortAt: Date.parse(notification.createdAt),
+    })),
+    ...rejectedBugNotifications.map(({ bug, notification }) => ({
+      bug,
+      createdAt: notification.createdAt,
+      key: `bug-rejected-${bug.id}`,
+      kind: 'bug_rejected' as const,
       notification,
       notificationKey: getTestWorkbenchNotificationKey(notification),
       sortAt: Date.parse(notification.createdAt),
@@ -1271,6 +1364,16 @@ function NotificationsView({
       plan,
       sortAt: getTimestampMs(notification.createdAt),
     })),
+    ...data.notifications
+      .filter((notification) => notification.kind === 'package_event_comment_added')
+      .map((notification) => ({
+        createdAt: notification.createdAt,
+        key: `package-comment-${notification.sourceId}`,
+        kind: 'package_comment' as const,
+        notification,
+        notificationKey: getTestWorkbenchNotificationKey(notification),
+        sortAt: getTimestampMs(notification.createdAt),
+      })),
   ].sort((left, right) => {
     const rightTime = Number.isNaN(right.sortAt) ? 0 : right.sortAt
     const leftTime = Number.isNaN(left.sortAt) ? 0 : left.sortAt
@@ -1349,6 +1452,31 @@ function NotificationsView({
                   </article>
                 )
               }
+              if (item.kind === 'package_comment') {
+                const notification = item.notification
+                const read = readNotificationKeys.has(item.notificationKey)
+                return (
+                  <article key={item.key} className={read ? 'test-notification-card read' : 'test-notification-card unread'}>
+                    <div className="test-notification-copy">
+                      <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>交付反馈</span>
+                      <div>
+                        <strong>{notification.eventTitle || '交付事件'}</strong>
+                        <p>{notification.authorName} 在交付反馈中提到了你{notification.commentPreview ? `：“${notification.commentPreview}”` : '。'}</p>
+                        <small>{notification.projectName || '项目' } · {formatTimestamp(item.createdAt)}</small>
+                      </div>
+                    </div>
+                    <div>
+                      <Button
+                        disabled={read}
+                        variant="outline"
+                        onClick={() => onMarkNotificationRead(notification)}
+                      >
+                        <CheckCircle /> {read ? '已读' : '标记已读'}
+                      </Button>
+                    </div>
+                  </article>
+                )
+              }
               const bug = item.bug
               const spaceName = data.spaces.find((space) => space.id === bug.testSpaceId)?.name ?? '未知测试空间'
               const subjectName = data.subjects.find((subject) => subject.id === bug.testSubjectId)?.name ?? '未关联测试对象'
@@ -1367,6 +1495,24 @@ function NotificationsView({
                     </div>
                     <div>
                       <Button variant="outline" onClick={() => onOpenBug(bug, item.notification, comment.id)}><Bug /> 查看 Bug</Button>
+                    </div>
+                  </article>
+                )
+              }
+              if (item.kind === 'bug_rejected') {
+                const read = readNotificationKeys.has(item.notificationKey)
+                return (
+                  <article key={item.key} className={read ? 'test-notification-card read' : 'test-notification-card unread'}>
+                    <div className="test-notification-copy">
+                      <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>Bug 驳回</span>
+                      <div>
+                        <strong>BUG-{bug.id} · {bug.title}</strong>
+                        <p>开发工程师驳回了这个 Bug，需要测试侧处理。</p>
+                        <small>{spaceName} · {subjectName} · {formatTimestamp(item.createdAt)}</small>
+                      </div>
+                    </div>
+                    <div>
+                      <Button variant="outline" onClick={() => onOpenBug(bug, item.notification)}><Bug /> 查看 Bug</Button>
                     </div>
                   </article>
                 )
@@ -1775,28 +1921,65 @@ function PlanCaseDetailDialog({ onClose, planCase }: {
   )
 }
 
-function BugsView({ bugs, busy, data, onAssignee, onComment, onCreate, onDeleteComment, onEdit, onSelect, onStatus, onUpdateComment, readOnly, selectedId }: {
+function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, onCreate, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onSelect, onStatus, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
   bugs: TestBug[]
   busy: boolean
   data: TestWorkbenchData
+  filterConditions: BugFilterCondition[]
   onAssignee: (bug: TestBug, assigneeUserId?: number) => void
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onCreate: () => void
   onDeleteComment: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
   onEdit: (bug: TestBug) => void
+  onFilterClear: () => void
+  onFilterOpenChange: (open: boolean) => void
+  onSearchQueryChange: (value: string) => void
   onSelect: (id: number) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
   onUpdateComment: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
   readOnly: boolean
+  searchQuery: string
   selectedId?: number
 }) {
   const selected = bugs.find((item) => item.id === selectedId)
   return (
     <div className="test-module-view">
-      <div className="test-module-toolbar"><div><span>缺陷闭环</span><h1>Bug 追踪</h1></div>{!readOnly ? <Button onClick={onCreate}><Plus /> 新建 Bug</Button> : null}</div>
+      <div className="test-module-toolbar">
+        <div><span>缺陷闭环</span><h1>Bug 追踪</h1></div>
+        <div className="test-bug-toolbar-actions">
+          <label className="test-bug-search">
+            <MagnifyingGlass aria-hidden />
+            <Input
+              aria-label="搜索 Bug"
+              placeholder="搜索 Bug 标题、编号或关联信息"
+              type="search"
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+            />
+          </label>
+          <Button
+            className={filterConditions.length > 0 ? 'todo-filter-open-button active' : 'todo-filter-open-button'}
+            type="button"
+            variant="outline"
+            onClick={() => onFilterOpenChange(true)}
+          >
+            <FunnelSimple />
+            筛选
+            {filterConditions.length > 0 ? <span className="assigned-bugs-filter-count">{filterConditions.length}</span> : null}
+          </Button>
+          {!readOnly ? <Button onClick={onCreate}><Plus /> 新建 Bug</Button> : null}
+        </div>
+      </div>
+      {filterConditions.length > 0 || searchQuery.trim() ? (
+        <div className="test-bug-filter-summary">
+          <span>当前显示 {bugs.length} 条 Bug</span>
+          {filterConditions.length > 0 ? <Button type="button" variant="ghost" onClick={onFilterClear}>清除筛选</Button> : null}
+          {searchQuery.trim() ? <Button type="button" variant="ghost" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}
+        </div>
+      ) : null}
       <div className="test-split-view">
         <div className="test-record-list">
-          {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <p className="test-list-empty">当前测试对象还没有 Bug。</p>}
+          {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试对象还没有 Bug。'}</div>}
         </div>
         <div className="test-record-detail">
           {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
@@ -1899,7 +2082,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment,
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(comment.content)
   const [uploading, setUploading] = useState(false)
-  const canManage = comment.kind !== 'transfer' && Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
+  const canManage = comment.kind !== 'transfer' && comment.kind !== 'reject' && Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
     currentUserId != null && comment.authorUserId === currentUserId
   )))
   const canEdit = Boolean(onUpdateComment && canManage)
@@ -1918,6 +2101,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment,
         <div className="test-comment-byline">
           <strong>{comment.authorName}</strong>
           {comment.kind === 'transfer' ? <Badge variant="outline">转移记录</Badge> : null}
+          {comment.kind === 'reject' ? <Badge variant="outline">驳回记录</Badge> : null}
           <span aria-hidden="true">·</span>
           <time>{formatTimestamp(comment.createdAt)}{edited ? ` · 编辑于 ${formatTimestamp(comment.updatedAt)}` : ''}</time>
         </div>
@@ -3582,6 +3766,58 @@ function BugTransferDialog({ bug, busy, onOpenChange, onSubmit, open }: {
   )
 }
 
+function BugRejectDialog({ bug, busy, onOpenChange, onSubmit, open }: {
+  bug?: TestBug
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (bug: TestBug, reason: string) => Promise<boolean>
+  open: boolean
+}) {
+  const [reason, setReason] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setReason('')
+  }, [bug?.id, open])
+
+  const normalizedReason = reason.trim()
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent fixedHeader>
+        <DialogHeader>
+          <DialogTitle>驳回 Bug</DialogTitle>
+          <DialogDescription>{bug ? `BUG-${bug.id} · ${bug.title}` : ''}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="test-dialog-form"
+          onSubmit={async (event) => {
+            event.preventDefault()
+            if (!bug || !normalizedReason) return
+            if (await onSubmit(bug, normalizedReason)) onOpenChange(false)
+          }}
+        >
+          <Label>
+            驳回理由
+            <Textarea
+              autoFocus
+              maxLength={1000}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="填写驳回理由，将记录到 Bug 评论区并通知提出该 Bug 的测试工程师。"
+            />
+          </Label>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button variant="destructive" disabled={busy || !normalizedReason}>
+              {busy ? '驳回中...' : '确认驳回'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function AssignedTestBugs({
   currentUserId,
   initialBugId,
@@ -3605,10 +3841,25 @@ export function AssignedTestBugs({
   const [error, setError] = useState('')
   const [transferBug, setTransferBug] = useState<TestBug>()
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [rejectBug, setRejectBug] = useState<TestBug>()
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [filterDialogOpen, setFilterDialogOpen] = useState(false)
   const [filterJoin, setFilterJoin] = useState<BugFilterJoin>('and')
   const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>([])
+  const [selectedSpaceId, setSelectedSpaceId] = useState<number>()
+  const [searchQuery, setSearchQuery] = useState('')
   const refreshInFlightRef = useRef(false)
+
+  const spaceOptions = useMemo(() => uniqueBugFilterOptions(bugs, (bug) => bug.testSpaceName
+    ? { label: bug.testSpaceName, value: String(bug.testSpaceId) }
+    : undefined), [bugs])
+
+  function selectAssignedBugSpace(value: string) {
+    const nextId = Number(value)
+    if (!Number.isSafeInteger(nextId) || nextId <= 0) return
+    setSelectedSpaceId(nextId)
+    window.localStorage.setItem(getAssignedBugSpaceStorageKey(currentUserId), String(nextId))
+  }
 
   useEffect(() => {
     fetchAssignedTestBugs()
@@ -3616,13 +3867,21 @@ export function AssignedTestBugs({
         setBugs(result.bugs)
         setMentionMembers(result.members ?? [])
         onBugsChange?.(result.bugs)
+        const rememberedSpaceId = readAssignedBugSpaceId(currentUserId)
+        const initialBug = initialBugId ? result.bugs.find((bug) => bug.id === initialBugId) : undefined
+        const nextSpaceId = initialBug?.testSpaceId
+          ?? (rememberedSpaceId && result.bugs.some((bug) => bug.testSpaceId === rememberedSpaceId)
+            ? rememberedSpaceId
+            : result.bugs[0]?.testSpaceId)
+        setSelectedSpaceId(nextSpaceId)
+        if (nextSpaceId) window.localStorage.setItem(getAssignedBugSpaceStorageKey(currentUserId), String(nextSpaceId))
         setSelectedId(initialBugId && result.bugs.some((bug) => bug.id === initialBugId)
           ? initialBugId
           : result.bugs[0]?.id)
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Bug 加载失败。'))
       .finally(() => setLoading(false))
-  }, [initialBugId, onBugsChange])
+  }, [currentUserId, initialBugId, onBugsChange])
 
   useEffect(() => {
     let active = true
@@ -3636,6 +3895,13 @@ export function AssignedTestBugs({
           setBugs(result.bugs)
           setMentionMembers(result.members ?? [])
           onBugsChange?.(result.bugs)
+          setSelectedSpaceId((current) => {
+            if (current && result.bugs.some((bug) => bug.testSpaceId === current)) return current
+            const remembered = readAssignedBugSpaceId(currentUserId)
+            return remembered && result.bugs.some((bug) => bug.testSpaceId === remembered)
+              ? remembered
+              : result.bugs[0]?.testSpaceId
+          })
           setSelectedId((current) => (
             current && result.bugs.some((bug) => bug.id === current)
               ? current
@@ -3656,32 +3922,42 @@ export function AssignedTestBugs({
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [onBugsChange])
+  }, [currentUserId, onBugsChange])
 
-  const filteredBugs = useMemo(() => bugs.filter((bug) => (
-    matchesBugFilterConditions(bug, filterConditions, filterJoin)
-  )), [bugs, filterConditions, filterJoin])
+  const spaceBugs = useMemo(() => bugs.filter((bug) => bug.testSpaceId === selectedSpaceId), [bugs, selectedSpaceId])
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase('zh-CN')
+  const filteredBugs = useMemo(() => spaceBugs.filter((bug) => (
+    matchesBugFilterConditions(bug, filterConditions, filterJoin) && (
+      !normalizedSearchQuery || [
+        `bug-${bug.id}`,
+        bug.title,
+        bug.environment,
+        bug.testSubjectName,
+        bug.testPlanName,
+        bug.reporterName,
+        bug.assigneeName,
+      ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedSearchQuery))
+    )
+  )), [filterConditions, filterJoin, normalizedSearchQuery, spaceBugs])
   const selected = useMemo(
     () => filteredBugs.find((bug) => bug.id === selectedId),
     [filteredBugs, selectedId],
   )
   const filterOptions = useMemo<BugFilterOptions>(() => ({
-    assignees: uniqueBugFilterOptions(bugs, (bug) => bug.assigneeUserId && bug.assigneeName
+    assignees: uniqueBugFilterOptions(spaceBugs, (bug) => bug.assigneeUserId && bug.assigneeName
       ? { label: bug.assigneeName, value: String(bug.assigneeUserId) }
       : undefined),
-    plans: uniqueBugFilterOptions(bugs, (bug) => bug.testPlanId && bug.testPlanName
+    plans: uniqueBugFilterOptions(spaceBugs, (bug) => bug.testPlanId && bug.testPlanName
       ? { label: bug.testPlanName, value: String(bug.testPlanId) }
       : undefined),
-    reporters: uniqueBugFilterOptions(bugs, (bug) => bug.reporterUserId && bug.reporterName
+    reporters: uniqueBugFilterOptions(spaceBugs, (bug) => bug.reporterUserId && bug.reporterName
       ? { label: bug.reporterName, value: String(bug.reporterUserId) }
       : undefined),
-    spaces: uniqueBugFilterOptions(bugs, (bug) => bug.testSpaceName
-      ? { label: bug.testSpaceName, value: String(bug.testSpaceId) }
-      : undefined),
-    subjects: uniqueBugFilterOptions(bugs, (bug) => bug.testSubjectId && bug.testSubjectName
+    spaces: [],
+    subjects: uniqueBugFilterOptions(spaceBugs, (bug) => bug.testSubjectId && bug.testSubjectName
       ? { label: bug.testSubjectName, value: String(bug.testSubjectId) }
       : undefined),
-  }), [bugs])
+  }), [spaceBugs])
 
   useEffect(() => {
     setSelectedId((current) => (
@@ -3737,6 +4013,24 @@ export function AssignedTestBugs({
       <WorkspaceError message={error} />
       {!loading && bugs.length > 0 ? (
         <div className="assigned-bugs-filter-toolbar">
+          <Select value={selectedSpaceId ? String(selectedSpaceId) : ''} onValueChange={selectAssignedBugSpace}>
+            <SelectTrigger className="assigned-bugs-space-select" aria-label="选择测试空间">
+              <SelectValue placeholder="选择测试空间" />
+            </SelectTrigger>
+            <SelectContent>
+              {spaceOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <label className="test-bug-search assigned-bugs-search">
+            <MagnifyingGlass aria-hidden />
+            <Input
+              aria-label="搜索 Bug"
+              placeholder="搜索 Bug 标题、编号或关联信息"
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+          </label>
           <Button
             className={filterConditions.length > 0 ? 'todo-filter-open-button active' : 'todo-filter-open-button'}
             type="button"
@@ -3750,10 +4044,11 @@ export function AssignedTestBugs({
             ) : null}
           </Button>
           <span className="assigned-bugs-filter-summary">
-            {filterConditions.length > 0
-              ? `${filteredBugs.length} / ${bugs.length} 条 Bug`
-              : `共 ${bugs.length} 条 Bug`}
+            {filterConditions.length > 0 || searchQuery.trim()
+              ? `${filteredBugs.length} / ${spaceBugs.length} 条 Bug`
+              : `共 ${spaceBugs.length} 条 Bug`}
           </span>
+          {searchQuery.trim() ? <Button type="button" variant="ghost" onClick={() => setSearchQuery('')}>清除搜索</Button> : null}
         </div>
       ) : null}
       {loading ? (
@@ -3798,11 +4093,31 @@ export function AssignedTestBugs({
                         {selected.assigneeUserId ? '转移' : '分配'}
                       </Button>
                     ) : null}
-                    {selected.canManage && (selected.status === 'assigned' || selected.status === 'reopened') ? (
+                    {selected.canManage && (
+                      selected.status === 'pending_confirmation' || selected.status === 'assigned' || selected.status === 'reopened'
+                    ) ? (
                       <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'in_progress'))}>开始修复</Button>
                     ) : null}
+                    {selected.canManage && (
+                      selected.status === 'pending_confirmation' || selected.status === 'assigned' || selected.status === 'reopened'
+                    ) ? (
+                      <Button
+                        className="test-bug-reject-button"
+                        variant="destructive"
+                        disabled={busy}
+                        onClick={() => {
+                          setRejectBug(selected)
+                          setRejectDialogOpen(true)
+                        }}
+                      >
+                        驳回
+                      </Button>
+                    ) : null}
                     {selected.canManage && selected.status === 'in_progress' ? (
-                      <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'pending_verification'))}>提交验证</Button>
+                      <>
+                        <Button className="test-bug-reject-button" variant="destructive" disabled>驳回</Button>
+                        <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'pending_verification'))}>提交验证</Button>
+                      </>
                     ) : null}
                   </div>
                 </div>
@@ -3840,8 +4155,16 @@ export function AssignedTestBugs({
           reason,
         }))}
       />
+      <BugRejectDialog
+        bug={rejectBug}
+        busy={busy}
+        open={rejectDialogOpen}
+        onOpenChange={setRejectDialogOpen}
+        onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(bug.id, reason))}
+      />
       <BugFilterBuilderDialog
         conditions={filterConditions}
+        includeTestSpace={false}
         join={filterJoin}
         open={filterDialogOpen}
         options={filterOptions}

@@ -301,9 +301,17 @@ The schema is normalized around these groups:
   delivery boundary only after a successful create or effective reassignment. The new
   developer always receives a personal card. A project-chat target is resolved only when
   the Bug's test plan has a live project relation; group cards mention that same assignee.
+  An assigned Bug starts in `pending_confirmation`（待确定）: the developer either starts
+  fixing (`in_progress`) or rejects it with a mandatory reason. Rejection atomically moves
+  the Bug to `rejected`, writes an immutable `reject` collaboration comment with the reason,
+  and notifies the reporting test engineer by personal Feishu message (and the in-app
+  feed); the project chat is never used for rejections.
 - Package delivery: `project_package_events`, `project_package_groups`,
   `project_package_items`, `project_package_operations`,
-  `project_package_operation_todos`.
+  `project_package_operation_todos`, and `project_package_event_comments`.
+  Delivery feedback comments are author-owned and encrypted; `@` mentions resolve
+  against the project's organization members plus its owner and active members, and
+  mentioned users receive a personal Feishu message (never the project chat).
 - Testing: `test_spaces`, pending/active memberships, expiring invite links, test subjects,
   case folders and cases, space-level test plans with selected test subjects and immutable
   case snapshots, bugs, and bug comments.

@@ -652,6 +652,43 @@
   flex-wrap: wrap;
 }
 
+.test-bug-toolbar-actions {
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.test-bug-search {
+  min-width: min(320px, 34vw);
+  position: relative;
+}
+
+.test-bug-search > svg {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  z-index: 1;
+  color: var(--muted-text);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.test-bug-search input {
+  padding-left: 34px;
+}
+
+.test-bug-filter-summary {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
 .test-module-toolbar h1,
 .test-detail-heading h2,
 .assigned-bugs-shell h1 {
@@ -2956,6 +2993,12 @@
   flex: 0 0 auto;
 }
 
+.assigned-bugs-filter-toolbar [data-slot="button"],
+.assigned-bugs-filter-toolbar [data-slot="select-trigger"] {
+  height: 36px;
+  min-height: 36px;
+}
+
 .assigned-bugs-filter-toolbar .todo-filter-open-button {
   width: auto;
   min-width: 82px;
@@ -2968,6 +3011,20 @@
   border-color: var(--line);
   background: var(--surface);
   color: var(--strong);
+}
+
+.assigned-bugs-space-select {
+  width: min(220px, 28vw);
+  flex: 0 1 220px;
+}
+
+.assigned-bugs-search {
+  flex: 1 1 260px;
+}
+
+.test-bug-reject-button {
+  height: 32px;
+  min-height: 32px;
 }
 
 .assigned-bugs-filter-count {
@@ -3030,6 +3087,19 @@
 
   .test-plan-case-search-row > [data-slot="button"] {
     width: 100%;
+  }
+
+  .test-bug-toolbar-actions,
+  .test-bug-filter-summary {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .test-bug-search,
+  .assigned-bugs-space-select {
+    width: 100%;
+    min-width: 0;
+    flex-basis: 100%;
   }
 
   .test-plan-case-selection-bar {

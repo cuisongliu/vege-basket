@@ -127,7 +127,10 @@ export function JournalDatePicker({
                 key={day.stamp}
                 onSelect={() => onChange(day.stamp)}
               >
-                {day.day}
+                <span className="journal-calendar-day-number">{day.day}</span>
+                {entryDates.has(day.stamp) ? (
+                  <span className="journal-calendar-day-dot" aria-hidden="true" />
+                ) : null}
               </DropdownMenuItem>
             )
           })}

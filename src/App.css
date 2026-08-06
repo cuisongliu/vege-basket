@@ -4554,8 +4554,33 @@ textarea:focus {
 .mention-menu-floating {
   position: fixed;
   z-index: 1200;
-  max-height: none;
-  overflow: visible;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.mention-menu-floating::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.mention-menu-floating::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mention-menu-floating::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.mention-menu-floating:hover {
+  scrollbar-color: color-mix(in oklch, var(--muted-text) 62%, transparent) transparent;
+}
+
+.mention-menu-floating:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--muted-text) 62%, transparent);
 }
 
 .mention-option {
@@ -4574,18 +4599,21 @@ textarea:focus {
   transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
 }
 
-.mention-option:hover {
-  border-color: color-mix(in oklch, var(--brand) 48%, var(--line));
-  background: color-mix(in oklch, var(--brand) 18%, var(--surface));
+.mention-option:hover,
+.mention-option:focus-visible {
+  border-color: transparent;
+  background: var(--muted);
+  color: var(--text);
+}
+
+.mention-option:hover strong,
+.mention-option:focus-visible strong {
   color: var(--strong);
 }
 
-.mention-option:hover strong {
-  color: var(--brand);
-}
-
-.mention-option:hover small {
-  color: color-mix(in oklch, var(--brand) 72%, var(--muted-text));
+.mention-option:hover small,
+.mention-option:focus-visible small {
+  color: var(--muted-text);
 }
 
 .mention-option strong {
@@ -5208,8 +5236,9 @@ textarea:focus {
 }
 
 .journal-calendar-day {
-  height: 34px;
+  height: 38px;
   border-radius: 8px;
+  position: relative;
   display: grid;
   place-items: center;
   color: var(--strong);
@@ -5217,6 +5246,19 @@ textarea:focus {
   font-weight: 560;
   line-height: 1;
   cursor: pointer;
+}
+
+.journal-calendar-day-number {
+  line-height: 1;
+}
+
+.journal-calendar-day-dot {
+  width: 4px;
+  height: 4px;
+  position: absolute;
+  bottom: 5px;
+  border-radius: 999px;
+  background: var(--brand);
 }
 
 .journal-calendar-day:hover,
@@ -5230,7 +5272,7 @@ textarea:focus {
 }
 
 .journal-calendar-day.has-entry {
-  background: var(--muted);
+  background: transparent;
 }
 
 .journal-calendar-day.selected {
@@ -5242,6 +5284,10 @@ textarea:focus {
   background: var(--brand);
 }
 
+.journal-calendar-day.selected .journal-calendar-day-dot {
+  background: var(--brand-foreground);
+}
+
 .journal-calendar-day.disabled {
   pointer-events: none;
   color: color-mix(in oklch, var(--muted-text) 42%, transparent);
@@ -5251,7 +5297,11 @@ textarea:focus {
 }
 
 .journal-calendar-day.disabled.has-entry {
-  background: color-mix(in oklch, var(--muted) 46%, transparent);
+  background: transparent;
+}
+
+.journal-calendar-day.disabled .journal-calendar-day-dot {
+  background: var(--muted-text);
 }
 
 .risk-item p,
@@ -6899,6 +6949,129 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
   margin-left: auto;
+}
+
+.package-feedback-button {
+  height: 32px;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 14px;
+  font-weight: 560;
+}
+
+/* 交付反馈抽屉 */
+.package-event-comments-drawer {
+  display: flex;
+  flex-direction: column;
+}
+
+.package-event-comments-header {
+  flex: 0 0 auto;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.package-event-comments-header [data-slot="dialog-title"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.package-event-comments-header [data-slot="dialog-description"] {
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-event-comments-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 18px;
+  overflow-y: auto;
+}
+
+.package-event-comments-empty {
+  padding: 32px 12px;
+  color: var(--muted-text);
+  font-size: 13px;
+  text-align: center;
+}
+
+.package-event-comment-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.package-event-comment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.package-event-comment-byline {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.package-event-comment-byline strong {
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.package-event-comment-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.package-event-comment-actions [data-slot="button"] {
+  min-height: 28px;
+  padding-inline: 8px;
+}
+
+.package-event-comment-delete {
+  color: var(--destructive);
+}
+
+.package-event-comment-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.package-event-comment-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.package-event-comment-editor-actions,
+.package-event-comments-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.package-event-comments-composer {
+  flex: 0 0 auto;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.package-event-comments-composer [data-slot="textarea"] {
+  min-height: 88px;
 }
 
 .package-event-status-select {

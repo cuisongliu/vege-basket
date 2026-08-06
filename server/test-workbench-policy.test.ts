@@ -6,6 +6,7 @@ import {
   canDeleteTestSubject,
   canEditTestBug,
   canEditTestSubject,
+  canDeveloperRejectBug,
   canDeveloperSetBugStatus,
   canManageTestPlan,
   canRemoveTestPlanCase,
@@ -24,9 +25,48 @@ const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.m
 test('developer bug transitions stop at pending verification', () => {
   assert.equal(canDeveloperSetBugStatus('assigned', 'in_progress'), true)
   assert.equal(canDeveloperSetBugStatus('reopened', 'in_progress'), true)
+  assert.equal(canDeveloperSetBugStatus('pending_confirmation', 'in_progress'), true)
   assert.equal(canDeveloperSetBugStatus('in_progress', 'pending_verification'), true)
   assert.equal(canDeveloperSetBugStatus('pending_verification', 'closed'), false)
   assert.equal(canDeveloperSetBugStatus('new', 'rejected'), false)
+  assert.equal(canDeveloperSetBugStatus('pending_confirmation', 'pending_verification'), false)
+})
+
+test('developer can reject only Bugs that are not yet being fixed', () => {
+  assert.equal(canDeveloperRejectBug('pending_confirmation'), true)
+  assert.equal(canDeveloperRejectBug('assigned'), true)
+  assert.equal(canDeveloperRejectBug('reopened'), true)
+  assert.equal(canDeveloperRejectBug('in_progress'), false)
+  assert.equal(canDeveloperRejectBug('pending_verification'), false)
+  assert.equal(canDeveloperRejectBug('rejected'), false)
+  assert.equal(canDeveloperRejectBug('closed'), false)
+  assert.equal(canDeveloperRejectBug('duplicate'), false)
+})
+
+test('bug status and comment kind checks include pending confirmation and reject', () => {
+  assert.match(schemaSource, /check \(status in \('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'\)\)/u)
+  assert.match(schemaSource, /check \(kind in \('comment', 'transfer', 'reject'\)\)/u)
+})
+
+test('assigned Bugs start in pending confirmation and reject writes a system comment', () => {
+  assert.match(testWorkbenchSource, /const status = assigneeUserId \? 'pending_confirmation' : 'new'/u)
+  assert.match(testWorkbenchSource, /status = 'pending_confirmation', updated_at = now\(\)/u)
+  const rejectRouteStart = testWorkbenchSource.indexOf("router.post('/test-bugs/:bugId/assigned/reject'")
+  assert.ok(rejectRouteStart >= 0)
+  const rejectRoute = testWorkbenchSource.slice(rejectRouteStart)
+  assert.match(rejectRoute, /canDeveloperRejectBug\(bug\.status\)/u)
+  assert.match(rejectRoute, /status = 'rejected', updated_at = now\(\)/u)
+  assert.match(rejectRoute, /values \(\$1, \$2, \$3, 'reject'\)/u)
+  assert.match(rejectRoute, /onTestBugRejected\(/u)
+  assert.match(rejectRoute, /for update of b/u)
+})
+
+test('developer workbench offers start and reject for pending confirmation Bugs', () => {
+  assert.match(testWorkbenchClientSource, /pending_confirmation: '待确定'/u)
+  assert.match(testWorkbenchClientSource, /selected\.status === 'pending_confirmation'/u)
+  assert.match(testWorkbenchClientSource, /<DialogTitle>驳回 Bug<\/DialogTitle>/u)
+  assert.match(testWorkbenchClientSource, /rejectAssignedTestBug\(bug\.id, reason\)/u)
+  assert.match(testWorkbenchClientSource, /驳回记录/u)
 })
 
 test('test result and bug status guards reject unknown values', () => {

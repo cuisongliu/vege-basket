@@ -13,12 +13,14 @@ import {
 import {
   CaretDown,
   CaretRight,
+  ChatCircleDots,
   Check,
   Copy,
   DotsThree,
   FunnelSimple,
   LinkSimple,
   Package,
+  PencilSimple,
   Plus,
   ShoppingCartSimple,
   SortAscending,
@@ -28,6 +30,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { JournalDatePicker } from '@/components/journal-date-picker'
+import { MentionTextarea, type MentionMember } from '@/components/mention-textarea'
 import {
   Dialog,
   DialogContent,
@@ -76,6 +79,7 @@ import type {
   Project,
   ProjectMembership,
   ProjectPackageEvent,
+  ProjectPackageEventComment,
   ProjectPackageEventSavePayload,
   ProjectPackageEventStatus,
   ProjectPackageGroup,
@@ -90,6 +94,7 @@ import type {
 import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
 
 type PackageWorkbenchProps = {
+  onAddEventComment: (eventId: number, content: string) => Promise<boolean>
   onCompleteEvent: (eventId: number) => Promise<boolean>
   onCreateOperation: (payload: {
     eventId: number
@@ -104,6 +109,7 @@ type PackageWorkbenchProps = {
     relatedTodoNotes?: Record<number, string>
   }) => Promise<boolean>
   onDeleteEvent: (eventId: number) => Promise<boolean>
+  onDeleteEventComment: (eventId: number, commentId: number) => Promise<boolean>
   onDeleteGroup: (groupId: number) => Promise<void>
   onDeleteOperation: (operationId: number) => Promise<void>
   onExportTimeline: (eventId?: number) => Promise<{ fileName: string; markdown: string }>
@@ -146,6 +152,7 @@ type PackageWorkbenchProps = {
       relatedTodoNotes: Record<number, string>
     }>,
   ) => Promise<boolean>
+  onUpdateEventComment: (eventId: number, commentId: number, content: string) => Promise<boolean>
   onUpdateTodo: (
     todoId: number,
     payload: Partial<Pick<Todo, 'done'>>,
@@ -1201,9 +1208,11 @@ const operationEventOptions: Array<{
 export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle, PackageWorkbenchProps>(function ProjectPackageWorkbench({
   currentUserId,
   memberships,
+  onAddEventComment,
   onCompleteEvent,
   onCreateOperation,
   onDeleteEvent,
+  onDeleteEventComment,
   onDeleteGroup,
   onDeleteOperation,
   onExportTimeline,
@@ -1213,6 +1222,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
   onSaveEvent,
+  onUpdateEventComment,
   onUpdateOperation,
   onUpdateTodo,
   project,
@@ -1221,6 +1231,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 }, ref) {
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
+  const [commentsDrawerOpen, setCommentsDrawerOpen] = useState(false)
   const [eventEditorOpen, setEventEditorOpen] = useState(false)
   const [eventEditorEventId, setEventEditorEventId] = useState<number | null>(null)
   const [eventEditorStep, setEventEditorStep] = useState<1 | 2 | 3>(1)
@@ -2937,8 +2948,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         事件发布后，基本信息、安装包和文档保持只读。
                       </p>
                     </div>
-                    {canManageProject && selectedEvent.status !== 'delivered' ? (
-                      <div className="operation-actions">
+                    <div className="operation-actions">
+                      <Button
+                        className="package-feedback-button"
+                        type="button"
+                        variant="outline"
+                        onClick={() => setCommentsDrawerOpen(true)}
+                      >
+                        <ChatCircleDots size={15} /> 交付反馈
+                      </Button>
+                      {canManageProject && selectedEvent.status !== 'delivered' ? (
                         <Button
                           className="solid-button"
                           type="button"
@@ -2950,8 +2969,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         >
                           <Check size={14} weight="bold" /> 标记已交付
                         </Button>
-                      </div>
-                    ) : null}
+                      ) : null}
+                    </div>
                   </div>
 
                   {selectedEvent.operations.length === 0 ? (
@@ -3959,6 +3978,197 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </div>
         </DialogContent>
       </Dialog>
+      <PackageEventCommentsDrawer
+        currentUserId={currentUserId}
+        event={selectedEvent}
+        mentionMembers={timeline?.mentionableMembers ?? memberOptions}
+        open={commentsDrawerOpen && selectedEvent != null}
+        onAddComment={(eventId, content) => onAddEventComment(eventId, content)}
+        onDeleteComment={(comment) => onDeleteEventComment(selectedEvent!.id, comment.id)}
+        onOpenChange={setCommentsDrawerOpen}
+        onUpdateComment={(comment, content) => onUpdateEventComment(selectedEvent!.id, comment.id, content)}
+      />
     </div>
   )
 })
+
+function PackageEventCommentItem({
+  comment,
+  currentUserId,
+  disabled,
+  mentionMembers,
+  onDelete,
+  onUpdate,
+}: {
+  comment: ProjectPackageEventComment
+  currentUserId?: number
+  disabled: boolean
+  mentionMembers: MentionMember[]
+  onDelete: (comment: ProjectPackageEventComment) => Promise<boolean>
+  onUpdate: (comment: ProjectPackageEventComment, content: string) => Promise<boolean>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(comment.content)
+  const canManage = comment.canEdit || (
+    currentUserId != null && comment.authorUserId === currentUserId
+  )
+  const edited = comment.updatedAt !== comment.createdAt
+
+  useEffect(() => {
+    if (!editing) setDraft(comment.content)
+  }, [comment.content, editing])
+
+  return (
+    <article className="package-event-comment-item">
+      <div className="package-event-comment-header">
+        <div className="package-event-comment-byline">
+          <strong>{comment.authorName}</strong>
+          <span aria-hidden="true">·</span>
+          <time>{comment.createdAt}{edited ? ` · 编辑于 ${comment.updatedAt}` : ''}</time>
+        </div>
+        {canManage && !editing ? (
+          <div className="package-event-comment-actions">
+            <Button
+              aria-label="编辑反馈"
+              size="icon-sm"
+              title="编辑反馈"
+              type="button"
+              variant="outline"
+              onClick={() => setEditing(true)}
+            >
+              <PencilSimple />
+            </Button>
+            <Button
+              aria-label="删除反馈"
+              className="package-event-comment-delete"
+              disabled={disabled}
+              size="icon-sm"
+              title="删除反馈"
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (window.confirm('确定删除这条交付反馈吗？')) void onDelete(comment)
+              }}
+            >
+              <Trash />
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {editing ? (
+        <form
+          className="package-event-comment-editor"
+          onSubmit={async (formEvent) => {
+            formEvent.preventDefault()
+            if (!draft.trim() || disabled) return
+            if (await onUpdate(comment, draft)) setEditing(false)
+          }}
+        >
+          <MentionTextarea
+            aria-label="编辑反馈"
+            members={mentionMembers}
+            menuPlacement="above"
+            maxLength={5000}
+            onChange={setDraft}
+            value={draft}
+          />
+          <div className="package-event-comment-editor-actions">
+            <Button type="button" variant="outline" onClick={() => { setDraft(comment.content); setEditing(false) }}>
+              取消
+            </Button>
+            <Button disabled={disabled || !draft.trim()}>保存</Button>
+          </div>
+        </form>
+      ) : (
+        <p className="package-event-comment-content">{comment.content}</p>
+      )}
+    </article>
+  )
+}
+
+function PackageEventCommentsDrawer({
+  currentUserId,
+  event,
+  mentionMembers,
+  onAddComment,
+  onDeleteComment,
+  onOpenChange,
+  onUpdateComment,
+  open,
+}: {
+  currentUserId?: number
+  event: ProjectPackageEvent | null
+  mentionMembers: MentionMember[]
+  onAddComment: (eventId: number, content: string) => Promise<boolean>
+  onDeleteComment: (comment: ProjectPackageEventComment) => Promise<boolean>
+  onOpenChange: (open: boolean) => void
+  onUpdateComment: (comment: ProjectPackageEventComment, content: string) => Promise<boolean>
+  open: boolean
+}) {
+  const [draft, setDraft] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!open) setDraft('')
+  }, [event?.id, open])
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="package-event-comments-drawer fixed inset-y-0 right-0 left-auto z-50 h-full w-[min(92vw,430px)] translate-x-0 translate-y-0 gap-0 rounded-none border-l p-0 shadow-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right"
+      >
+        <DialogHeader className="package-event-comments-header">
+          <DialogTitle>交付反馈</DialogTitle>
+          <DialogDescription>
+            {event ? `${event.title} · ${eventTypeLabel(event.type)}` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="package-event-comments-body">
+          {(event?.comments ?? []).length === 0 ? (
+            <div className="package-event-comments-empty">
+              还没有反馈，写下这次交付的情况或 @ 相关成员吧。
+            </div>
+          ) : (
+            (event?.comments ?? []).map((comment) => (
+              <PackageEventCommentItem
+                comment={comment}
+                currentUserId={currentUserId}
+                disabled={submitting}
+                key={comment.id}
+                mentionMembers={mentionMembers}
+                onDelete={onDeleteComment}
+                onUpdate={onUpdateComment}
+              />
+            ))
+          )}
+        </div>
+        <form
+          className="package-event-comments-composer"
+          onSubmit={async (formEvent) => {
+            formEvent.preventDefault()
+            if (!event || !draft.trim() || submitting) return
+            setSubmitting(true)
+            const saved = await onAddComment(event.id, draft)
+            setSubmitting(false)
+            if (saved) setDraft('')
+          }}
+        >
+          <MentionTextarea
+            aria-label="交付反馈"
+            members={mentionMembers}
+            menuPlacement="above"
+            maxLength={5000}
+            onChange={setDraft}
+            placeholder="写下交付反馈，输入 @ 可提及组织成员。"
+            value={draft}
+          />
+          <div className="package-event-comments-composer-actions">
+            <Button disabled={submitting || !draft.trim()}>
+              {submitting ? '发送中...' : '发送反馈'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}

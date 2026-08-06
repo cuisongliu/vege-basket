@@ -123,6 +123,7 @@ test('removes a completed todo from actionable todo notification categories', ()
       projectId: 1,
       projectName: 'Project',
     }],
+    packageEventCommentMentions: [],
     projectTransfers: [],
   }
 
@@ -161,6 +162,7 @@ test('removes only the delivery event whose status advanced', () => {
     dueTomorrowTodos: [],
     noteMentions: [],
     invites: [],
+    packageEventCommentMentions: [],
     projectTransfers: [],
   }
 
@@ -378,13 +380,13 @@ test('transfers an assigned organization Bug atomically with an immutable collab
   assert.match(route, /membership\.status = 'active'/u)
   assert.match(route, /eligible_role\.role in \('developer', 'organization_admin'\)/u)
   assert.match(route, /for share of membership, eligible_role/u)
-  assert.match(route, /set assignee_user_id = \$1, status = 'assigned'/u)
+  assert.match(route, /set assignee_user_id = \$1, status = 'pending_confirmation'/u)
   assert.match(route, /insert into test_bug_comments \(test_bug_id, author_user_id, content, kind\)/u)
   assert.match(route, /values \(\$1, \$2, \$3, 'transfer'\)/u)
   assert.match(route, /transferReason: transfer\.assigningUnassignedBug \? undefined : reason/u)
 
   assert.match(schemaSource, /test_bug_comments_kind_check/u)
-  assert.match(schemaSource, /kind in \('comment', 'transfer'\)/u)
+  assert.match(schemaSource, /kind in \('comment', 'transfer', 'reject'\)/u)
   assert.ok((testWorkbenchSource.match(/and c\.kind = 'comment'/g) ?? []).length >= 4)
   assert.match(testWorkbenchClientSource, /comment\.kind !== 'transfer'/u)
 })
@@ -430,6 +432,7 @@ test('covers test-workbench Feishu private notification events', () => {
   for (const kind of [
     'test_plan_assigned',
     'test_bug_status_changed',
+    'test_bug_rejected',
     'test_bug_comment_added',
     'test_case_activity',
   ]) {
@@ -462,7 +465,7 @@ test('covers test-workbench Feishu private notification events', () => {
     /const showSubject = candidate\.kind === 'test_plan_assigned' \|\| candidate\.kind === 'test_case_activity'/,
   )
   assert.match(textBranch, /showSubject && candidate\.title \? `事项：\$\{candidate\.title\}` : ''/)
-  assert.match(textBranch, /const detail = candidate\.testCommentContent\s*\?\s*`评论内容：/)
+  assert.match(textBranch, /const detail = candidate\.testCommentContent\s*\?\s*`\$\{candidate\.kind === 'test_bug_rejected' \? '驳回理由' : '评论内容'\}：\$\{formatFeishuTodoDetailText\(candidate\.testCommentContent, '未填写'\)\}/)
   assert.doesNotMatch(textBranch, /\\n评论内容：/)
 
   assert.ok(cardBranch.includes("const activityTitle = candidate.kind === 'test_bug_status_changed'"))
@@ -471,11 +474,26 @@ test('covers test-workbench Feishu private notification events', () => {
     /const showSubject = candidate\.kind === 'test_plan_assigned' \|\| candidate\.kind === 'test_case_activity'/,
   )
   assert.match(cardBranch, /showSubject && candidate\.title \? `\*\*事项\*\*\\n\$\{sanitizeFeishuMarkdownText\(candidate\.title\)\}` : ''/)
-  assert.match(cardBranch, /const detail = candidate\.testCommentContent\s*\?\s*`\*\*评论内容\*\*\\n/)
+  assert.match(cardBranch, /const detail = candidate\.testCommentContent\s*\?\s*`\*\*\$\{isRejection \? '驳回理由' : '评论内容'\}\*\*\\n/)
   assert.doesNotMatch(cardBranch, /\\n\\n\*\*评论内容\*\*/)
-  assert.match(cardBranch, /title: \{ content: `🔔 \$\{activityTitle\}`,/)
+  assert.match(cardBranch, /title: \{ content: `\$\{isRejection \? '⛔' : '🔔'\} \$\{activityTitle\}`,/)
   assert.match(serverSource, /event\.nextStatus === 'reopened' \? '重新打开了你创建的 Bug' : '修复了你创建的 Bug，请验证'/)
   assert.doesNotMatch(serverSource, /退回了你创建的 Bug/)
+})
+
+test('notifies the Bug reporter privately when a developer rejects it', () => {
+  assert.match(serverSource, /onTestBugRejected: enqueueTestBugRejectedDelivery/u)
+  assert.match(serverSource, /async function buildTestBugRejectedFeishuCandidate/u)
+  assert.match(serverSource, /b\.reporter_user_id as recipient_user_id/u)
+  assert.match(serverSource, /join users recipient on recipient\.id = b\.reporter_user_id and recipient\.id <> \$2/u)
+  assert.match(serverSource, /where b\.id = \$1 and b\.status = 'rejected'/u)
+  assert.match(serverSource, /驳回了你创建的 Bug/u)
+  assert.match(serverSource, /delete from notification_deliveries where kind = 'test_bug_rejected' and source_id = \$1 and channel = 'feishu'/u)
+  assert.match(serverSource, /function enqueueTestBugRejectedDelivery/u)
+  assert.match(testWorkbenchSource, /onTestBugRejected\(\{/u)
+  assert.match(testWorkbenchSource, /'test_bug_rejected'/u)
+  assert.match(testWorkbenchClientSource, /rejectedBugNotifications/u)
+  assert.equal(shouldDeliverNotificationToProjectChat('test_bug_rejected'), false)
 })
 
 test('reuses Feishu recipients for the test-workbench in-app notification feed', () => {
@@ -495,6 +513,7 @@ test('reuses Feishu recipients for the test-workbench in-app notification feed',
   for (const functionName of [
     'deliverTestPlanAssignedNotification',
     'deliverTestBugStatusChangedNotification',
+    'deliverTestBugRejectedNotification',
     'deliverTestBugCommentAddedNotification',
   ]) {
     const start = serverSource.indexOf(`async function ${functionName}(`)
@@ -648,4 +667,31 @@ test('refreshes the workspace snapshot independently from notification polling',
   assert.match(appSource, /if \(!workspaceHydratedRef\.current\) \{\s*workspaceHydratedRef\.current = true\s*return/u)
   assert.match(appSource, /\[loggedIn, view, workspaceLoaded, refreshWorkspace\]/u)
   assert.match(appSource, /refreshToken=\{workspaceRefreshVersion\}/u)
+})
+
+test('notifies only mentioned users privately when a delivery event comment is added', () => {
+  assert.equal(shouldDeliverNotificationToProjectChat('package_event_comment_added'), false)
+  assert.match(serverSource, /'package_event_comment_added'/u)
+  const candidateSource = serverSource.slice(
+    serverSource.indexOf('async function buildPackageEventCommentAddedFeishuCandidates'),
+    serverSource.indexOf('async function deliverPackageEventCommentAddedNotification'),
+  )
+  assert.match(candidateSource, /from project_package_event_comments c/u)
+  assert.match(candidateSource, /join users recipient on recipient\.id = any\(\$2::bigint\[\]\) and recipient\.id <> \$3/u)
+  assert.match(candidateSource, /kind: 'package_event_comment_added' as const/u)
+  assert.match(candidateSource, /noteContent: commentContent/u)
+  assert.match(candidateSource, /sourceId: params\.commentId/u)
+  assert.match(candidateSource, /在交付事件评论中提到了你/u)
+  assert.match(serverSource, /async function deliverPackageEventCommentAddedNotification/u)
+  assert.match(serverSource, /function enqueuePackageEventCommentAddedDelivery/u)
+  assert.match(serverSource, /💬 交付反馈/u)
+  assert.match(
+    packageTimelineSource,
+    /insert into notification_deliveries[\s\S]*?'package_event_comment_added'[\s\S]*?'in_app'[\s\S]*?from unnest\(\$2::bigint\[\]\)/u,
+  )
+  assert.match(serverSource, /packageEventCommentMentions: packageEventCommentMentionsResult\.rows\.map/u)
+  assert.match(appSource, /notifications\.packageEventCommentMentions/u)
+  assert.match(testWorkbenchSource, /delivery\.kind = 'package_event_comment_added'/u)
+  assert.match(testWorkbenchClientSource, />交付反馈<\/span>/u)
+  assert.match(testWorkbenchClientSource, /在交付反馈中提到了你/u)
 })

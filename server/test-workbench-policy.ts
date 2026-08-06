@@ -7,6 +7,7 @@ export const testSpaceInviteExpiryOptions = [10, 30, 60, 240, 1440] as const
 export const bugStatuses = [
   'new',
   'confirmed',
+  'pending_confirmation',
   'assigned',
   'in_progress',
   'pending_verification',
@@ -99,7 +100,13 @@ export function canRemoveTestPlanCase(
 
 export function canDeveloperSetBugStatus(current: BugStatus, next: BugStatus) {
   if (current === next) return true
-  if (next === 'in_progress') return current === 'assigned' || current === 'reopened'
+  if (next === 'in_progress') {
+    return current === 'pending_confirmation' || current === 'assigned' || current === 'reopened'
+  }
   if (next === 'pending_verification') return current === 'in_progress'
   return false
+}
+
+export function canDeveloperRejectBug(current: BugStatus) {
+  return current === 'pending_confirmation' || current === 'assigned' || current === 'reopened'
 }

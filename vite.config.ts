@@ -7,7 +7,7 @@ import path from 'node:path'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    allowedHosts: ['.sealosgzg.site'],
+    allowedHosts: ['.sealosgzg.site', '.igt.run'],
     proxy: {
       '/api': 'http://127.0.0.1:8787',
     },

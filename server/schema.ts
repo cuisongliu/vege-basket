@@ -1335,6 +1335,18 @@ alter table project_package_operation_todos
 alter table project_package_operation_todos
   add column if not exists note_author_user_id bigint references users(id) on delete set null;
 
+create table if not exists project_package_event_comments (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  author_user_id bigint references users(id) on delete set null,
+  content text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
+
+create index if not exists idx_project_package_event_comments_event
+  on project_package_event_comments(project_package_event_id, created_at, id);
+
 create table if not exists todo_notes (
   id bigserial primary key,
   todo_id bigint not null references todos(id) on delete cascade,
@@ -1664,7 +1676,7 @@ create table if not exists test_bugs (
     check (severity in ('blocker', 'critical', 'major', 'minor', 'trivial')),
   priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
   status text not null default 'new'
-    check (status in ('new', 'confirmed', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
+    check (status in ('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
   environment text not null default '',
   reproduction_steps text not null default '',
   expected_result text not null default '',
@@ -1695,6 +1707,13 @@ exception
   when duplicate_object then null;
 end $$;
 
+alter table test_bugs
+  drop constraint if exists test_bugs_status_check;
+
+alter table test_bugs
+  add constraint test_bugs_status_check
+  check (status in ('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'));
+
 create table if not exists test_bug_comments (
   id bigserial primary key,
   test_bug_id bigint not null references test_bugs(id) on delete cascade,
@@ -1712,7 +1731,7 @@ alter table test_bug_comments
 
 alter table test_bug_comments
   add constraint test_bug_comments_kind_check
-  check (kind in ('comment', 'transfer'));
+  check (kind in ('comment', 'transfer', 'reject'));
 
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_projects_organization_id on projects(organization_id);

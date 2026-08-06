@@ -98,7 +98,7 @@ export function getDefaultBugFilterValue(
     return `${today}..${today}`
   }
   if (field === 'createdAt') return getBugFilterTodayStamp()
-  if (field === 'status') return 'assigned'
+  if (field === 'status') return 'pending_confirmation'
   if (field === 'severity') return 'major'
   if (field === 'priority') return 'medium'
   return ''

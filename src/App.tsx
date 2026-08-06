@@ -164,6 +164,9 @@ import {
   registerAccount,
   clearAuthToken,
   completeProjectPackageEvent,
+  addPackageEventComment,
+  updatePackageEventComment,
+  deletePackageEventComment,
   removeDraft,
   removeJournalEntry,
   removeProjectPackageEvent,
@@ -1667,6 +1670,7 @@ const emptyNotifications: NotificationCenterData = {
   dueTomorrowTodos: [],
   noteMentions: [],
   invites: [],
+  packageEventCommentMentions: [],
   projectTransfers: [],
 }
 
@@ -2720,7 +2724,8 @@ function App() {
       notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.readAt && !item.done).length +
       notifications.watchedTodos.filter((item) => !item.dismissedAt && !item.readAt).length +
       notifications.dueTomorrowTodos.filter((item) => !item.dismissedAt && !item.readAt).length +
-      notifications.noteMentions.filter((item) => !item.dismissedAt && !item.readAt).length,
+      notifications.noteMentions.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.packageEventCommentMentions.filter((item) => !item.dismissedAt && !item.readAt).length,
     [notifications],
   )
   useEffect(() => {
@@ -3031,6 +3036,7 @@ function App() {
       watchedTodos: current.watchedTodos.map((item) => ({ ...item, readAt })),
       dueTomorrowTodos: current.dueTomorrowTodos.map((item) => ({ ...item, readAt })),
       noteMentions: current.noteMentions.map((item) => ({ ...item, readAt })),
+      packageEventCommentMentions: current.packageEventCommentMentions.map((item) => ({ ...item, readAt })),
       projectTransfers: current.projectTransfers.map((item) => ({ ...item, readAt })),
     }))
     try {
@@ -3081,10 +3087,13 @@ function App() {
 
   async function saveJournal(createdAt?: string) {
     const content = journalDraft.trim()
-    if (!content || !selectedProject) return
+    if (!content || !selectedProject) return false
 
-    await runMutation(() => createJournalEntry(selectedProject.id, content, createdAt))
-    setJournalDraft('')
+    const draftAtSubmit = journalDraft
+    const data = await runMutation(() => createJournalEntry(selectedProject.id, content, createdAt))
+    if (!data) return false
+    setJournalDraft((current) => current === draftAtSubmit ? '' : current)
+    return true
   }
 
   async function renameProject(projectId: number, name: string) {
@@ -3381,6 +3390,54 @@ function App() {
       return true
     } catch {
       setWorkspaceError('交付事件状态更新失败，请稍后再试。')
+      return false
+    }
+  }
+
+  async function addInstallEventComment(eventId: number, content: string) {
+    if (!selectedProject) return false
+    try {
+      const timeline = await addPackageEventComment(selectedProject.id, eventId, content)
+      setProjectPackageTimelines((current) => ({
+        ...current,
+        [selectedProject.id]: timeline,
+      }))
+      setWorkspaceError('')
+      return true
+    } catch {
+      setWorkspaceError('交付反馈发送失败，请稍后再试。')
+      return false
+    }
+  }
+
+  async function updateInstallEventComment(eventId: number, commentId: number, content: string) {
+    if (!selectedProject) return false
+    try {
+      const timeline = await updatePackageEventComment(selectedProject.id, eventId, commentId, content)
+      setProjectPackageTimelines((current) => ({
+        ...current,
+        [selectedProject.id]: timeline,
+      }))
+      setWorkspaceError('')
+      return true
+    } catch {
+      setWorkspaceError('交付反馈更新失败，请稍后再试。')
+      return false
+    }
+  }
+
+  async function deleteInstallEventComment(eventId: number, commentId: number) {
+    if (!selectedProject) return false
+    try {
+      const timeline = await deletePackageEventComment(selectedProject.id, eventId, commentId)
+      setProjectPackageTimelines((current) => ({
+        ...current,
+        [selectedProject.id]: timeline,
+      }))
+      setWorkspaceError('')
+      return true
+    } catch {
+      setWorkspaceError('交付反馈删除失败，请稍后再试。')
       return false
     }
   }
@@ -4829,9 +4886,11 @@ ${packageTimelineText}`
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
             onAddTodo={addTodo}
+            onAddInstallEventComment={addInstallEventComment}
             onCompleteInstallEvent={completeInstallEvent}
             onCreateInstallOperation={createInstallOperation}
             onDeleteInstallEvent={deleteInstallEvent}
+            onDeleteInstallEventComment={deleteInstallEventComment}
             onDeleteInstallGroup={deleteInstallGroup}
             onDeleteInstallOperation={deleteInstallOperation}
             onDraftChange={setJournalDraft}
@@ -4842,6 +4901,7 @@ ${packageTimelineText}`
             onInstallLoadMarketRules={loadPackageMarketRules}
             onInstallLoadMarketVersions={loadPackageMarketVersions}
             onSaveInstallEvent={saveInstallEvent}
+            onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
             onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
@@ -5587,9 +5647,11 @@ function ProjectDetail({
   packageWorkbenchRef,
   projectDetailTab,
   onAddTodo,
+  onAddInstallEventComment,
   onCompleteInstallEvent,
   onCreateInstallOperation,
   onDeleteInstallEvent,
+  onDeleteInstallEventComment,
   onDeleteInstallGroup,
   onDeleteInstallOperation,
   onDraftChange,
@@ -5600,6 +5662,7 @@ function ProjectDetail({
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
   onSaveInstallEvent,
+  onUpdateInstallEventComment,
   onUpdateInstallOperation,
   onSaveJournal,
   onDeleteJournalEntry,
@@ -5645,6 +5708,7 @@ function ProjectDetail({
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
   onAddTodo: (projectId: number) => void | Promise<void>
+  onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onCompleteInstallEvent: (eventId: number) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
@@ -5659,6 +5723,7 @@ function ProjectDetail({
     relatedTodoNotes?: Record<number, string>
   }) => Promise<boolean>
   onDeleteInstallEvent: (eventId: number) => Promise<boolean>
+  onDeleteInstallEventComment: (eventId: number, commentId: number) => Promise<boolean>
   onDeleteInstallGroup: (groupId: number) => Promise<void>
   onDeleteInstallOperation: (operationId: number) => Promise<void>
   onDraftChange: (value: string) => void
@@ -5701,7 +5766,8 @@ function ProjectDetail({
       relatedTodoNotes: Record<number, string>
     }>,
   ) => Promise<boolean>
-  onSaveJournal: (createdAt?: string) => void
+  onUpdateInstallEventComment: (eventId: number, commentId: number, content: string) => Promise<boolean>
+  onSaveJournal: (createdAt?: string) => Promise<boolean>
   onDeleteJournalEntry: (projectId: number, entryId: number) => void
   onEditJournalEntry: (
     projectId: number,
@@ -5826,10 +5892,18 @@ function ProjectDetail({
     setPastJournalDialogOpen(true)
   }
 
-  function savePastJournal() {
+  async function savePastJournal() {
     if (!journalDraft.trim()) return
-    onSaveJournal(pastJournalDate)
-    setPastJournalDialogOpen(false)
+    const saved = await onSaveJournal(pastJournalDate)
+    if (saved) {
+      setSelectedJournalDate(pastJournalDate)
+      setPastJournalDialogOpen(false)
+    }
+  }
+
+  async function saveTodayJournal() {
+    const saved = await onSaveJournal()
+    if (saved) setSelectedJournalDate(today)
   }
 
   function closeTodoCreateDialog() {
@@ -5876,9 +5950,11 @@ function ProjectDetail({
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
+            onAddEventComment={onAddInstallEventComment}
             onCompleteEvent={onCompleteInstallEvent}
             onCreateOperation={onCreateInstallOperation}
             onDeleteEvent={onDeleteInstallEvent}
+            onDeleteEventComment={onDeleteInstallEventComment}
             onDeleteGroup={onDeleteInstallGroup}
             onDeleteOperation={onDeleteInstallOperation}
             onExportTimeline={onExportInstallTimeline}
@@ -5888,6 +5964,7 @@ function ProjectDetail({
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}
             onSaveEvent={onSaveInstallEvent}
+            onUpdateEventComment={onUpdateInstallEventComment}
             onUpdateOperation={onUpdateInstallOperation}
             onUpdateTodo={onUpdateTodo}
             currentUserId={currentUser?.id}
@@ -5907,11 +5984,11 @@ function ProjectDetail({
                 onChange={onDraftChange}
                 onCompositionEnd={() => setIsJournalComposing(false)}
                 onCompositionStart={() => setIsJournalComposing(true)}
-                onKeyDown={(event) => handleJournalKeyDown(event, onSaveJournal)}
+                onKeyDown={(event) => handleJournalKeyDown(event, saveTodayJournal)}
               />
             </Label>
             <div className="journal-save-actions">
-              <Button className="solid-button" type="button" onClick={() => onSaveJournal()}>
+              <Button className="solid-button" type="button" onClick={saveTodayJournal}>
                 <NotePencil size={17} /> 保存到今日日记
               </Button>
               <Button className="ghost-button" variant="outline" type="button" onClick={openPastJournalDialog}>
@@ -6824,6 +6901,14 @@ function NotificationCenterView({
         message: `${event.assignedByName ?? '有人'} 在「${event.projectName}」中为你安排了交付事件「${event.title}」，请及时查看。`,
         sortAt: sortTime(event),
         time: event.assignedAt,
+      })
+    }
+    for (const comment of visible(notifications.packageEventCommentMentions)) {
+      result.push({
+        id: `package-event-comment-${comment.commentId}`,
+        message: `${comment.authorName} 在「${comment.projectName}」的交付反馈中提到了你${comment.commentPreview ? `：“${comment.commentPreview}”` : '。'}`,
+        sortAt: sortTime(comment),
+        time: comment.createdAt,
       })
     }
     for (const todo of visible(notifications.dueTomorrowTodos)) {

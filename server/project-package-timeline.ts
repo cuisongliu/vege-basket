@@ -32,9 +32,9 @@ export type ProjectPackageDocumentInput = {
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
 
 export class ProjectPackageEventError extends Error {
-  readonly status: 400 | 404 | 409
+  readonly status: 400 | 403 | 404 | 409
 
-  constructor(message: string, status: 400 | 404 | 409) {
+  constructor(message: string, status: 400 | 403 | 404 | 409) {
     super(message)
     this.name = 'ProjectPackageEventError'
     this.status = status
@@ -80,12 +80,28 @@ export type ProjectPackageGroup = {
   packageName: string
 }
 
+export type ProjectPackageEventComment = {
+  authorName: string
+  authorUserId?: number
+  canEdit?: boolean
+  content: string
+  createdAt: string
+  id: number
+  updatedAt: string
+}
+
+export type ProjectPackageMentionableMember = {
+  id: number
+  name: string
+}
+
 export type ProjectPackageEvent = {
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
+  comments: ProjectPackageEventComment[]
   createdAt: string
   deliveryDate: string
   groups: ProjectPackageGroup[]
@@ -101,6 +117,7 @@ export type ProjectPackageEvent = {
 
 export type ProjectPackageTimeline = {
   events: ProjectPackageEvent[]
+  mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
 }
 
@@ -164,6 +181,23 @@ type OperationTodoRow = {
   note: string
   project_package_operation_id: string
   todo_id: string
+}
+
+type PackageEventCommentRow = {
+  author_display_name: string | null
+  author_email: string | null
+  author_user_id: string | null
+  content: string
+  created_at: Date
+  id: string
+  project_package_event_id: string
+  updated_at: Date | null
+}
+
+type MentionableMemberRow = {
+  display_name: string | null
+  email: string | null
+  id: string
 }
 
 type ProjectOperationTodoLinkRow = {
@@ -1156,7 +1190,15 @@ function buildProjectPackageEventMarkdown(
 }
 
 export async function getProjectPackageTimeline(projectId: number) {
-  const [eventsResult, groupsResult, itemsResult, operationsResult, operationTodosResult] = await Promise.all([
+  const [
+    eventsResult,
+    groupsResult,
+    itemsResult,
+    operationsResult,
+    operationTodosResult,
+    commentsResult,
+    mentionableMembersResult,
+  ] = await Promise.all([
     query<EventRow>(
       `
       select e.id,
@@ -1258,6 +1300,44 @@ export async function getProjectPackageTimeline(projectId: number) {
       `,
       [projectId],
     ),
+    query<PackageEventCommentRow>(
+      `
+      select c.id,
+             c.project_package_event_id,
+             c.author_user_id,
+             c.content,
+             c.created_at,
+             c.updated_at,
+             author.email as author_email,
+             author.display_name as author_display_name
+      from project_package_event_comments c
+      join project_package_events e on e.id = c.project_package_event_id
+      left join users author on author.id = c.author_user_id
+      where e.project_id = $1
+      order by c.created_at asc, c.id asc
+      `,
+      [projectId],
+    ),
+    query<MentionableMemberRow>(
+      `
+      select u.id, u.email, u.display_name
+      from users u
+      where (
+        u.id = (select p.user_id from projects p where p.id = $1)
+        or exists (
+          select 1 from project_memberships pm
+          where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
+        )
+        or exists (
+          select 1 from projects p
+          join organization_memberships om on om.organization_id = p.organization_id
+          where p.id = $1 and om.user_id = u.id and om.status = 'active'
+        )
+      )
+      order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+      `,
+      [projectId],
+    ),
   ])
 
   const groupsByEvent = new Map<number, ProjectPackageGroup[]>()
@@ -1310,6 +1390,30 @@ export async function getProjectPackageTimeline(projectId: number) {
     todoNotes[Number(row.todo_id)] = row.note ? decryptText(row.note) : ''
     relatedTodoNotesByOperation.set(operationId, todoNotes)
   }
+
+  const commentsByEvent = new Map<number, ProjectPackageEventComment[]>()
+  for (const row of commentsResult.rows) {
+    const comments = commentsByEvent.get(Number(row.project_package_event_id)) ?? []
+    comments.push({
+      authorName: displayUserName({
+        email: row.author_email,
+        display_name: row.author_display_name,
+      }),
+      authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
+      content: decryptText(row.content),
+      createdAt: formatDateTime(row.created_at),
+      id: Number(row.id),
+      updatedAt: formatDateTime(row.updated_at ?? row.created_at),
+    })
+    commentsByEvent.set(Number(row.project_package_event_id), comments)
+  }
+
+  const mentionableMembers: ProjectPackageMentionableMember[] = mentionableMembersResult.rows.map(
+    (row) => ({
+      id: Number(row.id),
+      name: displayUserName({ email: row.email, display_name: row.display_name }),
+    }),
+  )
 
   const eventOperationsByEvent = new Map<number, ProjectPackageOperation[]>()
   for (const row of operationsResult.rows) {
@@ -1364,6 +1468,7 @@ export async function getProjectPackageTimeline(projectId: number) {
           })
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+      comments: commentsByEvent.get(Number(row.id)) ?? [],
       id: Number(row.id),
       publishedAt: row.published_at ? formatDateTime(row.published_at) : undefined,
       publishedByUserId: row.published_by_user_id ? Number(row.published_by_user_id) : undefined,
@@ -1376,6 +1481,7 @@ export async function getProjectPackageTimeline(projectId: number) {
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
     })),
+    mentionableMembers,
   } satisfies ProjectPackageTimeline
 }
 
@@ -2106,4 +2212,155 @@ export async function queryRows<T extends QueryResultRow = QueryResultRow>(
   params: unknown[] = [],
 ) {
   return query<T>(text, params)
+}
+
+function extractMentionNames(value: string) {
+  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】[\]<>《》"'“”])/g))
+    .map((match) => match[1]?.trim() ?? '')
+    .filter(Boolean)
+}
+
+export async function resolvePackageEventMentionUserIds(projectId: number, content: string) {
+  const names = extractMentionNames(content).map((name) => name.toLocaleLowerCase('zh-CN'))
+  if (names.length === 0) return []
+  const result = await query<{ id: string }>(
+    `
+    select u.id
+    from users u
+    where lower(coalesce(nullif(u.display_name, ''), u.email)) = any($2::text[])
+      and (
+        u.id = (select p.user_id from projects p where p.id = $1)
+        or exists (
+          select 1 from project_memberships pm
+          where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
+        )
+        or exists (
+          select 1 from projects p
+          join organization_memberships om on om.organization_id = p.organization_id
+          where p.id = $1 and om.user_id = u.id and om.status = 'active'
+        )
+      )
+    `,
+    [projectId, names],
+  )
+  return result.rows.map((row) => Number(row.id))
+}
+
+export async function createProjectPackageEventComment(params: {
+  authorUserId: number
+  content: string
+  eventId: number
+  mentionedUserIds: number[]
+  projectId: number
+}) {
+  return withTransaction(async (client) => {
+    const event = await client.query(
+      'select id from project_package_events where id = $1 and project_id = $2',
+      [params.eventId, params.projectId],
+    )
+    if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
+    const inserted = await client.query<{ id: string }>(
+      `insert into project_package_event_comments (project_package_event_id, author_user_id, content)
+       values ($1, $2, $3)
+       returning id`,
+      [params.eventId, params.authorUserId, encryptText(params.content)],
+    )
+    const commentId = Number(inserted.rows[0].id)
+    await client.query(
+      `insert into notification_deliveries (
+         user_id,
+         kind,
+         source_id,
+         channel,
+         target_type,
+         target_id,
+         status,
+         delivered_at,
+         updated_at
+       )
+       select recipient.user_id,
+              'package_event_comment_added',
+              $1::bigint,
+              'in_app',
+              'user',
+              recipient.user_id::text,
+              'sent',
+              now(),
+              now()
+       from unnest($2::bigint[]) as recipient(user_id)
+       where recipient.user_id <> $3::bigint
+       on conflict (kind, source_id, channel, target_type, target_id) do update
+         set user_id = excluded.user_id,
+             status = 'sent',
+             attempts = 0,
+             last_error = '',
+             delivered_at = now(),
+             updated_at = now()`,
+      [commentId, params.mentionedUserIds, params.authorUserId],
+    )
+    return commentId
+  })
+}
+
+async function lockPackageEventComment(
+  commentId: number,
+  projectId: number,
+  userId: number,
+  client: PoolClient,
+) {
+  const locked = await client.query<{ author_user_id: string | null }>(
+    `select c.author_user_id
+     from project_package_event_comments c
+     join project_package_events e on e.id = c.project_package_event_id
+     where c.id = $1 and e.project_id = $2
+     for update of c`,
+    [commentId, projectId],
+  )
+  const comment = locked.rows[0]
+  if (!comment) throw new ProjectPackageEventError('Comment not found', 404)
+  if (!comment.author_user_id || Number(comment.author_user_id) !== userId) {
+    throw new ProjectPackageEventError('Only the comment author can change it', 403)
+  }
+  return comment
+}
+
+export async function updateProjectPackageEventComment(params: {
+  commentId: number
+  content: string
+  projectId: number
+  userId: number
+}) {
+  await withTransaction(async (client) => {
+    await lockPackageEventComment(params.commentId, params.projectId, params.userId, client)
+    await client.query(
+      `update project_package_event_comments
+       set content = $1, updated_at = now()
+       where id = $2`,
+      [encryptText(params.content), params.commentId],
+    )
+  })
+}
+
+export async function deleteProjectPackageEventComment(params: {
+  commentId: number
+  projectId: number
+  userId: number
+}) {
+  await withTransaction(async (client) => {
+    await lockPackageEventComment(params.commentId, params.projectId, params.userId, client)
+    await client.query(
+      `delete from notification_states
+       where kind = 'package_event_comment_added' and source_id = $1`,
+      [params.commentId],
+    )
+    await client.query(
+      `delete from notification_deliveries
+       where kind = 'package_event_comment_added' and source_id = $1`,
+      [params.commentId],
+    )
+    await client.query(
+      'delete from project_package_event_comments where id = $1',
+      [params.commentId],
+    )
+  })
 }

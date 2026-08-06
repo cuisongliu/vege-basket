@@ -15,6 +15,7 @@ import {
   canDeleteTestSubject,
   canEditTestBug,
   canEditTestSubject,
+  canDeveloperRejectBug,
   canDeveloperSetBugStatus,
   canManageTestPlan,
   canRemoveTestPlanCase,
@@ -36,7 +37,9 @@ type TestCaseKind = 'functional' | 'baseline'
 type TestWorkbenchNotificationKind =
   | 'test_plan_assigned'
   | 'test_bug_status_changed'
+  | 'test_bug_rejected'
   | 'test_bug_comment_added'
+  | 'package_event_comment_added'
 
 const router = Router()
 
@@ -61,6 +64,12 @@ export type TestBugStatusChangedEvent = {
   previousStatus: BugStatus
 }
 
+export type TestBugRejectedEvent = {
+  actorUserId: number
+  bugId: number
+  rejectReason: string
+}
+
 export type TestBugCommentAddedEvent = {
   actorUserId: number
   bugId: number
@@ -81,6 +90,7 @@ export type TestExecutionResultChangedEvent = {
 let onTestBugAssigned: (event: TestBugAssignedEvent) => void = () => {}
 let onTestPlanAssigned: (event: TestPlanAssignedEvent) => void = () => {}
 let onTestBugStatusChanged: (event: TestBugStatusChangedEvent) => void = () => {}
+let onTestBugRejected: (event: TestBugRejectedEvent) => void = () => {}
 let onTestBugCommentAdded: (event: TestBugCommentAddedEvent) => void = () => {}
 let onTestCaseChanged: (event: TestCaseChangedEvent) => void = () => {}
 let onTestExecutionResultChanged: (event: TestExecutionResultChangedEvent) => void = () => {}
@@ -89,6 +99,7 @@ export function configureTestWorkbenchNotifications(handlers: {
   onTestBugAssigned: (event: TestBugAssignedEvent) => void
   onTestPlanAssigned: (event: TestPlanAssignedEvent) => void
   onTestBugStatusChanged: (event: TestBugStatusChangedEvent) => void
+  onTestBugRejected: (event: TestBugRejectedEvent) => void
   onTestBugCommentAdded: (event: TestBugCommentAddedEvent) => void
   onTestCaseChanged: (event: TestCaseChangedEvent) => void
   onTestExecutionResultChanged: (event: TestExecutionResultChangedEvent) => void
@@ -96,6 +107,7 @@ export function configureTestWorkbenchNotifications(handlers: {
   onTestBugAssigned = handlers.onTestBugAssigned
   onTestPlanAssigned = handlers.onTestPlanAssigned
   onTestBugStatusChanged = handlers.onTestBugStatusChanged
+  onTestBugRejected = handlers.onTestBugRejected
   onTestBugCommentAdded = handlers.onTestBugCommentAdded
   onTestCaseChanged = handlers.onTestCaseChanged
   onTestExecutionResultChanged = handlers.onTestExecutionResultChanged
@@ -770,8 +782,15 @@ async function getTestWorkbench(userId: number) {
       [userId],
     ),
     query<{
+      author_display_name: string | null
+      author_email: string | null
+      comment_content: string | null
       created_at: Date
+      event_id: string | null
+      event_title: string | null
       kind: TestWorkbenchNotificationKind
+      project_id: string | null
+      project_name: string | null
       source_id: string
     }>(
       `
@@ -780,18 +799,45 @@ async function getTestWorkbench(userId: number) {
              coalesce(
                max(delivery.created_at) filter (where delivery.channel = 'in_app'),
                min(delivery.created_at) filter (where delivery.channel = 'feishu')
-             ) as created_at
+             ) as created_at,
+             max(package_comment.content) as comment_content,
+             max(package_event.id) as event_id,
+             max(package_event.title) as event_title,
+             max(package_event.project_id) as project_id,
+             max(package_project.name) as project_name,
+             max(package_author.email) as author_email,
+             max(package_author.display_name) as author_display_name
       from notification_deliveries delivery
+      left join project_package_event_comments package_comment
+        on delivery.kind = 'package_event_comment_added'
+       and package_comment.id = delivery.source_id
+      left join project_package_events package_event
+        on package_event.id = package_comment.project_package_event_id
+      left join projects package_project on package_project.id = package_event.project_id
+      left join users package_author on package_author.id = package_comment.author_user_id
       where delivery.user_id = $1
         and delivery.kind in (
           'test_plan_assigned',
           'test_bug_status_changed',
-          'test_bug_comment_added'
+          'test_bug_rejected',
+          'test_bug_comment_added',
+          'package_event_comment_added'
         )
         and (
-          (delivery.channel = 'in_app' and delivery.status = 'sent')
-          or delivery.channel = 'feishu'
+          (
+            delivery.kind = 'package_event_comment_added'
+            and delivery.channel = 'in_app'
+            and delivery.status = 'sent'
+          )
+          or (
+            delivery.kind <> 'package_event_comment_added'
+            and (
+              (delivery.channel = 'in_app' and delivery.status = 'sent')
+              or delivery.channel = 'feishu'
+            )
+          )
         )
+        and (delivery.kind <> 'package_event_comment_added' or package_comment.id is not null)
       group by delivery.kind, delivery.source_id
       order by created_at desc, delivery.source_id desc
       limit 200
@@ -808,13 +854,13 @@ async function getTestWorkbench(userId: number) {
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.kind !== 'transfer' && row.author_user_id
+        canEdit: row.kind !== 'transfer' && row.kind !== 'reject' && row.author_user_id
           ? Number(row.author_user_id) === userId
           : false,
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
-        kind: row.kind === 'transfer' ? 'transfer' : 'comment',
+        kind: row.kind === 'transfer' ? 'transfer' : (row.kind === 'reject' ? 'reject' : 'comment'),
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
@@ -875,11 +921,23 @@ async function getTestWorkbench(userId: number) {
       testSpaceId: Number(row.test_space_id),
       testSubjectId: Number(row.test_subject_id),
     })),
-    notifications: notifications.rows.map((row) => ({
-      createdAt: row.created_at.toISOString(),
-      kind: row.kind,
-      sourceId: Number(row.source_id),
-    })),
+    notifications: notifications.rows.map((row) => row.kind === 'package_event_comment_added'
+      ? {
+        authorName: row.author_display_name || row.author_email || '未知用户',
+        commentPreview: row.comment_content ? decryptText(row.comment_content).slice(0, 160) : '',
+        createdAt: row.created_at.toISOString(),
+        eventId: Number(row.event_id),
+        eventTitle: row.event_title ? decryptText(row.event_title) : '',
+        kind: row.kind,
+        projectId: Number(row.project_id),
+        projectName: row.project_name ? decryptText(row.project_name) : '',
+        sourceId: Number(row.source_id),
+      }
+      : {
+        createdAt: row.created_at.toISOString(),
+        kind: row.kind,
+        sourceId: Number(row.source_id),
+      }),
     planCases: planCases.rows.map((row) => ({
       executedAt: row.executed_at?.toISOString(),
       executedByUserId: row.executed_by_user_id ? Number(row.executed_by_user_id) : undefined,
@@ -2500,7 +2558,7 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
     response.status(400).json({ error: 'Bug assignee must be a developer in this test space' })
     return
   }
-  const status = assigneeUserId ? 'assigned' : 'new'
+  const status = assigneeUserId ? 'pending_confirmation' : 'new'
   const insertedBug = await query<{ id: string }>(
     `
     insert into test_bugs
@@ -2832,7 +2890,7 @@ async function getAssignedBugs(userId: number) {
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.kind !== 'transfer' && row.author_user_id
+        canEdit: row.kind !== 'transfer' && row.kind !== 'reject' && row.author_user_id
           ? Number(row.author_user_id) === userId && (
             Number(row.assignee_user_id) === userId || row.organization_admin_access
           )
@@ -2840,7 +2898,7 @@ async function getAssignedBugs(userId: number) {
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
-        kind: row.kind === 'transfer' ? 'transfer' : 'comment',
+        kind: row.kind === 'transfer' ? 'transfer' : (row.kind === 'reject' ? 'reject' : 'comment'),
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
@@ -3052,7 +3110,7 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
 
     await client.query(
       `update test_bugs
-       set assignee_user_id = $1, status = 'assigned', updated_at = now()
+       set assignee_user_id = $1, status = 'pending_confirmation', updated_at = now()
        where id = $2`,
       [assigneeUserId, bugId],
     )
@@ -3080,6 +3138,54 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
     assignmentKind: transfer.assigningUnassignedBug ? 'assigned' : 'transferred',
     bugId,
     transferReason: transfer.assigningUnassignedBug ? undefined : reason,
+  })
+  response.json(await getAssignedBugs(session.userId))
+}))
+
+router.post('/test-bugs/:bugId/assigned/reject', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'developer')
+  if (!session) return
+  const bugId = positiveId(request.params.bugId)
+  const reason = String(request.body.reason ?? '').trim()
+  if (!bugId || !reason || reason.length > 1000) {
+    response.status(400).json({ error: 'Valid Bug and reject reason are required' })
+    return
+  }
+
+  await transaction(async (client) => {
+    const lockedBug = await client.query<{ status: BugStatus }>(
+      `
+      select b.status
+      from test_bugs b
+      where b.id = $1 and b.assignee_user_id = $2
+      for update of b
+      `,
+      [bugId, session.userId],
+    )
+    const bug = lockedBug.rows[0]
+    if (!bug) {
+      throw Object.assign(new Error('Assigned Bug not found'), { status: 404 })
+    }
+    if (!canDeveloperRejectBug(bug.status)) {
+      throw Object.assign(new Error('Developer cannot reject this Bug'), { status: 409 })
+    }
+    await client.query(
+      `update test_bugs set status = 'rejected', updated_at = now()
+       where id = $1 and assignee_user_id = $2`,
+      [bugId, session.userId],
+    )
+    const rejectComment = `驳回了该 Bug。\n\n驳回理由：${reason}`
+    await client.query(
+      `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
+       values ($1, $2, $3, 'reject')`,
+      [bugId, session.userId, encryptText(rejectComment)],
+    )
+  })
+
+  onTestBugRejected({
+    actorUserId: session.userId,
+    bugId,
+    rejectReason: reason,
   })
   response.json(await getAssignedBugs(session.userId))
 }))

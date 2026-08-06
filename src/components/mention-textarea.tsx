@@ -7,17 +7,27 @@ export type MentionMember = {
   name: string
 }
 
+const mentionMenuMaxHeight = 220
+
 type MentionTextareaProps = Omit<ComponentProps<typeof Textarea>, 'onChange' | 'value'> & {
   members?: MentionMember[]
+  menuPlacement?: 'above' | 'auto'
   onChange: (value: string) => void
   value: string
 }
 
-export function MentionTextarea({ members = [], onChange, value, ...props }: MentionTextareaProps) {
+export function MentionTextarea({
+  members = [],
+  menuPlacement = 'auto',
+  onChange,
+  value,
+  ...props
+}: MentionTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const shellRef = useRef<HTMLSpanElement | null>(null)
   const [mentionRange, setMentionRange] = useState<{ start: number; query: string } | null>(null)
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0, width: 260 })
+  const [menuPortalHost, setMenuPortalHost] = useState<HTMLElement | null>(null)
 
   const availableMembers = useMemo(() => {
     const seen = new Set<string>()
@@ -35,28 +45,52 @@ export function MentionTextarea({ members = [], onChange, value, ...props }: Men
     return availableMembers.filter((member) => member.name.toLocaleLowerCase().includes(query))
   }, [availableMembers, mentionRange])
 
+  const setShellRef = useCallback((node: HTMLSpanElement | null) => {
+    shellRef.current = node
+    if (typeof document === 'undefined') {
+      setMenuPortalHost(null)
+      return
+    }
+    setMenuPortalHost(node?.closest<HTMLElement>('[data-slot="dialog-content"]') ?? document.body)
+  }, [])
+
   const updateMenuPosition = useCallback(() => {
     const shell = shellRef.current
     if (!shell || typeof window === 'undefined') return
     const rect = shell.getBoundingClientRect()
+    const dialogContent = shell.closest<HTMLElement>('[data-slot="dialog-content"]')
+    const containingRect = dialogContent?.getBoundingClientRect()
     const width = Math.min(360, Math.max(260, rect.width))
-    const estimatedHeight = filteredMembers.length * 46 + 12
+    const estimatedHeight = Math.min(filteredMembers.length * 46 + 12, mentionMenuMaxHeight)
     const margin = 8
     const spaceBelow = window.innerHeight - rect.bottom - margin
-    const top = spaceBelow >= estimatedHeight || rect.top < estimatedHeight + margin
-      ? rect.bottom + 4
-      : rect.top - estimatedHeight - 4
+    const showAbove = menuPlacement === 'above' || (
+      spaceBelow < estimatedHeight && rect.top >= estimatedHeight + margin
+    )
+    const viewportLeft = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - width - margin),
+    )
+    const desiredTop = showAbove ? rect.top - estimatedHeight - 4 : rect.bottom + 4
+    const viewportTop = Math.min(
+      Math.max(margin, desiredTop),
+      Math.max(margin, window.innerHeight - estimatedHeight - margin),
+    )
     setMenuPosition({
-      left: Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin)),
-      top: Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - margin)),
+      left: viewportLeft - (containingRect?.left ?? 0),
+      top: viewportTop - (containingRect?.top ?? 0),
       width,
     })
-  }, [filteredMembers.length])
+  }, [filteredMembers.length, menuPlacement])
 
   useEffect(() => {
     if (!mentionRange || filteredMembers.length === 0) return
     updateMenuPosition()
-    const handleViewportChange = () => updateMenuPosition()
+    const handleViewportChange = (event: Event) => {
+      // 菜单自身的滚动不改变锚点位置：跳过，避免滚动过程中反复 setState 触发重渲染
+      if (event.target instanceof Element && event.target.closest('.mention-menu-floating')) return
+      updateMenuPosition()
+    }
     window.addEventListener('resize', handleViewportChange)
     window.addEventListener('scroll', handleViewportChange, true)
     return () => {
@@ -92,7 +126,7 @@ export function MentionTextarea({ members = [], onChange, value, ...props }: Men
   }
 
   return (
-    <span ref={shellRef} className="mention-input-shell mention-textarea-shell">
+    <span ref={setShellRef} className="mention-input-shell mention-textarea-shell">
       <Textarea
         {...props}
         ref={textareaRef}
@@ -106,13 +140,17 @@ export function MentionTextarea({ members = [], onChange, value, ...props }: Men
         onKeyUp={(event) => updateMentionRange(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
       />
       {mentionRange && filteredMembers.length > 0 ? (
-        typeof document === 'undefined' ? null : createPortal(
+        menuPortalHost == null ? null : createPortal(
           <span
             className="mention-menu mention-menu-floating"
             style={{
               left: menuPosition.left,
+              position: menuPortalHost === document.body ? 'fixed' : 'absolute',
               top: menuPosition.top,
               width: menuPosition.width,
+              // 内联兜底：即使样式表加载异常/被覆盖，菜单仍是 220px 可滚动盒子
+              maxHeight: mentionMenuMaxHeight,
+              overflowY: 'auto',
             } satisfies CSSProperties}
           >
             {filteredMembers.map((member) => (
@@ -130,7 +168,7 @@ export function MentionTextarea({ members = [], onChange, value, ...props }: Men
               </button>
             ))}
           </span>,
-          document.body,
+          menuPortalHost,
         )
       ) : null}
     </span>

@@ -139,7 +139,7 @@ families are:
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | `/api/package-market/rules`, package details, release versions, CI versions |
-| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, package-item download URLs, and timeline export |
+| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
@@ -148,7 +148,7 @@ families are:
 | Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, the shared four-section editor/AI template, cursor-position source insertion, draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, bugs, comments, and author-owned comment edits/deletions |
 | Test-space collaboration | `GET /api/test-spaces/settings`, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
-| Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, `POST /api/test-bugs/:bugId/assigned/transfer`, organization-admin assignment of unassigned Bugs with a direct Feishu notification to the new assignee, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
+| Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, `POST /api/test-bugs/:bugId/assigned/transfer`, `POST /api/test-bugs/:bugId/assigned/reject` (mandatory reason, records an immutable `reject` comment and notifies the reporting tester by personal Feishu message), organization-admin assignment of unassigned Bugs with a direct Feishu notification to the new assignee, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
@@ -200,6 +200,10 @@ must remain bound to the authorized project ID.
   editable draft. Publishing atomically records `publishedAt`, changes the status to
   `delivering`, makes the event read-only, and schedules the Feishu assignment notification.
   A published event supports only the `delivering` to `delivered` completion action.
+- Creating a package-event feedback comment records one in-app notification for every
+  explicitly mentioned member except the author, independently of Feishu configuration.
+  The developer project basket and tester workbench notification centers expose the same
+  recipient-scoped notification; deleting the feedback removes its notification records.
 - Package event aggregate save accepts `action` (`save_draft` or `publish`), basic event
   fields, zero or more selected package `items`, and `documents`. Publishing always requires
   one event-scoped Markdown document; each selected package may additionally have one

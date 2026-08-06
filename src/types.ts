@@ -175,6 +175,17 @@ export type PackageEventNotification = NotificationState & {
   title: string
 }
 
+export type PackageEventCommentMentionNotification = NotificationState & {
+  authorName: string
+  commentId: number
+  commentPreview: string
+  createdAt: string
+  eventId: number
+  eventTitle: string
+  projectId: number
+  projectName: string
+}
+
 export type NotificationCenterData = {
   assignedPackageEvents: PackageEventNotification[]
   assignedTodos: TodoNotification[]
@@ -182,6 +193,7 @@ export type NotificationCenterData = {
   dueTomorrowTodos: TodoNotification[]
   noteMentions: TodoNotification[]
   invites: ProjectInviteNotification[]
+  packageEventCommentMentions: PackageEventCommentMentionNotification[]
   projectTransfers: ProjectTransferNotification[]
 }
 
@@ -320,12 +332,23 @@ export type ProjectPackageGroup = {
   operations: ProjectPackageOperation[]
 }
 
+export type ProjectPackageEventComment = {
+  authorName: string
+  authorUserId?: number
+  canEdit?: boolean
+  content: string
+  createdAt: string
+  id: number
+  updatedAt: string
+}
+
 export type ProjectPackageEvent = {
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
+  comments: ProjectPackageEventComment[]
   id: number
   type: ProjectPackageEventType
   status: ProjectPackageEventStatus
@@ -371,6 +394,7 @@ export type ProjectPackageEventSavePayload = {
 export type ProjectPackageTimeline = {
   projectId: number
   events: ProjectPackageEvent[]
+  mentionableMembers: Array<{ id: number; name: string }>
 }
 
 export type PackageMarketRule = {

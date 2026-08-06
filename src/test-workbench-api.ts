@@ -379,6 +379,16 @@ export function transferAssignedTestBug(bugId: number, payload: { assigneeUserId
   })
 }
 
+export function rejectAssignedTestBug(bugId: number, reason: string) {
+  return request<{
+    bugs: TestWorkbenchData['bugs']
+    members: Array<{ id: number; name: string }>
+  }>(`/api/test-bugs/${bugId}/assigned/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
 export function addAssignedTestBugComment(bugId: number, content: string) {
   return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments`, {
     method: 'POST',

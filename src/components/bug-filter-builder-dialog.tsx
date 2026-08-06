@@ -51,6 +51,7 @@ const statusOptions: BugFilterOption[] = [
   { label: '重复 Bug', value: 'duplicate' },
   { label: '修复中', value: 'in_progress' },
   { label: '待确认', value: 'new' },
+  { label: '待确定', value: 'pending_confirmation' },
   { label: '待验证', value: 'pending_verification' },
   { label: '已拒绝', value: 'rejected' },
   { label: '重新打开', value: 'reopened' },
@@ -84,6 +85,7 @@ function optionsForField(field: BugFilterField, options: BugFilterOptions) {
 
 export function BugFilterBuilderDialog({
   conditions,
+  includeTestSpace = true,
   join,
   onApply,
   onOpenChange,
@@ -91,6 +93,7 @@ export function BugFilterBuilderDialog({
   options,
 }: {
   conditions: BugFilterCondition[]
+  includeTestSpace?: boolean
   join: BugFilterJoin
   onApply: (next: { conditions: BugFilterCondition[]; join: BugFilterJoin }) => void
   onOpenChange: (open: boolean) => void
@@ -99,12 +102,18 @@ export function BugFilterBuilderDialog({
 }) {
   const [draftJoin, setDraftJoin] = useState<BugFilterJoin>(join)
   const [draftConditions, setDraftConditions] = useState<BugFilterCondition[]>(conditions)
+  const availableFields = includeTestSpace
+    ? bugFilterFields
+    : bugFilterFields.filter((field) => field !== 'testSpace')
 
   useEffect(() => {
     if (!open) return
     setDraftJoin(join)
-    setDraftConditions(conditions.length > 0 ? conditions : [createBugFilterCondition()])
-  }, [conditions, join, open])
+    const visibleConditions = includeTestSpace
+      ? conditions
+      : conditions.filter((condition) => condition.field !== 'testSpace')
+    setDraftConditions(visibleConditions.length > 0 ? visibleConditions : [createBugFilterCondition()])
+  }, [conditions, includeTestSpace, join, open])
 
   function updateCondition(id: string, patch: Partial<BugFilterCondition>) {
     setDraftConditions((current) => current.map((condition) => {
@@ -253,7 +262,7 @@ export function BugFilterBuilderDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {bugFilterFields.map((field) => (
+                  {availableFields.map((field) => (
                     <SelectItem key={field} value={field}>{bugFilterFieldLabels[field]}</SelectItem>
                   ))}
                 </SelectContent>

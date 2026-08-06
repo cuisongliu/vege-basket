@@ -73,8 +73,10 @@ import {
 import {
   addProjectPackageItems,
   completeProjectPackageEvent,
+  createProjectPackageEventComment,
   createProjectPackageOperation,
   deleteProjectPackageEvent,
+  deleteProjectPackageEventComment,
   deleteProjectPackageGroup,
   deleteProjectPackageOperation,
   ensureProjectPackageEventType,
@@ -84,8 +86,10 @@ import {
   getProjectPackageItemObjectKey,
   getProjectPackageTimeline,
   ProjectPackageEventError,
+  resolvePackageEventMentionUserIds,
   saveProjectPackageEvent,
   updateProjectPackageEvent,
+  updateProjectPackageEventComment,
   updateProjectPackageOperation,
 } from './project-package-timeline.ts'
 import type {
@@ -161,6 +165,7 @@ import {
   testWorkbenchRouter,
   type TestBugAssignedEvent,
   type TestBugCommentAddedEvent,
+  type TestBugRejectedEvent,
   type TestBugStatusChangedEvent,
   type TestCaseChangedEvent,
   type TestExecutionResultChangedEvent,
@@ -204,6 +209,7 @@ type NotificationKind =
   | 'todo_acceptance_failed_assignee'
   | 'todo_completed_creator'
   | 'package_event_assigned'
+  | 'package_event_comment_added'
   | 'todo_due_tomorrow'
   | 'todo_note_mention'
   | 'todo_note_added'
@@ -211,11 +217,12 @@ type NotificationKind =
   | 'test_bug_assigned'
   | 'test_plan_assigned'
   | 'test_bug_status_changed'
+  | 'test_bug_rejected'
   | 'test_bug_comment_added'
   | 'test_case_activity'
 type TestWorkbenchNotificationKind = Extract<
   NotificationKind,
-  'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_comment_added'
+  'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_rejected' | 'test_bug_comment_added'
 >
 type PackageMarketChannel = 'release' | 'ci'
 type UserRow = {
@@ -472,6 +479,7 @@ configureTestWorkbenchNotifications({
   onTestBugAssigned: enqueueTestBugAssignedDelivery,
   onTestPlanAssigned: enqueueTestPlanAssignedDelivery,
   onTestBugStatusChanged: enqueueTestBugStatusChangedDelivery,
+  onTestBugRejected: enqueueTestBugRejectedDelivery,
   onTestBugCommentAdded: enqueueTestBugCommentAddedDelivery,
   onTestCaseChanged: enqueueTestCaseChangedDelivery,
   onTestExecutionResultChanged: enqueueTestExecutionResultChangedDelivery,
@@ -4921,6 +4929,7 @@ async function getNotifications(userId: number) {
     assignedTodosResult,
     dueTomorrowResult,
     noteMentionsResult,
+    packageEventCommentMentionsResult,
   ] = await Promise.all([
     query<{
       id: string
@@ -5201,6 +5210,42 @@ async function getNotifications(userId: number) {
       `,
       [userId],
     ),
+    query<{
+      author_display_name: string | null
+      author_email: string | null
+      comment_id: string
+      content: string
+      created_at: Date
+      event_id: string
+      event_title: string
+      project_id: string
+      project_name: string
+    }>(
+      `
+      select c.id as comment_id,
+             c.project_package_event_id as event_id,
+             e.project_id,
+             p.name as project_name,
+             e.title as event_title,
+             c.content,
+             c.created_at,
+             author.email as author_email,
+             author.display_name as author_display_name
+      from notification_deliveries delivery
+      join project_package_event_comments c on c.id = delivery.source_id
+      join project_package_events e on e.id = c.project_package_event_id
+      join projects p on p.id = e.project_id
+      left join users author on author.id = c.author_user_id
+      where delivery.user_id = $1
+        and delivery.kind = 'package_event_comment_added'
+        and delivery.channel = 'in_app'
+        and delivery.target_type = 'user'
+        and delivery.status = 'sent'
+      order by delivery.created_at desc, delivery.id desc
+      limit 200
+      `,
+      [userId],
+    ),
   ])
 
   return {
@@ -5248,6 +5293,23 @@ async function getNotifications(userId: number) {
       projectName: decryptText(event.project_name),
       title: decryptText(event.title),
       sortAt: (event.assigned_at ?? event.created_at).toISOString(),
+    })),
+    packageEventCommentMentions: packageEventCommentMentionsResult.rows.map((comment) => ({
+      ...stateFor('package_event_comment_added', comment.comment_id),
+      authorName: comment.author_email
+        ? displayNameFromUser({
+          email: comment.author_email,
+          display_name: comment.author_display_name ?? '',
+        })
+        : '未知用户',
+      commentId: Number(comment.comment_id),
+      commentPreview: decryptText(comment.content).slice(0, 160),
+      createdAt: formatDateTime(comment.created_at),
+      eventId: Number(comment.event_id),
+      eventTitle: decryptText(comment.event_title),
+      projectId: Number(comment.project_id),
+      projectName: decryptText(comment.project_name),
+      sortAt: comment.created_at.toISOString(),
     })),
     watchedTodos: watchedTodosResult.rows.map((todo) => ({
       ...stateFor('watched_todo', todo.id),
@@ -5800,13 +5862,14 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
   if (
     candidate.kind === 'test_plan_assigned' ||
     candidate.kind === 'test_bug_status_changed' ||
+    candidate.kind === 'test_bug_rejected' ||
     candidate.kind === 'test_bug_comment_added' ||
     candidate.kind === 'test_case_activity'
   ) {
     const showSubject = candidate.kind === 'test_plan_assigned' || candidate.kind === 'test_case_activity'
     const activity = candidate.testActivityLabel || '测试工作台有新的变更'
     const detail = candidate.testCommentContent
-      ? `评论内容：${formatFeishuTodoDetailText(candidate.testCommentContent, '未填写')}`
+      ? `${candidate.kind === 'test_bug_rejected' ? '驳回理由' : '评论内容'}：${formatFeishuTodoDetailText(candidate.testCommentContent, '未填写')}`
       : ''
     const lines = [
       `【Veges 通知】${candidate.operatorName || '项目成员'} ${activity}`,
@@ -5839,6 +5902,20 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
       `- 事件类型：${packageEventTypeLabel(candidate.eventType)}`,
       `- 事件状态：${packageEventStatusLabel(candidate.eventStatus)}`,
     ].join('\n')
+  }
+
+  if (candidate.kind === 'package_event_comment_added') {
+    const operatorName = candidate.operatorName || '项目成员'
+    const commentText = formatFeishuTodoDetailText(candidate.noteContent, '未填写')
+    return [
+      `【Veges 通知】${operatorName} 在交付事件评论中提到了你`,
+      '',
+      candidate.projectName ? `关联项目：${candidate.projectName}` : '',
+      candidate.eventTitle ? `交付事件：${candidate.eventTitle}` : '',
+      '',
+      '评论内容',
+      commentText,
+    ].filter(Boolean).join('\n')
   }
 
   return [
@@ -6572,18 +6649,51 @@ function buildFeishuInteractiveCard(
     }
   }
 
+  if (candidate.kind === 'package_event_comment_added') {
+    const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '项目成员')
+    const eventTitle = sanitizeFeishuMarkdownText(candidate.eventTitle || '未命名交付事件')
+    const content = [
+      `**${operatorName} 在交付事件评论中提到了你**`,
+      candidate.projectName
+        ? `**关联项目**\n${sanitizeFeishuMarkdownText(candidate.projectName)}`
+        : '',
+      `**交付事件**\n${eventTitle}`,
+      `**评论内容**\n${formatFeishuTodoDetailText(candidate.noteContent, '未填写')}`,
+    ].filter(Boolean).join('\n\n')
+    return {
+      config: { wide_screen_mode: true },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content,
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'blue',
+        title: { content: '💬 交付反馈', tag: 'plain_text' },
+      },
+    }
+  }
+
   if (
     candidate.kind === 'test_plan_assigned' ||
     candidate.kind === 'test_bug_status_changed' ||
+    candidate.kind === 'test_bug_rejected' ||
     candidate.kind === 'test_bug_comment_added' ||
     candidate.kind === 'test_case_activity'
   ) {
+    const isRejection = candidate.kind === 'test_bug_rejected'
     const operatorName = sanitizeFeishuMarkdownText(candidate.operatorName || '项目成员')
     const activity = sanitizeFeishuMarkdownText(candidate.testActivityLabel || '测试工作台有新的变更')
-    const activityTitle = candidate.kind === 'test_bug_status_changed' ? `${operatorName} ${activity}` : activity
+    const activityTitle = candidate.kind === 'test_bug_status_changed' || isRejection
+      ? `${operatorName} ${activity}`
+      : activity
     const showSubject = candidate.kind === 'test_plan_assigned' || candidate.kind === 'test_case_activity'
     const detail = candidate.testCommentContent
-      ? `**评论内容**\n${formatFeishuTodoDetailText(candidate.testCommentContent, '未填写')}`
+      ? `**${isRejection ? '驳回理由' : '评论内容'}**\n${formatFeishuTodoDetailText(candidate.testCommentContent, '未填写')}`
       : ''
     const lines = [
       `**测试空间**\n${sanitizeFeishuMarkdownText(candidate.testSpaceName || '未命名测试空间')}`,
@@ -6605,8 +6715,8 @@ function buildFeishuInteractiveCard(
         },
       ],
       header: {
-        template: 'green',
-        title: { content: `🔔 ${activityTitle}`, tag: 'plain_text' },
+        template: isRejection ? 'red' : 'green',
+        title: { content: `${isRejection ? '⛔' : '🔔'} ${activityTitle}`, tag: 'plain_text' },
       },
     }
   }
@@ -7641,7 +7751,7 @@ async function buildTestBugAssignedFeishuCandidate(event: TestBugAssignedEvent) 
 function testWorkbenchNotificationCandidate<
   Kind extends Extract<
     NotificationKind,
-    'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_comment_added' | 'test_case_activity'
+    'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_rejected' | 'test_bug_comment_added' | 'test_case_activity'
   >,
 >(
   kind: Kind,
@@ -7752,6 +7862,42 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
         row,
         event.nextStatus === 'reopened' ? '重新打开了你创建的 Bug' : '修复了你创建的 Bug，请验证',
       )
+    : null
+}
+
+async function buildTestBugRejectedFeishuCandidate(event: TestBugRejectedEvent) {
+  const result = await query<TestWorkbenchNotificationRow>(
+    `
+    select b.id, b.title as bug_title, b.status as bug_status,
+           b.reporter_user_id as recipient_user_id,
+           space.name as test_space_name, plan.name as test_plan_name,
+           plan.project_id, project.name as project_name,
+           recipient.email as recipient_email, recipient.display_name as recipient_display_name,
+           recipient.feishu_email as recipient_feishu_email, recipient.feishu_user_id as recipient_feishu_user_id,
+           actor.email as actor_email, actor.display_name as actor_display_name,
+           b.assignee_user_id as operator_user_id,
+           null::text as comment_content, null::text as title
+    from test_bugs b
+    join test_spaces space on space.id = b.test_space_id
+    join users recipient on recipient.id = b.reporter_user_id and recipient.id <> $2
+    left join test_plans plan on plan.id = b.test_plan_id and plan.test_space_id = b.test_space_id
+    left join projects project on project.id = plan.project_id
+    left join users actor on actor.id = $2
+    where b.id = $1 and b.status = 'rejected'
+    limit 1
+    `,
+    [event.bugId, event.actorUserId],
+  )
+  const row = result.rows[0]
+  return row
+    ? {
+        ...testWorkbenchNotificationCandidate(
+          'test_bug_rejected',
+          row,
+          '驳回了你创建的 Bug',
+        ),
+        testCommentContent: event.rejectReason,
+      }
     : null
 }
 
@@ -7949,6 +8095,19 @@ async function deliverTestBugStatusChangedNotification(event: TestBugStatusChang
   return deliverFeishuNotification(candidate)
 }
 
+async function deliverTestBugRejectedNotification(event: TestBugRejectedEvent) {
+  const candidate = await buildTestBugRejectedFeishuCandidate(event)
+  if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
+  await recordTestWorkbenchInAppNotification(candidate)
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  await query(
+    `delete from notification_deliveries where kind = 'test_bug_rejected' and source_id = $1 and channel = 'feishu'`,
+    [event.bugId],
+  )
+  return deliverFeishuNotification(candidate)
+}
+
 async function deliverTestBugCommentAddedNotification(event: TestBugCommentAddedEvent) {
   const candidates = await buildTestBugCommentFeishuCandidates(event)
   if (candidates.length === 0) return { failed: 0, sent: 0, skipped: 1 }
@@ -8050,6 +8209,14 @@ function enqueueTestBugStatusChangedDelivery(event: TestBugStatusChangedEvent) {
   setTimeout(() => {
     void deliverTestBugStatusChangedNotification(event).catch((error) => {
       console.error('Feishu test bug status delivery failed', error)
+    })
+  }, 0)
+}
+
+function enqueueTestBugRejectedDelivery(event: TestBugRejectedEvent) {
+  setTimeout(() => {
+    void deliverTestBugRejectedNotification(event).catch((error) => {
+      console.error('Feishu test bug rejection delivery failed', error)
     })
   }, 0)
 }
@@ -8218,6 +8385,122 @@ function enqueueLatestAssignedPackageEventDelivery(eventId: number) {
   }, 0)
 }
 
+type PackageEventCommentNotificationRow = {
+  actor_display_name: string | null
+  actor_email: string | null
+  comment_content: string
+  event_status: ProjectPackageEventStatus
+  event_title: string
+  event_type: ProjectPackageEventType
+  project_id: string
+  project_name: string
+  recipient_display_name: string | null
+  recipient_email: string | null
+  recipient_feishu_email: string | null
+  recipient_feishu_user_id: string | null
+  recipient_user_id: string
+}
+
+async function buildPackageEventCommentAddedFeishuCandidates(params: {
+  actorUserId: number
+  commentId: number
+  mentionedUserIds: number[]
+}) {
+  if (params.mentionedUserIds.length === 0) return []
+  const result = await query<PackageEventCommentNotificationRow>(
+    `
+    select c.content as comment_content,
+           e.title as event_title,
+           e.type as event_type,
+           e.status as event_status,
+           p.id as project_id,
+           p.name as project_name,
+           actor.email as actor_email,
+           actor.display_name as actor_display_name,
+           recipient.id as recipient_user_id,
+           recipient.email as recipient_email,
+           recipient.display_name as recipient_display_name,
+           recipient.feishu_email as recipient_feishu_email,
+           recipient.feishu_user_id as recipient_feishu_user_id
+    from project_package_event_comments c
+    join project_package_events e on e.id = c.project_package_event_id
+    join projects p on p.id = e.project_id
+    left join users actor on actor.id = $3
+    join users recipient on recipient.id = any($2::bigint[]) and recipient.id <> $3
+    where c.id = $1
+    `,
+    [params.commentId, params.mentionedUserIds, params.actorUserId],
+  )
+  const operatorName = result.rows[0]?.actor_email
+    ? displayNameFromUser({
+      email: result.rows[0].actor_email,
+      display_name: result.rows[0].actor_display_name ?? '',
+    })
+    : '项目成员'
+  return result.rows.map((row) => {
+    const recipientName = displayNameFromUser({
+      email: row.recipient_email ?? '',
+      display_name: row.recipient_display_name ?? '',
+    })
+    const eventTitle = decryptText(row.event_title)
+    const projectName = decryptText(row.project_name)
+    const commentContent = decryptText(row.comment_content)
+    return {
+      body: `${operatorName} 在交付事件评论中提到了你：${commentContent}`,
+      eventStatus: row.event_status,
+      eventTitle,
+      eventType: row.event_type,
+      kind: 'package_event_comment_added' as const,
+      noteContent: commentContent,
+      operatorName,
+      projectId: Number(row.project_id),
+      projectName,
+      recipientFeishuEmail: row.recipient_feishu_email || undefined,
+      recipientFeishuOpenId: row.recipient_feishu_user_id?.startsWith('ou_')
+        ? row.recipient_feishu_user_id
+        : undefined,
+      recipientName,
+      sourceId: params.commentId,
+      title: '交付事件评论',
+      userId: Number(row.recipient_user_id),
+    } satisfies FeishuNotificationCandidate
+  })
+}
+
+async function deliverPackageEventCommentAddedNotification(params: {
+  actorUserId: number
+  commentId: number
+  mentionedUserIds: number[]
+}) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  const candidates = await buildPackageEventCommentAddedFeishuCandidates(params)
+  if (candidates.length === 0) return { failed: 0, sent: 0, skipped: 1 }
+  const results = await Promise.all(candidates.map((candidate) => deliverFeishuNotification(candidate)))
+  return results.reduce(
+    (total, result) => ({
+      failed: total.failed + result.failed,
+      sent: total.sent + result.sent,
+      skipped: total.skipped + result.skipped,
+    }),
+    { failed: 0, sent: 0, skipped: 0 },
+  )
+}
+
+function enqueuePackageEventCommentAddedDelivery(params: {
+  actorUserId: number
+  commentId: number
+  mentionedUserIds: number[]
+}) {
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return
+  setTimeout(() => {
+    void deliverPackageEventCommentAddedNotification(params).catch((error) => {
+      console.error('Feishu package event comment delivery failed', error)
+    })
+  }, 0)
+}
+
 app.get('/api/notifications', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -8238,6 +8521,10 @@ app.patch('/api/notifications/read-all', asyncHandler(async (request, response) 
       .filter((item) => item.noteId != null)
       .map((item) => ({ kind: 'todo_note_mention' as const, sourceId: item.noteId! })),
     ...notifications.assignedPackageEvents.map((item) => ({ kind: 'package_event_assigned' as const, sourceId: item.id })),
+    ...notifications.packageEventCommentMentions.map((item) => ({
+      kind: 'package_event_comment_added' as const,
+      sourceId: item.commentId,
+    })),
   ]
   if (entries.length > 0) {
     const client = await pool.connect()
@@ -10664,6 +10951,83 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/complete', a
     projectId,
   }))
   if (!completed.ok) return
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.post('/api/projects/:projectId/package-timeline/events/:eventId/comments', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const content = String(request.body.content ?? '').trim().slice(0, 5000)
+  if (!content) {
+    response.status(400).json({ error: 'Comment is required' })
+    return
+  }
+  const eventId = Number(request.params.eventId)
+  const mentionedUserIds = (await resolvePackageEventMentionUserIds(projectId, content))
+    .filter((mentionedUserId) => mentionedUserId !== userId)
+  const created = await runProjectPackageEventMutation(response, () => createProjectPackageEventComment({
+    authorUserId: userId,
+    content,
+    eventId,
+    mentionedUserIds,
+    projectId,
+  }))
+  if (!created.ok) return
+  if (mentionedUserIds.length > 0) {
+    enqueuePackageEventCommentAddedDelivery({
+      actorUserId: userId,
+      commentId: created.value,
+      mentionedUserIds,
+    })
+  }
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.patch('/api/projects/:projectId/package-timeline/events/:eventId/comments/:commentId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const content = String(request.body.content ?? '').trim().slice(0, 5000)
+  if (!content) {
+    response.status(400).json({ error: 'Comment is required' })
+    return
+  }
+  const updated = await runProjectPackageEventMutation(response, () => updateProjectPackageEventComment({
+    commentId: Number(request.params.commentId),
+    content,
+    projectId,
+    userId,
+  }))
+  if (!updated.ok) return
+  response.json(await getProjectPackageTimeline(projectId))
+}))
+
+app.delete('/api/projects/:projectId/package-timeline/events/:eventId/comments/:commentId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  const deleted = await runProjectPackageEventMutation(response, () => deleteProjectPackageEventComment({
+    commentId: Number(request.params.commentId),
+    projectId,
+    userId,
+  }))
+  if (!deleted.ok) return
   response.json(await getProjectPackageTimeline(projectId))
 }))
 

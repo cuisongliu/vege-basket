@@ -121,3 +121,87 @@ test('aggregate event save validates and persists document todo links transactio
     /insert into project_package_operations[\s\S]*?returning id[\s\S]*?replaceOperationTodoLinks\(/u,
   )
 })
+
+test('delivery events expose per-event comments with author names', () => {
+  assert.match(timelineSource, /comments: commentsByEvent\.get\(Number\(row\.id\)\) \?\? \[\]/u)
+  assert.match(timelineSource, /from project_package_event_comments c/u)
+  assert.match(timelineSource, /content: decryptText\(row\.content\)/u)
+  assert.match(timelineSource, /authorName: displayUserName\(/u)
+  assert.match(timelineSource, /mentionableMembers,/u)
+  assert.match(timelineSource, /organization_memberships om on om\.organization_id = p\.organization_id/u)
+})
+
+test('package event comments support encrypted author-only updates and deletes', () => {
+  const commentSource = timelineSource.slice(
+    timelineSource.indexOf('export async function createProjectPackageEventComment'),
+  )
+  assert.match(commentSource, /insert into project_package_event_comments \(project_package_event_id, author_user_id, content\)/u)
+  assert.match(commentSource, /values \(\$1, \$2, \$3\)\s*returning id/u)
+  assert.match(commentSource, /encryptText\(params\.content\)/u)
+  assert.match(commentSource, /mentionedUserIds: number\[\]/u)
+  assert.match(commentSource, /insert into notification_deliveries/u)
+  assert.match(commentSource, /where kind = 'package_event_comment_added' and source_id = \$1/u)
+  assert.match(commentSource, /for update of c/u)
+  assert.match(commentSource, /Only the comment author can change it/u)
+  assert.match(commentSource, /delete from project_package_event_comments where id = \$1/u)
+  assert.match(timelineSource, /readonly status: 400 \| 403 \| 404 \| 409/u)
+})
+
+test('delivery comment mention resolution covers organization and project members', () => {
+  const resolver = timelineSource.slice(
+    timelineSource.indexOf('export async function resolvePackageEventMentionUserIds'),
+    timelineSource.indexOf('export async function createProjectPackageEventComment'),
+  )
+  assert.match(resolver, /lower\(coalesce\(nullif\(u\.display_name, ''\), u\.email\)\) = any\(\$2::text\[\]\)/u)
+  assert.match(resolver, /u\.id = \(select p\.user_id from projects p where p\.id = \$1\)/u)
+  assert.match(resolver, /project_memberships pm[\s\S]*pm\.status = 'active'/u)
+  assert.match(resolver, /organization_memberships om[\s\S]*om\.status = 'active'/u)
+})
+
+test('package event comment routes require project write access and valid content', () => {
+  const commentRoutes = indexSource.slice(
+    indexSource.indexOf("app.post('/api/projects/:projectId/package-timeline/events/:eventId/comments'"),
+    indexSource.indexOf("app.get('/api/projects/:projectId/package-timeline/export'"),
+  )
+  assert.match(commentRoutes, /getProjectAccess\(projectId, userId\)/u)
+  assert.match(commentRoutes, /Comment is required/u)
+  assert.match(commentRoutes, /createProjectPackageEventComment/u)
+  assert.match(commentRoutes, /resolvePackageEventMentionUserIds\(projectId, content\)/u)
+  assert.match(commentRoutes, /enqueuePackageEventCommentAddedDelivery/u)
+  assert.match(commentRoutes, /updateProjectPackageEventComment/u)
+  assert.match(commentRoutes, /deleteProjectPackageEventComment/u)
+})
+
+test('delivery workbench offers a feedback drawer next to the delivered action', () => {
+  assert.match(workbenchSource, /交付反馈/u)
+  assert.match(workbenchSource, /ChatCircleDots/u)
+  assert.match(workbenchSource, /setCommentsDrawerOpen\(true\)/u)
+  assert.match(workbenchSource, /PackageEventCommentsDrawer/u)
+  assert.match(workbenchSource, /slide-in-from-right/u)
+  assert.match(workbenchSource, /MentionTextarea/u)
+  assert.match(workbenchSource, /onAddEventComment\(eventId, content\)/u)
+  assert.match(workbenchSource, /标记已交付/u)
+  assert.match(workbenchSource, /发送反馈/u)
+  assert.equal((workbenchSource.match(/menuPlacement="above"/g) ?? []).length, 2)
+  const mentionSource = readFileSync(
+    new URL('../src/components/mention-textarea.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(mentionSource, /menuPlacement\?: 'above' \| 'auto'/u)
+  assert.match(mentionSource, /menuPlacement === 'above'/u)
+  assert.match(mentionSource, /const mentionMenuMaxHeight = 220/u)
+  assert.match(mentionSource, /Math\.min\(filteredMembers\.length \* 46 \+ 12, mentionMenuMaxHeight\)/u)
+  assert.match(mentionSource, /maxHeight: mentionMenuMaxHeight/u)
+  assert.match(mentionSource, /overflowY: 'auto'/u)
+  assert.match(mentionSource, /closest<HTMLElement>\('\[data-slot="dialog-content"\]'\)/u)
+  assert.match(mentionSource, /menuPortalHost === document\.body \? 'fixed' : 'absolute'/u)
+  assert.doesNotMatch(mentionSource, /onMouseDownCapture/u)
+  assert.match(mentionSource, /closest\('\.mention-menu-floating'\)/u)
+  const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+  assert.match(
+    appCssSource,
+    /\.mention-menu-floating \{[\s\S]*?position: fixed;[\s\S]*?max-height: 220px;[\s\S]*?overflow-y: auto;[\s\S]*?scrollbar-gutter: stable;[\s\S]*?scrollbar-color: transparent transparent;/u,
+  )
+  assert.match(appCssSource, /\.mention-menu-floating:hover[\s\S]*?scrollbar-color:/u)
+  assert.match(appCssSource, /\.mention-menu-floating:hover::-webkit-scrollbar-thumb[\s\S]*?background:/u)
+})

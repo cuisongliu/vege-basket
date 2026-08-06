@@ -125,5 +125,5 @@
   },
   "has_dockerfile": true,
   "complexity_tier": "L2",
-  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260804-210029"
+  "image_ref": "ghcr.io/felixqiu014-wq/vege-basket:20260805-225637"
 }
