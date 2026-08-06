@@ -119,19 +119,20 @@ Before an encryption-key change:
 
 ## Deployment
 
-Production images are `linux/amd64` unless ARM is explicitly requested. A release
-operator should:
+`main` 分支推送后，GitHub Actions 会先运行只读校验，再分别在 `ubuntu-latest`
+（amd64）与 `ubuntu-24.04-arm`（arm64）原生 runner 上用普通 `docker build` 构建镜像，
+推送 `ghcr.io/<仓库>/vege-basket:main-<12位sha>-amd64` 与
+`ghcr.io/<仓库>/vege-basket:main-<12位sha>-arm64`，最后用 `docker manifest` 合并为同一个镜像
+`ghcr.io/<仓库>/vege-basket:main-<12位sha>`。部署负责人应：
 
-1. Run the read-only verification commands.
-2. Build and publish an immutable amd64 tag.
-3. Pass the same verified immutable tag or digest through the Sealos template's required
-   `VEGES_IMAGE` input. The template reuses it for `originImageName`, the application
-   container, and the todo-digest CronJob.
-4. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
+1. 查看 `main` 推送触发的构建与推送结果，确认合并镜像已生成。
+2. 将同一个不可变合并标签 `main-<12位sha>` 填入 Sealos 模板的必填输入 `VEGES_IMAGE`。
+   模板会把它复用于 `originImageName`、应用容器和待办日报 CronJob。
+3. Pass database, encryption, shared AI, Feishu, and OSS configuration through the
    deployment environment; confirm real credential values are absent from the image and Git.
    The Sealos template derives `APP_PUBLIC_URL` from its TLS ingress host; custom deployments
    must set it to the application's exact HTTPS root origin.
-5. Deploy to a test environment first, then verify health, sign-in, one authorized
+4. Deploy to a test environment first, then verify health, sign-in, one authorized
    project read, and any changed integration. For an AI change, verify ordinary text arrives
    incrementally, structured turns expose progress without partial JSON, and a deliberately
    interrupted connection reconciles the canonical turn without leaving the composer locked.
@@ -141,9 +142,9 @@ operator should:
    workspace-review turn disappears from history.
    For Feishu OAuth, re-check the custom application's availability scope is limited to
    the intended company users; the server treats successful OAuth as internal identity.
-6. Re-read the live application image digest and the CronJob template image. Do not infer
+5. Re-read the live application image digest and the CronJob template image. Do not infer
    deployment success from `.sealos/build/build-result.json` or `.sealos/state.json` alone.
-7. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
+6. For the digest workflow, verify the CronJob schedule, one completed Job, and the run
    record in an authorized test database before enabling a real user's subscription.
    Confirm the recipient receives a passive Feishu JSON 2.0 card titled with the
    scheduled delivery date, previous-day activity is separate from the current backlog,
@@ -167,7 +168,7 @@ old image, but old browser code cannot continue a conversation until it refreshe
 Useful preflight checks:
 
 ```bash
-docker buildx build --platform linux/amd64 --load -t vege-basket:verify .
+docker build -t vege-basket:verify .
 rg -n 'originImageName:|^[[:space:]]+image:' .sealos/template/index.yaml
 ```
 
