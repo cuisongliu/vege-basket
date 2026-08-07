@@ -50,12 +50,10 @@ export function ChangelogWorkbench({
   createRequest = 0,
   onCanManageChange,
   onEditorModeChange,
-  refreshToken = 0,
 }: {
   createRequest?: number
   onCanManageChange?: (canManage: boolean) => void
   onEditorModeChange?: (open: boolean) => void
-  refreshToken?: number
 }) {
   const [entries, setEntries] = useState<ChangelogEntry[]>([])
   const [canManage, setCanManage] = useState(false)
@@ -80,7 +78,6 @@ export function ChangelogWorkbench({
         setEntries(result.entries)
         setCanManage(result.canManage)
         onCanManageChange?.(result.canManage)
-        setExpandedEntryId((current) => current ?? result.entries[0]?.id ?? null)
       })
       .catch((loadError) => {
         if (alive) setError(formatApiErrorDiagnostic(loadError, '更新日志加载失败，请稍后重试。'))
@@ -91,7 +88,7 @@ export function ChangelogWorkbench({
     return () => {
       alive = false
     }
-  }, [onCanManageChange, refreshToken])
+  }, [onCanManageChange])
 
   useEffect(() => {
     onEditorModeChange?.(Boolean(editorMode))

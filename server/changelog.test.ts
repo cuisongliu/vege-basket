@@ -1,11 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   changelogContentMaxLength,
   changelogTitleMaxLength,
   changelogVersionMaxLength,
   normalizeChangelogPayload,
 } from './changelog.ts'
+
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const changelogWorkbenchSource = readFileSync(
+  new URL('../src/components/changelog-workbench.tsx', import.meta.url),
+  'utf8',
+)
 
 test('normalizes a valid changelog payload', () => {
   assert.deepEqual(normalizeChangelogPayload({
@@ -36,4 +43,11 @@ test('rejects empty and oversized changelog fields', () => {
     version: 'x'.repeat(changelogVersionMaxLength + 1),
     content: '正文',
   }), null)
+})
+
+test('changelog loads independently from workspace polling and starts collapsed', () => {
+  assert.doesNotMatch(changelogWorkbenchSource, /refreshToken/u)
+  assert.doesNotMatch(appSource, /<ChangelogWorkbench[\s\S]*?refreshToken=/u)
+  assert.match(changelogWorkbenchSource, /useState<number \| null>\(null\)/u)
+  assert.doesNotMatch(changelogWorkbenchSource, /result\.entries\[0\]\?\.id/u)
 })

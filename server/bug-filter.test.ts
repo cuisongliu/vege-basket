@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  getDefaultBugFilterValue,
   matchesBugFilterConditions,
+  normalizeBugFilterCondition,
   type BugFilterCondition,
 } from '../src/components/bug-filter.ts'
 import type { TestBug } from '../src/test-workbench-types.ts'
+
+const filterDialogSource = readFileSync(new URL('../src/components/bug-filter-builder-dialog.tsx', import.meta.url), 'utf8')
 
 const baseBug: TestBug = {
   actualResult: '页面返回 500',
@@ -62,6 +67,27 @@ test('bug filters support status, text, date range, and or matching', () => {
     condition('severity', 'equals', 'minor'),
     condition('environment', 'contains', 'chrome'),
   ], 'or'), true)
+})
+
+test('pending confirmation filter covers unassigned and assigned confirmation states', () => {
+  const pendingAssigneeConfirmation: TestBug = { ...baseBug, status: 'pending_confirmation' }
+  const pendingTriage: TestBug = { ...baseBug, assigneeName: undefined, assigneeUserId: undefined, status: 'new' }
+  const pendingFilter = [condition('status', 'equals', 'new')]
+  assert.equal(matchesBugFilterConditions(pendingAssigneeConfirmation, pendingFilter, 'and'), true)
+  assert.equal(matchesBugFilterConditions(pendingTriage, pendingFilter, 'and'), true)
+  assert.equal(matchesBugFilterConditions(baseBug, pendingFilter, 'and'), false)
+  assert.equal(matchesBugFilterConditions(pendingAssigneeConfirmation, [
+    condition('status', 'not_equals', 'new'),
+  ], 'and'), false)
+})
+
+test('Bug status UI exposes one pending confirmation option and upgrades old filters', () => {
+  assert.equal(getDefaultBugFilterValue('status', 'equals'), 'new')
+  assert.equal(normalizeBugFilterCondition(
+    condition('status', 'equals', 'pending_confirmation'),
+  ).value, 'new')
+  assert.match(filterDialogSource, /\{ label: '待确认', value: 'new' \}/u)
+  assert.doesNotMatch(filterDialogSource, /待确定/u)
 })
 
 test('bug filters distinguish unassigned and unplanned bugs', () => {

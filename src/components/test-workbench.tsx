@@ -191,10 +191,20 @@ const bugStatusLabel: Record<BugStatus, string> = {
   duplicate: '重复 Bug',
   in_progress: '修复中',
   new: '待确认',
-  pending_confirmation: '待确定',
+  pending_confirmation: '待确认',
   pending_verification: '待验证',
   rejected: '已拒绝',
   reopened: '重新打开',
+}
+const bugStatusOptions = (Object.entries(bugStatusLabel) as Array<[BugStatus, string]>)
+  .filter(([value]) => value !== 'pending_confirmation')
+
+function visibleBugStatus(status: BugStatus) {
+  return status === 'pending_confirmation' ? 'new' : status
+}
+
+function selectedBugStatus(bug: TestBug, status: BugStatus) {
+  return status === 'new' && bug.assigneeUserId ? 'pending_confirmation' : status
 }
 const severityLabel: Record<BugSeverity, string> = {
   blocker: '阻断',
@@ -2007,7 +2017,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   const [shareOpen, setShareOpen] = useState(false)
   return <>
     <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions">{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
-    <div className="test-bug-controls"><Label>状态<Select value={bug.status} onValueChange={(value) => onStatus(bug, value as BugStatus)} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(bugStatusLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
+    <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
     <div className="test-detail-meta"><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
     <BugCommentsSection

@@ -5136,7 +5136,6 @@ ${packageTimelineText}`
             createRequest={changelogCreateRequest}
             onCanManageChange={setChangelogCanManage}
             onEditorModeChange={setChangelogEditorOpen}
-            refreshToken={workspaceRefreshVersion}
           />
         ) : null}
 

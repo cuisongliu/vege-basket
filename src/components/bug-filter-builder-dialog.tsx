@@ -51,7 +51,6 @@ const statusOptions: BugFilterOption[] = [
   { label: '重复 Bug', value: 'duplicate' },
   { label: '修复中', value: 'in_progress' },
   { label: '待确认', value: 'new' },
-  { label: '待确定', value: 'pending_confirmation' },
   { label: '待验证', value: 'pending_verification' },
   { label: '已拒绝', value: 'rejected' },
   { label: '重新打开', value: 'reopened' },

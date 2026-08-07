@@ -62,7 +62,8 @@ test('assigned Bugs start in pending confirmation and reject writes a system com
 })
 
 test('developer workbench offers start and reject for pending confirmation Bugs', () => {
-  assert.match(testWorkbenchClientSource, /pending_confirmation: '待确定'/u)
+  assert.match(testWorkbenchClientSource, /pending_confirmation: '待确认'/u)
+  assert.match(testWorkbenchClientSource, /value !== 'pending_confirmation'/u)
   assert.match(testWorkbenchClientSource, /selected\.status === 'pending_confirmation'/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>驳回 Bug<\/DialogTitle>/u)
   assert.match(testWorkbenchClientSource, /rejectAssignedTestBug\(bug\.id, reason\)/u)

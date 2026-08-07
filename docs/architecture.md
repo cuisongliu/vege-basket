@@ -311,7 +311,7 @@ The schema is normalized around these groups:
   delivery boundary only after a successful create or effective reassignment. The new
   developer always receives a personal card. A project-chat target is resolved only when
   the Bug's test plan has a live project relation; group cards mention that same assignee.
-  An assigned Bug starts in `pending_confirmation`（待确定）: the developer either starts
+  An assigned Bug starts internally in `pending_confirmation`（界面统一显示为待确认）: the developer either starts
   fixing (`in_progress`) or rejects it with a mandatory reason. Rejection atomically moves
   the Bug to `rejected`, writes an immutable `reject` collaboration comment with the reason,
   and notifies the reporting test engineer by personal Feishu message (and the in-app

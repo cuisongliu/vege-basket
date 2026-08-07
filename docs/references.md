@@ -452,7 +452,8 @@ Bug 分享接口：`POST /api/test-bugs/:bugId/share-link` 创建或复用当前
 `DELETE /api/test-bugs/:bugId/share-link` 撤销链接；两者要求报告人、负责人或组织管理员
 读取范围。`GET /api/bug-shares/:token` 为公开读取接口，`POST /api/bug-shares/:token/comments`
 要求登录后发表评论。公共读取响应不包含敏感身份字段或内部附件链接，分享地址基于已验证
-的 `APP_PUBLIC_URL` 生成。
+的 `APP_PUBLIC_URL` 生成；未配置时 API 返回同站路径，由浏览器按当前页面的可信来源补全，
+不使用服务端请求的 Host 头推导公开域名。
 
 Project invite links default to a 10 minute lifetime. Owners can request one of the
 supported durations when generating a link. Invite links may optionally require a share

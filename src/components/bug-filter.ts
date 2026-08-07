@@ -98,7 +98,7 @@ export function getDefaultBugFilterValue(
     return `${today}..${today}`
   }
   if (field === 'createdAt') return getBugFilterTodayStamp()
-  if (field === 'status') return 'pending_confirmation'
+  if (field === 'status') return 'new'
   if (field === 'severity') return 'major'
   if (field === 'priority') return 'medium'
   return ''
@@ -130,10 +130,13 @@ export function normalizeBugFilterCondition(
   const operator = allowedOperators.includes(condition.operator)
     ? condition.operator
     : allowedOperators[0]
+  const value = condition.field === 'status' && condition.value === 'pending_confirmation'
+    ? 'new'
+    : condition.value
   return {
     ...condition,
     operator,
-    value: condition.value || getDefaultBugFilterValue(condition.field, operator),
+    value: value || getDefaultBugFilterValue(condition.field, operator),
   }
 }
 
@@ -164,8 +167,11 @@ function matchesCondition(bug: TestBug, condition: BugFilterCondition) {
   if (normalized.operator === 'not_contains') {
     return !fieldValue.toLowerCase().includes(targetValue.trim().toLowerCase())
   }
-  if (normalized.operator === 'equals') return fieldValue === targetValue
-  if (normalized.operator === 'not_equals') return fieldValue !== targetValue
+  const equalsTarget = normalized.field === 'status' && targetValue === 'new'
+    ? fieldValue === 'new' || fieldValue === 'pending_confirmation'
+    : fieldValue === targetValue
+  if (normalized.operator === 'equals') return equalsTarget
+  if (normalized.operator === 'not_equals') return !equalsTarget
   if (normalized.operator === 'before') return Boolean(fieldValue) && fieldValue < targetValue
   if (normalized.operator === 'after') return Boolean(fieldValue) && fieldValue > targetValue
   if (normalized.operator === 'between') {

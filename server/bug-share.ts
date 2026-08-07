@@ -7,6 +7,8 @@ import { hashBugShareToken } from './organization-policy.ts'
 import { normalizePublicAppUrl } from './todo-digest.ts'
 
 const shareLifetimeMs = 30 * 24 * 60 * 60 * 1_000
+const shareLockTimeout = '5s'
+const shareStatementTimeout = '15s'
 
 export type BugShareComment = {
   authorName: string
@@ -79,10 +81,10 @@ async function transaction<T>(handler: (client: PoolClient) => Promise<T>) {
   }
 }
 
-function publicAppUrl() {
+function publicBugShareUrl(token: string) {
+  const path = `/share/bug/${encodeURIComponent(token)}`
   const origin = normalizePublicAppUrl(process.env.APP_PUBLIC_URL)
-  if (!origin) throw shareError('Public sharing is not configured', 503)
-  return origin
+  return origin ? `${origin}${path}` : path
 }
 
 async function readView(token: string, userId?: number | null) {
@@ -160,41 +162,53 @@ export async function getBugShareView(token: string, userId?: number | null) {
 }
 
 export async function createBugShareLink(bugId: number, userId: number) {
-  const origin = publicAppUrl()
-  const token = await transaction(async (client) => {
-    const bugResult = await client.query<{ id: string }>(
-      `
-      select b.id
-      from test_bugs b
-      join test_spaces space on space.id = b.test_space_id
-      where b.id = $1
-        and (b.reporter_user_id = $2 or b.assignee_user_id = $2 or ${managedOrganizationReadScopeSql('space.organization_id', '$2')})
-      for update of b
-      `,
-      [bugId, userId],
-    )
-    if (!bugResult.rows[0]) throw shareError('Bug share access denied', 404)
-    const active = await client.query<{ token_encrypted: string }>(
-      `select token_encrypted from bug_share_links
-       where test_bug_id = $1 and revoked_at is null and expires_at > now()
-       order by created_at desc limit 1 for update`,
-      [bugId],
-    )
-    if (active.rows[0]) return decryptText(active.rows[0].token_encrypted)
-    await client.query(
-      `update bug_share_links set revoked_at = now()
-       where test_bug_id = $1 and revoked_at is null`,
-      [bugId],
-    )
-    const next = shareToken()
-    await client.query(
-      `insert into bug_share_links (test_bug_id, created_by_user_id, token_hash, token_encrypted, expires_at)
-       values ($1, $2, $3, $4, $5)`,
-      [bugId, userId, hashBugShareToken(next), encryptText(next), new Date(Date.now() + shareLifetimeMs)],
-    )
-    return next
-  })
-  return { expiresInDays: 30, url: `${origin}/share/bug/${encodeURIComponent(token)}` }
+  let token: string
+  try {
+    token = await transaction(async (client) => {
+      await client.query(`set local lock_timeout = '${shareLockTimeout}'`)
+      await client.query(`set local statement_timeout = '${shareStatementTimeout}'`)
+      const bugResult = await client.query<{ id: string }>(
+        `
+        select b.id
+        from test_bugs b
+        join test_spaces space on space.id = b.test_space_id
+        where b.id = $1
+          and (b.reporter_user_id = $2 or b.assignee_user_id = $2 or ${managedOrganizationReadScopeSql('space.organization_id', '$2')})
+        for update of b
+        `,
+        [bugId, userId],
+      )
+      if (!bugResult.rows[0]) throw shareError('Bug share access denied', 404)
+      const active = await client.query<{ token_encrypted: string }>(
+        `select token_encrypted from bug_share_links
+         where test_bug_id = $1 and revoked_at is null and expires_at > now()
+         order by created_at desc limit 1 for update`,
+        [bugId],
+      )
+      if (active.rows[0]) return decryptText(active.rows[0].token_encrypted)
+      await client.query(
+        `update bug_share_links set revoked_at = now()
+         where test_bug_id = $1 and revoked_at is null`,
+        [bugId],
+      )
+      const next = shareToken()
+      await client.query(
+        `insert into bug_share_links (test_bug_id, created_by_user_id, token_hash, token_encrypted, expires_at)
+         values ($1, $2, $3, $4, $5)`,
+        [bugId, userId, hashBugShareToken(next), encryptText(next), new Date(Date.now() + shareLifetimeMs)],
+      )
+      return next
+    })
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : ''
+    if (code === '55P03' || code === '57014') {
+      throw shareError('Bug share link generation timed out', 503)
+    }
+    throw error
+  }
+  return { expiresInDays: 30, url: publicBugShareUrl(token) }
 }
 
 export async function revokeBugShareLink(bugId: number, userId: number) {
