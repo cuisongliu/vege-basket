@@ -284,9 +284,12 @@ import {
   type AiTextAttachment,
 } from './ai-attachments'
 import { AssignedTestBugs, TestWorkbench } from './components/test-workbench'
+import { BugShareView } from './components/bug-share-view'
+import { getBugShareTokenFromPath } from './bug-share-deep-link'
 import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
+import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import { MarkdownPreview } from './components/markdown-preview'
 import { WeeklyReportWorkbench } from './components/weekly-report-workbench'
@@ -352,6 +355,7 @@ type View =
   | 'weekly_report'
   | 'package_market'
   | 'image_sync'
+  | 'changelog'
   | 'search'
   | 'ai'
   | 'testing'
@@ -580,6 +584,7 @@ const appViews = [
   'weekly_report',
   'package_market',
   'image_sync',
+  'changelog',
   'search',
   'ai',
   'testing',
@@ -1723,6 +1728,8 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const bugShareToken = getBugShareTokenFromPath()
+  const [bugShareLoginRequested, setBugShareLoginRequested] = useState(false)
   const [authError, setAuthError] = useState('')
   const [roleSelectionOpen, setRoleSelectionOpen] = useState(false)
   const [roleSelectionBusy, setRoleSelectionBusy] = useState(false)
@@ -1741,6 +1748,17 @@ function App() {
   const [invitePasswordRequired, setInvitePasswordRequired] = useState(false)
   const [invitePasswordVerified, setInvitePasswordVerified] = useState(false)
   const [view, setView] = useState<View>(getInitialView)
+  const [changelogCanManage, setChangelogCanManage] = useState(false)
+  const [changelogEditorOpen, setChangelogEditorOpen] = useState(false)
+  const [changelogCreateRequest, setChangelogCreateRequest] = useState(0)
+
+  useEffect(() => {
+    if (view === 'changelog') return
+    setChangelogCanManage(false)
+    setChangelogEditorOpen(false)
+    setChangelogCreateRequest(0)
+  }, [view])
+
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
   const [memberships, setMemberships] = useState(initialMemberships)
@@ -2924,6 +2942,19 @@ function App() {
     } finally {
       setRoleSelectionBusy(false)
     }
+  }
+
+  function openAssignedBugFromShare(bugId: number) {
+    setRequestedAssignedBugId(bugId)
+    setBugShareLoginRequested(false)
+    window.history.replaceState({}, '', `/?assignedBug=${bugId}`)
+    void changeActiveUserRole('developer', 'assigned_bugs')
+  }
+
+  function returnToVegesFromShare() {
+    window.history.replaceState({}, '', '/')
+    setBugShareLoginRequested(false)
+    setView('search')
   }
 
   async function saveOnboardingDisplayName() {
@@ -4384,6 +4415,41 @@ ${packageTimelineText}`
     URL.revokeObjectURL(url)
   }
 
+  if (bugShareToken && !loggedIn && bugShareLoginRequested) {
+    return (
+      <LoginScreen
+        error={authError}
+        hasOrganizationInvite={Boolean(organizationInviteToken)}
+        hasProjectInvite={Boolean(inviteToken)}
+        invitePasswordChecking={invitePasswordChecking}
+        invitePasswordDraft={invitePasswordDraft}
+        invitePasswordError={invitePasswordError}
+        invitePasswordRequired={invitePasswordRequired}
+        invitePasswordVerified={invitePasswordVerified}
+        onBackToShare={() => setBugShareLoginRequested(false)}
+        onClearError={() => setAuthError('')}
+        onFeishuSignIn={signInWithFeishu}
+        onInvitePasswordChange={(value) => {
+          setInvitePasswordDraft(value)
+          setInvitePasswordError('')
+          setAuthError('')
+        }}
+        onVerifyInvitePassword={submitInvitePassword}
+        onSignIn={signIn}
+      />
+    )
+  }
+
+  if (bugShareToken) {
+    return <BugShareView
+      authUser={authUser}
+      onBackToVeges={authUser ? returnToVegesFromShare : undefined}
+      onLogin={() => setBugShareLoginRequested(true)}
+      onOpenAssignedBug={openAssignedBugFromShare}
+      token={bugShareToken}
+    />
+  }
+
   if (!loggedIn) {
     return (
         <LoginScreen
@@ -4437,6 +4503,7 @@ ${packageTimelineText}`
               onDisconnectFeishu={disconnectFeishuBinding}
               onSaveAccountSettings={updateAccountSettings}
               onRoleChange={(role) => void changeActiveUserRole(role)}
+              onOpenChangelog={() => setView('changelog')}
               onSignOut={signOut}
               onToggleTheme={toggleThemeMode}
             />
@@ -4535,6 +4602,7 @@ ${packageTimelineText}`
             onDisconnectFeishu={disconnectFeishuBinding}
             onSaveAccountSettings={updateAccountSettings}
             onRoleChange={(role) => void changeActiveUserRole(role)}
+            onOpenChangelog={() => setView('changelog')}
             onSignOut={signOut}
             onToggleTheme={toggleThemeMode}
           />
@@ -4660,8 +4728,10 @@ ${packageTimelineText}`
         ? 'workspace cockpit-workspace'
         : view === 'weekly_report'
           ? 'workspace embedded-module-workspace weekly-report-shell'
-          : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync'
-          ? 'workspace embedded-module-workspace'
+          : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync' || view === 'changelog'
+          ? view === 'changelog'
+            ? 'workspace embedded-module-workspace changelog-shell'
+            : 'workspace embedded-module-workspace'
           : 'workspace'}>
         {!(view === 'project' && isProjectTodoDetailActive) ? (
           <header className="topbar">
@@ -4728,6 +4798,15 @@ ${packageTimelineText}`
                 </>
               ) : (
                 <>
+                  {view === 'changelog' && changelogCanManage && !changelogEditorOpen ? (
+                    <Button
+                      className="solid-button"
+                      type="button"
+                      onClick={() => setChangelogCreateRequest((current) => current + 1)}
+                    >
+                      <Plus size={17} /> 新增日志
+                    </Button>
+                  ) : null}
                   {view === 'project' && selectedProject && (
                     <Button
                       className={projectDetailTab === 'activity' ? 'solid-button' : 'ghost-button'}
@@ -4812,7 +4891,7 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  {view !== 'ai' && view !== 'organization' && view !== 'weekly_report' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' ? (
+                  {view !== 'ai' && view !== 'organization' && view !== 'weekly_report' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' && view !== 'changelog' ? (
                     <Button
                       className="ghost-button"
                       variant="outline"
@@ -5052,6 +5131,15 @@ ${packageTimelineText}`
 
         {view === 'image_sync' ? <ImageSyncWorkbench /> : null}
 
+        {view === 'changelog' ? (
+          <ChangelogWorkbench
+            createRequest={changelogCreateRequest}
+            onCanManageChange={setChangelogCanManage}
+            onEditorModeChange={setChangelogEditorOpen}
+            refreshToken={workspaceRefreshVersion}
+          />
+        ) : null}
+
         {view === 'ai' && (
           <VegesAiView
             aiBusy={aiBusy}
@@ -5123,6 +5211,7 @@ function LoginScreen({
   invitePasswordRequired,
   invitePasswordVerified,
   onClearError,
+  onBackToShare,
   onFeishuSignIn,
   onInvitePasswordChange,
   onVerifyInvitePassword,
@@ -5137,6 +5226,7 @@ function LoginScreen({
   invitePasswordRequired: boolean
   invitePasswordVerified: boolean
   onClearError: () => void
+  onBackToShare?: () => void
   onFeishuSignIn: () => Promise<void>
   onInvitePasswordChange: (value: string) => void
   onVerifyInvitePassword: () => Promise<void>
@@ -5183,6 +5273,7 @@ function LoginScreen({
   return (
     <main className="login-screen">
       <section className="login-panel">
+        {onBackToShare ? <Button className="login-back-share" type="button" variant="ghost" onClick={onBackToShare}><ArrowLeft /> 返回 Bug 分享</Button> : null}
         <div className="login-copy">
           <div className="login-brand-title">Veges</div>
           <div className="login-copy-body">
@@ -5422,6 +5513,7 @@ function AccountMenu({
   themeMode,
   onSaveAccountSettings,
   onRoleChange,
+  onOpenChangelog,
   onSignOut,
   onToggleTheme,
 }: {
@@ -5432,6 +5524,7 @@ function AccountMenu({
     displayName: string
   }) => Promise<void>
   onRoleChange: (role: SwitchableUserRole) => void
+  onOpenChangelog: () => void
   onSignOut: () => void
   onToggleTheme: () => void
 }) {
@@ -5462,6 +5555,9 @@ function AccountMenu({
             onSelect={() => setAccountDialogOpen(true)}
           >
             <GearSix /> 账户设置
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onOpenChangelog}>
+            <FileText /> 更新日志
           </DropdownMenuItem>
           {user && availableRoles.length > 1 ? (
             <>
@@ -12085,6 +12181,7 @@ function getViewTitle(view: View, projectName: string) {
   if (view === 'weekly_report') return '周报管理'
   if (view === 'package_market') return '安装包市场'
   if (view === 'image_sync') return '镜像同步'
+  if (view === 'changelog') return '更新日志'
   if (view === 'testing') return '测试工作台'
   if (view === 'assigned_bugs') return 'Bug 工作台'
   return 'Veges AI'

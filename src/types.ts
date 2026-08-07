@@ -223,6 +223,18 @@ export type Summary = {
 
 export type SummaryPeriodType = 'daily' | 'weekly'
 
+export type ChangelogEntry = {
+  content: string
+  createdAt: string
+  createdByUserId: number | null
+  id: number
+  publishedAt: string
+  title: string
+  updatedAt: string
+  updatedByUserId: number | null
+  version: string
+}
+
 export type {
   AiConversation,
   AiConversationContextKind,

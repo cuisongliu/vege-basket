@@ -20,6 +20,7 @@ import {
   FunnelSimple,
   GearSix,
   ListChecks,
+  LinkSimple,
   MagnifyingGlass,
   PencilSimple,
   Plus,
@@ -56,6 +57,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
 import { WeeklyReportWorkbench } from './weekly-report-workbench'
+import { BugShareDialog } from './bug-share-dialog'
 import {
   BugFilterBuilderDialog,
   type BugFilterOption,
@@ -2002,8 +2004,9 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   users: TestWorkbenchData['users']
 }) {
   const developers = users.filter((user) => user.roles.includes('developer'))
+  const [shareOpen, setShareOpen] = useState(false)
   return <>
-    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions">{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}<Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div></div>
+    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions">{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
     <div className="test-bug-controls"><Label>状态<Select value={bug.status} onValueChange={(value) => onStatus(bug, value as BugStatus)} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(bugStatusLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
     <div className="test-detail-meta"><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
@@ -2015,6 +2018,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
       onDeleteComment={onDeleteComment}
       onUpdateComment={onUpdateComment}
     />
+    <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
   </>
 }
 
@@ -3836,6 +3840,7 @@ export function AssignedTestBugs({
   const [bugs, setBugs] = useState<TestBug[]>([])
   const [mentionMembers, setMentionMembers] = useState<MentionMember[]>([])
   const [selectedId, setSelectedId] = useState<number>()
+  const [shareOpen, setShareOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -4080,6 +4085,7 @@ export function AssignedTestBugs({
                 <div className="test-detail-heading">
                   <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2><span className="test-bug-assignee">负责人：{selected.assigneeName || '未分配'}</span></div>
                   <div className="test-detail-heading-actions">
+                    {selected.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}
                     {selected.canTransfer && (selected.transferCandidates?.length ?? 0) > 0 ? (
                       <Button
                         variant="outline"
@@ -4162,6 +4168,7 @@ export function AssignedTestBugs({
         onOpenChange={setRejectDialogOpen}
         onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(bug.id, reason))}
       />
+      {selected ? <BugShareDialog bugId={selected.id} open={shareOpen} onOpenChange={setShareOpen} /> : null}
       <BugFilterBuilderDialog
         conditions={filterConditions}
         includeTestSpace={false}

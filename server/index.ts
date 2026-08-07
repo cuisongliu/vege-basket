@@ -177,6 +177,7 @@ import {
   createOrganizationRouter,
 } from './organizations.ts'
 import { createWeeklyReportRouter } from './weekly-reports.ts'
+import { changelogRouter } from './changelog.ts'
 import { getMyWork } from './my-work.ts'
 import { parseMyWorkFilters } from './my-work-policy.ts'
 import {
@@ -474,6 +475,7 @@ app.use(express.json({
   },
 }))
 app.use('/api', roleRouter)
+app.use('/api', changelogRouter)
 app.use('/api', imageSyncWorkflowRouter)
 configureTestWorkbenchNotifications({
   onTestBugAssigned: enqueueTestBugAssignedDelivery,

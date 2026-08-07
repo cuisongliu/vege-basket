@@ -8,7 +8,13 @@ import {
   managedOrganizationReadScopeSql,
   testSpaceMembershipPresentSql,
 } from './organization-scope.ts'
-import { requireActiveRole } from './roles.ts'
+import { getAuthenticatedRoleSession, requireActiveRole } from './roles.ts'
+import {
+  addBugShareComment,
+  createBugShareLink,
+  getBugShareView,
+  revokeBugShareLink,
+} from './bug-share.ts'
 import { parseTestCaseCsv } from './test-case-import.ts'
 import {
   canDeleteTestCase,
@@ -707,9 +713,10 @@ async function getTestWorkbench(userId: number) {
       test_subject_id: string
       title: string
       updated_at: Date
+      organization_admin_access: boolean
     }>(
       `
-      select b.*
+      select b.*, ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
       from test_bugs b
       join test_spaces space on space.id = b.test_space_id
       left join test_space_memberships m
@@ -876,6 +883,9 @@ async function getTestWorkbench(userId: number) {
       actualResult: decryptText(row.actual_result),
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       canEdit: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
+      canShare: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
+        || Number(row.assignee_user_id) === userId
+        || Boolean(row.organization_admin_access),
       comments: commentsByBug.get(Number(row.id)) ?? [],
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
@@ -2972,6 +2982,7 @@ async function getAssignedBugs(userId: number) {
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       canComment: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
       canManage: Number(row.assignee_user_id) === userId,
+      canShare: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
       canTransfer: (Number(row.assignee_user_id) === userId || (
         !row.assignee_user_id && row.organization_admin_access
       )) &&
@@ -3031,6 +3042,62 @@ router.get('/test-bugs/assigned', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
   response.json(await getAssignedBugs(session.userId))
+}))
+
+router.get('/bug-shares/:token', asyncRoute(async (request, response) => {
+  const token = text(request.params.token, 256)
+  if (!token) {
+    response.status(404).json({ error: 'Bug share link is invalid or expired' })
+    return
+  }
+  const session = await getAuthenticatedRoleSession(request)
+  response.setHeader('Cache-Control', 'private, no-store')
+  response.setHeader('Referrer-Policy', 'no-referrer')
+  response.setHeader('X-Robots-Tag', 'noindex')
+  response.json(await getBugShareView(token, session?.userId))
+}))
+
+router.post('/bug-shares/:token/comments', asyncRoute(async (request, response) => {
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: '登录后才能评论' })
+    return
+  }
+  const token = text(request.params.token, 256)
+  const content = text(request.body.content, 5000)
+  if (!token || !content) {
+    response.status(400).json({ error: 'Comment is required' })
+    return
+  }
+  response.status(201).json(await addBugShareComment(token, session.userId, content))
+}))
+
+router.post('/test-bugs/:bugId/share-link', asyncRoute(async (request, response) => {
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const bugId = positiveId(request.params.bugId)
+  if (!bugId) {
+    response.status(400).json({ error: 'Valid Bug is required' })
+    return
+  }
+  response.status(201).json(await createBugShareLink(bugId, session.userId))
+}))
+
+router.delete('/test-bugs/:bugId/share-link', asyncRoute(async (request, response) => {
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const bugId = positiveId(request.params.bugId)
+  if (!bugId) {
+    response.status(400).json({ error: 'Valid Bug is required' })
+    return
+  }
+  response.json(await revokeBugShareLink(bugId, session.userId))
 }))
 
 router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, response) => {

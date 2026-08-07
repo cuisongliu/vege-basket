@@ -169,6 +169,7 @@ export type TestBug = {
   canComment?: boolean
   canEdit?: boolean
   canManage?: boolean
+  canShare?: boolean
   canTransfer?: boolean
   comments: TestBugComment[]
   createdAt: string

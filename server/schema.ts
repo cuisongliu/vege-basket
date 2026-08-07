@@ -1733,6 +1733,36 @@ alter table test_bug_comments
   add constraint test_bug_comments_kind_check
   check (kind in ('comment', 'transfer', 'reject'));
 
+create table if not exists bug_share_links (
+  id bigserial primary key,
+  test_bug_id bigint not null references test_bugs(id) on delete cascade,
+  created_by_user_id bigint references users(id) on delete set null,
+  token_hash text not null unique,
+  token_encrypted text not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
+create index if not exists idx_bug_share_links_bug_id
+  on bug_share_links(test_bug_id, created_at desc);
+
+create unique index if not exists idx_bug_share_links_active_bug
+  on bug_share_links(test_bug_id)
+  where revoked_at is null;
+
+create table if not exists changelog_entries (
+  id bigserial primary key,
+  title_encrypted text not null,
+  version_encrypted text not null default '',
+  content_encrypted text not null,
+  created_by_user_id bigint references users(id) on delete set null,
+  updated_by_user_id bigint references users(id) on delete set null,
+  published_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_projects_user_id on projects(user_id);
 create index if not exists idx_projects_organization_id on projects(organization_id);
 create index if not exists idx_organization_memberships_user_id
@@ -1744,6 +1774,8 @@ create unique index if not exists idx_organization_invitations_pending_target
   where status = 'pending';
 create index if not exists idx_organization_invite_links_organization_id
   on organization_invite_links(organization_id);
+create index if not exists idx_changelog_entries_published_at
+  on changelog_entries(published_at desc, id desc);
 create unique index if not exists idx_organization_invite_links_active_organization
   on organization_invite_links(organization_id)
   where revoked_at is null;

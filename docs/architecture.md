@@ -74,6 +74,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   index metadata, drafts, immutable submitted revisions, authorized work-source links,
   organization collection status, AI draft generation, Feishu reminder delivery, and
   authenticated browser deep links.
+- `server/changelog.ts`: authenticated global update-log reads, encrypted Markdown
+  persistence, and system-administrator-only create/update authorization.
 - `server/roles.ts`, `server/organization-scope.ts`, `server/test-workbench.ts`:
   session-scoped business personas, additive organization-administrator capability,
   and resource-scoped read/write authorization boundaries.
@@ -110,6 +112,10 @@ That dual authorization also permits project-governance mutations for lifecycle 
 health, and milestones. Other project mutations continue to use direct project access;
 test-space and Bug mutations continue to require membership, creator ownership, or Bug
 assignment checks.
+
+The update log is a global authenticated read surface. Its create and update routes require
+`isSystemAdmin(username)`, which is derived from `VEGES_ADMIN_USERNAMES`; an
+`organization_admin` role does not grant global update-log write access.
 
 `AI_API_BASE`, `AI_API_KEY`, and `AI_MODEL` form one deployment-level provider
 configuration. Users never submit or read AI credentials. When that shared provider is
@@ -256,6 +262,10 @@ The schema is normalized around these groups:
   project or test-space members. Each organization stores one
   weekday-based week-start preference, from Monday through Sunday; member reports and
   administrator summaries derive the current seven-day period from that shared setting.
+- Product updates: `changelog_entries` stores encrypted title, version, and Markdown content,
+  with queryable publication timestamps and nullable creator/editor references. Entries are
+  immediately visible after a system administrator saves them; there is no draft or delete
+  lifecycle.
 - Projects and collaboration: `projects`, `project_memberships`,
   `project_invite_links`, `project_integrations`, `collaborators`.
 - Personal image-sync history: `image_sync_workflow_runs` binds each local request to its
@@ -396,6 +406,19 @@ Atomicity rules:
   not by a standalone select-before-insert check.
 
 ## Startup And Deployment Boundary
+
+### Bug 分享边界
+
+Bug 分享使用 `/share/bug/<token>` 单页链接。服务端仅保存令牌的 SHA-256 哈希和
+加密原文，默认有效期为 30 天，创建新链接会撤销该 Bug 的旧链接。生成和撤销要求
+当前 Bug 的报告人、负责人或具备组织资源读取范围的组织管理员；公共读取不要求登录，
+返回内容只包含 Bug 展示字段与普通评论，并以 `Cache-Control: private, no-store`、
+`Referrer-Policy: no-referrer` 和 `X-Robots-Tag: noindex` 限制缓存、来源和搜索索引。
+
+分享页的评论接口要求登录，但不要求测试空间成员资格；评论始终写入加密的普通 Bug
+评论。非负责人登录用户停留在分享页，只能评论。负责人登录后由浏览器切换到开发身份，
+进入已有的负责人 Bug 工作台并沿用原有操作授权。公共页面不返回邮箱、成员名单、内部
+链接、附件对象地址、转移或驳回记录。
 
 Server startup validates encryption keys and executes `schemaSql`; starting the API is a
 database mutation, not a read-only smoke test. There is no automatic down migration.

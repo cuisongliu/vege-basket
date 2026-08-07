@@ -19,6 +19,7 @@
 | AI reply document conversion | `server/ai-turn-document.ts` |
 | Daily digest schedule and worker | `server/todo-digest.ts`, `server/todo-digest-worker.ts` |
 | Personal weekly reports and reminders | `server/weekly-reports.ts`, `shared/weekly-report-deep-link.ts`, `src/components/weekly-report-workbench.tsx` |
+| Veges update log | `server/changelog.ts`, `src/components/changelog-workbench.tsx`, `src/api.ts`, `src/types.ts` |
 | Package timeline transactions | `server/project-package-timeline.ts` |
 | OSS rules and URL signing | `server/package-market.ts`, `server/trial-combo-package-rules.yaml` |
 | GitHub image sync workflow | `server/image-sync-workflows.ts`, external `sealos-pro/.github/workflows/sync-images-tar-oss.yml` |
@@ -135,6 +136,7 @@ families are:
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
 | Workspace | `GET /api/workspace`, `GET /api/my-work`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Changelog | `GET /api/changelog` for authenticated readers; `POST /api/admin/changelog` and `PATCH /api/admin/changelog/:id` require `VEGES_ADMIN_USERNAMES` system-admin access |
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
@@ -445,6 +447,12 @@ Errors use JSON `{ "error": "..." }`. Common status codes are 400 for invalid in
 inaccessible resources, 409 for state conflicts, 413 for an oversized Markdown/AI
 context, 415 for unsupported image media, 429 for AI throttling, and 503 for an
 unconfigured dependency.
+
+Bug 分享接口：`POST /api/test-bugs/:bugId/share-link` 创建或复用当前有效链接，
+`DELETE /api/test-bugs/:bugId/share-link` 撤销链接；两者要求报告人、负责人或组织管理员
+读取范围。`GET /api/bug-shares/:token` 为公开读取接口，`POST /api/bug-shares/:token/comments`
+要求登录后发表评论。公共读取响应不包含敏感身份字段或内部附件链接，分享地址基于已验证
+的 `APP_PUBLIC_URL` 生成。
 
 Project invite links default to a 10 minute lifetime. Owners can request one of the
 supported durations when generating a link. Invite links may optionally require a share

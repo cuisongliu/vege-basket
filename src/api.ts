@@ -4,6 +4,7 @@ import type {
   AiConversationPage,
   AiTurnPage,
   AiTurnRunResponse,
+  ChangelogEntry,
   ImageSyncArchitecture,
   ImageSyncDownloadLink,
   ImageSyncRun,
@@ -82,6 +83,11 @@ export type NotificationResponse = {
 export type PackageMarketRulesResponse = {
   expireMinutes: number
   rules: PackageMarketRule[]
+}
+
+export type ChangelogResponse = {
+  canManage: boolean
+  entries: ChangelogEntry[]
 }
 
 export type AuthUser = {
@@ -347,6 +353,27 @@ async function requestAiTurnStream(
 
 export function fetchWorkspace() {
   return request<WorkspaceData>('/api/workspace')
+}
+
+export function fetchChangelog() {
+  return request<ChangelogResponse>('/api/changelog')
+}
+
+export function createChangelogEntry(payload: Pick<ChangelogEntry, 'content' | 'title' | 'version'>) {
+  return request<{ entry: ChangelogEntry }>('/api/admin/changelog', {
+    body: JSON.stringify(payload),
+    method: 'POST',
+  })
+}
+
+export function updateChangelogEntry(
+  entryId: number,
+  payload: Pick<ChangelogEntry, 'content' | 'title' | 'version'>,
+) {
+  return request<{ entry: ChangelogEntry }>(`/api/admin/changelog/${entryId}`, {
+    body: JSON.stringify(payload),
+    method: 'PATCH',
+  })
 }
 
 export function createImageSyncRun(payload: {
