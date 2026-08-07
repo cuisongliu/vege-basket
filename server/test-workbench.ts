@@ -532,6 +532,35 @@ async function getOrCreateCaseFolder(
   return Number(result.rows[0].id)
 }
 
+async function recordTestBugEvent(
+  event: {
+    actorUserId: number | null
+    assigneeUserId?: number | null
+    bugId: number
+    eventType: 'created' | 'assigned' | 'transferred' | 'status_changed'
+    nextStatus?: BugStatus
+    previousStatus?: BugStatus
+  },
+  client?: PoolClient,
+) {
+  const run = client
+    ? (sql: string, params: unknown[]) => client.query(sql, params)
+    : (sql: string, params: unknown[]) => query(sql, params)
+  await run(
+    `insert into test_bug_events
+       (test_bug_id, event_type, actor_user_id, previous_status, next_status, assignee_user_id)
+     values ($1, $2, $3, $4, $5, $6)`,
+    [
+      event.bugId,
+      event.eventType,
+      event.actorUserId,
+      event.previousStatus ?? null,
+      event.nextStatus ?? null,
+      event.assigneeUserId ?? null,
+    ],
+  )
+}
+
 async function getTestWorkbench(userId: number) {
   const [
     spaces,
@@ -543,6 +572,7 @@ async function getTestWorkbench(userId: number) {
     planCases,
     bugs,
     comments,
+    events,
     users,
     notifications,
   ] = await Promise.all([
@@ -698,12 +728,16 @@ async function getTestWorkbench(userId: number) {
     ),
     query<{
       actual_result: string
+      assignee_display_name: string | null
+      assignee_email: string | null
       assignee_user_id: string | null
       created_at: Date
       environment: string
       expected_result: string
       id: string
       priority: string
+      reporter_display_name: string | null
+      reporter_email: string | null
       reporter_user_id: string | null
       reproduction_steps: string
       severity: string
@@ -717,11 +751,16 @@ async function getTestWorkbench(userId: number) {
       organization_admin_access: boolean
     }>(
       `
-      select b.*, ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
+      select b.*,
+        reporter.display_name as reporter_display_name, reporter.email as reporter_email,
+        assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+        ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
       from test_bugs b
       join test_spaces space on space.id = b.test_space_id
       left join test_space_memberships m
         on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
+      left join users reporter on reporter.id = b.reporter_user_id
+      left join users assignee on assignee.id = b.assignee_user_id
       where ${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')}
       order by b.updated_at desc, b.id desc
       `,
@@ -748,6 +787,35 @@ async function getTestWorkbench(userId: number) {
       left join users u on u.id = c.author_user_id
       where ${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')}
       order by c.created_at, c.id
+      `,
+      [userId],
+    ),
+    query<{
+      actor_display_name: string | null
+      actor_email: string | null
+      actor_user_id: string | null
+      assignee_display_name: string | null
+      assignee_email: string | null
+      assignee_user_id: string | null
+      created_at: Date
+      event_type: string
+      id: string
+      next_status: string | null
+      previous_status: string | null
+      test_bug_id: string
+    }>(
+      `
+      select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
+             assignee.display_name as assignee_display_name, assignee.email as assignee_email
+      from test_bug_events e
+      join test_bugs b on b.id = e.test_bug_id
+      join test_spaces space on space.id = b.test_space_id
+      left join test_space_memberships m
+        on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
+      left join users actor on actor.id = e.actor_user_id
+      left join users assignee on assignee.id = e.assignee_user_id
+      where ${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')}
+      order by e.created_at, e.id
       `,
       [userId],
     ),
@@ -873,6 +941,24 @@ async function getTestWorkbench(userId: number) {
       },
     ])
   }
+  const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
+  for (const row of events.rows) {
+    const bugId = Number(row.test_bug_id)
+    eventsByBug.set(bugId, [
+      ...(eventsByBug.get(bugId) ?? []),
+      {
+        actorName: row.actor_display_name || row.actor_email || '未知用户',
+        actorUserId: row.actor_user_id ? Number(row.actor_user_id) : undefined,
+        assigneeName: row.assignee_display_name || row.assignee_email || undefined,
+        assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+        createdAt: row.created_at.toISOString(),
+        eventType: row.event_type,
+        id: Number(row.id),
+        nextStatus: row.next_status ?? undefined,
+        previousStatus: row.previous_status ?? undefined,
+      },
+    ])
+  }
   const subjectIdsByPlan = new Map<number, number[]>()
   for (const row of planSubjects.rows) {
     const planId = Number(row.test_plan_id)
@@ -882,6 +968,7 @@ async function getTestWorkbench(userId: number) {
   return {
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
+      assigneeName: row.assignee_display_name || row.assignee_email || undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       canEdit: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
       canShare: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
@@ -891,8 +978,10 @@ async function getTestWorkbench(userId: number) {
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
       expectedResult: decryptText(row.expected_result),
+      events: eventsByBug.get(Number(row.id)) ?? [],
       id: Number(row.id),
       priority: row.priority,
+      reporterName: row.reporter_display_name || row.reporter_email || undefined,
       reporterUserId: row.reporter_user_id ? Number(row.reporter_user_id) : undefined,
       reproductionSteps: decryptText(row.reproduction_steps),
       severity: row.severity,
@@ -2595,13 +2684,28 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
       assigneeUserId,
     ],
   )
-  if (assigneeUserId && insertedBug.rows[0]) {
-    onTestBugAssigned({
+  if (insertedBug.rows[0]) {
+    const bugId = Number(insertedBug.rows[0].id)
+    await recordTestBugEvent({
       actorUserId: session.userId,
-      assigneeUserId,
-      assignmentKind: 'created',
-      bugId: Number(insertedBug.rows[0].id),
+      bugId,
+      eventType: 'created',
+      nextStatus: status,
     })
+    if (assigneeUserId) {
+      await recordTestBugEvent({
+        actorUserId: session.userId,
+        assigneeUserId,
+        bugId,
+        eventType: 'assigned',
+      })
+      onTestBugAssigned({
+        actorUserId: session.userId,
+        assigneeUserId,
+        assignmentKind: 'created',
+        bugId,
+      })
+    }
   }
   response.status(201).json(await getTestWorkbench(session.userId))
 }))
@@ -2698,6 +2802,12 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
     normalizedAssigneeUserId &&
     normalizedAssigneeUserId !== previousAssigneeUserId
   ) {
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      assigneeUserId: normalizedAssigneeUserId,
+      bugId,
+      eventType: 'assigned',
+    })
     onTestBugAssigned({
       actorUserId: session.userId,
       assigneeUserId: normalizedAssigneeUserId,
@@ -2705,9 +2815,18 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
       bugId,
     })
   }
+  if (status !== currentBug.status) {
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      bugId,
+      eventType: 'status_changed',
+      nextStatus: status,
+      previousStatus: currentBug.status,
+    })
+  }
   if (
     status !== currentBug.status &&
-    (status === 'pending_verification' || status === 'reopened')
+    (status === 'pending_verification' || (status === 'pending_confirmation' && currentBug.status !== 'new'))
   ) {
     onTestBugStatusChanged({
       actorUserId: session.userId,
@@ -2859,7 +2978,7 @@ async function getAssignedBugs(userId: number) {
     left join users reporter on reporter.id = b.reporter_user_id
     left join users assignee on assignee.id = b.assignee_user_id
     where (
-      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected', 'duplicate')
+      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
     ) or ${managedOrganizationReadScopeSql('space.organization_id')}
     order by b.updated_at desc, b.id desc
     `,
@@ -2887,7 +3006,7 @@ async function getAssignedBugs(userId: number) {
     join test_spaces space on space.id = b.test_space_id
     left join users u on u.id = c.author_user_id
     where (
-      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected', 'duplicate')
+      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
     ) or ${managedOrganizationReadScopeSql('space.organization_id')}
     order by c.created_at, c.id
     `,
@@ -2911,6 +3030,53 @@ async function getAssignedBugs(userId: number) {
         id: Number(row.id),
         kind: row.kind === 'transfer' ? 'transfer' : (row.kind === 'reject' ? 'reject' : 'comment'),
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
+      },
+    ])
+  }
+  const events = await query<{
+    actor_display_name: string | null
+    actor_email: string | null
+    actor_user_id: string | null
+    assignee_display_name: string | null
+    assignee_email: string | null
+    assignee_user_id: string | null
+    created_at: Date
+    event_type: string
+    id: string
+    next_status: string | null
+    previous_status: string | null
+    test_bug_id: string
+  }>(
+    `
+    select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
+           assignee.display_name as assignee_display_name, assignee.email as assignee_email
+    from test_bug_events e
+    join test_bugs b on b.id = e.test_bug_id
+    join test_spaces space on space.id = b.test_space_id
+    left join users actor on actor.id = e.actor_user_id
+    left join users assignee on assignee.id = e.assignee_user_id
+    where (
+      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
+    ) or ${managedOrganizationReadScopeSql('space.organization_id')}
+    order by e.created_at, e.id
+    `,
+    [userId],
+  )
+  const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
+  for (const row of events.rows) {
+    const bugId = Number(row.test_bug_id)
+    eventsByBug.set(bugId, [
+      ...(eventsByBug.get(bugId) ?? []),
+      {
+        actorName: row.actor_display_name || row.actor_email || '未知用户',
+        actorUserId: row.actor_user_id ? Number(row.actor_user_id) : undefined,
+        assigneeName: row.assignee_display_name || row.assignee_email || undefined,
+        assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+        createdAt: row.created_at.toISOString(),
+        eventType: row.event_type,
+        id: Number(row.id),
+        nextStatus: row.next_status ?? undefined,
+        previousStatus: row.previous_status ?? undefined,
       },
     ])
   }
@@ -2988,11 +3154,12 @@ async function getAssignedBugs(userId: number) {
         !row.assignee_user_id && row.organization_admin_access
       )) &&
         Boolean(row.organization_id) &&
-        !['closed', 'rejected', 'duplicate'].includes(row.status),
+        !['closed', 'rejected'].includes(row.status),
       comments: commentsByBug.get(Number(row.id)) ?? [],
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
       expectedResult: decryptText(row.expected_result),
+      events: eventsByBug.get(Number(row.id)) ?? [],
       id: Number(row.id),
       organizationMembers: row.organization_id
         ? membersByOrganization.get(Number(row.organization_id)) ?? []
@@ -3159,7 +3326,7 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
     if (!bug.organization_id) {
       throw Object.assign(new Error('Only organization Bugs can be transferred'), { status: 409 })
     }
-    if (['closed', 'rejected', 'duplicate'].includes(bug.status)) {
+    if (['closed', 'rejected'].includes(bug.status)) {
       throw Object.assign(new Error('Terminal Bugs cannot be transferred'), { status: 409 })
     }
 
@@ -3190,6 +3357,19 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
        where id = $2`,
       [assigneeUserId, bugId],
     )
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      assigneeUserId,
+      bugId,
+      eventType: 'transferred',
+    }, client)
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      bugId,
+      eventType: 'status_changed',
+      nextStatus: 'pending_confirmation',
+      previousStatus: bug.status,
+    }, client)
     if (!assigningUnassignedBug) {
       const previousAssigneeName = bug.assignee_display_name || bug.assignee_email || '未知成员'
       const nextAssigneeName = nextAssignee.display_name || nextAssignee.email
@@ -3250,6 +3430,13 @@ router.post('/test-bugs/:bugId/assigned/reject', asyncRoute(async (request, resp
        where id = $1 and assignee_user_id = $2`,
       [bugId, session.userId],
     )
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      bugId,
+      eventType: 'status_changed',
+      nextStatus: 'rejected',
+      previousStatus: bug.status,
+    }, client)
     const rejectComment = `驳回了该 Bug。\n\n驳回理由：${reason}`
     await client.query(
       `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
@@ -3291,7 +3478,14 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     bugId,
     session.userId,
   ])
-  if (request.body.status === 'pending_verification' || request.body.status === 'reopened') {
+  await recordTestBugEvent({
+    actorUserId: session.userId,
+    bugId,
+    eventType: 'status_changed',
+    nextStatus: request.body.status,
+    previousStatus: current.rows[0].status,
+  })
+  if (request.body.status === 'pending_verification') {
     onTestBugStatusChanged({
       actorUserId: session.userId,
       bugId,

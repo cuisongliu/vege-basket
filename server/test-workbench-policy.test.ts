@@ -24,7 +24,6 @@ const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.m
 
 test('developer bug transitions stop at pending verification', () => {
   assert.equal(canDeveloperSetBugStatus('assigned', 'in_progress'), true)
-  assert.equal(canDeveloperSetBugStatus('reopened', 'in_progress'), true)
   assert.equal(canDeveloperSetBugStatus('pending_confirmation', 'in_progress'), true)
   assert.equal(canDeveloperSetBugStatus('in_progress', 'pending_verification'), true)
   assert.equal(canDeveloperSetBugStatus('pending_verification', 'closed'), false)
@@ -35,18 +34,23 @@ test('developer bug transitions stop at pending verification', () => {
 test('developer can reject only Bugs that are not yet being fixed', () => {
   assert.equal(canDeveloperRejectBug('pending_confirmation'), true)
   assert.equal(canDeveloperRejectBug('assigned'), true)
-  assert.equal(canDeveloperRejectBug('reopened'), true)
   assert.equal(canDeveloperRejectBug('in_progress'), false)
   assert.equal(canDeveloperRejectBug('pending_verification'), false)
   assert.equal(canDeveloperRejectBug('rejected'), false)
   assert.equal(canDeveloperRejectBug('closed'), false)
-  assert.equal(canDeveloperRejectBug('duplicate'), false)
 })
 
 test('bug status and comment kind checks include pending confirmation and reject', () => {
-  assert.match(schemaSource, /update test_bugs[\s\S]*where status = 'confirmed'/u)
-  assert.match(schemaSource, /check \(status in \('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'\)\)/u)
+  assert.match(schemaSource, /update test_bugs[\s\S]*where status in \('confirmed', 'reopened'\)/u)
+  assert.match(schemaSource, /update test_bugs[\s\S]*where status = 'duplicate'/u)
+  assert.match(schemaSource, /check \(status in \('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected'\)\)/u)
   assert.match(schemaSource, /check \(kind in \('comment', 'transfer', 'reject'\)\)/u)
+})
+
+test('returning a Bug to pending confirmation keeps the status change notification', () => {
+  assert.match(testWorkbenchSource, /status === 'pending_verification' \|\| \(status === 'pending_confirmation' && currentBug\.status !== 'new'\)/u)
+  assert.match(testWorkbenchSource, /b\.status not in \('closed', 'rejected'\)/u)
+  assert.match(testWorkbenchSource, /!\[['"]closed['"], ['"]rejected['"]\]\.includes\(row\.status\)/u)
 })
 
 test('assigned Bugs start in pending confirmation and reject writes a system comment', () => {
@@ -64,11 +68,54 @@ test('assigned Bugs start in pending confirmation and reject writes a system com
 
 test('developer workbench offers start and reject for pending confirmation Bugs', () => {
   assert.match(testWorkbenchClientSource, /pending_confirmation: '待确认'/u)
-  assert.match(testWorkbenchClientSource, /value !== 'pending_confirmation'/u)
   assert.match(testWorkbenchClientSource, /selected\.status === 'pending_confirmation'/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>驳回 Bug<\/DialogTitle>/u)
   assert.match(testWorkbenchClientSource, /rejectAssignedTestBug\(bug\.id, reason\)/u)
   assert.match(testWorkbenchClientSource, /驳回记录/u)
+})
+
+test('reopening a rejected or closed Bug is a dedicated button next to share that returns it to pending confirmation', () => {
+  assert.match(testWorkbenchClientSource, /\(bug\.status === 'rejected' \|\| bug\.status === 'closed'\) \? <Button/u)
+  assert.match(testWorkbenchClientSource, /onStatus\(bug, 'pending_confirmation'\)/u)
+  assert.match(testWorkbenchClientSource, /<ArrowCounterClockwise \/> 重新打开/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /\[['"]reopened['"], '重新打开'\]/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /if \(status === 'reopened'\)/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /updateTestBug\(selected\.testSpaceId, selected\.id, \{ status: 'pending_confirmation' \}\)/u)
+})
+
+test('Bug timeline records creation, assignment, transfer and status changes without comments', () => {
+  assert.match(schemaSource, /create table if not exists test_bug_events/u)
+  assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'status_changed'\)\)/u)
+  assert.match(schemaSource, /create index if not exists idx_test_bug_events_bug/u)
+  assert.match(schemaSource, /on test_bug_events\(test_bug_id, created_at, id\)/u)
+
+  assert.match(testWorkbenchSource, /async function recordTestBugEvent\(/u)
+  assert.match(testWorkbenchSource, /insert into test_bug_events/u)
+  assert.match(testWorkbenchSource, /eventType: 'created'/u)
+  assert.match(testWorkbenchSource, /eventType: 'assigned'/u)
+  assert.match(testWorkbenchSource, /eventType: 'transferred'/u)
+  assert.match(testWorkbenchSource, /eventType: 'status_changed'/u)
+  assert.match(testWorkbenchSource, /events: eventsByBug\.get\(Number\(row\.id\)\) \?\? \[\]/u)
+  assert.match(testWorkbenchSource, /reporter\.display_name as reporter_display_name/u)
+  assert.match(testWorkbenchSource, /reporterName: row\.reporter_display_name \|\| row\.reporter_email \|\| undefined/u)
+  assert.match(testWorkbenchSource, /assigneeName: row\.assignee_display_name \|\| row\.assignee_email \|\| undefined/u)
+})
+
+test('Bug detail offers an icon-only timeline button that opens the lifecycle dialog', () => {
+  assert.match(testWorkbenchClientSource, /aria-label="时间线"/u)
+  assert.match(testWorkbenchClientSource, /<Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick=\{\(\) => setTimelineOpen\(true\)\}><Clock \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /function BugTimelineDialog/u)
+  assert.match(testWorkbenchClientSource, /<DialogTitle>Bug 时间线<\/DialogTitle>/u)
+  assert.match(testWorkbenchClientSource, /eventType === 'created' \? \(/u)
+  assert.match(testWorkbenchClientSource, /创建了 Bug/u)
+  assert.match(testWorkbenchClientSource, /指派给 \{event\.assigneeName \?\? '未分配'\}/u)
+  assert.match(testWorkbenchClientSource, /转移给 \{event\.assigneeName \?\? '未分配'\}/u)
+  assert.match(testWorkbenchClientSource, /状态从「\{event\.previousStatus \? bugStatusLabel\[event\.previousStatus\] : '未知'\}」改为「\{event\.nextStatus \? bugStatusLabel\[event\.nextStatus\] : '未知'\}」/u)
+  assert.match(testWorkbenchClientSource, /hasCreatedEvent = bug\.events\.some\(\(event\) => event\.eventType === 'created'\)/u)
+  assert.match(testWorkbenchClientSource, /comment\.kind === 'reject' \|\| comment\.kind === 'transfer'/u)
+  assert.match(testWorkbenchClientSource, /eventType: comment\.kind === 'reject' \? 'rejected' as const : 'transferred' as const/u)
+  assert.match(testWorkbenchClientSource, /转移给「\(\[\^」\]\+\)」/u)
+  assert.match(testWorkbenchClientSource, /驳回了该 Bug/u)
 })
 
 test('assigned Bug selection keeps the current item when parent callbacks refresh counts', () => {
@@ -86,6 +133,18 @@ test('test result and bug status guards reject unknown values', () => {
   assert.equal(isBugStatus('fixed'), false)
   assert.equal(isBugSeverity('major'), true)
   assert.equal(isBugSeverity('fixed'), false)
+})
+
+test('test workbench restores the last visited tab, space and selection after refresh', () => {
+  assert.match(testWorkbenchClientSource, /testWorkbenchViewStatePrefix = 'veges\.testWorkbench\.viewState\.v1'/u)
+  assert.match(testWorkbenchClientSource, /function readTestWorkbenchViewState/u)
+  assert.match(testWorkbenchClientSource, /function writeTestWorkbenchViewState/u)
+  assert.match(testWorkbenchClientSource, /const saved = readTestWorkbenchViewState\(currentUserId\)/u)
+  assert.match(testWorkbenchClientSource, /setSpaceId\(savedSpaceId \?\? result\.spaces\[0\]\?\.id\)/u)
+  assert.match(testWorkbenchClientSource, /setTab\(saved\?\.tab \?\? 'cases'\)/u)
+  assert.match(testWorkbenchClientSource, /viewStateReadyRef\.current = true/u)
+  assert.match(testWorkbenchClientSource, /if \(!viewStateReadyRef\.current\) return/u)
+  assert.match(testWorkbenchClientSource, /writeTestWorkbenchViewState\(currentUserId, \{/u)
 })
 
 test('only the Bug creator can edit Bug details', () => {

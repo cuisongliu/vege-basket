@@ -478,7 +478,7 @@ test('covers test-workbench Feishu private notification events', () => {
   assert.match(cardBranch, /const detail = candidate\.testCommentContent\s*\?\s*`\*\*\$\{isRejection \? '驳回理由' : '评论内容'\}\*\*\\n/)
   assert.doesNotMatch(cardBranch, /\\n\\n\*\*评论内容\*\*/)
   assert.match(cardBranch, /title: \{ content: `\$\{isRejection \? '⛔' : '🔔'\} \$\{activityTitle\}`,/)
-  assert.match(serverSource, /event\.nextStatus === 'reopened' \? '重新打开了你创建的 Bug' : '修复了你创建的 Bug，请验证'/)
+  assert.match(serverSource, /event\.nextStatus === 'pending_confirmation' \? '将 Bug 打回待确认' : '修复了你创建的 Bug，请验证'/)
   assert.doesNotMatch(serverSource, /退回了你创建的 Bug/)
 })
 

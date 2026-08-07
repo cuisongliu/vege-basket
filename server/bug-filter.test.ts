@@ -18,6 +18,7 @@ const baseBug: TestBug = {
   comments: [],
   createdAt: '2026-08-04T12:30:00.000Z',
   environment: 'Chrome 128',
+  events: [],
   expectedResult: '保存成功',
   id: 6,
   priority: 'high',
@@ -92,6 +93,21 @@ test('Bug status UI exposes one pending confirmation option and upgrades old fil
   assert.match(filterDialogSource, /\{ label: '待确认', value: 'new' \}/u)
   assert.doesNotMatch(filterDialogSource, /已确认/u)
   assert.doesNotMatch(filterDialogSource, /待确定/u)
+
+  const expectedStatusOrder = [
+    "{ label: '待确认', value: 'new' }",
+    "{ label: '待修复', value: 'assigned' }",
+    "{ label: '修复中', value: 'in_progress' }",
+    "{ label: '待验证', value: 'pending_verification' }",
+    "{ label: '已驳回', value: 'rejected' }",
+    "{ label: '已关闭', value: 'closed' }",
+  ]
+  let previousIndex = -1
+  for (const option of expectedStatusOrder) {
+    const index = filterDialogSource.indexOf(option)
+    assert.ok(index > previousIndex, `${option} should appear after the previous status option`)
+    previousIndex = index
+  }
 })
 
 test('bug filters distinguish unassigned and unplanned bugs', () => {

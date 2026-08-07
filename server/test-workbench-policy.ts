@@ -12,8 +12,6 @@ export const bugStatuses = [
   'pending_verification',
   'closed',
   'rejected',
-  'duplicate',
-  'reopened',
 ] as const
 
 export type TestCaseStatus = (typeof testCaseStatuses)[number]
@@ -100,12 +98,12 @@ export function canRemoveTestPlanCase(
 export function canDeveloperSetBugStatus(current: BugStatus, next: BugStatus) {
   if (current === next) return true
   if (next === 'in_progress') {
-    return current === 'pending_confirmation' || current === 'assigned' || current === 'reopened'
+    return current === 'pending_confirmation' || current === 'assigned'
   }
   if (next === 'pending_verification') return current === 'in_progress'
   return false
 }
 
 export function canDeveloperRejectBug(current: BugStatus) {
-  return current === 'pending_confirmation' || current === 'assigned' || current === 'reopened'
+  return current === 'pending_confirmation' || current === 'assigned'
 }

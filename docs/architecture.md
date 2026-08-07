@@ -316,6 +316,10 @@ The schema is normalized around these groups:
   the Bug to `rejected`, writes an immutable `reject` collaboration comment with the reason,
   and notifies the reporting test engineer by personal Feishu message (and the in-app
   feed); the project chat is never used for rejections.
+  `test_bug_events` records the Bug lifecycle for the detail-view timeline: creation,
+  assignment/transfer (with the involved assignee), and every status change (previous and
+  next status, acting user). Comments are intentionally excluded from the timeline; the
+  timeline falls back to the Bug row for creation when no event rows exist yet.
 - Package delivery: `project_package_events`, `project_package_groups`,
   `project_package_items`, `project_package_operations`,
   `project_package_operation_todos`, and `project_package_event_comments`.

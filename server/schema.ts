@@ -1676,7 +1676,7 @@ create table if not exists test_bugs (
     check (severity in ('blocker', 'critical', 'major', 'minor', 'trivial')),
   priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
   status text not null default 'new'
-    check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
+    check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected')),
   environment text not null default '',
   reproduction_steps text not null default '',
   expected_result text not null default '',
@@ -1712,11 +1712,15 @@ alter table test_bugs
 
 update test_bugs
 set status = 'pending_confirmation'
-where status = 'confirmed';
+where status in ('confirmed', 'reopened');
+
+update test_bugs
+set status = 'closed'
+where status = 'duplicate';
 
 alter table test_bugs
   add constraint test_bugs_status_check
-  check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'));
+  check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected'));
 
 create table if not exists test_bug_comments (
   id bigserial primary key,
@@ -1736,6 +1740,21 @@ alter table test_bug_comments
 alter table test_bug_comments
   add constraint test_bug_comments_kind_check
   check (kind in ('comment', 'transfer', 'reject'));
+
+create table if not exists test_bug_events (
+  id bigserial primary key,
+  test_bug_id bigint not null references test_bugs(id) on delete cascade,
+  event_type text not null
+    check (event_type in ('created', 'assigned', 'transferred', 'status_changed')),
+  actor_user_id bigint references users(id) on delete set null,
+  previous_status text,
+  next_status text,
+  assignee_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_test_bug_events_bug
+  on test_bug_events(test_bug_id, created_at, id);
 
 create table if not exists bug_share_links (
   id bigserial primary key,

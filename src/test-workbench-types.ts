@@ -15,8 +15,6 @@ export type BugStatus =
   | 'pending_verification'
   | 'closed'
   | 'rejected'
-  | 'duplicate'
-  | 'reopened'
 
 export type TestSpace = {
   accessLevel: 'owner' | 'editor' | 'viewer'
@@ -161,6 +159,18 @@ export type TestBugComment = {
   updatedAt: string
 }
 
+export type TestBugEvent = {
+  actorName?: string
+  actorUserId?: number
+  assigneeName?: string
+  assigneeUserId?: number
+  createdAt: string
+  eventType: 'created' | 'assigned' | 'transferred' | 'status_changed'
+  id: number
+  nextStatus?: BugStatus
+  previousStatus?: BugStatus
+}
+
 export type TestBug = {
   actualResult: string
   assigneeName?: string
@@ -174,6 +184,7 @@ export type TestBug = {
   createdAt: string
   environment: string
   expectedResult: string
+  events: TestBugEvent[]
   id: number
   organizationMembers?: Array<{ id: number; name: string }>
   priority: Priority

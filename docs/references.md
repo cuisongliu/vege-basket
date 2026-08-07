@@ -272,7 +272,14 @@ must remain bound to the authorized project ID.
   `DELETE .../plans/:planId` to delete the plan. Existing snapshots are not rewritten.
   Plan deletion keeps bugs and clears their plan and plan-case references.
 - Test result: `untested`, `passed`, `failed`, `blocked`, `skipped`.
-- Bug status: `new`, `confirmed`, `assigned`, `in_progress`, `pending_verification`, `closed`, `rejected`, `duplicate`, `reopened`.
+- Bug status: `new`, `pending_confirmation`, `assigned`, `in_progress`, `pending_verification`, `closed`, `rejected`.
+  Returning a Bug to `pending_confirmation` replaces the former `reopened` status, and marking a
+  duplicate Bug closes it instead of using a separate `duplicate` status.
+- Bug lifecycle events (`test_bug_events`): creation, assignment, transfer, and every status
+  change are appended with the acting user, previous/next status, and the involved assignee
+  (encrypted fields are not involved; comments are intentionally not recorded). The Bug detail
+  view exposes a timeline dialog built from these events; Bugs created before the table existed
+  fall back to a synthetic creation entry from the Bug row itself.
 - A Bug in an organization-owned test space may be assigned to any active organization
   member with the developer role. The developer does not receive test-space access and
   continues to read and update only Bugs assigned to that account. An organization

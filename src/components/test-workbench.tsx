@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type ReactNode } from 'react'
 import {
+  ArrowCounterClockwise,
   ArrowLeft,
   ArrowsLeftRight,
   Bell,
@@ -11,6 +12,7 @@ import {
   CaretRight,
   CheckCircle,
   ClipboardText,
+  Clock,
   CopySimple,
   DownloadSimple,
   FileCsv,
@@ -119,6 +121,7 @@ import type {
   BugStatus,
   TestBug,
   TestBugComment,
+  TestBugEvent,
   TestCase,
   TestCaseType,
   TestCaseImportPreview,
@@ -185,18 +188,22 @@ const planStatusLabel: Record<TestPlan['status'], string> = {
   in_progress: '执行中',
 }
 const bugStatusLabel: Record<BugStatus, string> = {
-  assigned: '待修复',
-  closed: '已关闭',
-  duplicate: '重复 Bug',
-  in_progress: '修复中',
   new: '待确认',
   pending_confirmation: '待确认',
+  assigned: '待修复',
+  in_progress: '修复中',
   pending_verification: '待验证',
-  rejected: '已拒绝',
-  reopened: '重新打开',
+  rejected: '已驳回',
+  closed: '已关闭',
 }
-const bugStatusOptions = (Object.entries(bugStatusLabel) as Array<[BugStatus, string]>)
-  .filter(([value]) => value !== 'pending_confirmation')
+const bugStatusOptions: Array<[BugStatus, string]> = [
+  ['new', '待确认'],
+  ['assigned', '待修复'],
+  ['in_progress', '修复中'],
+  ['pending_verification', '待验证'],
+  ['rejected', '已驳回'],
+  ['closed', '已关闭'],
+]
 
 function visibleBugStatus(status: BugStatus) {
   return status === 'pending_confirmation' ? 'new' : status
@@ -325,6 +332,54 @@ function readAssignedBugSpaceId(currentUserId?: number) {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
+const testWorkbenchViewStatePrefix = 'veges.testWorkbench.viewState.v1'
+
+type TestWorkbenchViewState = {
+  selectedBugId?: number
+  selectedCaseId?: number
+  selectedPlanId?: number
+  spaceId?: number
+  subjectId?: number
+  tab: WorkbenchTab
+}
+
+function getTestWorkbenchViewStateStorageKey(currentUserId?: number) {
+  return currentUserId ? `${testWorkbenchViewStatePrefix}.${currentUserId}` : ''
+}
+
+function readTestWorkbenchViewState(currentUserId?: number): TestWorkbenchViewState | undefined {
+  const storageKey = getTestWorkbenchViewStateStorageKey(currentUserId)
+  if (typeof window === 'undefined' || !storageKey) return undefined
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? 'null') as unknown
+    if (!parsed || typeof parsed !== 'object') return undefined
+    const state = parsed as Partial<TestWorkbenchViewState>
+    if (
+      !state.tab ||
+      !(['cases', 'plans', 'bugs', 'weekly_report', 'notifications'] as WorkbenchTab[]).includes(state.tab)
+    ) return undefined
+    const positiveNumber = (value: unknown) => (
+      typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
+    )
+    return {
+      tab: state.tab,
+      spaceId: positiveNumber(state.spaceId),
+      subjectId: positiveNumber(state.subjectId),
+      selectedCaseId: positiveNumber(state.selectedCaseId),
+      selectedPlanId: positiveNumber(state.selectedPlanId),
+      selectedBugId: positiveNumber(state.selectedBugId),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function writeTestWorkbenchViewState(currentUserId: number | undefined, state: TestWorkbenchViewState) {
+  const storageKey = getTestWorkbenchViewStateStorageKey(currentUserId)
+  if (typeof window === 'undefined' || !storageKey) return
+  window.localStorage.setItem(storageKey, JSON.stringify(state))
+}
+
 function getTestWorkbenchNotificationKey(notification: TestWorkbenchNotification) {
   return `${notification.kind}:${notification.sourceId}:${notification.createdAt}`
 }
@@ -410,6 +465,7 @@ export function TestWorkbench({
   const [readNotificationKeySet, setReadNotificationKeySet] = useState<Set<string>>(() => loadReadNotificationKeys(currentUserId))
   const acceptingInviteTokenRef = useRef('')
   const refreshInFlightRef = useRef(false)
+  const viewStateReadyRef = useRef(false)
 
   useEffect(() => {
     setSeenBugCommentIds(readSeenBugCommentIds(currentUserId))
@@ -422,7 +478,35 @@ export function TestWorkbench({
       .then((result) => {
         if (cancelled) return
         setData(result)
-        setSpaceId(result.spaces[0]?.id)
+        const saved = readTestWorkbenchViewState(currentUserId)
+        const savedSpaceId = saved?.spaceId && result.spaces.some((space) => space.id === saved.spaceId)
+          ? saved.spaceId
+          : undefined
+        setSpaceId(savedSpaceId ?? result.spaces[0]?.id)
+        if (saved && savedSpaceId) {
+          if (saved.subjectId != null && result.subjects.some((subject) => (
+            subject.id === saved.subjectId && subject.testSpaceId === savedSpaceId
+          ))) {
+            setSubjectId(saved.subjectId)
+          }
+          if (saved.selectedCaseId != null && result.cases.some((item) => (
+            item.id === saved.selectedCaseId && item.testSpaceId === savedSpaceId
+          ))) {
+            setSelectedCaseId(saved.selectedCaseId)
+          }
+          if (saved.selectedPlanId != null && result.plans.some((plan) => (
+            plan.id === saved.selectedPlanId && plan.testSpaceId === savedSpaceId
+          ))) {
+            setSelectedPlanId(saved.selectedPlanId)
+          }
+          if (saved.selectedBugId != null && result.bugs.some((bug) => (
+            bug.id === saved.selectedBugId && bug.testSpaceId === savedSpaceId
+          ))) {
+            setSelectedBugId(saved.selectedBugId)
+          }
+        }
+        setTab(saved?.tab ?? 'cases')
+        viewStateReadyRef.current = true
         setLoading(false)
       })
       .catch((loadError) => {
@@ -440,7 +524,19 @@ export function TestWorkbench({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [currentUserId])
+
+  useEffect(() => {
+    if (!viewStateReadyRef.current) return
+    writeTestWorkbenchViewState(currentUserId, {
+      tab,
+      spaceId,
+      subjectId,
+      selectedCaseId,
+      selectedPlanId,
+      selectedBugId,
+    })
+  }, [tab, spaceId, subjectId, selectedCaseId, selectedPlanId, selectedBugId, currentUserId])
 
   useEffect(() => {
     if (loading) return
@@ -576,7 +672,7 @@ export function TestWorkbench({
   const returnedBugs: BugReturnNotification[] = data.notifications.flatMap((notification) => {
     if (notification.kind !== 'test_bug_status_changed') return []
     const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
-    if (!bug || (bug.status !== 'pending_verification' && bug.status !== 'reopened')) return []
+    if (!bug || (bug.status !== 'pending_verification' && bug.status !== 'pending_confirmation')) return []
     return [{ bug, notification }]
   })
   const rejectedBugNotifications: BugReturnNotification[] = data.notifications.flatMap((notification) => {
@@ -590,7 +686,7 @@ export function TestWorkbench({
     for (const bug of data.bugs) {
       const comment = bug.comments.find((candidate) => candidate.id === notification.sourceId)
       if (!comment) continue
-      if (bug.status === 'closed' || bug.status === 'duplicate' || bug.status === 'rejected') return []
+      if (bug.status === 'closed' || bug.status === 'rejected') return []
       return [{ bug, comment, notification }]
     }
     return []
@@ -2014,8 +2110,9 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
 }) {
   const developers = users.filter((user) => user.roles.includes('developer'))
   const [shareOpen, setShareOpen] = useState(false)
+  const [timelineOpen, setTimelineOpen] = useState(false)
   return <>
-    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions">{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
+    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions"><Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick={() => setTimelineOpen(true)}><Clock /></Button>{(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
     <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
     <div className="test-detail-meta"><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
@@ -2028,7 +2125,73 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
       onUpdateComment={onUpdateComment}
     />
     <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
+    <BugTimelineDialog bug={bug} open={timelineOpen} onOpenChange={setTimelineOpen} />
   </>
+}
+
+function BugTimelineDialog({ bug, onOpenChange, open }: {
+  bug: TestBug
+  onOpenChange: (open: boolean) => void
+  open: boolean
+}) {
+  const hasCreatedEvent = bug.events.some((event) => event.eventType === 'created')
+  const timeline: Array<{
+    actorName?: string
+    assigneeName?: string
+    createdAt: string
+    eventType: TestBugEvent['eventType'] | 'rejected'
+    id: number
+    nextStatus?: BugStatus
+    previousStatus?: BugStatus
+  }> = [
+    ...(hasCreatedEvent ? [] : [{ eventType: 'created' as const, actorName: bug.reporterName, createdAt: bug.createdAt, id: 0 }]),
+    ...bug.comments
+      .filter((comment) => comment.kind === 'reject' || comment.kind === 'transfer')
+      .map((comment) => ({
+        actorName: comment.authorName,
+        assigneeName: comment.kind === 'transfer'
+          ? (comment.content.match(/转移给「([^」]+)」/u)?.[1] ?? undefined)
+          : undefined,
+        createdAt: comment.createdAt,
+        eventType: comment.kind === 'reject' ? 'rejected' as const : 'transferred' as const,
+        id: -comment.id,
+      })),
+    ...bug.events,
+  ].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bug-timeline-dialog">
+        <DialogHeader>
+          <DialogTitle>Bug 时间线</DialogTitle>
+          <DialogDescription>BUG-{bug.id} · {bug.title}</DialogDescription>
+        </DialogHeader>
+        <div className="bug-timeline-list">
+          {timeline.length === 0 ? (
+            <div className="bug-timeline-empty">暂无记录</div>
+          ) : timeline.map((event) => (
+            <div className="bug-timeline-item" key={event.id}>
+              <span className="bug-timeline-icon">{event.eventType === 'created' ? <Plus size={15} /> : event.eventType === 'assigned' ? <UserPlus size={15} /> : event.eventType === 'transferred' ? <ArrowsLeftRight size={15} /> : event.eventType === 'rejected' ? <XCircle size={15} /> : <ArrowCounterClockwise size={15} />}</span>
+              <div className="bug-timeline-content">
+                {event.eventType === 'created' ? (
+                  <strong>创建了 Bug</strong>
+                ) : event.eventType === 'assigned' ? (
+                  <strong>指派给 {event.assigneeName ?? '未分配'}</strong>
+                ) : event.eventType === 'transferred' ? (
+                  <strong>转移给 {event.assigneeName ?? '未分配'}</strong>
+                ) : event.eventType === 'rejected' ? (
+                  <strong>驳回了该 Bug</strong>
+                ) : (
+                  <strong>状态从「{event.previousStatus ? bugStatusLabel[event.previousStatus] : '未知'}」改为「{event.nextStatus ? bugStatusLabel[event.nextStatus] : '未知'}」</strong>
+                )}
+                <span>{event.actorName ?? '未知用户'}</span>
+              </div>
+              <time>{formatTimestamp(event.createdAt)}</time>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function BugCommentsSection({ bug, busy, currentUserId, mentionMembers, onComment, onDeleteComment, onUpdateComment, placeholder }: {
@@ -4114,12 +4277,12 @@ export function AssignedTestBugs({
                       </Button>
                     ) : null}
                     {selected.canManage && (
-                      selected.status === 'pending_confirmation' || selected.status === 'assigned' || selected.status === 'reopened'
+                      selected.status === 'pending_confirmation' || selected.status === 'assigned'
                     ) ? (
                       <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'in_progress'))}>开始修复</Button>
                     ) : null}
                     {selected.canManage && (
-                      selected.status === 'pending_confirmation' || selected.status === 'assigned' || selected.status === 'reopened'
+                      selected.status === 'pending_confirmation' || selected.status === 'assigned'
                     ) ? (
                       <Button
                         className="test-bug-reject-button"

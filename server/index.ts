@@ -7797,12 +7797,10 @@ function bugStatusLabel(status: string) {
   const labels: Record<string, string> = {
     assigned: '已指派',
     closed: '已关闭',
-    duplicate: '重复 Bug',
     in_progress: '处理中',
     new: '待处理',
     pending_verification: '待验证',
-    reopened: '重新打开',
-    rejected: '已拒绝',
+    rejected: '已驳回',
   }
   return labels[status] ?? status
 }
@@ -7862,7 +7860,7 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
     ? testWorkbenchNotificationCandidate(
         'test_bug_status_changed',
         row,
-        event.nextStatus === 'reopened' ? '重新打开了你创建的 Bug' : '修复了你创建的 Bug，请验证',
+        event.nextStatus === 'pending_confirmation' ? '将 Bug 打回待确认' : '修复了你创建的 Bug，请验证',
       )
     : null
 }
