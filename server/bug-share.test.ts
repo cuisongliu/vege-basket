@@ -52,6 +52,8 @@ test('Bug share view renders Markdown screenshots as thumbnails with an image pr
   assert.match(bugShareViewSource, /className="bug-share-image-preview"/u)
   assert.match(bugShareViewSource, /图片预览/u)
   assert.match(bugShareViewSource, /target\.currentSrc \|\| target\.src/u)
+  assert.match(bugShareViewSource, /bug-share-comment-markdown/u)
+  assert.match(bugShareViewSource, /<MarkdownPreview content=\{item\.content\} \/>/u)
   assert.match(bugShareViewSource, /members=\{data\.mentionableMembers\}/u)
   assert.match(bugShareViewSource, /输入 @ 可提及组织成员/u)
   assert.match(bugShareSource, /resolveBugShareMentionUserIds/u)

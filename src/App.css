@@ -13471,7 +13471,9 @@ textarea:focus {
 .bug-share-comments article { border-bottom: 1px solid #edf1ef; padding: 16px 0; }
 .bug-share-comments article strong { margin-right: 10px; }
 .bug-share-comments article time { color: #7b8c87; font-size: 12px; }
-.bug-share-comments article p { margin: 8px 0 0; white-space: pre-wrap; line-height: 1.6; }
+.bug-share-comments article .bug-share-comment-markdown { margin-top: 8px; }
+.bug-share-comments article .bug-share-comment-markdown .markdown-preview { gap: 8px; }
+.bug-share-comments article .bug-share-comment-markdown .markdown-preview p { margin: 0; white-space: pre-wrap; line-height: 1.6; }
 .bug-share-comments form { display: flex; align-items: flex-end; gap: 12px; margin-top: 20px; }
 .bug-share-comments .mention-input-shell { flex: 1; min-width: 0; }
 .bug-share-comments textarea { min-height: 96px; flex: 1; resize: vertical; border: 1px solid #d4dfdb; border-radius: 8px; padding: 10px 12px; font: inherit; }

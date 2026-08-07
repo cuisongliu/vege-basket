@@ -112,7 +112,15 @@ export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenA
         <div className="bug-share-badges"><span>{statusLabels[data.status] || data.status}</span><span>{severityLabels[data.severity] || data.severity}</span><span>{priorityLabels[data.priority] || data.priority}</span>{data.projectName ? <span>{data.projectName}</span> : null}</div>
         <div className="bug-share-meta"><span>测试对象：{data.testSubjectName}</span>{data.testPlanName ? <span>测试计划：{data.testPlanName}</span> : null}{data.assigneeName ? <span>负责人：{data.assigneeName}</span> : null}<span>更新时间：{new Date(data.updatedAt).toLocaleString()}</span></div>
         <div className="bug-share-fields"><ShareText label="环境" onPreviewImage={setPreviewImage} value={data.environment} /><ShareText label="复现步骤" onPreviewImage={setPreviewImage} value={data.reproductionSteps} /><ShareText label="预期结果" onPreviewImage={setPreviewImage} value={data.expectedResult} /><ShareText label="实际结果" onPreviewImage={setPreviewImage} value={data.actualResult} /></div>
-        <section className="bug-share-comments"><div className="bug-share-section-title"><h2>评论</h2><span><ChatCircleDots /> {data.comments.length}</span></div>{data.comments.map((item) => <article key={item.id}><strong>{item.authorName}</strong><time>{new Date(item.createdAt).toLocaleString()}</time><p>{item.content}</p></article>)}{authUser ? <form onSubmit={submitComment}><MentionTextarea aria-label="评论内容" members={data.mentionableMembers} maxLength={5000} onChange={setComment} placeholder="写下你的评论，输入 @ 可提及组织成员。" value={comment} /><Button disabled={busy || !comment.trim()}>发表评论</Button></form> : <div className="bug-share-login-prompt"><span>登录后可以评论这个 Bug。</span><Button className="bug-share-login-button" variant="default" onClick={onLogin}><SignIn /> 登录</Button></div>}</section>
+        <section className="bug-share-comments"><div className="bug-share-section-title"><h2>评论</h2><span><ChatCircleDots /> {data.comments.length}</span></div>{data.comments.map((item) => <article key={item.id}><strong>{item.authorName}</strong><time>{new Date(item.createdAt).toLocaleString()}</time><div
+          className="bug-share-comment-markdown bug-share-markdown"
+          onClick={(event) => {
+            const target = event.target
+            if (target instanceof HTMLImageElement) {
+              setPreviewImage({ alt: target.alt || '图片', src: target.currentSrc || target.src })
+            }
+          }}
+        ><MarkdownPreview content={item.content} /></div></article>)}{authUser ? <form onSubmit={submitComment}><MentionTextarea aria-label="评论内容" members={data.mentionableMembers} maxLength={5000} onChange={setComment} placeholder="写下你的评论，输入 @ 可提及组织成员。" value={comment} /><Button disabled={busy || !comment.trim()}>发表评论</Button></form> : <div className="bug-share-login-prompt"><span>登录后可以评论这个 Bug。</span><Button className="bug-share-login-button" variant="default" onClick={onLogin}><SignIn /> 登录</Button></div>}</section>
       </> : null}
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => { if (!open) setPreviewImage(null) }}>
         <DialogContent className="bug-share-image-preview-dialog" showCloseButton={false}>
