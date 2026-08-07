@@ -9,7 +9,6 @@ export type TestResult = 'untested' | 'passed' | 'failed' | 'blocked' | 'skipped
 export type BugSeverity = 'blocker' | 'critical' | 'major' | 'minor' | 'trivial'
 export type BugStatus =
   | 'new'
-  | 'confirmed'
   | 'pending_confirmation'
   | 'assigned'
   | 'in_progress'

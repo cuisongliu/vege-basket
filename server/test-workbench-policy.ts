@@ -6,7 +6,6 @@ export const testSpaceMembershipStatuses = ['pending', 'active', 'declined'] as 
 export const testSpaceInviteExpiryOptions = [10, 30, 60, 240, 1440] as const
 export const bugStatuses = [
   'new',
-  'confirmed',
   'pending_confirmation',
   'assigned',
   'in_progress',

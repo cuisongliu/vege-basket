@@ -187,7 +187,6 @@ const planStatusLabel: Record<TestPlan['status'], string> = {
 const bugStatusLabel: Record<BugStatus, string> = {
   assigned: '待修复',
   closed: '已关闭',
-  confirmed: '已确认',
   duplicate: '重复 Bug',
   in_progress: '修复中',
   new: '待确认',
@@ -3864,6 +3863,11 @@ export function AssignedTestBugs({
   const [selectedSpaceId, setSelectedSpaceId] = useState<number>()
   const [searchQuery, setSearchQuery] = useState('')
   const refreshInFlightRef = useRef(false)
+  const onBugsChangeRef = useRef(onBugsChange)
+
+  useEffect(() => {
+    onBugsChangeRef.current = onBugsChange
+  }, [onBugsChange])
 
   const spaceOptions = useMemo(() => uniqueBugFilterOptions(bugs, (bug) => bug.testSpaceName
     ? { label: bug.testSpaceName, value: String(bug.testSpaceId) }
@@ -3881,7 +3885,7 @@ export function AssignedTestBugs({
       .then((result) => {
         setBugs(result.bugs)
         setMentionMembers(result.members ?? [])
-        onBugsChange?.(result.bugs)
+        onBugsChangeRef.current?.(result.bugs)
         const rememberedSpaceId = readAssignedBugSpaceId(currentUserId)
         const initialBug = initialBugId ? result.bugs.find((bug) => bug.id === initialBugId) : undefined
         const nextSpaceId = initialBug?.testSpaceId
@@ -3896,7 +3900,7 @@ export function AssignedTestBugs({
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Bug 加载失败。'))
       .finally(() => setLoading(false))
-  }, [currentUserId, initialBugId, onBugsChange])
+  }, [currentUserId, initialBugId])
 
   useEffect(() => {
     let active = true
@@ -3909,7 +3913,7 @@ export function AssignedTestBugs({
           if (!active) return
           setBugs(result.bugs)
           setMentionMembers(result.members ?? [])
-          onBugsChange?.(result.bugs)
+          onBugsChangeRef.current?.(result.bugs)
           setSelectedSpaceId((current) => {
             if (current && result.bugs.some((bug) => bug.testSpaceId === current)) return current
             const remembered = readAssignedBugSpaceId(currentUserId)
@@ -3937,7 +3941,7 @@ export function AssignedTestBugs({
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [currentUserId, onBugsChange])
+  }, [currentUserId])
 
   const spaceBugs = useMemo(() => bugs.filter((bug) => bug.testSpaceId === selectedSpaceId), [bugs, selectedSpaceId])
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase('zh-CN')
@@ -4005,7 +4009,7 @@ export function AssignedTestBugs({
           ? current
           : result.bugs[0]?.id
       ))
-      onBugsChange?.(result.bugs)
+      onBugsChangeRef.current?.(result.bugs)
       return true
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : '操作失败。')

@@ -9,6 +9,10 @@ const bugShareDialogSource = readFileSync(
   new URL('../src/components/bug-share-dialog.tsx', import.meta.url),
   'utf8',
 )
+const bugShareViewSource = readFileSync(
+  new URL('../src/components/bug-share-view.tsx', import.meta.url),
+  'utf8',
+)
 
 test('Bug share tokens are deterministic one-way digests', () => {
   const token = 'share-token-for-test'
@@ -38,4 +42,18 @@ test('Bug share dialog ignores a stale link request after its Bug or open state 
   assert.match(bugShareDialogSource, /const requestIdRef = useRef\(0\)/u)
   assert.match(bugShareDialogSource, /requestIdRef\.current !== requestId/u)
   assert.match(bugShareDialogSource, /requestIdRef\.current \+= 1/u)
+})
+
+test('Bug share view renders Markdown screenshots as thumbnails with an image preview dialog', () => {
+  assert.match(bugShareViewSource, /import \{ MarkdownPreview \} from '\.\/markdown-preview'/u)
+  assert.match(bugShareViewSource, /import \{ MentionTextarea \} from '\.\/mention-textarea'/u)
+  assert.match(bugShareViewSource, /className="bug-share-markdown"/u)
+  assert.match(bugShareViewSource, /target instanceof HTMLImageElement/u)
+  assert.match(bugShareViewSource, /className="bug-share-image-preview"/u)
+  assert.match(bugShareViewSource, /图片预览/u)
+  assert.match(bugShareViewSource, /target\.currentSrc \|\| target\.src/u)
+  assert.match(bugShareViewSource, /members=\{data\.mentionableMembers\}/u)
+  assert.match(bugShareViewSource, /输入 @ 可提及组织成员/u)
+  assert.match(bugShareSource, /resolveBugShareMentionUserIds/u)
+  assert.match(bugShareSource, /mentionableMembers/u)
 })

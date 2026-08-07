@@ -44,7 +44,8 @@ test('developer can reject only Bugs that are not yet being fixed', () => {
 })
 
 test('bug status and comment kind checks include pending confirmation and reject', () => {
-  assert.match(schemaSource, /check \(status in \('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'\)\)/u)
+  assert.match(schemaSource, /update test_bugs[\s\S]*where status = 'confirmed'/u)
+  assert.match(schemaSource, /check \(status in \('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'\)\)/u)
   assert.match(schemaSource, /check \(kind in \('comment', 'transfer', 'reject'\)\)/u)
 })
 
@@ -70,10 +71,18 @@ test('developer workbench offers start and reject for pending confirmation Bugs'
   assert.match(testWorkbenchClientSource, /驳回记录/u)
 })
 
+test('assigned Bug selection keeps the current item when parent callbacks refresh counts', () => {
+  assert.match(testWorkbenchClientSource, /const onBugsChangeRef = useRef\(onBugsChange\)/u)
+  assert.match(testWorkbenchClientSource, /onBugsChangeRef\.current\?\.\(result\.bugs\)/u)
+  assert.match(testWorkbenchClientSource, /useEffect\(\(\) => \{\s+onBugsChangeRef\.current = onBugsChange\s+\}, \[onBugsChange\]\)/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /useEffect\(\(\) => \{\s+fetchAssignedTestBugs\(\)[\s\S]*\}, \[currentUserId, initialBugId, onBugsChange\]\)/u)
+})
+
 test('test result and bug status guards reject unknown values', () => {
   assert.equal(isTestResult('blocked'), true)
   assert.equal(isTestResult('success'), false)
   assert.equal(isBugStatus('pending_verification'), true)
+  assert.equal(isBugStatus('confirmed'), false)
   assert.equal(isBugStatus('fixed'), false)
   assert.equal(isBugSeverity('major'), true)
   assert.equal(isBugSeverity('fixed'), false)

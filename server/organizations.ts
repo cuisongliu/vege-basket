@@ -1566,7 +1566,7 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       )
       await client.query(
         `update test_bugs b set assignee_user_id = null,
-           status = case when b.status in ('assigned', 'in_progress', 'reopened') then 'confirmed' else b.status end,
+           status = case when b.status in ('assigned', 'in_progress', 'reopened', 'confirmed') then 'pending_confirmation' else b.status end,
            updated_at = now()
          from test_spaces s
          where s.id = b.test_space_id and s.organization_id = $2 and b.assignee_user_id = $1

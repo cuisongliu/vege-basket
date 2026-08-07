@@ -5,6 +5,11 @@ export type BugShareComment = {
   id: number
 }
 
+export type BugShareMentionableMember = {
+  id: number
+  name: string
+}
+
 export type BugShareView = {
   assigneeName: string | null
   bugId: number
@@ -13,6 +18,7 @@ export type BugShareView = {
   environment: string
   expectedResult: string
   actualResult: string
+  mentionableMembers: BugShareMentionableMember[]
   priority: string
   projectName: string | null
   reproductionSteps: string

@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Bug, ChatCircleDots, SignIn, SpinnerGap } from '@phosphor-icons/react'
+import { ArrowLeft, Bug, ChatCircleDots, SignIn, SpinnerGap, X } from '@phosphor-icons/react'
 import { addBugShareComment, fetchBugShare } from '../bug-share-api'
 import type { BugShareView as BugShareData } from '../bug-share-types'
 import type { AuthUser } from '../api'
 import { Button } from './ui/button'
+import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
+import { MentionTextarea } from './mention-textarea'
+import { MarkdownPreview } from './markdown-preview'
 
 const statusLabels: Record<string, string> = {
   assigned: '已分配',
   closed: '已关闭',
-  confirmed: '已确认',
   duplicate: '重复 Bug',
   in_progress: '处理中',
   new: '新建',
@@ -26,8 +28,26 @@ const severityLabels: Record<string, string> = {
 }
 const priorityLabels: Record<string, string> = { high: '高优先级', low: '低优先级', medium: '中优先级' }
 
-function ShareText({ label, value }: { label: string; value: string }) {
-  return <section className="bug-share-field"><h3>{label}</h3><div>{value || '未填写'}</div></section>
+function ShareText({ label, onPreviewImage, value }: { label: string; onPreviewImage: (image: { alt: string; src: string }) => void; value: string }) {
+  const hasContent = Boolean(value.trim())
+  return (
+    <section className="bug-share-field">
+      <h3>{label}</h3>
+      {hasContent ? (
+        <div
+          className="bug-share-markdown"
+          onClick={(event) => {
+            const target = event.target
+            if (target instanceof HTMLImageElement) {
+              onPreviewImage({ alt: target.alt || '图片', src: target.currentSrc || target.src })
+            }
+          }}
+        >
+          <MarkdownPreview content={value} />
+        </div>
+      ) : <div className="bug-share-plain-text">未填写</div>}
+    </section>
+  )
 }
 
 export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenAssignedBug, token }: {
@@ -42,6 +62,7 @@ export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenA
   const [error, setError] = useState('')
   const [comment, setComment] = useState('')
   const [busy, setBusy] = useState(false)
+  const [previewImage, setPreviewImage] = useState<{ alt: string; src: string } | null>(null)
   const redirected = useRef(false)
 
   useEffect(() => {
@@ -90,9 +111,18 @@ export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenA
       {data ? <>
         <div className="bug-share-badges"><span>{statusLabels[data.status] || data.status}</span><span>{severityLabels[data.severity] || data.severity}</span><span>{priorityLabels[data.priority] || data.priority}</span>{data.projectName ? <span>{data.projectName}</span> : null}</div>
         <div className="bug-share-meta"><span>测试对象：{data.testSubjectName}</span>{data.testPlanName ? <span>测试计划：{data.testPlanName}</span> : null}{data.assigneeName ? <span>负责人：{data.assigneeName}</span> : null}<span>更新时间：{new Date(data.updatedAt).toLocaleString()}</span></div>
-        <div className="bug-share-fields"><ShareText label="环境" value={data.environment} /><ShareText label="复现步骤" value={data.reproductionSteps} /><ShareText label="预期结果" value={data.expectedResult} /><ShareText label="实际结果" value={data.actualResult} /></div>
-        <section className="bug-share-comments"><div className="bug-share-section-title"><h2>评论</h2><span><ChatCircleDots /> {data.comments.length}</span></div>{data.comments.map((item) => <article key={item.id}><strong>{item.authorName}</strong><time>{new Date(item.createdAt).toLocaleString()}</time><p>{item.content}</p></article>)}{authUser ? <form onSubmit={submitComment}><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下你的评论" maxLength={5000} /><Button disabled={busy || !comment.trim()}>发表评论</Button></form> : <div className="bug-share-login-prompt"><span>登录后可以评论这个 Bug。</span><Button className="bug-share-login-button" variant="default" onClick={onLogin}><SignIn /> 登录</Button></div>}</section>
+        <div className="bug-share-fields"><ShareText label="环境" onPreviewImage={setPreviewImage} value={data.environment} /><ShareText label="复现步骤" onPreviewImage={setPreviewImage} value={data.reproductionSteps} /><ShareText label="预期结果" onPreviewImage={setPreviewImage} value={data.expectedResult} /><ShareText label="实际结果" onPreviewImage={setPreviewImage} value={data.actualResult} /></div>
+        <section className="bug-share-comments"><div className="bug-share-section-title"><h2>评论</h2><span><ChatCircleDots /> {data.comments.length}</span></div>{data.comments.map((item) => <article key={item.id}><strong>{item.authorName}</strong><time>{new Date(item.createdAt).toLocaleString()}</time><p>{item.content}</p></article>)}{authUser ? <form onSubmit={submitComment}><MentionTextarea aria-label="评论内容" members={data.mentionableMembers} maxLength={5000} onChange={setComment} placeholder="写下你的评论，输入 @ 可提及组织成员。" value={comment} /><Button disabled={busy || !comment.trim()}>发表评论</Button></form> : <div className="bug-share-login-prompt"><span>登录后可以评论这个 Bug。</span><Button className="bug-share-login-button" variant="default" onClick={onLogin}><SignIn /> 登录</Button></div>}</section>
       </> : null}
+      <Dialog open={Boolean(previewImage)} onOpenChange={(open) => { if (!open) setPreviewImage(null) }}>
+        <DialogContent className="bug-share-image-preview-dialog" showCloseButton={false}>
+          <DialogTitle className="bug-share-image-preview-title">图片预览</DialogTitle>
+          {previewImage ? <div className="bug-share-image-preview-shell">
+            <img className="bug-share-image-preview" src={previewImage.src} alt={previewImage.alt} />
+            <button aria-label="关闭图片预览" className="bug-share-image-preview-close" type="button" onClick={() => setPreviewImage(null)}><X size={18} /></button>
+          </div> : null}
+        </DialogContent>
+      </Dialog>
     </div>
   </main>
 }

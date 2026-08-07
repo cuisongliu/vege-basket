@@ -31,6 +31,7 @@ const packageWorkbenchSource = readFileSync(
   new URL('../src/components/project-package-workbench.tsx', import.meta.url),
   'utf8',
 )
+const bugShareSource = readFileSync(new URL('./bug-share.ts', import.meta.url), 'utf8')
 
 test('notification center exposes a read-all endpoint without dismissing notifications', () => {
   const routeStart = serverSource.indexOf("app.patch('/api/notifications/read-all'")
@@ -694,4 +695,14 @@ test('notifies only mentioned users privately when a delivery event comment is a
   assert.match(testWorkbenchSource, /delivery\.kind = 'package_event_comment_added'/u)
   assert.match(testWorkbenchClientSource, />交付反馈<\/span>/u)
   assert.match(testWorkbenchClientSource, /在交付反馈中提到了你/u)
+})
+
+test('bug share comments reuse organization mentions and the test-bug notification hook', () => {
+  assert.match(bugShareSource, /organization_memberships membership/u)
+  assert.match(bugShareSource, /resolveBugShareMentionUserIds/u)
+  assert.match(testWorkbenchSource, /resolveBugShareMentionUserIds\(token, content\)/u)
+  assert.match(
+    testWorkbenchSource,
+    /onTestBugCommentAdded\(\{\s*actorUserId: session\.userId,\s*bugId: result\.bugId,\s*commentId: result\.commentId,\s*mentionedUserIds,\s*\}\)/u,
+  )
 })

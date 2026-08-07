@@ -86,7 +86,11 @@ test('Bug status UI exposes one pending confirmation option and upgrades old fil
   assert.equal(normalizeBugFilterCondition(
     condition('status', 'equals', 'pending_confirmation'),
   ).value, 'new')
+  assert.equal(normalizeBugFilterCondition(
+    condition('status', 'equals', 'confirmed'),
+  ).value, 'new')
   assert.match(filterDialogSource, /\{ label: '待确认', value: 'new' \}/u)
+  assert.doesNotMatch(filterDialogSource, /已确认/u)
   assert.doesNotMatch(filterDialogSource, /待确定/u)
 })
 

@@ -13433,7 +13433,37 @@ textarea:focus {
 .bug-share-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
 .bug-share-field { border-top: 1px solid #e4ebe8; padding-top: 14px; }
 .bug-share-field h3 { margin: 0 0 8px; font-size: 14px; color: #6d827b; }
-.bug-share-field div { white-space: pre-wrap; line-height: 1.65; }
+.bug-share-field > div { line-height: 1.65; color: #111; }
+.bug-share-field > .bug-share-plain-text { white-space: pre-wrap; }
+.bug-share-markdown .markdown-preview { border-top: 0; padding-top: 0; gap: 8px; color: #111; }
+.bug-share-markdown .markdown-preview p,
+.bug-share-markdown .markdown-preview li,
+.bug-share-markdown .markdown-preview h3,
+.bug-share-markdown .markdown-preview h4,
+.bug-share-markdown .markdown-preview h5,
+.bug-share-markdown .markdown-preview strong,
+.bug-share-markdown .markdown-preview a {
+  color: #111;
+}
+.bug-share-markdown .markdown-preview li::marker {
+  color: #111;
+}
+.bug-share-markdown .markdown-preview img {
+  width: min(100%, 240px);
+  max-height: 180px;
+  object-fit: cover;
+  cursor: zoom-in;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+}
+.bug-share-image-preview-dialog { width: auto; max-width: none; gap: 0; border: 0; background: transparent; box-shadow: none; padding: 0; overflow: visible; }
+.bug-share-image-preview-title { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.bug-share-image-preview-shell { position: relative; display: flex; align-items: center; justify-content: center; max-width: min(92vw, 980px); max-height: 82vh; }
+.bug-share-image-preview { display: block; max-width: min(88vw, 920px); max-height: 78vh; border-radius: 12px; border: 1px solid #d9e3df; background: #fff; object-fit: contain; box-shadow: 0 26px 80px rgb(18 51 43 / 34%); }
+.bug-share-image-preview-close { position: absolute; top: 12px; right: 12px; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 999px; background: rgb(18 51 43 / 78%); color: #fff; cursor: pointer; }
+.bug-share-image-preview-close:hover { background: rgb(18 51 43 / 92%); }
 .bug-share-comments { margin-top: 32px; border-top: 1px solid #e4ebe8; padding-top: 20px; }
 .bug-share-section-title { display: flex; align-items: center; justify-content: space-between; }
 .bug-share-section-title h2 { margin: 0; font-size: 20px; }
@@ -13443,6 +13473,7 @@ textarea:focus {
 .bug-share-comments article time { color: #7b8c87; font-size: 12px; }
 .bug-share-comments article p { margin: 8px 0 0; white-space: pre-wrap; line-height: 1.6; }
 .bug-share-comments form { display: flex; align-items: flex-end; gap: 12px; margin-top: 20px; }
+.bug-share-comments .mention-input-shell { flex: 1; min-width: 0; }
 .bug-share-comments textarea { min-height: 96px; flex: 1; resize: vertical; border: 1px solid #d4dfdb; border-radius: 8px; padding: 10px 12px; font: inherit; }
 .bug-share-login-prompt { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; background: #f5f7f6; padding: 14px 16px; border-radius: 8px; }
 .bug-share-login-button { background: #1f7a68 !important; color: #fff !important; }

@@ -130,7 +130,9 @@ export function normalizeBugFilterCondition(
   const operator = allowedOperators.includes(condition.operator)
     ? condition.operator
     : allowedOperators[0]
-  const value = condition.field === 'status' && condition.value === 'pending_confirmation'
+  const value = condition.field === 'status' && (
+    condition.value === 'pending_confirmation' || condition.value === 'confirmed'
+  )
     ? 'new'
     : condition.value
   return {

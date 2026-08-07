@@ -47,7 +47,6 @@ export type BugFilterOptions = {
 const statusOptions: BugFilterOption[] = [
   { label: '待修复', value: 'assigned' },
   { label: '已关闭', value: 'closed' },
-  { label: '已确认', value: 'confirmed' },
   { label: '重复 Bug', value: 'duplicate' },
   { label: '修复中', value: 'in_progress' },
   { label: '待确认', value: 'new' },

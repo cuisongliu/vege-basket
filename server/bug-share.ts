@@ -17,6 +17,11 @@ export type BugShareComment = {
   id: number
 }
 
+export type BugShareMentionableMember = {
+  id: number
+  name: string
+}
+
 export type BugShareView = {
   assigneeName: string | null
   bugId: number
@@ -29,6 +34,7 @@ export type BugShareView = {
   projectName: string | null
   reproductionSteps: string
   severity: string
+  mentionableMembers: BugShareMentionableMember[]
   status: string
   testPlanName: string | null
   testSpaceName: string
@@ -46,6 +52,7 @@ type ShareBugRow = {
   created_at: Date
   environment: string
   expected_result: string
+  organization_id: string | null
   project_name: string | null
   priority: string
   reproduction_steps: string
@@ -56,6 +63,12 @@ type ShareBugRow = {
   test_subject_name: string
   title: string
   updated_at: Date
+}
+
+function extractMentionNames(value: string) {
+  return Array.from(value.matchAll(/@([^\s@，。；：、,.!?！？()（）【】[\]<>《》"'“”]+)(?=$|[\s，。；：、,.!?！？()（）【】[\]<>《》"'“”])/g))
+    .map((match) => match[1]?.trim() ?? '')
+    .filter(Boolean)
 }
 
 function shareError(message: string, status: number): Error & { status: number } {
@@ -93,6 +106,7 @@ async function readView(token: string, userId?: number | null) {
     select b.id as bug_id, b.title, b.severity, b.priority, b.status,
            b.environment, b.reproduction_steps, b.expected_result, b.actual_result,
            b.created_at, b.updated_at, b.assignee_user_id,
+           space.organization_id,
            space.name as test_space_name,
            subject.name as test_subject_name,
            plan.name as test_plan_name,
@@ -114,6 +128,23 @@ async function readView(token: string, userId?: number | null) {
   )
   const bug = result.rows[0]
   if (!bug) throw shareError('Bug share link is invalid or expired', 404)
+  const mentionableMembers = bug.organization_id
+    ? await query<{
+        display_name: string | null
+        email: string | null
+        id: string
+      }>(
+        `
+        select u.id, u.display_name, u.email
+        from organization_memberships membership
+        join users u on u.id = membership.user_id
+        where membership.organization_id = $1
+          and membership.status = 'active'
+        order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+        `,
+        [bug.organization_id],
+      )
+    : { rows: [] as Array<{ display_name: string | null; email: string | null; id: string }> }
   const comments = await query<{
     author_display_name: string | null
     content: string
@@ -143,6 +174,10 @@ async function readView(token: string, userId?: number | null) {
     environment: decryptText(bug.environment),
     expectedResult: decryptText(bug.expected_result),
     actualResult: decryptText(bug.actual_result),
+    mentionableMembers: mentionableMembers.rows.map((member) => ({
+      id: Number(member.id),
+      name: member.display_name || member.email || '未知用户',
+    })),
     priority: bug.priority,
     projectName: bug.project_name ? decryptText(bug.project_name) : null,
     reproductionSteps: decryptText(bug.reproduction_steps),
@@ -155,6 +190,30 @@ async function readView(token: string, userId?: number | null) {
     updatedAt: bug.updated_at.toISOString(),
     viewer: userId && Number(bug.assignee_user_id) === userId ? 'assignee' : userId ? 'commenter' : 'anonymous',
   } satisfies BugShareView
+}
+
+async function resolveBugShareMentionUserIds(token: string, content: string) {
+  const names = extractMentionNames(content).map((name) => name.toLocaleLowerCase('zh-CN'))
+  if (names.length === 0) return []
+  const result = await query<{ id: string }>(
+    `
+    select distinct u.id
+    from bug_share_links link
+    join test_bugs b on b.id = link.test_bug_id
+    join test_spaces space on space.id = b.test_space_id
+    join organization_memberships membership
+      on membership.organization_id = space.organization_id
+     and membership.status = 'active'
+    join users u on u.id = membership.user_id
+    where link.token_hash = $1
+      and link.revoked_at is null
+      and link.expires_at > now()
+      and lower(coalesce(nullif(u.display_name, ''), u.email)) = any($2::text[])
+    order by u.id
+    `,
+    [hashBugShareToken(token), names],
+  )
+  return result.rows.map((row) => Number(row.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
 }
 
 export async function getBugShareView(token: string, userId?: number | null) {
@@ -231,7 +290,8 @@ export async function revokeBugShareLink(bugId: number, userId: number) {
 }
 
 export async function addBugShareComment(token: string, userId: number, content: string) {
-  await transaction(async (client) => {
+  let commentId = 0
+  const bugId = await transaction(async (client) => {
     const link = await client.query<{ test_bug_id: string }>(
       `select test_bug_id from bug_share_links
        where token_hash = $1 and revoked_at is null and expires_at > now()
@@ -240,11 +300,20 @@ export async function addBugShareComment(token: string, userId: number, content:
     )
     const bugId = link.rows[0]?.test_bug_id
     if (!bugId) throw shareError('Bug share link is invalid or expired', 404)
-    await client.query(
+    const inserted = await client.query<{ id: string }>(
       `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
-       values ($1, $2, $3, 'comment')`,
+       values ($1, $2, $3, 'comment')
+       returning id`,
       [bugId, userId, encryptText(content)],
     )
+    commentId = Number(inserted.rows[0]?.id ?? 0)
+    return Number(bugId)
   })
-  return readView(token, userId)
+  return {
+    bugId,
+    commentId,
+    view: await readView(token, userId),
+  }
 }
+
+export { resolveBugShareMentionUserIds }

@@ -13,6 +13,7 @@ import {
   addBugShareComment,
   createBugShareLink,
   getBugShareView,
+  resolveBugShareMentionUserIds,
   revokeBugShareLink,
 } from './bug-share.ts'
 import { parseTestCaseCsv } from './test-case-import.ts'
@@ -3069,7 +3070,15 @@ router.post('/bug-shares/:token/comments', asyncRoute(async (request, response) 
     response.status(400).json({ error: 'Comment is required' })
     return
   }
-  response.status(201).json(await addBugShareComment(token, session.userId, content))
+  const mentionedUserIds = await resolveBugShareMentionUserIds(token, content)
+  const result = await addBugShareComment(token, session.userId, content)
+  onTestBugCommentAdded({
+    actorUserId: session.userId,
+    bugId: result.bugId,
+    commentId: result.commentId,
+    mentionedUserIds,
+  })
+  response.status(201).json(result.view)
 }))
 
 router.post('/test-bugs/:bugId/share-link', asyncRoute(async (request, response) => {

@@ -1676,7 +1676,7 @@ create table if not exists test_bugs (
     check (severity in ('blocker', 'critical', 'major', 'minor', 'trivial')),
   priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
   status text not null default 'new'
-    check (status in ('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
+    check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened')),
   environment text not null default '',
   reproduction_steps text not null default '',
   expected_result text not null default '',
@@ -1710,9 +1710,13 @@ end $$;
 alter table test_bugs
   drop constraint if exists test_bugs_status_check;
 
+update test_bugs
+set status = 'pending_confirmation'
+where status = 'confirmed';
+
 alter table test_bugs
   add constraint test_bugs_status_check
-  check (status in ('new', 'confirmed', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'));
+  check (status in ('new', 'pending_confirmation', 'assigned', 'in_progress', 'pending_verification', 'closed', 'rejected', 'duplicate', 'reopened'));
 
 create table if not exists test_bug_comments (
   id bigserial primary key,
