@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   buildImageSyncRunName,
   buildImageSyncArtifactUris,
+  buildImageSyncArtifactObjectKey,
   buildImageSyncTarObjectKey,
   classifyImageSyncRun,
   getImageSyncDownloadExpireSeconds,
@@ -169,6 +170,12 @@ test('derives only the fixed tar object key for image sync downloads', () => {
     image: 'docker.io/library/nginx:1.27',
     runCreatedAt: '2026-08-04T01:02:03Z',
   }), null)
+  assert.equal(buildImageSyncArtifactObjectKey({
+    arch: 'amd64',
+    bucket: 'veges-artifacts',
+    image: 'docker.io/library/nginx:1.27',
+    runCreatedAt: '2026-08-04T01:02:03Z',
+  }, 'md5'), 'temp/2026/08/04/docker-io-library-nginx-1-27-amd64.tar.md5')
 })
 
 test('uses a 30-minute download expiry by default and rejects unsafe configuration', () => {
@@ -186,7 +193,10 @@ test('download route remains owner-scoped and derives the tar key server-side', 
   const source = readFileSync(new URL('./image-sync-workflows.ts', import.meta.url), 'utf8')
   const route = source.slice(source.indexOf("imageSyncWorkflowRouter.get('/image-sync-runs/:runId/download-url'"))
   assert.match(route, /findOwnedRun\(session\.userId, runId\)/)
-  assert.match(route, /createImageSyncDownloadLink\(row\)/)
+  assert.match(route, /imageSyncArtifactKinds/)
+  assert.match(route, /INVALID_IMAGE_SYNC_ARTIFACT/)
+  assert.match(route, /response\.status\(400\)/)
+  assert.match(route, /createImageSyncDownloadLink\(row, artifact/)
   assert.doesNotMatch(route, /request\.(?:body|query).*objectKey/)
 })
 
