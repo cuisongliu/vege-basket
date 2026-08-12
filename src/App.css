@@ -6585,21 +6585,18 @@ textarea:focus {
 
 .event-wizard-content::-webkit-scrollbar,
 .event-workspace::-webkit-scrollbar,
-.package-market-rule-list::-webkit-scrollbar,
 .package-market-detail-area::-webkit-scrollbar {
   width: 5px;
 }
 
 .event-wizard-content::-webkit-scrollbar-track,
 .event-workspace::-webkit-scrollbar-track,
-.package-market-rule-list::-webkit-scrollbar-track,
 .package-market-detail-area::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .event-wizard-content::-webkit-scrollbar-thumb,
 .event-workspace::-webkit-scrollbar-thumb,
-.package-market-rule-list::-webkit-scrollbar-thumb,
 .package-market-detail-area::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: transparent;
@@ -6609,15 +6606,12 @@ textarea:focus {
 .event-wizard-content:focus-within::-webkit-scrollbar-thumb,
 .event-workspace:hover::-webkit-scrollbar-thumb,
 .event-workspace:focus-within::-webkit-scrollbar-thumb,
-.package-market-rule-list:hover::-webkit-scrollbar-thumb,
-.package-market-rule-list:focus-within::-webkit-scrollbar-thumb,
 .package-market-detail-area:hover::-webkit-scrollbar-thumb,
 .package-market-detail-area:focus-within::-webkit-scrollbar-thumb {
   background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .event-workspace,
-.package-market-rule-list,
 .package-market-detail-area {
   scrollbar-color: transparent transparent;
   scrollbar-width: thin;
@@ -6625,8 +6619,6 @@ textarea:focus {
 
 .event-workspace:hover,
 .event-workspace:focus-within,
-.package-market-rule-list:hover,
-.package-market-rule-list:focus-within,
 .package-market-detail-area:hover,
 .package-market-detail-area:focus-within {
   scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
@@ -6648,8 +6640,16 @@ textarea:focus {
   margin: 0;
 }
 
+.event-wizard-date-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  min-width: 0;
+}
+
 .event-wizard-form-grid input,
 .event-wizard-form-grid [data-slot='select-trigger'],
+.event-wizard-form-grid .journal-date-trigger,
 .event-wizard-form-grid .package-event-date-trigger,
 .event-document-title-field input {
   width: 100%;
@@ -8842,25 +8842,34 @@ textarea:focus {
 }
 
 .package-market-workspace .package-market-group-list {
-  gap: 2px;
-  padding: 6px;
+  gap: 6px;
+  padding: 8px;
 }
 
 .package-market-workspace .package-market-rule {
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  padding: 9px 10px;
-  gap: 2px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--foreground) 4%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--field) 24%, var(--surface));
+  padding: 10px 12px;
+  gap: 3px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
 }
 
-.package-market-workspace .package-market-rule:hover {
-  background: color-mix(in oklch, var(--muted) 72%, var(--surface));
+.package-market-workspace .package-market-rule:hover,
+.package-market-workspace .package-market-rule:focus-visible {
+  border-color: color-mix(in oklch, var(--foreground) 22%, var(--line));
+  background: color-mix(in oklch, var(--muted) 58%, var(--surface));
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--foreground) 7%, transparent);
+  outline: none;
 }
 
 .package-market-workspace .package-market-rule.active {
-  background: var(--muted);
-  box-shadow: none;
+  border-color: color-mix(in oklch, var(--foreground) 30%, var(--line));
+  background: color-mix(in oklch, var(--muted) 76%, var(--surface));
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 .package-market-workspace .package-market-link-card {
@@ -8897,43 +8906,59 @@ textarea:focus {
 }
 
 .package-market-rule-list {
+  position: relative;
   min-height: 0;
-  overflow-y: auto;
-  align-content: start;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: color-mix(in oklch, var(--surface) 94%, black);
-  scrollbar-color: transparent transparent;
+}
+
+.package-market-rule-scroll {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-width: none;
 }
 
-.package-market-rule-list:hover,
-.package-market-rule-list:focus-within {
-  scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
-  scrollbar-width: thin;
+.package-market-rule-scroll::-webkit-scrollbar {
+  display: none;
 }
 
-.package-market-rule-list::-webkit-scrollbar {
-  width: 0;
+.package-market-rule-scroll-content {
+  min-height: 100%;
 }
 
-.package-market-rule-list:hover::-webkit-scrollbar,
-.package-market-rule-list:focus-within::-webkit-scrollbar {
-  width: 6px;
-}
-
-.package-market-rule-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.package-market-rule-list::-webkit-scrollbar-thumb {
+.package-market-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: 3px;
+  z-index: 2;
+  width: 5px;
+  min-width: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
-  background: transparent;
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
 }
 
-.package-market-rule-list:hover::-webkit-scrollbar-thumb,
-.package-market-rule-list:focus-within::-webkit-scrollbar-thumb {
-  background: color-mix(in oklch, var(--foreground) 28%, transparent);
+.package-market-rule-list:hover .package-market-scrollbar-thumb,
+.package-market-rule-list:focus-within .package-market-scrollbar-thumb {
+  opacity: 1;
+}
+
+.package-market-scrollbar-thumb:hover,
+.package-market-scrollbar-thumb:focus-visible {
+  background: color-mix(in oklch, var(--foreground) 46%, transparent);
+  outline: none;
+}
+
+.package-market-scrollbar-thumb:active {
+  cursor: grabbing;
 }
 
 .package-market-group {
@@ -8986,6 +9011,12 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.7fr);
   gap: 10px;
+}
+
+.package-market-sidebar [data-slot='input'],
+.package-market-controls [data-slot='select-trigger'] {
+  height: 36px;
+  min-height: 36px;
 }
 
 .package-market-detail-area {
@@ -11176,6 +11207,21 @@ textarea:focus {
   gap: 4px;
   padding: 10px 12px;
   border-radius: 10px;
+  border-color: color-mix(in oklch, var(--foreground) 5%, var(--line));
+  background: color-mix(in oklch, var(--muted) 14%, var(--surface));
+}
+
+:root:not(.dark) .package-market-rule:hover,
+:root:not(.dark) .package-market-rule:focus-visible {
+  border-color: color-mix(in oklch, var(--foreground) 23%, var(--line));
+  background: color-mix(in oklch, var(--muted) 52%, var(--surface));
+  box-shadow: 0 3px 10px color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+:root:not(.dark) .package-market-rule.active {
+  border-color: color-mix(in oklch, var(--foreground) 32%, var(--line));
+  background: color-mix(in oklch, var(--muted) 76%, var(--surface));
+  box-shadow: 0 3px 10px color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 :root:not(.dark) .package-empty-state,
@@ -13409,6 +13455,7 @@ textarea:focus {
   }
 
   .event-wizard-form-grid,
+  .event-wizard-date-fields,
   .event-draft-summary-metrics {
     grid-template-columns: 1fr;
   }

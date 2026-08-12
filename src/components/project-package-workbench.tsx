@@ -8,6 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
+  type PointerEvent,
   type ReactNode,
 } from 'react'
 import {
@@ -56,6 +58,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { JournalDatePicker } from '@/components/journal-date-picker'
 import { getProjectPackageOperationTitle } from '@/lib/project-package-operation'
 import { createWgetDownloadCommand } from '@/lib/download-command'
 import {
@@ -283,6 +286,10 @@ function getShanghaiDateTimeLocalStamp(date = new Date()) {
   return `${pick('year')}-${pick('month')}-${pick('day')}T${pick('hour')}:${pick('minute')}`
 }
 
+function getShanghaiDateStamp(date = new Date()) {
+  return getShanghaiDateTimeLocalStamp(date).slice(0, 10)
+}
+
 function normalizeDateTimeLocalStamp(value: string | undefined, fallback = '') {
   const match = String(value ?? '').trim().match(
     /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T ](\d{1,2}):(\d{2})(?::\d{2})?$/,
@@ -305,25 +312,6 @@ function dateTimeLocalToUtcTimestamp(value: string) {
       date.getUTCMinutes() === Number(minute)
     ? timestamp
     : Number.NaN
-}
-
-function addDateTimeLocalHours(value: string, hours: number) {
-  const timestamp = dateTimeLocalToUtcTimestamp(value)
-  if (Number.isNaN(timestamp)) return value
-  const date = new Date(timestamp + hours * 60 * 60 * 1000)
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    day: '2-digit',
-    hour: '2-digit',
-    hourCycle: 'h23',
-    hour12: false,
-    minute: '2-digit',
-    month: '2-digit',
-    timeZone: 'UTC',
-    year: 'numeric',
-  }).formatToParts(date)
-  const pick = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value ?? ''
-  return `${pick('year')}-${pick('month')}-${pick('day')}T${pick('hour')}:${pick('minute')}`
 }
 
 function dateTimeLocalDateStamp(value: string) {
@@ -538,6 +526,106 @@ function getPackageMarketBaseRules(): PackageMarketRule[] {
       ciFileNameFormats: [],
     },
   ]
+}
+
+function PackageMarketRuleList({ children }: { children: ReactNode }) {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [scrollbar, setScrollbar] = useState({ height: 0, scrollable: false, top: 0, value: 0 })
+
+  function syncScrollbar() {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const trackHeight = Math.max(0, viewport.clientHeight - 8)
+    const maxScroll = viewport.scrollHeight - viewport.clientHeight
+    if (maxScroll <= 0 || trackHeight <= 0) {
+      setScrollbar({ height: 0, scrollable: false, top: 0, value: 0 })
+      return
+    }
+    const height = Math.max(32, Math.round(trackHeight * viewport.clientHeight / viewport.scrollHeight))
+    const travel = Math.max(0, trackHeight - height)
+    const top = 4 + travel * viewport.scrollTop / maxScroll
+    setScrollbar({
+      height,
+      scrollable: true,
+      top,
+      value: Math.round(viewport.scrollTop * 100 / maxScroll),
+    })
+  }
+
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const observer = new ResizeObserver(syncScrollbar)
+    observer.observe(viewport)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    syncScrollbar()
+    return () => observer.disconnect()
+  }, [children])
+
+  function startScrollbarDrag(event: PointerEvent<HTMLButtonElement>) {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const activeViewport = viewport
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const startY = event.clientY
+    const startScrollTop = activeViewport.scrollTop
+    const trackTravel = activeViewport.clientHeight - 8 - scrollbar.height
+    const maxScroll = activeViewport.scrollHeight - activeViewport.clientHeight
+    if (trackTravel <= 0 || maxScroll <= 0) return
+
+    function handlePointerMove(moveEvent: globalThis.PointerEvent) {
+      activeViewport.scrollTop = startScrollTop + (moveEvent.clientY - startY) * maxScroll / trackTravel
+    }
+
+    function stopPointerDrag() {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopPointerDrag)
+      window.removeEventListener('pointercancel', stopPointerDrag)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopPointerDrag)
+    window.addEventListener('pointercancel', stopPointerDrag)
+  }
+
+  function handleScrollbarKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const increments: Partial<Record<string, number>> = {
+      ArrowDown: 40,
+      ArrowUp: -40,
+      PageDown: viewport.clientHeight * 0.8,
+      PageUp: viewport.clientHeight * -0.8,
+    }
+    const increment = increments[event.key]
+    if (increment == null) return
+    event.preventDefault()
+    viewport.scrollBy({ behavior: 'smooth', top: increment })
+  }
+
+  return (
+    <div className="package-market-rule-list">
+      <div className="package-market-rule-scroll" onScroll={syncScrollbar} ref={viewportRef}>
+        <div className="package-market-rule-scroll-content">{children}</div>
+      </div>
+      {scrollbar.scrollable ? (
+        <button
+          aria-label="滚动安装包列表"
+          aria-orientation="vertical"
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={scrollbar.value}
+          className="package-market-scrollbar-thumb"
+          onKeyDown={handleScrollbarKeyDown}
+          onPointerDown={startScrollbarDrag}
+          role="scrollbar"
+          style={{ height: scrollbar.height, transform: `translateY(${scrollbar.top}px)` }}
+          type="button"
+        />
+      ) : null}
+    </div>
+  )
 }
 
 export function PackageMarketBrowser({
@@ -901,7 +989,7 @@ export function PackageMarketBrowser({
                 placeholder="sealos / db / app"
               />
             </Label>
-            <div className="package-market-rule-list">
+            <PackageMarketRuleList>
               {(
                 [
                   { id: 'base' as const, label: '基础包', rules: groupedMarketRules.base },
@@ -972,7 +1060,7 @@ export function PackageMarketBrowser({
                   ) : null}
                 </section>
               ))}
-            </div>
+            </PackageMarketRuleList>
           </div>
           <div className="package-market-main">
             <div className="package-market-controls">
@@ -1354,10 +1442,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [documentTodoFilterConditions, setDocumentTodoFilterConditions] = useState<TodoFilterCondition[]>([])
   const [, setEventEditorReady] = useState(false)
   const [eventAssigneeUserId, setEventAssigneeUserId] = useState('')
-  const [eventDeliveryStartAt, setEventDeliveryStartAt] = useState(() => getShanghaiDateTimeLocalStamp())
-  const [eventDeliveryEndAt, setEventDeliveryEndAt] = useState(() =>
-    addDateTimeLocalHours(getShanghaiDateTimeLocalStamp(), 24),
-  )
+  const [eventDeliveryStartAt, setEventDeliveryStartAt] = useState(() => `${getShanghaiDateStamp()}T00:00`)
+  const [eventDeliveryEndAt, setEventDeliveryEndAt] = useState(() => `${getShanghaiDateStamp()}T23:59`)
   const [eventTitle, setEventTitle] = useState('')
   const [eventType, setEventType] = useState<ProjectPackageEventType>('upgrade')
   const [eventFilterDialogOpen, setEventFilterDialogOpen] = useState(false)
@@ -2064,9 +2150,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setEventEditorStep(1)
     setEventTitle('')
     setEventType(events.length === 0 ? 'init' : 'upgrade')
-    const startAt = getShanghaiDateTimeLocalStamp()
-    setEventDeliveryStartAt(startAt)
-    setEventDeliveryEndAt(addDateTimeLocalHours(startAt, 24))
+    const startDate = getShanghaiDateStamp()
+    setEventDeliveryStartAt(`${startDate}T00:00`)
+    setEventDeliveryEndAt(`${startDate}T23:59`)
     setEventAssigneeUserId(
       String(
         memberOptions.find((member) => member.id === currentUserId)?.id ??
@@ -2155,8 +2241,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setSelectedEventId(event.id)
     setEventTitle(event.title)
     setEventType(event.type)
-    setEventDeliveryStartAt(getEventDeliveryStartAt(event))
-    setEventDeliveryEndAt(getEventDeliveryEndAt(event))
+    setEventDeliveryStartAt(`${dateTimeLocalDateStamp(getEventDeliveryStartAt(event))}T00:00`)
+    setEventDeliveryEndAt(`${dateTimeLocalDateStamp(getEventDeliveryEndAt(event))}T23:59`)
     setEventAssigneeUserId(String(event.assigneeUserId ?? memberOptions[0]?.id ?? ''))
     setCartItems(event.groups.flatMap((group) => group.items.map((item) => ({
       arch: item.arch,
@@ -2626,28 +2712,34 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   placeholder="例如：控制台升级到 v5.1.2"
                 />
               </Label>
-              <Label>
-                交付开始时间
-                <Input
-                  type="datetime-local"
-                  value={eventDeliveryStartAt}
-                  onChange={(event) => {
-                    setEventDeliveryStartAt(event.target.value)
-                    setEventEditorDirty(true)
-                  }}
-                />
-              </Label>
-              <Label>
-                预期交付完成时间
-                <Input
-                  type="datetime-local"
-                  value={eventDeliveryEndAt}
-                  onChange={(event) => {
-                    setEventDeliveryEndAt(event.target.value)
-                    setEventEditorDirty(true)
-                  }}
-                />
-              </Label>
+              <div className="event-wizard-date-fields">
+                <Label>
+                  交付开始日期
+                  <JournalDatePicker
+                    ariaLabel="交付开始日期"
+                    datesWithEntries={[]}
+                    displayValue={dateTimeLocalDateStamp(eventDeliveryStartAt).replaceAll('-', '/')}
+                    value={dateTimeLocalDateStamp(eventDeliveryStartAt)}
+                    onChange={(date) => {
+                      setEventDeliveryStartAt(`${date}T00:00`)
+                      setEventEditorDirty(true)
+                    }}
+                  />
+                </Label>
+                <Label>
+                  预期交付完成日期
+                  <JournalDatePicker
+                    ariaLabel="预期交付完成日期"
+                    datesWithEntries={[]}
+                    displayValue={dateTimeLocalDateStamp(eventDeliveryEndAt).replaceAll('-', '/')}
+                    value={dateTimeLocalDateStamp(eventDeliveryEndAt)}
+                    onChange={(date) => {
+                      setEventDeliveryEndAt(`${date}T23:59`)
+                      setEventEditorDirty(true)
+                    }}
+                  />
+                </Label>
+              </div>
               <Label>
                 交付人
                 <Select
@@ -3853,7 +3945,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   placeholder="sealos / db / app"
                 />
               </Label>
-              <div className="package-market-rule-list">
+              <PackageMarketRuleList>
                 {(
                   [
                     { id: 'base' as const, label: '基础包', rules: groupedMarketRules.base },
@@ -3924,7 +4016,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     ) : null}
                   </section>
                 ))}
-              </div>
+              </PackageMarketRuleList>
             </div>
             <div className="package-market-main">
               <div className="package-market-controls">
