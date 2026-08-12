@@ -17,6 +17,7 @@ dist-ssr
 .sealos/deploy-args.json
 .sealos/canvas/
 oss-ui/
+.zcode/
 
 # Editor directories and files
 .vscode/*

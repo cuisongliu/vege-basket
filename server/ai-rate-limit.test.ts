@@ -44,6 +44,14 @@ test('enforces both per-user and instance-wide request windows', () => {
   assert.equal(limiter.allow(3), true)
 })
 
+test('rate limiters accept opaque resource keys without changing numeric callers', () => {
+  const limiter = createAiRateLimiter<string>({ globalLimit: 2, perUserLimit: 1, windowMs: 1_000 })
+
+  assert.equal(limiter.allow('share:a'), true)
+  assert.equal(limiter.allow('share:a'), false)
+  assert.equal(limiter.allow('share:b'), true)
+})
+
 test('bounds concurrent work per user and across the application instance', () => {
   const limiter = createAiConcurrencyLimiter({ globalLimit: 3, perUserLimit: 2 })
   const releaseFirst = limiter.acquire(1)
@@ -63,4 +71,17 @@ test('bounds concurrent work per user and across the application instance', () =
   releaseSecond?.()
   releaseThird?.()
   releaseFourth?.()
+})
+
+test('concurrency limiters isolate opaque resource keys', () => {
+  const limiter = createAiConcurrencyLimiter<string>({ globalLimit: 2, perUserLimit: 1 })
+  const releaseFirst = limiter.acquire('share:a')
+  const releaseSecond = limiter.acquire('share:b')
+
+  assert.equal(typeof releaseFirst, 'function')
+  assert.equal(limiter.acquire('share:a'), null)
+  assert.equal(limiter.acquire('share:c'), null)
+  releaseFirst?.()
+  assert.equal(typeof limiter.acquire('share:c'), 'function')
+  releaseSecond?.()
 })

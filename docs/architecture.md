@@ -111,7 +111,9 @@ projects, test spaces, Bugs, comments, and related records attached to that orga
 That dual authorization also permits project-governance mutations for lifecycle status,
 health, and milestones. Other project mutations continue to use direct project access;
 test-space and Bug mutations continue to require membership, creator ownership, or Bug
-assignment checks.
+assignment checks. Todo public-link creation and revocation are one explicit exception:
+managed organization administrators may share todos in projects attached to their organization
+without receiving general todo mutation access.
 
 The update log is a global authenticated read surface. Its create and update routes require
 `isSystemAdmin(username)`, which is derived from `VEGES_ADMIN_USERNAMES`; an
@@ -423,6 +425,25 @@ Bug 分享使用 `/share/bug/<token>` 单页链接。服务端仅保存令牌的
 评论。非负责人登录用户停留在分享页，只能评论。负责人登录后由浏览器切换到开发身份，
 进入已有的负责人 Bug 工作台并沿用原有操作授权。公共页面不返回邮箱、成员名单、内部
 链接、附件对象地址、转移或驳回记录。
+
+### 待办分享边界
+
+待办分享使用 `/share/todo/<token>` 单页链接，并与 Bug 分享采用相同的 30 天令牌、
+SHA-256 哈希、加密原文、单资源有效链接和撤销模型。链接生成和撤销允许待办所在项目的
+Owner、任意有效项目成员，以及同时拥有 `organization_admin` 账号角色和该项目所属组织
+有效 Owner/Admin 成员身份的组织管理员。有效项目成员范围自然包含待办创建人、负责人、
+验收人、关注人和未承担待办字段角色的普通成员。
+
+公开读取不要求登录，只返回待办的展示属性、详情和未绑定交付操作的普通/验收备注，且
+不返回邮箱、权限或活动历史。分享页文档和 API 响应使用 `private, no-store`、
+`no-referrer` 和 `noindex`，文档 CSP 仅允许同站图片。登录后可凭分享链接添加加密的普通
+待办备注，但不会获得项目成员身份或其他待办操作权限。仅当登录账号本来就拥有项目访问权
+时，响应才返回项目 Owner 和有效项目成员中唯一、非空的展示名作为 `@` 候选；候选不包含
+邮箱或内部用户 ID，服务端也只为原本拥有项目访问权的留言人解析 mentions。留言与 mentions
+在一个事务内写入 `todo_notes` 和 `todo_note_mentions`，并以请求 UUID 保持幂等；服务端按
+用户和链接限制请求频率、并发及分钟/每日留言数，提交后复用现有待办备注飞书通知策略。
+分享来源留言不接受图片 Markdown，并在公开页按纯文本展示；公开备注列表只返回最近 100
+条。原本拥有项目访问权的登录用户可从分享页打开内部待办详情。
 
 Server startup validates encryption keys and executes `schemaSql`; starting the API is a
 database mutation, not a read-only smoke test. There is no automatic down migration.

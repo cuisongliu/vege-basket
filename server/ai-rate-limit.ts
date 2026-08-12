@@ -28,14 +28,14 @@ export function readAiRateLimitConfig(
   }
 }
 
-export function createAiRateLimiter(
+export function createAiRateLimiter<Key = number>(
   config: AiRateLimitConfig,
   now: () => number = Date.now,
 ) {
-  const userRequests = new Map<number, number[]>()
+  const userRequests = new Map<Key, number[]>()
   let globalRequests: number[] = []
 
-  function currentRequests(userId: number) {
+  function currentRequests(userId: Key) {
     const currentTime = now()
     const windowStart = currentTime - config.windowMs
     const recentUserRequests = (userRequests.get(userId) ?? [])
@@ -45,17 +45,17 @@ export function createAiRateLimiter(
     return { currentTime, recentUserRequests }
   }
 
-  function hasCapacity(userId: number) {
+  function hasCapacity(userId: Key) {
     const { recentUserRequests } = currentRequests(userId)
     return recentUserRequests.length < config.perUserLimit &&
       globalRequests.length < config.globalLimit
   }
 
   return {
-    canAllow(userId: number) {
+    canAllow(userId: Key) {
       return hasCapacity(userId)
     },
-    allow(userId: number) {
+    allow(userId: Key) {
       const { currentTime, recentUserRequests } = currentRequests(userId)
 
       if (
@@ -73,7 +73,7 @@ export function createAiRateLimiter(
   }
 }
 
-export function createAiConcurrencyLimiter(config: AiConcurrencyLimitConfig) {
+export function createAiConcurrencyLimiter<Key = number>(config: AiConcurrencyLimitConfig) {
   if (
     !Number.isSafeInteger(config.globalLimit) ||
     config.globalLimit <= 0 ||
@@ -82,11 +82,11 @@ export function createAiConcurrencyLimiter(config: AiConcurrencyLimitConfig) {
   ) {
     throw new Error('AI concurrency limits must be positive integers')
   }
-  const activeByUser = new Map<number, number>()
+  const activeByUser = new Map<Key, number>()
   let activeGlobal = 0
 
   return {
-    acquire(userId: number) {
+    acquire(userId: Key) {
       const activeForUser = activeByUser.get(userId) ?? 0
       if (activeForUser >= config.perUserLimit || activeGlobal >= config.globalLimit) return null
       activeByUser.set(userId, activeForUser + 1)

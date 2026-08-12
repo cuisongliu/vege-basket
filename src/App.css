@@ -1817,8 +1817,28 @@ textarea:focus {
 .todo-detail-page-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.todo-detail-share-button {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.todo-detail-share-button:hover,
+.todo-detail-share-button:focus-visible {
+  border-color: color-mix(in oklch, var(--primary) 84%, black);
+  background: color-mix(in oklch, var(--primary) 84%, black);
+  color: #ffffff;
+}
+
+.dark .todo-detail-share-button,
+.dark .todo-detail-share-button:hover,
+.dark .todo-detail-share-button:focus-visible {
+  color: #ffffff;
 }
 
 .todo-detail-page-copy {
@@ -1886,6 +1906,7 @@ textarea:focus {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 .todo-detail-page-summary-row {
@@ -3868,6 +3889,27 @@ textarea:focus {
   border-radius: 7px;
   padding: 0 10px;
   font-size: 12px;
+}
+
+.dark .todo-note-submit {
+  color: #ffffff;
+}
+
+.dark .todo-note-submit:disabled {
+  background: color-mix(in srgb, var(--primary) 50%, transparent);
+  color: #ffffff;
+  opacity: 1;
+}
+
+.dark .todo-share-dialog,
+.dark .todo-share-dialog [data-slot='dialog-title'],
+.dark .todo-share-dialog [data-slot='dialog-description'],
+.dark .todo-share-dialog [data-slot='dialog-close'],
+.dark .todo-share-dialog [data-slot='button'],
+.dark .todo-share-dialog .bug-share-link-box,
+.dark .todo-share-dialog .bug-share-loading,
+.dark .todo-share-dialog .bug-share-error {
+  color: #ffffff;
 }
 
 .todo-note-editor-actions {
@@ -13409,6 +13451,19 @@ textarea:focus {
   }
 }
 .bug-share-screen {
+  --background: #fff;
+  --foreground: #12332b;
+  --primary: #1f7a68;
+  --primary-foreground: #fff;
+  --secondary: #eef3f1;
+  --secondary-foreground: #315f51;
+  --muted: #eef3f1;
+  --muted-foreground: #6d827b;
+  --border: #d9e3df;
+  --input: #d4dfdb;
+  --ring: #1f7a68;
+  --control-bg: #fff;
+  color-scheme: light;
   min-height: 100vh;
   background: #f4f6f5;
   color: #12332b;
@@ -13486,15 +13541,35 @@ textarea:focus {
 .bug-share-comments article .bug-share-comment-markdown .markdown-preview p { margin: 0; white-space: pre-wrap; line-height: 1.6; }
 .bug-share-comments form { display: flex; align-items: flex-end; gap: 12px; margin-top: 20px; }
 .bug-share-comments .mention-input-shell { flex: 1; min-width: 0; }
-.bug-share-comments textarea { min-height: 96px; flex: 1; resize: vertical; border: 1px solid #d4dfdb; border-radius: 8px; padding: 10px 12px; font: inherit; }
+.bug-share-comments textarea { min-height: 96px; flex: 1; resize: vertical; border: 1px solid #d4dfdb; border-radius: 8px; background: #fff; color: #12332b; padding: 10px 12px; font: inherit; box-shadow: none; }
+.bug-share-comments textarea::placeholder { color: #7b8c87; opacity: 1; }
+.bug-share-comments textarea:focus { border-color: #1f7a68; background: #fff; box-shadow: 0 0 0 2px rgb(31 122 104 / 12%); }
+.bug-share-comments form > button { background: #1f7a68; color: #fff; }
+.bug-share-comments form > button:hover { background: #176351; color: #fff; }
+.bug-share-comments form > button:disabled { background: #dce8e4; color: #71847e; opacity: 1; }
 .bug-share-login-prompt { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; background: #f5f7f6; padding: 14px 16px; border-radius: 8px; }
 .bug-share-login-button { background: #1f7a68 !important; color: #fff !important; }
 .bug-share-login-button:hover { background: #176351 !important; color: #fff !important; }
-.bug-share-return-button { color: #1f6254; }
+.bug-share-return-button { border-color: #d9e3df; background: #fff; color: #1f6254; }
+.bug-share-return-button:hover { border-color: #c6d6d0; background: #eef3f1; color: #164c40; }
+.bug-share-mention-menu { border-color: #d9e3df; background: #fff; color: #12332b; box-shadow: 0 8px 24px rgb(18 51 43 / 12%); }
+.bug-share-mention-menu .mention-option { color: #315f51; }
+.bug-share-mention-menu .mention-option strong { color: #12332b; }
+.bug-share-mention-menu .mention-option small { color: #6d827b; }
+.bug-share-mention-menu .mention-option:hover,
+.bug-share-mention-menu .mention-option:focus-visible { background: #eef3f1; color: #12332b; }
+.bug-share-mention-menu .mention-option:hover strong,
+.bug-share-mention-menu .mention-option:focus-visible strong { color: #12332b; }
+.bug-share-mention-menu .mention-option:hover small,
+.bug-share-mention-menu .mention-option:focus-visible small { color: #49675f; }
 .bug-share-empty, .bug-share-loading, .bug-share-error { color: #6d827b; }
 .bug-share-error { color: #b13f43; }
 .bug-share-link-box { display: flex; align-items: center; gap: 8px; overflow: hidden; border: 1px solid #d9e3df; border-radius: 8px; padding: 10px 12px; color: #315f51; }
 .bug-share-link-box span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-share-detail { margin-top: 28px; }
+.todo-share-note-kind { display: inline-flex; margin-right: 10px; border-radius: 4px; padding: 2px 6px; background: #eef3f1; color: #49675f; font-size: 11px; font-weight: 650; }
+.todo-share-comment-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.todo-share-screen .bug-share-field > .bug-share-plain-text { color: #6d827b; }
 .login-back-share {
   position: absolute;
   top: -48px;

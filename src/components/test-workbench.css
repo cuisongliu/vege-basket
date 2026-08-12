@@ -680,6 +680,11 @@
   padding-left: 34px;
 }
 
+.test-bug-toolbar-actions [data-slot="button"] {
+  height: 36px;
+  min-height: 36px;
+}
+
 .test-bug-filter-summary {
   min-height: 28px;
   display: flex;

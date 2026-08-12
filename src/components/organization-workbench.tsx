@@ -92,7 +92,7 @@ import {
 import { Textarea } from './ui/textarea'
 import './organization-workbench.css'
 
-type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'members' | 'tasks' | 'reports'
+type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'members' | 'reports'
 
 const organizationTabs: Array<{
   icon: typeof Buildings
@@ -103,7 +103,6 @@ const organizationTabs: Array<{
   { icon: FolderSimple, id: 'projects', label: '项目管理' },
   { icon: Flask, id: 'testSpaces', label: '测试空间管理' },
   { icon: Users, id: 'members', label: '成员' },
-  { icon: ClipboardText, id: 'tasks', label: '任务' },
   { icon: Sparkle, id: 'reports', label: '周报' },
 ]
 
@@ -291,8 +290,6 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
   const [inviteDialogError, setInviteDialogError] = useState('')
   const [inviteLinkStatus, setInviteLinkStatus] = useState('')
   const [isCopyingInviteLink, setIsCopyingInviteLink] = useState(false)
-  const [taskQuery, setTaskQuery] = useState('')
-  const [taskKind, setTaskKind] = useState<'all' | OrganizationTask['kind']>('all')
   const [projectQuery, setProjectQuery] = useState('')
   const [projectStatus, setProjectStatus] = useState<'all' | OrganizationProjectStatus>('all')
   const [projectHealth, setProjectHealth] = useState<'all' | OrganizationProjectHealthStatus>('all')
@@ -537,15 +534,6 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
       setNewProjectOpen(false)
     }
   }
-
-  const filteredTasks = useMemo(() => {
-    if (!detail) return []
-    const query = taskQuery.trim().toLowerCase()
-    return detail.tasks.filter((task) => (
-      (taskKind === 'all' || task.kind === taskKind) &&
-      (!query || [task.title, task.projectName, task.assigneeName].some((value) => value.toLowerCase().includes(query)))
-    ))
-  }, [detail, taskKind, taskQuery])
 
   const filteredProjects = useMemo(() => {
     if (!detail) return []
@@ -1153,30 +1141,6 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
                 </div>
               ))}
             </div>
-          </section>
-        ) : null}
-
-        {tab === 'tasks' ? (
-          <section className="organization-section organization-tasks-section">
-            <header><h3>组织任务</h3><span>{filteredTasks.length}</span></header>
-            <div className="organization-task-filters">
-              <Input
-                aria-label="搜索任务"
-                placeholder="搜索标题、项目或负责人"
-                value={taskQuery}
-                onChange={(event) => setTaskQuery(event.target.value)}
-              />
-              <Select value={taskKind} onValueChange={(value) => setTaskKind(value as typeof taskKind)}>
-                <SelectTrigger aria-label="任务类型"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部类型</SelectItem>
-                  <SelectItem value="todo">待办</SelectItem>
-                  <SelectItem value="delivery">交付</SelectItem>
-                  <SelectItem value="bug">Bug</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <TaskTable tasks={filteredTasks} />
           </section>
         ) : null}
 

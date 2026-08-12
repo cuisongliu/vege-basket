@@ -462,6 +462,20 @@ Bug 分享接口：`POST /api/test-bugs/:bugId/share-link` 创建或复用当前
 的 `APP_PUBLIC_URL` 生成；未配置时 API 返回同站路径，由浏览器按当前页面的可信来源补全，
 不使用服务端请求的 Host 头推导公开域名。
 
+待办分享接口：`POST /api/todos/:todoId/share-link` 创建或复用当前有效链接，
+`DELETE /api/todos/:todoId/share-link` 撤销链接；两者允许项目 Owner、任意有效项目成员，
+以及同时拥有 `organization_admin` 账号角色和该项目所属组织有效 Owner/Admin 成员身份的
+组织管理员。
+`GET /api/todo-shares/:token` 为公开只读接口，`POST /api/todo-shares/:token/comments`
+要求登录后添加留言备注。公开 DTO 包含待办展示字段及未绑定交付操作的普通/验收备注，
+匿名或非项目成员的登录响应不包含 `@` 候选；项目成员响应仅以项目 Owner 和有效项目成员中
+唯一、非空的展示名作为候选，不返回邮箱或内部用户 ID；服务端只为原本拥有项目访问权的
+留言人解析 mentions。留言请求需携带 UUID `requestId`，写入现有加密待办
+备注及 mention 表，并复用待办备注飞书投递策略；接口按用户和链接限制频率、并发和分钟/
+每日留言数，公开响应最多返回最近 100 条备注。分享来源留言不接受图片 Markdown，并按纯
+文本展示；链接本身不授予项目权限。分享地址使用与 Bug 分享相同的 `APP_PUBLIC_URL` 校验
+和同站路径回退。
+
 Project invite links default to a 10 minute lifetime. Owners can request one of the
 supported durations when generating a link. Invite links may optionally require a share
 password; the server stores only a bcrypt hash and requires the password during login,

@@ -11,6 +11,7 @@ const mentionMenuMaxHeight = 220
 
 type MentionTextareaProps = Omit<ComponentProps<typeof Textarea>, 'onChange' | 'value'> & {
   members?: MentionMember[]
+  menuClassName?: string
   menuPlacement?: 'above' | 'auto'
   onChange: (value: string) => void
   value: string
@@ -18,6 +19,7 @@ type MentionTextareaProps = Omit<ComponentProps<typeof Textarea>, 'onChange' | '
 
 export function MentionTextarea({
   members = [],
+  menuClassName = '',
   menuPlacement = 'auto',
   onChange,
   value,
@@ -142,7 +144,7 @@ export function MentionTextarea({
       {mentionRange && filteredMembers.length > 0 ? (
         menuPortalHost == null ? null : createPortal(
           <span
-            className="mention-menu mention-menu-floating"
+            className={['mention-menu', 'mention-menu-floating', menuClassName].filter(Boolean).join(' ')}
             style={{
               left: menuPosition.left,
               position: menuPortalHost === document.body ? 'fixed' : 'absolute',

@@ -155,11 +155,18 @@ import { waitForAiTurnStreamDrain } from './ai-turn-stream.ts'
 import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 import {
+  getAuthenticatedRoleSession,
   getUserRoleContext,
   getSwitchableUserRoles,
   roleRouter,
   type UserRole,
 } from './roles.ts'
+import {
+  addTodoShareComment,
+  createTodoShareLink,
+  getTodoShareView,
+  revokeTodoShareLink,
+} from './todo-share.ts'
 import {
   configureTestWorkbenchNotifications,
   testWorkbenchRouter,
@@ -181,6 +188,7 @@ import { changelogRouter } from './changelog.ts'
 import { getMyWork } from './my-work.ts'
 import { parseMyWorkFilters } from './my-work-policy.ts'
 import {
+  hashTodoShareToken,
   hashProjectTransferToken,
   isFreshFeishuTimestamp,
   verifyFeishuCardSignature,
@@ -348,6 +356,24 @@ const aiTurnExecutionConcurrencyLimiter = createAiConcurrencyLimiter({
   globalLimit: 10,
   perUserLimit: 2,
 })
+const todoShareCommentUserRateLimiter = createAiRateLimiter<string>({
+  globalLimit: 300,
+  perUserLimit: 20,
+  windowMs: 5 * 60_000,
+})
+const todoShareCommentTokenRateLimiter = createAiRateLimiter<string>({
+  globalLimit: 300,
+  perUserLimit: 30,
+  windowMs: 5 * 60_000,
+})
+const todoShareCommentUserConcurrencyLimiter = createAiConcurrencyLimiter<string>({
+  globalLimit: 20,
+  perUserLimit: 1,
+})
+const todoShareCommentTokenConcurrencyLimiter = createAiConcurrencyLimiter<string>({
+  globalLimit: 20,
+  perUserLimit: 1,
+})
 let nextAiIntentReceiptCleanupAt = 0
 const aiIntentRoutingDependencies = {
   database: pool,
@@ -487,6 +513,87 @@ configureTestWorkbenchNotifications({
   onTestExecutionResultChanged: enqueueTestExecutionResultChangedDelivery,
 })
 app.use('/api', testWorkbenchRouter)
+
+app.get('/api/todo-shares/:token', asyncHandler(async (request, response) => {
+  const token = String(request.params.token ?? '').trim().slice(0, 256)
+  if (!token) {
+    response.status(404).json({ error: 'Todo share link is invalid or expired' })
+    return
+  }
+  const session = await getAuthenticatedRoleSession(request)
+  response.setHeader('Cache-Control', 'private, no-store')
+  response.setHeader('Referrer-Policy', 'no-referrer')
+  response.setHeader('X-Robots-Tag', 'noindex')
+  response.json(await getTodoShareView(token, session?.userId))
+}))
+
+app.post('/api/todo-shares/:token/comments', asyncHandler(async (request, response) => {
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: '登录后才能留言' })
+    return
+  }
+  const token = String(request.params.token ?? '').trim().slice(0, 256)
+  const content = typeof request.body.content === 'string' ? request.body.content.trim() : ''
+  const requestId = typeof request.body.requestId === 'string' ? request.body.requestId.trim() : ''
+  if (
+    !token ||
+    !content ||
+    content.length > 5000 ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)
+  ) {
+    response.status(400).json({ error: 'Comment must contain 1 to 5000 characters' })
+    return
+  }
+  const userKey = `user:${session.userId}`
+  const tokenKey = `token:${hashTodoShareToken(token)}`
+  if (
+    !todoShareCommentUserRateLimiter.allow(userKey) ||
+    !todoShareCommentTokenRateLimiter.allow(tokenKey)
+  ) {
+    response.status(429).json({ error: '留言过于频繁，请稍后再试' })
+    return
+  }
+  const releaseUser = todoShareCommentUserConcurrencyLimiter.acquire(userKey)
+  const releaseToken = todoShareCommentTokenConcurrencyLimiter.acquire(tokenKey)
+  if (!releaseUser || !releaseToken) {
+    releaseUser?.()
+    releaseToken?.()
+    response.status(429).json({ error: '已有留言正在提交，请稍后再试' })
+    return
+  }
+  try {
+    const result = await addTodoShareComment(token, session.userId, content, requestId)
+    if (result.created && result.noteId > 0) enqueueTodoNoteDeliveries(result.noteId)
+    response.setHeader('Cache-Control', 'private, no-store')
+    response.status(result.created ? 201 : 200).json(result)
+  } finally {
+    releaseToken()
+    releaseUser()
+  }
+}))
+
+app.post('/api/todos/:todoId/share-link', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  if (!Number.isSafeInteger(todoId) || todoId <= 0) {
+    response.status(400).json({ error: 'Valid todo is required' })
+    return
+  }
+  response.status(201).json(await createTodoShareLink(todoId, userId))
+}))
+
+app.delete('/api/todos/:todoId/share-link', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const todoId = Number(request.params.todoId)
+  if (!Number.isSafeInteger(todoId) || todoId <= 0) {
+    response.status(400).json({ error: 'Valid todo is required' })
+    return
+  }
+  response.json(await revokeTodoShareLink(todoId, userId))
+}))
 
 function formatDateTime(value: Date | string) {
   const date = value instanceof Date ? value : new Date(value)
@@ -12600,6 +12707,29 @@ app.use('/api', createWeeklyReportRouter({
   resolveFeishuOpenIdByEmail,
   sendFeishuMessage,
 }))
+
+function setShareDocumentHeaders(response: express.Response, todoShare = false) {
+  response.setHeader('Cache-Control', 'private, no-store')
+  response.setHeader('Referrer-Policy', 'no-referrer')
+  response.setHeader('X-Robots-Tag', 'noindex')
+  if (todoShare) {
+    response.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+        "script-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+    )
+  }
+}
+
+app.get(/^\/share\/bug\/[^/]+\/?$/, (_request, response) => {
+  setShareDocumentHeaders(response)
+  response.sendFile(path.join(clientDistPath, 'index.html'))
+})
+
+app.get(/^\/share\/todo\/[^/]+\/?$/, (_request, response) => {
+  setShareDocumentHeaders(response, true)
+  response.sendFile(path.join(clientDistPath, 'index.html'))
+})
 
 app.use(express.static(clientDistPath))
 

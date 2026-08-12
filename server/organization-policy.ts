@@ -115,6 +115,10 @@ export function hashBugShareToken(token: string) {
   return crypto.createHash('sha256').update(token).digest('base64url')
 }
 
+export function hashTodoShareToken(token: string) {
+  return crypto.createHash('sha256').update(token).digest('base64url')
+}
+
 export function verifyFeishuCardSignature(params: {
   body: string
   nonce: string

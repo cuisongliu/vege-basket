@@ -1806,6 +1806,36 @@ create unique index if not exists idx_bug_share_links_active_bug
   on bug_share_links(test_bug_id)
   where revoked_at is null;
 
+create table if not exists todo_share_links (
+  id bigserial primary key,
+  todo_id bigint not null references todos(id) on delete cascade,
+  created_by_user_id bigint references users(id) on delete set null,
+  token_hash text not null unique,
+  token_encrypted text not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
+create index if not exists idx_todo_share_links_todo_id
+  on todo_share_links(todo_id, created_at desc);
+
+create unique index if not exists idx_todo_share_links_active_todo
+  on todo_share_links(todo_id)
+  where revoked_at is null;
+
+alter table todo_notes
+  add column if not exists source_share_link_id bigint references todo_share_links(id) on delete set null,
+  add column if not exists source_share_request_id uuid;
+
+create index if not exists idx_todo_notes_source_share_link
+  on todo_notes(source_share_link_id, created_at desc)
+  where source_share_link_id is not null;
+
+create unique index if not exists idx_todo_notes_share_request_unique
+  on todo_notes(source_share_link_id, author_user_id, source_share_request_id)
+  where source_share_request_id is not null;
+
 create table if not exists changelog_entries (
   id bigserial primary key,
   title_encrypted text not null,

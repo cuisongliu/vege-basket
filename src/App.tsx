@@ -286,6 +286,9 @@ import {
 import { AssignedTestBugs, TestWorkbench } from './components/test-workbench'
 import { BugShareView } from './components/bug-share-view'
 import { getBugShareTokenFromPath } from './bug-share-deep-link'
+import { TodoShareDialog } from './components/todo-share-dialog'
+import { TodoShareView } from './components/todo-share-view'
+import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
@@ -1729,7 +1732,9 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const bugShareToken = getBugShareTokenFromPath()
+  const todoShareToken = getTodoShareTokenFromPath(window.location.pathname)
   const [bugShareLoginRequested, setBugShareLoginRequested] = useState(false)
+  const [todoShareLoginRequested, setTodoShareLoginRequested] = useState(false)
   const [authError, setAuthError] = useState('')
   const [roleSelectionOpen, setRoleSelectionOpen] = useState(false)
   const [roleSelectionBusy, setRoleSelectionBusy] = useState(false)
@@ -2954,7 +2959,14 @@ function App() {
   function returnToVegesFromShare() {
     window.history.replaceState({}, '', '/')
     setBugShareLoginRequested(false)
+    setTodoShareLoginRequested(false)
     setView('search')
+  }
+
+  function openTodoFromShare(todoId: number) {
+    window.history.replaceState({}, '', `/?todo=${todoId}`)
+    setTodoShareLoginRequested(false)
+    setPendingTodoDeepLinkId(todoId)
   }
 
   async function saveOnboardingDisplayName() {
@@ -4450,6 +4462,43 @@ ${packageTimelineText}`
     />
   }
 
+  if (todoShareToken && !loggedIn && todoShareLoginRequested) {
+    return (
+      <LoginScreen
+        error={authError}
+        hasOrganizationInvite={Boolean(organizationInviteToken)}
+        hasProjectInvite={Boolean(inviteToken)}
+        invitePasswordChecking={invitePasswordChecking}
+        invitePasswordDraft={invitePasswordDraft}
+        invitePasswordError={invitePasswordError}
+        invitePasswordRequired={invitePasswordRequired}
+        invitePasswordVerified={invitePasswordVerified}
+        onBackToShare={() => setTodoShareLoginRequested(false)}
+        onClearError={() => setAuthError('')}
+        onFeishuSignIn={signInWithFeishu}
+        onInvitePasswordChange={(value) => {
+          setInvitePasswordDraft(value)
+          setInvitePasswordError('')
+          setAuthError('')
+        }}
+        onVerifyInvitePassword={submitInvitePassword}
+        onSignIn={signIn}
+        shareBackLabel="返回待办分享"
+      />
+    )
+  }
+
+  if (todoShareToken) {
+    return (
+      <TodoShareView
+        authUser={authUser}
+        onLogin={() => setTodoShareLoginRequested(true)}
+        onOpenTodo={openTodoFromShare}
+        token={todoShareToken}
+      />
+    )
+  }
+
   if (!loggedIn) {
     return (
         <LoginScreen
@@ -5215,6 +5264,7 @@ function LoginScreen({
   onInvitePasswordChange,
   onVerifyInvitePassword,
   onSignIn,
+  shareBackLabel = '返回 Bug 分享',
 }: {
   error: string
   hasOrganizationInvite: boolean
@@ -5230,6 +5280,7 @@ function LoginScreen({
   onInvitePasswordChange: (value: string) => void
   onVerifyInvitePassword: () => Promise<void>
   onSignIn: (username: string, password: string, mode: 'login' | 'register') => void
+  shareBackLabel?: string
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
@@ -5272,7 +5323,7 @@ function LoginScreen({
   return (
     <main className="login-screen">
       <section className="login-panel">
-        {onBackToShare ? <Button className="login-back-share" type="button" variant="ghost" onClick={onBackToShare}><ArrowLeft /> 返回 Bug 分享</Button> : null}
+        {onBackToShare ? <Button className="login-back-share" type="button" variant="ghost" onClick={onBackToShare}><ArrowLeft /> {shareBackLabel}</Button> : null}
         <div className="login-copy">
           <div className="login-brand-title">Veges</div>
           <div className="login-copy-body">
@@ -10635,8 +10686,8 @@ function TodoNotesPanel({
 }: {
   currentUserId?: number
   members?: Array<{ id: number; name: string }>
-  onCreateNote: (todoId: number, content: string) => void
-  onUpdateNote: (todoId: number, noteId: number, content: string) => void
+  onCreateNote?: (todoId: number, content: string) => void
+  onUpdateNote?: (todoId: number, noteId: number, content: string) => void
   todo: Todo
 }) {
   const [draft, setDraft] = useState('')
@@ -10655,14 +10706,14 @@ function TodoNotesPanel({
 
   function saveNewNote() {
     const content = draft.trim()
-    if (!content) return
+    if (!content || !onCreateNote) return
     onCreateNote(todo.id, content)
     setDraft('')
   }
 
   function saveExistingNote(note: TodoNote) {
     const nextContent = String(editingDrafts[note.id] ?? note.content).trim()
-    if (!nextContent) return
+    if (!nextContent || !onUpdateNote) return
     onUpdateNote(todo.id, note.id, nextContent)
     setEditingNoteId(null)
   }
@@ -10675,32 +10726,34 @@ function TodoNotesPanel({
         </div>
         <span className="todo-notes-panel-count">{notes.length} 条</span>
       </div>
-      <div className="todo-note-composer-pane">
-        <div className="todo-note-create">
-          <TodoNoteComposer
-            action={(
-              <Button
-                className="todo-note-submit"
-                type="button"
-                disabled={!draft.trim()}
-                onClick={saveNewNote}
-              >
-                添加备注
-              </Button>
-            )}
-            members={members}
-            placeholder="记录确认结果、未完成原因或其他补充说明..."
-            value={draft}
-            onChange={setDraft}
-          />
+      {onCreateNote ? (
+        <div className="todo-note-composer-pane">
+          <div className="todo-note-create">
+            <TodoNoteComposer
+              action={(
+                <Button
+                  className="todo-note-submit"
+                  type="button"
+                  disabled={!draft.trim()}
+                  onClick={saveNewNote}
+                >
+                  添加备注
+                </Button>
+              )}
+              members={members}
+              placeholder="记录确认结果、未完成原因或其他补充说明..."
+              value={draft}
+              onChange={setDraft}
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
       <div className="todo-notes-list">
         {notes.length === 0 ? (
           <div className="todo-notes-empty">还没有备注，直接写第一条即可。</div>
         ) : (
           notes.map((note) => {
-            const canEdit = currentUserId != null && (
+            const canEdit = Boolean(onUpdateNote) && currentUserId != null && (
               note.authorUserId === currentUserId || note.sourceOperationId != null
             )
             const isEditing = editingNoteId === note.id
@@ -10980,6 +11033,7 @@ function TodoEditorDialog({
   backLabel = '返回待办列表',
   canEdit = false,
   canRespondToTodo = false,
+  canShare = false,
   canCreateModule = false,
   clearDisabled = false,
   createdAt,
@@ -11025,6 +11079,7 @@ function TodoEditorDialog({
   backLabel?: string
   canEdit?: boolean
   canRespondToTodo?: boolean
+  canShare?: boolean
   canCreateModule?: boolean
   clearDisabled?: boolean
   createdAt: string
@@ -11069,13 +11124,12 @@ function TodoEditorDialog({
   const editing = isCreateMode || isEditing
   const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
-  const showNotesSidebar = Boolean(
-    isDetailMode && todo && onCreateTodoNote && onUpdateTodoNote,
-  )
+  const showNotesSidebar = Boolean(isDetailMode && todo)
   const statusLabel = todo?.done ? '已完成' : '未完成'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
   const titleCharacterCount = Array.from(title).length
+  const [shareOpen, setShareOpen] = useState(false)
   if (!open) {
     return null
   }
@@ -11117,6 +11171,17 @@ function TodoEditorDialog({
               </div>
             </div>
           </div>
+          {todo && canShare ? (
+            <div className="todo-detail-overview-actions">
+              <Button
+                className="todo-detail-share-button"
+                type="button"
+                onClick={() => setShareOpen(true)}
+              >
+                <LinkSimple size={16} /> 分享待办
+              </Button>
+            </div>
+          ) : null}
         </section>
       ) : null}
       <div className="todo-editor-main">
@@ -11278,7 +11343,7 @@ function TodoEditorDialog({
                 />
               </div>
             </section>
-            {showNotesSidebar && todo && onCreateTodoNote && onUpdateTodoNote ? (
+            {showNotesSidebar && todo ? (
               <TodoNotesPanel
                 currentUserId={currentUserId}
                 members={members}
@@ -11312,7 +11377,7 @@ function TodoEditorDialog({
                 <div className="todo-detail-empty">暂无详情</div>
               )}
             </section>
-            {showNotesSidebar && todo && onCreateTodoNote && onUpdateTodoNote ? (
+            {showNotesSidebar && todo ? (
               <TodoNotesPanel
                 currentUserId={currentUserId}
                 members={members}
@@ -11418,6 +11483,9 @@ function TodoEditorDialog({
       <div className="todo-detail-surface">
         {form}
       </div>
+      {isDetailMode && todo ? (
+        <TodoShareDialog todoId={todo.id} open={shareOpen} onOpenChange={setShareOpen} />
+      ) : null}
     </article>
   )
 }
@@ -11631,6 +11699,11 @@ function TodoList({
   )
   const editingCanRespondToTodo = editingTodo ? canRespondToTodo(editingTodo) : false
 
+  function canShareTodo(todo: Todo) {
+    const project = projectById.get(todo.projectId)
+    return Boolean(currentUserId != null && project)
+  }
+
   function canManageTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
     return !project?.readOnly && (
@@ -11807,6 +11880,7 @@ function TodoList({
           project={editingProject}
           canEdit={editingCanManageTodo}
           canRespondToTodo={editingCanRespondToTodo}
+          canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
           isEditing={isTodoDetailEditing}
           submitDisabled={!todoEditDraft.trim()}

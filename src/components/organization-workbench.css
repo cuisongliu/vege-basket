@@ -980,13 +980,6 @@
   width: 132px;
 }
 
-.organization-task-filters {
-  display: grid;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
-}
-
 .organization-member-header-actions {
   display: flex;
   align-items: center;
@@ -1071,10 +1064,6 @@
   margin: -4px 0 0;
   color: var(--primary);
   font-size: 12px;
-}
-
-.organization-task-filters {
-  grid-template-columns: minmax(0, 1fr) 180px;
 }
 
 .organization-task-row {
@@ -1657,7 +1646,6 @@
   .organization-member-direct-form,
   .organization-member-link-actions,
   .organization-project-member-add-form,
-  .organization-task-filters,
   .organization-project-filters,
   .organization-governance-fields,
   .organization-milestone-form-grid {

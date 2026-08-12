@@ -11,6 +11,14 @@ const todoDetailEditorSource = appSource.slice(
   appSource.indexOf('function TodoDetailEditor('),
   appSource.indexOf('function TodoDetailViewer('),
 )
+const todoNotesPanelSource = appSource.slice(
+  appSource.indexOf('function TodoNotesPanel('),
+  appSource.indexOf('function TodoPropertiesPanel('),
+)
+const todoEditorDialogSource = appSource.slice(
+  appSource.indexOf('function TodoEditorDialog('),
+  appSource.indexOf('function TodoList('),
+)
 
 test('todo details use the stable shared Markdown editor without a page reload', () => {
   assert.match(
@@ -46,4 +54,17 @@ test('shared Markdown editor tolerates an unready Tiptap instance', () => {
 test('opening a todo keeps creation bound to the project that rendered the editor', () => {
   assert.match(appSource, /onAddTodo\(project\.id\)/u)
   assert.match(appSource, /onAddTodo: \(projectId: number\) => void \| Promise<void>/u)
+})
+
+test('todo notes remain visible when the viewer has no note write callbacks', () => {
+  assert.match(todoEditorDialogSource, /const showNotesSidebar = Boolean\(isDetailMode && todo\)/u)
+  assert.doesNotMatch(
+    todoEditorDialogSource,
+    /const showNotesSidebar[\s\S]{0,160}onCreateTodoNote[\s\S]{0,80}onUpdateTodoNote/u,
+  )
+  assert.match(todoNotesPanelSource, /onCreateNote\?: \(todoId: number, content: string\)/u)
+  assert.match(todoNotesPanelSource, /onUpdateNote\?: \(todoId: number, noteId: number, content: string\)/u)
+  assert.match(todoNotesPanelSource, /\{onCreateNote \? \(/u)
+  assert.match(todoNotesPanelSource, /<div className="todo-notes-list">/u)
+  assert.match(todoNotesPanelSource, /const canEdit = Boolean\(onUpdateNote\)/u)
 })
