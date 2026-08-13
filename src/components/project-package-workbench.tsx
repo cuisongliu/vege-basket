@@ -4,6 +4,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -1435,6 +1436,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventDocumentRelatedTodoIds, setEventDocumentRelatedTodoIds] = useState<number[]>([])
   const [packageDocumentValues, setPackageDocumentValues] = useState<Record<string, EventDocumentDraftValue>>({})
   const [activeDocumentScope, setActiveDocumentScope] = useState('event')
+  const documentTabsId = useId()
   const [documentTodoPickerOpen, setDocumentTodoPickerOpen] = useState(false)
   const [documentTodoSearch, setDocumentTodoSearch] = useState('')
   const [documentTodoFilterDialogOpen, setDocumentTodoFilterDialogOpen] = useState(false)
@@ -1715,8 +1717,15 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     () => Array.from(new Set(cartItems.map((item) => item.packageName))),
     [cartItems],
   )
-  const activePackageDocumentName = activeDocumentScope.startsWith('package:')
-    ? activeDocumentScope.slice('package:'.length)
+  const documentScopes = useMemo(
+    () => ['event', ...draftPackageNames.map((packageName) => `package:${packageName}`)],
+    [draftPackageNames],
+  )
+  const resolvedDocumentScope = documentScopes.includes(activeDocumentScope)
+    ? activeDocumentScope
+    : 'event'
+  const activePackageDocumentName = resolvedDocumentScope.startsWith('package:')
+    ? resolvedDocumentScope.slice('package:'.length)
     : ''
   const activePackageDocument = activePackageDocumentName
     ? packageDocumentValues[activePackageDocumentName] ?? {
@@ -1786,6 +1795,34 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setDocumentTodoSearch('')
     setEventEditorReady(false)
   }
+
+  function handleDocumentTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, scope: string) {
+    if (!['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'End', 'Home'].includes(event.key)) return
+    event.preventDefault()
+    const currentIndex = documentScopes.indexOf(scope)
+    if (currentIndex < 0) return
+    const lastIndex = documentScopes.length - 1
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? lastIndex
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+          ? (currentIndex - 1 + documentScopes.length) % documentScopes.length
+          : (currentIndex + 1) % documentScopes.length
+    const nextScope = documentScopes[nextIndex]
+    selectDocumentScope(nextScope)
+    const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    tabs?.[nextIndex]?.focus()
+  }
+
+  useEffect(() => {
+    if (documentScopes.includes(activeDocumentScope)) return
+    setActiveDocumentScope('event')
+    setDocumentTodoPickerOpen(false)
+    setDocumentTodoFilterDialogOpen(false)
+    setDocumentTodoSearch('')
+    setEventEditorReady(false)
+  }, [activeDocumentScope, documentScopes])
 
   function toggleActiveDocumentTodo(todoId: number) {
     const nextRelatedTodoIds = activeDocumentRelatedTodoIds.includes(todoId)
@@ -2660,24 +2697,62 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 { label: '选择安装包', step: 2 as const },
                 { label: '填写文档', step: 3 as const },
               ]).map((item) => (
-                <button
-                  aria-current={eventEditorStep === item.step ? 'step' : undefined}
-                  className={[
-                    'event-wizard-step',
-                    item.step <= eventEditorStep ? 'reached' : '',
-                    eventEditorStep === item.step ? 'active' : '',
-                  ].filter(Boolean).join(' ')}
-                  disabled={item.step > 1 && !eventBasicInformationValid}
-                  key={item.step}
-                  onClick={() => {
-                    setEventEditorStep(item.step)
-                    if (item.step === 3) setEventEditorReady(false)
-                  }}
-                  type="button"
-                >
-                  <span>{item.step}</span>
-                  {item.label}
-                </button>
+                <div className={item.step === 3 ? 'event-wizard-step-group documents' : 'event-wizard-step-group'} key={item.step}>
+                  <button
+                    aria-current={eventEditorStep === item.step ? 'step' : undefined}
+                    className={[
+                      'event-wizard-step',
+                      item.step <= eventEditorStep ? 'reached' : '',
+                      eventEditorStep === item.step ? 'active' : '',
+                    ].filter(Boolean).join(' ')}
+                    disabled={item.step > 1 && !eventBasicInformationValid}
+                    onClick={() => {
+                      setEventEditorStep(item.step)
+                      if (item.step === 3) setEventEditorReady(false)
+                    }}
+                    type="button"
+                  >
+                    <span>{item.step}</span>
+                    {item.label}
+                  </button>
+                  {item.step === 3 && eventEditorStep === 3 ? (
+                    <div className="event-wizard-document-nav" role="tablist" aria-label="填写文档子选项">
+                      <button
+                        aria-controls={`${documentTabsId}-panel`}
+                        aria-selected={resolvedDocumentScope === 'event'}
+                        className={resolvedDocumentScope === 'event' ? 'active' : ''}
+                        id={`${documentTabsId}-event-tab`}
+                        onKeyDown={(event) => handleDocumentTabKeyDown(event, 'event')}
+                        onClick={() => selectDocumentScope('event')}
+                        role="tab"
+                        tabIndex={resolvedDocumentScope === 'event' ? 0 : -1}
+                        type="button"
+                      >
+                        事件文档
+                      </button>
+                      {draftPackageNames.map((packageName, index) => {
+                        const scope = `package:${packageName}`
+                        return (
+                          <button
+                            aria-controls={`${documentTabsId}-panel`}
+                            aria-selected={resolvedDocumentScope === scope}
+                            className={resolvedDocumentScope === scope ? 'active' : ''}
+                            id={`${documentTabsId}-package-${index}-tab`}
+                            key={packageName}
+                            onKeyDown={(event) => handleDocumentTabKeyDown(event, scope)}
+                            onClick={() => selectDocumentScope(scope)}
+                            role="tab"
+                            tabIndex={resolvedDocumentScope === scope ? 0 : -1}
+                            title={`${packageName} 安装包文档`}
+                            type="button"
+                          >
+                            {packageName}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </nav>
           </div>
@@ -2795,33 +2870,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           ) : null}
 
           {eventEditorStep === 3 ? (
-            <div className="event-wizard-documents">
-              <div className="event-document-tabs" role="tablist" aria-label="事件文档范围">
-                <button
-                  aria-selected={activeDocumentScope === 'event'}
-                  className={activeDocumentScope === 'event' ? 'active' : ''}
-                  onClick={() => selectDocumentScope('event')}
-                  role="tab"
-                  type="button"
-                >
-                  事件文档
-                </button>
-                {draftPackageNames.map((packageName) => {
-                  const scope = `package:${packageName}`
-                  return (
-                    <button
-                      aria-selected={activeDocumentScope === scope}
-                      className={activeDocumentScope === scope ? 'active' : ''}
-                      key={packageName}
-                      onClick={() => selectDocumentScope(scope)}
-                      role="tab"
-                      type="button"
-                    >
-                      {packageName}
-                    </button>
-                  )
-                })}
-              </div>
+            <div
+              aria-labelledby={resolvedDocumentScope === 'event'
+                ? `${documentTabsId}-event-tab`
+                : `${documentTabsId}-package-${draftPackageNames.indexOf(activePackageDocumentName)}-tab`}
+              className="event-wizard-documents"
+              id={`${documentTabsId}-panel`}
+              role="tabpanel"
+            >
               <Label className="event-document-title-field">
                 文档标题
                 <Input
@@ -2960,7 +3016,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <Suspense fallback={<div className="markdown-wysiwyg-loading" role="status">正在加载编辑器…</div>}>
                   <MarkdownWysiwygEditor
                     ariaLabel={activePackageDocumentName ? `${activePackageDocumentName} 安装包文档内容` : '事件文档内容'}
-                    key={`event-wizard-${activeDocumentScope}`}
+                    key={`event-wizard-${resolvedDocumentScope}`}
                     onChange={(value) => {
                       if (activePackageDocumentName) {
                         updatePackageDocument(activePackageDocumentName, { content: value })

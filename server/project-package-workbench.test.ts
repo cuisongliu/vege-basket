@@ -110,6 +110,47 @@ test('event wizard keeps optional todo associations scoped to each step-three do
   assert.match(workbenchSource, /event-wizard-footer-actions[\s\S]*event-wizard-navigation[\s\S]*event-wizard-save-actions/u)
 })
 
+test('event wizard document navigation keeps tab semantics and valid scope state', () => {
+  const documentNavigationSource = workbenchSource.slice(
+    workbenchSource.indexOf('<div className="event-wizard-document-nav"'),
+    workbenchSource.indexOf('<Label className="event-document-title-field">'),
+  )
+  assert.match(documentNavigationSource, /role="tablist"/u)
+  assert.match(documentNavigationSource, /aria-controls=\{`\$\{documentTabsId\}-panel`\}/u)
+  assert.match(documentNavigationSource, /tabIndex=\{resolvedDocumentScope ===/u)
+  assert.match(documentNavigationSource, /onKeyDown=\{\(event\) => handleDocumentTabKeyDown/u)
+  assert.match(documentNavigationSource, /role="tabpanel"/u)
+  assert.match(documentNavigationSource, /aria-labelledby=/u)
+  assert.match(workbenchSource, /if \(documentScopes\.includes\(activeDocumentScope\)\) return/u)
+  assert.match(workbenchSource, /const resolvedDocumentScope = documentScopes\.includes\(activeDocumentScope\)/u)
+  assert.match(workbenchSource, /setActiveDocumentScope\('event'\)/u)
+})
+
+test('event wizard keeps long package document navigation inside the desktop sidebar', () => {
+  const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+  assert.match(
+    appCssSource,
+    /\.event-wizard-main \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/u,
+  )
+  assert.match(
+    appCssSource,
+    /\.event-wizard-steps-row \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/u,
+  )
+  assert.match(
+    appCssSource,
+    /\.event-wizard-step-group\.documents \{[\s\S]*?grid-template-rows: 58px minmax\(0, 1fr\);[\s\S]*?overflow: hidden;/u,
+  )
+  assert.match(
+    appCssSource,
+    /\.event-wizard-document-nav \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;[\s\S]*?scrollbar-gutter: stable;/u,
+  )
+  const mobileCssSource = appCssSource.slice(appCssSource.indexOf('@media (max-width: 760px)'))
+  assert.match(
+    mobileCssSource,
+    /\.event-wizard-document-nav \{[\s\S]*?overflow-x: auto;[\s\S]*?overflow-y: hidden;/u,
+  )
+})
+
 test('aggregate event save validates and persists document todo links transactionally', () => {
   assert.match(indexSource, /relatedTodoIds: Array\.isArray\(value\.relatedTodoIds\)/u)
   assert.match(
