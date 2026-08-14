@@ -8,6 +8,7 @@ import {
   matchesPackageMarketReleaseFileName,
   normalizeOssEndpoint,
   normalizePackageMarketExpireMinutes,
+  resolvePackageMarketAppRuleId,
 } from './package-market.ts'
 
 test('accepts custom package link validity in minutes within the bounded range', () => {
@@ -16,6 +17,12 @@ test('accepts custom package link validity in minutes within the bounded range',
   assert.equal(normalizePackageMarketExpireMinutes(365 * 24 * 60), 365 * 24 * 60)
   assert.equal(normalizePackageMarketExpireMinutes(0), defaultMinutes)
   assert.equal(normalizePackageMarketExpireMinutes(365 * 24 * 60 + 1), defaultMinutes)
+})
+
+test('keeps base package ids while resolving their reads through apps rules', () => {
+  assert.equal(resolvePackageMarketAppRuleId('base-pro'), 'sealos-pro')
+  assert.equal(resolvePackageMarketAppRuleId('base-oss'), 'sealos-oss')
+  assert.equal(resolvePackageMarketAppRuleId('offline-center'), '')
 })
 
 test('formats package market timestamps in Shanghai time', () => {
@@ -136,7 +143,7 @@ test('allows offline-center release package objects from bundled rules', () => {
     isAllowedPackageMarketObjectKey(
       'offline/sealos-apps/offline-center/release/v5.1.2-alpha4/offline-center-v5.1.2-alpha4-amd64.tar.gz',
     ),
-    true,
+    false,
   )
 })
 
@@ -168,8 +175,11 @@ test('returns bundled package market rules without OSS credentials', async () =>
     for (const key of keys) delete process.env[key]
     const rules = await listPackageMarketRules()
     assert.ok(rules.some((rule) => rule.id === 'offline-center'))
-    assert.ok(rules.some((rule) => rule.id === 'offline-center-desktop-cache'))
-    assert.ok(rules.some((rule) => rule.id === 'offline-center-vscode-cache'))
+    assert.ok(rules.some((rule) => rule.id === 'state-metrics'))
+    assert.equal(rules.some((rule) => rule.id === 'devbox-cache'), false)
+    assert.equal(rules.find((rule) => rule.id === 'sealos-pro')?.category, 'apps')
+    assert.equal(rules.find((rule) => rule.id === 'sealos-pro')?.fileNameFormats.includes('sealos-pro-%s-%s.tar'), true)
+    assert.equal(rules.find((rule) => rule.id === 'sealos-oss')?.category, 'apps')
   } finally {
     for (const key of keys) {
       if (previous[key] == null) {
@@ -179,6 +189,48 @@ test('returns bundled package market rules without OSS credentials', async () =>
       }
     }
   }
+})
+
+test('allows sealos base packages through APPS release rules', () => {
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/pro/release/v5.1.2/sealos-pro-v5.1.2-amd64.tar.gz',
+    ),
+    true,
+  )
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/oss/release/v5.1.2/sealos-oss-v5.1.2-arm64.tar.gz',
+    ),
+    true,
+  )
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/pro/release/v5.1.2/unconfigured-package-v5.1.2-amd64.tar.gz',
+    ),
+    false,
+  )
+})
+
+test('allows sealos base and release-branch packages through APPS CI rules', () => {
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/pro/ci/main/882f04e/sealos-pro-main-882f04e-amd64.tar.gz',
+    ),
+    true,
+  )
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/oss/ci/main/882f04e/sealos-oss-main-882f04e-amd64.tar.gz',
+    ),
+    true,
+  )
+  assert.equal(
+    isAllowedPackageMarketObjectKey(
+      'offline/pro/ci/release-v5.1/493cbc5/sealos-pro-release-v5.1-493cbc5-amd64.tar',
+    ),
+    true,
+  )
 })
 
 test('rejects cache-cluster attachments with mismatched app names or versions', () => {

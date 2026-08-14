@@ -136,12 +136,12 @@ spec:
       default: ''
       required: false
     PACKAGE_MARKET_BASE_OBJECT_TEMPLATE:
-      description: Optional OSS object template for package market downloads.
+      description: Optional legacy base-package object template; apps rules take precedence.
       type: string
       default: ''
       required: false
     PACKAGE_MARKET_BASE_LIST_PREFIX_TEMPLATE:
-      description: Optional OSS list prefix template for package market browsing.
+      description: Optional legacy base-package listing prefix; apps rules take precedence.
       type: string
       default: ''
       required: false

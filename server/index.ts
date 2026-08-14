@@ -10826,9 +10826,10 @@ app.get('/api/package-market/packages/base', asyncHandler(async (request, respon
   const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
   response.json(await getPackageMarketDetail({
     packageId,
-    deployType: String(request.query.deployType ?? ''),
     arch: String(request.query.arch ?? 'amd64'),
     channel: ensurePackageMarketChannel(request.query.channel),
+    ciBranch: String(request.query.ciBranch ?? ''),
+    ciVersion: String(request.query.ciVersion ?? ''),
     expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
     includeAll: ensurePackageMarketIncludeAll(request.query.includeAll),
     releaseVersion: String(request.query.releaseVersion ?? request.query.version ?? ''),
@@ -10842,7 +10843,6 @@ app.get('/api/package-market/packages/base/release-versions', asyncHandler(async
   response.json({
     versions: await listPackageMarketReleaseVersions({
       packageId,
-      deployType: String(request.query.deployType ?? ''),
       arch: String(request.query.arch ?? 'amd64'),
       includeAll: ensurePackageMarketIncludeAll(request.query.includeAll),
     }),
@@ -10854,7 +10854,6 @@ app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, 
   if (!userId) return
   response.json(await getPackageMarketDetail({
     packageId: String(request.params.packageId),
-    deployType: String(request.query.deployType ?? ''),
     arch: String(request.query.arch ?? 'amd64'),
     channel: ensurePackageMarketChannel(request.query.channel),
     ciBranch: String(request.query.ciBranch ?? ''),
@@ -10896,7 +10895,6 @@ app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler
       packageId: String(request.params.packageId),
       arch: String(request.query.arch ?? 'amd64'),
       includeAll: ensurePackageMarketIncludeAll(request.query.includeAll),
-      deployType: String(request.query.deployType ?? ''),
     }),
   })
 }))

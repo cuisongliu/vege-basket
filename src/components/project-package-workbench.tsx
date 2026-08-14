@@ -659,8 +659,8 @@ export function PackageMarketBrowser({
   const [marketLoading, setMarketLoading] = useState(false)
   const [marketError, setMarketError] = useState('')
   const [marketExpandedGroups, setMarketExpandedGroups] = useState<Record<'base' | 'apps' | 'middleware', boolean>>({
-    apps: true,
     base: true,
+    apps: true,
     middleware: true,
   })
   const marketDetailRequestIdRef = useRef(0)
@@ -691,7 +691,9 @@ export function PackageMarketBrowser({
   const groupedMarketRules = useMemo(() => {
     const base = filteredRules.filter((rule) => rule.id === 'base-pro' || rule.id === 'base-oss')
     const apps = filteredRules.filter(
-      (rule) => rule.category === 'apps' && rule.id !== 'base-pro' && rule.id !== 'base-oss',
+      (rule) =>
+        rule.category === 'apps' &&
+        !['base-pro', 'base-oss', 'sealos-pro', 'sealos-oss'].includes(rule.id),
     )
     const middleware = filteredRules.filter((rule) => rule.category === 'middleware')
     return { apps, base, middleware }
@@ -849,17 +851,16 @@ export function PackageMarketBrowser({
           : onLoadPackageMarketVersions({
               arch,
               kind: 'release',
+              deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
               includeAll,
               packageId,
-              deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
             }),
         onLoadPackageMarketDetail({
           packageId,
           channel,
           arch,
           ciBranch,
-          deployType:
-            packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
+          deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
           expireMinutes,
           includeAll,
           releaseVersion,
@@ -1069,10 +1070,7 @@ export function PackageMarketBrowser({
                             type="button"
                             className={rule.id === marketSelectedPackage ? 'package-market-rule active' : 'package-market-rule'}
                             onClick={() => {
-                              const nextChannel =
-                                rule.id === 'base-pro' || rule.id === 'base-oss'
-                                  ? 'release'
-                                  : marketChannel
+                              const nextChannel = rule.id === 'base-oss' ? 'release' : marketChannel
                               setMarketSelectedPackage(rule.id)
                               setMarketChannel(nextChannel)
                               setMarketReleaseVersion('')
@@ -1118,7 +1116,7 @@ export function PackageMarketBrowser({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="release">正式包</SelectItem>
-                    {marketSelectedPackage !== 'base-pro' && marketSelectedPackage !== 'base-oss' ? (
+                    {marketSelectedPackage !== 'base-oss' ? (
                       <SelectItem value="ci">测试包</SelectItem>
                     ) : null}
                   </SelectContent>
@@ -1881,26 +1879,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
     const baseRules: PackageMarketRule[] = [
-      {
-        id: 'base-pro',
-        name: 'sealos-pro',
-        category: 'apps',
-        mode: 'release',
-        releaseRoots: [],
-        flatFileRoots: [],
-        fileNameFormats: [],
-        ciFileNameFormats: [],
-      },
-      {
-        id: 'base-oss',
-        name: 'sealos-oss',
-        category: 'apps',
-        mode: 'release',
-        releaseRoots: [],
-        flatFileRoots: [],
-        fileNameFormats: [],
-        ciFileNameFormats: [],
-      },
+      ...getPackageMarketBaseRules(),
       ...marketRules,
     ]
     return baseRules.filter((rule) => {
@@ -1912,7 +1891,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const groupedMarketRules = useMemo(() => {
     const base = filteredRules.filter((rule) => rule.id === 'base-pro' || rule.id === 'base-oss')
     const apps = filteredRules.filter(
-      (rule) => rule.category === 'apps' && rule.id !== 'base-pro' && rule.id !== 'base-oss',
+      (rule) =>
+        rule.category === 'apps' &&
+        !['base-pro', 'base-oss', 'sealos-pro', 'sealos-oss'].includes(rule.id),
     )
     const middleware = filteredRules.filter((rule) => rule.category === 'middleware')
     return { apps, base, middleware }
@@ -2174,17 +2155,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           : onLoadPackageMarketVersions({
               arch,
               kind: 'release',
+              deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
               includeAll,
               packageId,
-              deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
             }),
         onLoadPackageMarketDetail({
           packageId,
           channel,
           arch,
           ciBranch,
-          deployType:
-            packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
+          deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
           expireMinutes,
           includeAll,
           releaseVersion,
@@ -4069,12 +4049,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </Button>
               <PackageMarketRuleList>
                 {(
-                  [
-                    { id: 'base' as const, label: '基础包', rules: groupedMarketRules.base },
-                    { id: 'apps' as const, label: 'APPS', rules: groupedMarketRules.apps },
-                    { id: 'middleware' as const, label: 'SEALOS-PRO 中间件', rules: groupedMarketRules.middleware },
-                  ] satisfies Array<{
-                    id: 'base' | 'apps' | 'middleware'
+                [
+                  { id: 'base' as const, label: '基础包', rules: groupedMarketRules.base },
+                  { id: 'apps' as const, label: 'APPS', rules: groupedMarketRules.apps },
+                  { id: 'middleware' as const, label: 'SEALOS-PRO 中间件', rules: groupedMarketRules.middleware },
+                ] satisfies Array<{
+                  id: 'base' | 'apps' | 'middleware'
                     label: string
                     rules: PackageMarketRule[]
                   }>
@@ -4111,10 +4091,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                               type="button"
                               className={rule.id === marketSelectedPackage ? 'package-market-rule active' : 'package-market-rule'}
                               onClick={() => {
-                                const nextChannel =
-                                  rule.id === 'base-pro' || rule.id === 'base-oss'
-                                    ? 'release'
-                                    : marketChannel
+                                const nextChannel = rule.id === 'base-oss' ? 'release' : marketChannel
                                 setMarketSelectedPackage(rule.id)
                                 setMarketChannel(nextChannel)
                                 setMarketReleaseVersion('')
@@ -4160,7 +4137,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="release">正式包</SelectItem>
-                      {marketSelectedPackage !== 'base-pro' && marketSelectedPackage !== 'base-oss' ? (
+                      {marketSelectedPackage !== 'base-oss' ? (
                         <SelectItem value="ci">测试包</SelectItem>
                       ) : null}
                     </SelectContent>

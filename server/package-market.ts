@@ -477,13 +477,16 @@ export function isAllowedPackageMarketObjectKey(value: unknown) {
     return false
   }
 
-  if (parseRulesFile().some((rule) => ruleAllowsObjectKey(rule, objectKey))) {
+  const rules = parseRulesFile()
+  if (rules.some((rule) => ruleAllowsObjectKey(rule, objectKey))) {
     return true
   }
   if (cacheClusterPackageAllowsObjectKey(objectKey)) return true
   if (middlewareRootAllowsObjectKey(objectKey)) return true
 
   for (const deployType of ['pro', 'oss']) {
+    const appRuleId = deployType === 'oss' ? 'sealos-oss' : 'sealos-pro'
+    if (rules.some((rule) => rule.id === appRuleId)) continue
     if (templateMatcher(baseObjectTemplate, false, { deployType })?.test(objectKey)) return true
     const prefixMatch = templateMatcher(baseListPrefixTemplate, true, { deployType })?.exec(objectKey)
     if (!prefixMatch) continue
@@ -701,6 +704,16 @@ function publicRule(rule: PackageMarketRule): PackageMarketRule {
 function proMiddlewareNameFromId(packageId: string) {
   if (!packageId.startsWith('pro:')) return ''
   return normalizeString(packageId.slice('pro:'.length))
+}
+
+export function resolvePackageMarketAppRuleId(packageId: string) {
+  if (packageId === 'base-pro') return 'sealos-pro'
+  if (packageId === 'base-oss') return 'sealos-oss'
+  return ''
+}
+
+function basePackageDeployType(packageId: string) {
+  return packageId === 'base-oss' ? 'oss' : 'pro'
 }
 
 async function publicProMiddlewareRules(client: OSS, excludedNames = new Set<string>()) {
@@ -1402,7 +1415,6 @@ export async function getPackageMarketDetail(params: {
   channel: 'release' | 'ci'
   ciBranch?: string
   ciVersion?: string
-  deployType?: string
   expireMinutes?: number
   includeAll?: boolean
   packageId: string
@@ -1412,16 +1424,7 @@ export async function getPackageMarketDetail(params: {
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
   const expireSeconds = normalizeDownloadExpireSeconds(params.expireMinutes)
   const includeAll = params.includeAll === true
-  if (params.packageId === 'base-pro' || params.packageId === 'base-oss') {
-    const deployType = params.packageId === 'base-oss' ? 'oss' : 'pro'
-    return buildBasePackage(
-      client,
-      deployType,
-      params.releaseVersion || '',
-      arch,
-      expireSeconds,
-    )
-  }
+  const appRuleId = resolvePackageMarketAppRuleId(params.packageId)
 
   const middlewareName = proMiddlewareNameFromId(params.packageId)
   if (middlewareName) {
@@ -1430,12 +1433,21 @@ export async function getPackageMarketDetail(params: {
       : buildProMiddlewarePackage(client, middlewareName, arch, params.releaseVersion || '', expireSeconds)
   }
 
-  const rule = parseRulesFile().find((item) => item.id === params.packageId)
+  const rule = parseRulesFile().find((item) => item.id === (appRuleId || params.packageId))
   if (!rule) {
+    if (appRuleId) {
+      return buildBasePackage(
+        client,
+        basePackageDeployType(params.packageId),
+        params.releaseVersion || '',
+        arch,
+        expireSeconds,
+      )
+    }
     throw new Error(`unknown package: ${params.packageId}`)
   }
 
-  return buildComboPackage(
+  const detail = await buildComboPackage(
     client,
     rule,
     arch,
@@ -1446,32 +1458,39 @@ export async function getPackageMarketDetail(params: {
     includeAll,
     expireSeconds,
   )
+  if (!appRuleId) return detail
+  const version = normalizeVersion(params.releaseVersion) || detail.releaseVersions?.[0]?.version || '未找到'
+  return {
+    ...detail,
+    title: '基础包',
+    type: 'main package',
+    meta: [
+      { label: '部署类型', value: basePackageDeployType(params.packageId).toUpperCase() },
+      { label: '基础包版本', value: version },
+      { label: '下载有效期', value: `${Math.round(expireSeconds / 60)} 分钟` },
+    ],
+  }
 }
 
 export async function listPackageMarketReleaseVersions(params: {
   arch: string
-  deployType?: string
   includeAll?: boolean
   packageId: string
 }) {
   const client = ossClient()
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
-  if (params.packageId === 'base-pro' || params.packageId === 'base-oss') {
-    const deployType = params.packageId === 'base-oss' ? 'oss' : 'pro'
-    return listBaseVersions(
-      client,
-      deployType,
-      arch,
-    )
-  }
+  const appRuleId = resolvePackageMarketAppRuleId(params.packageId)
 
   const middlewareName = proMiddlewareNameFromId(params.packageId)
   if (middlewareName) {
     return listProMiddlewareReleaseVersions(client, middlewareName, arch)
   }
 
-  const rule = parseRulesFile().find((item) => item.id === params.packageId)
+  const rule = parseRulesFile().find((item) => item.id === (appRuleId || params.packageId))
   if (!rule) {
+    if (appRuleId) {
+      return listBaseVersions(client, basePackageDeployType(params.packageId), arch)
+    }
     throw new Error(`unknown package: ${params.packageId}`)
   }
   if (rule.category === 'dependency' && rule.dependencyRoots.length > 0) {
@@ -1488,12 +1507,13 @@ export async function listPackageMarketCiVersions(params: {
 }) {
   const client = ossClient()
   const arch = normalizeString(params.arch || 'amd64').toLowerCase()
+  const appRuleId = resolvePackageMarketAppRuleId(params.packageId)
   const middlewareName = proMiddlewareNameFromId(params.packageId)
   if (middlewareName) {
     return listProMiddlewareCiVersions(client, middlewareName, arch)
   }
 
-  const rule = parseRulesFile().find((item) => item.id === params.packageId)
+  const rule = parseRulesFile().find((item) => item.id === (appRuleId || params.packageId))
   if (!rule) {
     throw new Error(`unknown package: ${params.packageId}`)
   }
@@ -1506,7 +1526,8 @@ export async function listPackageMarketCiVersions(params: {
 export async function listPackageMarketCiBranches(params: { packageId: string }) {
   const client = ossClient()
   if (proMiddlewareNameFromId(params.packageId)) return []
-  const rule = parseRulesFile().find((item) => item.id === params.packageId)
+  const appRuleId = resolvePackageMarketAppRuleId(params.packageId)
+  const rule = parseRulesFile().find((item) => item.id === (appRuleId || params.packageId))
   if (!rule) throw new Error(`unknown package: ${params.packageId}`)
   if (rule.category === 'dependency') return []
   return listCiBranches(client, rule)
