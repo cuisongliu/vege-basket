@@ -1437,7 +1437,8 @@ create table if not exists test_spaces (
 );
 
 alter table test_spaces
-  add column if not exists organization_id bigint references organizations(id) on delete restrict;
+  add column if not exists organization_id bigint references organizations(id) on delete restrict,
+  add column if not exists version_label text;
 
 create table if not exists test_space_memberships (
   test_space_id bigint not null references test_spaces(id) on delete cascade,

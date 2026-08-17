@@ -22,6 +22,37 @@ const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8
 const testWorkbenchClientSource = readFileSync(new URL('../src/components/test-workbench.tsx', import.meta.url), 'utf8')
 const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.meta.url), 'utf8')
 
+test('test spaces persist and expose an optional version label', () => {
+  assert.match(schemaSource, /add column if not exists version_label text/u)
+  assert.match(testWorkbenchSource, /select s\.id, s\.owner_user_id, s\.name, s\.version_label/u)
+  assert.match(testWorkbenchSource, /select ts\.id, ts\.owner_user_id, ts\.name, ts\.version_label/u)
+  assert.match(testWorkbenchSource, /insert into test_spaces \(owner_user_id, name, version_label, organization_id\)/u)
+  assert.match(testWorkbenchSource, /set name = \$1, version_label = \$2, organization_id = \$3/u)
+  assert.match(testWorkbenchSource, /versionLabel: row\.version_label \? decryptText\(row\.version_label\) : undefined/u)
+  assert.match(testWorkbenchClientSource, /createTestSpace\(normalizedName, versionLabel\.trim\(\)/u)
+  assert.match(testWorkbenchClientSource, /TestSpaceSelectLabel/u)
+})
+
+test('Bug scope stays within the current space while its subject is returned as detail metadata', () => {
+  assert.match(testWorkbenchSource, /join test_subjects subject on subject\.id = b\.test_subject_id/u)
+  assert.match(testWorkbenchSource, /subject\.name as test_subject_name/u)
+  assert.match(testWorkbenchSource, /testSubjectName: decryptText\(row\.test_subject_name\)/u)
+  assert.match(testWorkbenchClientSource, /const bugs = data\.bugs\.filter\(\s*\(bug\) => bug\.testSpaceId === spaceId,/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /const bugs = data\.bugs\.filter\(\s*\(bug\) => bug\.testSpaceId === spaceId && \(!subjectId/u)
+  assert.match(testWorkbenchClientSource, /activeSpace && tab === 'cases' \?/u)
+  assert.match(testWorkbenchClientSource, /tab === 'cases' && !activeSubject \?/u)
+  assert.match(testWorkbenchClientSource, /test-bug-detail-meta/u)
+  assert.match(testWorkbenchClientSource, /测试对象\s*<strong>\{bug\.testSubjectName/u)
+  assert.match(testWorkbenchClientSource, /<Label>\s*测试对象[\s\S]*subjects\.map/u)
+})
+
+test('assigned Bug details include their test subject and space version label', () => {
+  assert.match(testWorkbenchSource, /space\.version_label as test_space_version_label/u)
+  assert.match(testWorkbenchSource, /testSpaceVersionLabel: row\.test_space_version_label\s*\? decryptText\(row\.test_space_version_label\)\s*:\s*undefined/u)
+  assert.match(testWorkbenchClientSource, /selected\.testSubjectName/u)
+  assert.match(testWorkbenchClientSource, /selected\.testSpaceVersionLabel \|\| '未指定'/u)
+})
+
 test('developer bug transitions stop at pending verification', () => {
   assert.equal(canDeveloperSetBugStatus('assigned', 'in_progress'), true)
   assert.equal(canDeveloperSetBugStatus('pending_confirmation', 'in_progress'), true)
@@ -232,7 +263,7 @@ test('test space organization selection accepts an active id or no organization'
 test('test space organization changes validate membership before updating', () => {
   const membershipLock = testWorkbenchSource.indexOf('lockActiveOrganizationMembership(client, nextOrganizationId')
   const memberValidation = testWorkbenchSource.indexOf('everyCurrentTestSpaceMemberBelongsToOrganization(client, spaceId, nextOrganizationId)')
-  const update = testWorkbenchSource.indexOf('set name = $1, organization_id = $2, updated_at = now()')
+  const update = testWorkbenchSource.indexOf('set name = $1, version_label = $2, organization_id = $3, updated_at = now()')
 
   assert.notEqual(membershipLock, -1)
   assert.notEqual(memberValidation, -1)

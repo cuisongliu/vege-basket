@@ -393,9 +393,10 @@ async function getTestSpaceSettings(userId: number) {
       organization_id: string | null
       organization_name: string | null
       owner_user_id: string
+      version_label: string | null
     }>(
       `
-      select s.id, s.owner_user_id, s.name, s.organization_id, s.created_at,
+      select s.id, s.owner_user_id, s.name, s.version_label, s.organization_id, s.created_at,
         organization.name as organization_name,
         coalesce(mine.access_level, 'viewer') as access_level
       from test_spaces s
@@ -502,6 +503,7 @@ async function getTestSpaceSettings(userId: number) {
       organizationName: row.organization_name ? decryptText(row.organization_name) : undefined,
       ownerUserId: Number(row.owner_user_id),
       accessLevel: row.access_level,
+      versionLabel: row.version_label ? decryptText(row.version_label) : undefined,
     })),
     invitations: invitations.rows.map((row) => ({
       accessLevel: row.access_level,
@@ -582,9 +584,10 @@ async function getTestWorkbench(userId: number) {
       id: string
       name: string
       owner_user_id: string
+      version_label: string | null
     }>(
       `
-      select ts.id, ts.owner_user_id, ts.name, ts.created_at,
+      select ts.id, ts.owner_user_id, ts.name, ts.version_label, ts.created_at,
         coalesce(tsm.access_level, 'viewer') as access_level
       from test_spaces ts
       left join test_space_memberships tsm
@@ -745,18 +748,26 @@ async function getTestWorkbench(userId: number) {
       test_plan_case_id: string | null
       test_plan_id: string | null
       test_space_id: string
+      test_space_name: string
       test_subject_id: string
+      test_subject_name: string
+      test_plan_name: string | null
       title: string
       updated_at: Date
       organization_admin_access: boolean
     }>(
       `
       select b.*,
+        space.name as test_space_name,
+        subject.name as test_subject_name,
+        plan.name as test_plan_name,
         reporter.display_name as reporter_display_name, reporter.email as reporter_email,
         assignee.display_name as assignee_display_name, assignee.email as assignee_email,
         ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
       from test_bugs b
       join test_spaces space on space.id = b.test_space_id
+      join test_subjects subject on subject.id = b.test_subject_id
+      left join test_plans plan on plan.id = b.test_plan_id
       left join test_space_memberships m
         on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
       left join users reporter on reporter.id = b.reporter_user_id
@@ -988,8 +999,11 @@ async function getTestWorkbench(userId: number) {
       status: row.status,
       testPlanCaseId: row.test_plan_case_id ? Number(row.test_plan_case_id) : undefined,
       testPlanId: row.test_plan_id ? Number(row.test_plan_id) : undefined,
+      testPlanName: row.test_plan_name ? decryptText(row.test_plan_name) : undefined,
       testSpaceId: Number(row.test_space_id),
+      testSpaceName: decryptText(row.test_space_name),
       testSubjectId: Number(row.test_subject_id),
+      testSubjectName: decryptText(row.test_subject_name),
       title: decryptText(row.title),
       updatedAt: row.updated_at.toISOString(),
     })),
@@ -1077,6 +1091,7 @@ async function getTestWorkbench(userId: number) {
       id: Number(row.id),
       name: decryptText(row.name),
       ownerUserId: Number(row.owner_user_id),
+      versionLabel: row.version_label ? decryptText(row.version_label) : undefined,
     })),
     subjects: subjects.rows.map((row) => ({
       canDelete: canDeleteTestSubject(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
@@ -1114,6 +1129,7 @@ router.post('/test-spaces', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'tester')
   if (!session) return
   const name = text(request.body.name, 80)
+  const versionLabel = text(request.body.versionLabel, 80)
   const organization = parseOptionalTestSpaceOrganizationId(request.body?.organizationId)
   if (!name || !organization.valid) {
     response.status(400).json({ error: 'Test space name and organization must be valid' })
@@ -1131,8 +1147,8 @@ router.post('/test-spaces', asyncRoute(async (request, response) => {
       return
     }
     const created = await client.query<{ id: string }>(
-      'insert into test_spaces (owner_user_id, name, organization_id) values ($1, $2, $3) returning id',
-      [session.userId, encryptText(name), organization.value],
+      'insert into test_spaces (owner_user_id, name, version_label, organization_id) values ($1, $2, $3, $4) returning id',
+      [session.userId, encryptText(name), versionLabel ? encryptText(versionLabel) : null, organization.value],
     )
     const spaceId = Number(created.rows[0].id)
     await client.query(
@@ -1158,6 +1174,7 @@ router.patch('/test-spaces/:spaceId', asyncRoute(async (request, response) => {
   if (!session) return
   const spaceId = positiveId(request.params.spaceId)
   const name = text(request.body.name, 80)
+  const versionLabel = text(request.body.versionLabel, 80)
   const hasOrganizationId = Object.prototype.hasOwnProperty.call(request.body ?? {}, 'organizationId')
   const organization = hasOrganizationId
     ? parseOptionalTestSpaceOrganizationId(request.body.organizationId)
@@ -1198,9 +1215,9 @@ router.patch('/test-spaces/:spaceId', asyncRoute(async (request, response) => {
     }
     await client.query(
       `update test_spaces
-       set name = $1, organization_id = $2, updated_at = now()
-       where id = $3 and owner_user_id = $4`,
-      [encryptText(name), nextOrganizationId, spaceId, session.userId],
+       set name = $1, version_label = $2, organization_id = $3, updated_at = now()
+       where id = $4 and owner_user_id = $5`,
+      [encryptText(name), versionLabel ? encryptText(versionLabel) : null, nextOrganizationId, spaceId, session.userId],
     )
     if (organizationChanged && nextOrganizationId !== null) {
       await client.query(
@@ -2952,6 +2969,7 @@ async function getAssignedBugs(userId: number) {
     test_plan_name: string | null
     test_space_id: string
     test_space_name: string
+    test_space_version_label: string | null
     test_subject_id: string
     test_subject_name: string
     title: string
@@ -2966,6 +2984,7 @@ async function getAssignedBugs(userId: number) {
       b.created_at, b.updated_at,
       space.organization_id as organization_id,
       space.name as test_space_name,
+      space.version_label as test_space_version_label,
       subject.name as test_subject_name,
       plan.name as test_plan_name,
       reporter.display_name as reporter_display_name, reporter.email as reporter_email,
@@ -3174,6 +3193,9 @@ async function getAssignedBugs(userId: number) {
       testPlanName: row.test_plan_name ? decryptText(row.test_plan_name) : undefined,
       testSpaceId: Number(row.test_space_id),
       testSpaceName: decryptText(row.test_space_name),
+      testSpaceVersionLabel: row.test_space_version_label
+        ? decryptText(row.test_space_version_label)
+        : undefined,
       testSubjectId: Number(row.test_subject_id),
       testSubjectName: decryptText(row.test_subject_name),
       title: decryptText(row.title),

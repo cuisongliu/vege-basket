@@ -22,6 +22,7 @@ export type TestSpace = {
   id: number
   name: string
   ownerUserId: number
+  versionLabel?: string
 }
 
 export type TestSpaceMembershipStatus = 'pending' | 'active' | 'declined'
@@ -44,6 +45,7 @@ export type ManagedTestSpace = {
   organizationId?: number
   organizationName?: string
   ownerUserId: number
+  versionLabel?: string
 }
 
 export type TestSpaceOrganizationOption = {
@@ -198,6 +200,7 @@ export type TestBug = {
   testPlanName?: string
   testSpaceId: number
   testSpaceName?: string
+  testSpaceVersionLabel?: string
   testSubjectId?: number
   testSubjectName?: string
   title: string

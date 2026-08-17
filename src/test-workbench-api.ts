@@ -18,10 +18,10 @@ export function fetchTestWorkbench() {
   return request<TestWorkbenchData>('/api/test-workbench')
 }
 
-export function createTestSpace(name: string, organizationId?: number) {
+export function createTestSpace(name: string, versionLabel?: string, organizationId?: number) {
   return request<TestWorkbenchData>('/api/test-spaces', {
     method: 'POST',
-    body: JSON.stringify({ name, organizationId: organizationId ?? null }),
+    body: JSON.stringify({ name, organizationId: organizationId ?? null, versionLabel: versionLabel ?? '' }),
   })
 }
 
@@ -29,10 +29,14 @@ export function fetchTestSpaceSettings() {
   return request<TestSpaceSettings>('/api/test-spaces/settings')
 }
 
-export function updateTestSpace(spaceId: number, payload: { name: string; organizationId?: number }) {
+export function updateTestSpace(spaceId: number, payload: { name: string; organizationId?: number; versionLabel?: string }) {
   return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ name: payload.name, organizationId: payload.organizationId ?? null }),
+    body: JSON.stringify({
+      name: payload.name,
+      organizationId: payload.organizationId ?? null,
+      versionLabel: payload.versionLabel ?? '',
+    }),
   })
 }
 
@@ -327,6 +331,7 @@ export function updateTestBug(spaceId: number, bugId: number, payload: {
   reproductionSteps?: string
   severity?: BugSeverity
   status?: BugStatus
+  testSubjectId?: number
   title?: string
 }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {

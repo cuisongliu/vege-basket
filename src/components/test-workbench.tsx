@@ -409,6 +409,15 @@ function WorkspaceError({ message }: { message: string }) {
   return message ? <div className="test-workbench-error"><WarningCircle /> {message}</div> : null
 }
 
+function TestSpaceSelectLabel({ name, versionLabel }: { name: string; versionLabel?: string }) {
+  return (
+    <span className="test-space-select-label">
+      <span>{name}</span>
+      {versionLabel ? <small>{versionLabel}</small> : null}
+    </span>
+  )
+}
+
 export function TestWorkbench({
   accountMenu,
   currentUserId,
@@ -638,7 +647,7 @@ export function TestWorkbench({
     (plan) => plan.testSpaceId === spaceId,
   )
   const bugs = data.bugs.filter(
-    (bug) => bug.testSpaceId === spaceId && (!subjectId || bug.testSubjectId === subjectId),
+    (bug) => bug.testSpaceId === spaceId,
   )
   const normalizedBugSearchQuery = bugSearchQuery.trim().toLocaleLowerCase('zh-CN')
   const filteredBugs = useMemo(() => bugs.filter((bug) => {
@@ -827,13 +836,13 @@ export function TestWorkbench({
     return result
   }
 
-  async function handleCreateSpace(name: string, organizationId?: number) {
+  async function handleCreateSpace(name: string, versionLabel: string, organizationId?: number) {
     const normalizedName = name.trim()
     if (!normalizedName) return false
     setBusy(true)
     setError('')
     try {
-      const result = await createTestSpace(normalizedName, organizationId)
+      const result = await createTestSpace(normalizedName, versionLabel.trim(), organizationId)
       const createdSpace = result.spaces.find((space) => space.name === normalizedName) ?? result.spaces[0]
       setData(result)
       setSpaceId(createdSpace?.id)
@@ -956,7 +965,11 @@ export function TestWorkbench({
               )}
             >
               {data.spaces.length > 0
-                ? data.spaces.map((space) => <SelectItem key={space.id} value={String(space.id)}>{space.name}</SelectItem>)
+                ? data.spaces.map((space) => (
+                  <SelectItem key={space.id} value={String(space.id)}>
+                    <TestSpaceSelectLabel name={space.name} versionLabel={space.versionLabel} />
+                  </SelectItem>
+                ))
                 : <SelectItem disabled value="__empty">暂无测试空间</SelectItem>}
             </SelectContent>
           </Select>
@@ -968,7 +981,7 @@ export function TestWorkbench({
               <button className={tab === 'bugs' ? 'active' : ''} onClick={() => setTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{bugs.length}</span></button>
               <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => setTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
             </nav>
-            {activeSpace ? (
+            {activeSpace && tab === 'cases' ? (
               <section className="test-subject-browser" aria-label="测试对象">
                 <header className="test-subject-browser-header">
                   <span>测试对象</span>
@@ -1085,7 +1098,7 @@ export function TestWorkbench({
               </div>
               <WorkspaceError message={error} />
             </div>
-          ) : !activeSubject && tab !== 'plans' ? (
+          ) : tab === 'cases' && !activeSubject ? (
             <div className="test-inline-empty">
               <WorkspaceError message={error} />
               <Flask size={30} />
@@ -1375,6 +1388,7 @@ export function TestWorkbench({
         editing={Boolean(editingBug)}
         open={bugDialogOpen}
         seed={bugSeed}
+        subjects={subjects}
         users={data.users}
         onOpenChange={(open) => {
           setBugDialogOpen(open)
@@ -2114,7 +2128,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   return <>
     <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions"><Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick={() => setTimelineOpen(true)}><Clock /></Button>{(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
     <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
-    <div className="test-detail-meta"><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
+    <div className="test-detail-meta test-bug-detail-meta"><span>测试对象 <strong>{bug.testSubjectName || '未记录'}</strong></span><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
     <BugCommentsSection
       bug={bug}
@@ -2722,16 +2736,18 @@ function DetailBlock({ content, title }: { content: string; title: string }) {
 function TestSpaceCreateDialog({ busy, onOpenChange, onSubmit, open, organizations }: {
   busy: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (name: string, organizationId?: number) => Promise<boolean>
+  onSubmit: (name: string, versionLabel: string, organizationId?: number) => Promise<boolean>
   open: boolean
   organizations: TestSpaceSettings['organizations']
 }) {
   const [name, setName] = useState('')
+  const [versionLabel, setVersionLabel] = useState('')
   const [organizationValue, setOrganizationValue] = useState('none')
 
   useEffect(() => {
     if (!open) {
       setName('')
+      setVersionLabel('')
       setOrganizationValue('none')
     }
   }, [open])
@@ -2749,14 +2765,22 @@ function TestSpaceCreateDialog({ busy, onOpenChange, onSubmit, open, organizatio
             event.preventDefault()
             const saved = await onSubmit(
               name,
+              versionLabel,
               organizationValue === 'none' ? undefined : Number(organizationValue),
             )
-            if (saved) setName('')
+            if (saved) {
+              setName('')
+              setVersionLabel('')
+            }
           }}
         >
           <Label>
             空间名称
             <Input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：Sealos Pro 测试组" />
+          </Label>
+          <Label>
+            版本号
+            <Input maxLength={80} value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} placeholder="例如：v1.2.3" />
           </Label>
           <Label>
             归属组织
@@ -2793,6 +2817,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [renameValue, setRenameValue] = useState('')
+  const [versionLabel, setVersionLabel] = useState('')
   const [organizationValue, setOrganizationValue] = useState('none')
   const [inviteUsername, setInviteUsername] = useState('')
   const [memberAccess, setMemberAccess] = useState<'editor' | 'viewer'>('editor')
@@ -2823,11 +2848,12 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
 
   useEffect(() => {
     setRenameValue(selectedSpace?.name ?? '')
+    setVersionLabel(selectedSpace?.versionLabel ?? '')
     setOrganizationValue(selectedSpace?.organizationId ? String(selectedSpace.organizationId) : 'none')
     setDeleteConfirmation('')
     setInviteUsername('')
     setInviteLinkStatus('')
-  }, [selectedSpace?.id, selectedSpace?.name, selectedSpace?.organizationId])
+  }, [selectedSpace?.id, selectedSpace?.name, selectedSpace?.organizationId, selectedSpace?.versionLabel])
 
   async function mutateSettings(
     operation: () => Promise<TestSpaceSettings>,
@@ -2909,9 +2935,11 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                       void mutateSettings(() => updateTestSpace(selectedSpace.id, {
                         name: renameValue,
                         organizationId: organizationValue === 'none' ? undefined : Number(organizationValue),
+                        versionLabel,
                       }))
                     }}>
                       <Label>空间名称<Input maxLength={80} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /></Label>
+                      <Label>版本号<Input maxLength={80} value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} /></Label>
                       <Label>归属组织
                         <Select value={organizationValue} onValueChange={setOrganizationValue}>
                           <SelectTrigger aria-label="测试空间归属组织"><SelectValue /></SelectTrigger>
@@ -2928,6 +2956,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                       </Label>
                       <Button variant="outline" disabled={busy || !renameValue.trim() || (
                         renameValue.trim() === selectedSpace.name
+                        && versionLabel.trim() === (selectedSpace.versionLabel ?? '')
                         && organizationValue === (selectedSpace.organizationId ? String(selectedSpace.organizationId) : 'none')
                       )}><PencilSimple /> 保存修改</Button>
                     </form>
@@ -3767,11 +3796,11 @@ type BugDialogPayload = {
   title: string
 }
 
-function BugDialog({ busy, editing, onOpenChange, onSubmit, open, seed, users }: { busy: boolean; editing: boolean; onOpenChange: (open: boolean) => void; onSubmit: (payload: BugDialogPayload) => void; open: boolean; seed: Partial<TestBug>; users: TestWorkbenchData['users'] }) {
-  return <BugDialogForm key={`${open}-${editing ? seed.id : seed.testPlanCaseId ?? 'new'}`} {...{ busy, editing, onOpenChange, onSubmit, open, seed, users }} />
+function BugDialog({ busy, editing, onOpenChange, onSubmit, open, seed, subjects, users }: { busy: boolean; editing: boolean; onOpenChange: (open: boolean) => void; onSubmit: (payload: BugDialogPayload) => void; open: boolean; seed: Partial<TestBug>; subjects: TestSubject[]; users: TestWorkbenchData['users'] }) {
+  return <BugDialogForm key={`${open}-${editing ? seed.id : seed.testPlanCaseId ?? 'new'}`} {...{ busy, editing, onOpenChange, onSubmit, open, seed, subjects, users }} />
 }
 
-function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, users }: Parameters<typeof BugDialog>[0]) {
+function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, subjects, users }: Parameters<typeof BugDialog>[0]) {
   const [title, setTitle] = useState(seed.title ?? '')
   const [severity, setSeverity] = useState<BugSeverity>(seed.severity ?? 'major')
   const [priority, setPriority] = useState<Priority>(seed.priority ?? 'medium')
@@ -3780,6 +3809,7 @@ function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, user
   const [expectedResult, setExpectedResult] = useState(seed.expectedResult ?? '')
   const [actualResult, setActualResult] = useState(seed.actualResult ?? '')
   const [assigneeUserId, setAssigneeUserId] = useState(seed.assigneeUserId ? String(seed.assigneeUserId) : 'none')
+  const [testSubjectId, setTestSubjectId] = useState(seed.testSubjectId ? String(seed.testSubjectId) : '')
   const [reproductionUploading, setReproductionUploading] = useState(false)
   const [expectedUploading, setExpectedUploading] = useState(false)
   const [actualUploading, setActualUploading] = useState(false)
@@ -3806,7 +3836,7 @@ function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, user
               severity,
               testPlanCaseId: seed.testPlanCaseId,
               testPlanId: seed.testPlanId,
-              testSubjectId: seed.testSubjectId!,
+              testSubjectId: Number(testSubjectId),
               title,
             })
           }}
@@ -3838,6 +3868,13 @@ function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, user
               </Select>
             </Label>
             <Label>
+              测试对象
+              <Select value={testSubjectId} onValueChange={setTestSubjectId} disabled={editing}>
+                <SelectTrigger><SelectValue placeholder="选择测试对象" /></SelectTrigger>
+                <SelectContent>{subjects.map((subject) => <SelectItem key={subject.id} value={String(subject.id)}>{subject.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </Label>
+            <Label>
               测试环境
               <Input value={environment} onChange={(event) => setEnvironment(event.target.value)} />
             </Label>
@@ -3865,7 +3902,7 @@ function BugDialogForm({ busy, editing, onOpenChange, onSubmit, open, seed, user
           />
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button disabled={busy || evidenceUploading || !title.trim() || !seed.testSubjectId}>
+            <Button disabled={busy || evidenceUploading || !title.trim() || !testSubjectId}>
               {evidenceUploading ? '附件上传中...' : editing ? '保存修改' : '创建 Bug'}
             </Button>
           </DialogFooter>
@@ -4260,7 +4297,7 @@ export function AssignedTestBugs({
             {selected ? (
               <>
                 <div className="test-detail-heading">
-                  <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2><span className="test-bug-assignee">负责人：{selected.assigneeName || '未分配'}</span></div>
+                  <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2></div>
                   <div className="test-detail-heading-actions">
                     {selected.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}
                     {selected.canTransfer && (selected.transferCandidates?.length ?? 0) > 0 ? (
@@ -4303,6 +4340,12 @@ export function AssignedTestBugs({
                       </>
                     ) : null}
                   </div>
+                </div>
+                <div className="test-detail-meta assigned-bug-detail-meta">
+                  <span>负责人 <strong>{selected.assigneeName || '未分配'}</strong></span>
+                  <span>测试对象 <strong>{selected.testSubjectName}</strong></span>
+                  <span>版本号 <strong>{selected.testSpaceVersionLabel || '未指定'}</strong></span>
+                  <span>严重程度 <strong>{severityLabel[selected.severity]}</strong></span>
                 </div>
                 <DetailBlock title="复现步骤" content={selected.reproductionSteps} />
                 <DetailBlock title="预期结果" content={selected.expectedResult} />

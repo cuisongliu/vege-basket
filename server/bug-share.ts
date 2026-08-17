@@ -94,7 +94,7 @@ async function transaction<T>(handler: (client: PoolClient) => Promise<T>) {
   }
 }
 
-function publicBugShareUrl(token: string) {
+export function buildBugShareUrl(token: string) {
   const path = `/share/bug/${encodeURIComponent(token)}`
   const origin = normalizePublicAppUrl(process.env.APP_PUBLIC_URL)
   return origin ? `${origin}${path}` : path
@@ -267,7 +267,7 @@ export async function createBugShareLink(bugId: number, userId: number) {
     }
     throw error
   }
-  return { expiresInDays: 30, url: publicBugShareUrl(token) }
+  return { expiresInDays: 30, url: buildBugShareUrl(token) }
 }
 
 export async function revokeBugShareLink(bugId: number, userId: number) {

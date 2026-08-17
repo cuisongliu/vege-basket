@@ -167,6 +167,7 @@ import {
   getTodoShareView,
   revokeTodoShareLink,
 } from './todo-share.ts'
+import { buildBugShareUrl } from './bug-share.ts'
 import {
   configureTestWorkbenchNotifications,
   testWorkbenchRouter,
@@ -5520,6 +5521,7 @@ type FeishuNotificationCandidate = {
   bugExpectedResult?: string
   bugPriority?: Priority
   bugReproductionSteps?: string
+  bugShareUrl?: string
   bugSeverity?: string
   bugTitle?: string
   bugTransferReason?: string
@@ -5656,6 +5658,7 @@ type TestBugAssignedNotificationRow = {
   assignee_feishu_email: string | null
   assignee_feishu_user_id: string | null
   assignee_user_id: string
+  bug_share_token_encrypted: string | null
   environment: string
   expected_result: string
   id: string
@@ -5675,6 +5678,7 @@ type TestWorkbenchNotificationRow = {
   actor_display_name: string | null
   actor_email: string | null
   bug_title: string | null
+  bug_share_token_encrypted: string | null
   bug_status: string | null
   comment_content: string | null
   id: string
@@ -5790,6 +5794,12 @@ function bugSeverityLabel(severity?: string) {
   if (severity === 'minor') return '次要'
   if (severity === 'trivial') return '轻微'
   return '主要'
+}
+
+function bugShareLinkMarkdown(candidate: FeishuNotificationCandidate) {
+  return candidate.bugShareUrl
+    ? `**Bug 分享链接**\n[打开 Bug 分享页](${candidate.bugShareUrl})`
+    : ''
 }
 
 function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, target: FeishuDeliveryTarget) {
@@ -5969,6 +5979,7 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
       reproductionSteps,
       transferReason ? '转移理由' : '',
       transferReason,
+      candidate.bugShareUrl ? `Bug 分享链接：${candidate.bugShareUrl}` : '',
     ].filter(Boolean).join('\n')
   }
 
@@ -5993,7 +6004,9 @@ function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, tar
       candidate.testBugStatus ? `当前状态：${candidate.testBugStatus}` : '',
       showSubject && candidate.title ? `事项：${candidate.title}` : '',
     ].filter(Boolean)
-    return detail ? `${lines.join('\n')}\n${detail}` : lines.join('\n')
+    const content = detail ? `${lines.join('\n')}\n${detail}` : lines.join('\n')
+    const shareLink = bugShareLinkMarkdown(candidate)
+    return shareLink ? `${content}\n${shareLink}` : content
   }
 
   if (candidate.kind === 'package_event_assigned') {
@@ -6635,6 +6648,15 @@ function buildFeishuInteractiveCard(
             },
           ],
         },
+        ...(bugShareLinkMarkdown(candidate)
+          ? [{
+              tag: 'div',
+              text: {
+                content: bugShareLinkMarkdown(candidate),
+                tag: 'lark_md',
+              },
+            }]
+          : []),
       ],
       header: {
         template: 'red',
@@ -6815,14 +6837,17 @@ function buildFeishuInteractiveCard(
       candidate.testBugStatus ? `**当前状态**\n${sanitizeFeishuMarkdownText(candidate.testBugStatus)}` : '',
       showSubject && candidate.title ? `**事项**\n${sanitizeFeishuMarkdownText(candidate.title)}` : '',
     ].filter(Boolean)
-    const content = [`**${activityTitle}**`, `操作人：${operatorName}`, ...lines].join('\n\n')
+    const baseContent = [`**${activityTitle}**`, `操作人：${operatorName}`, ...lines].join('\n\n')
+    const content = detail ? `${baseContent}\n${detail}` : baseContent
     return {
       config: { wide_screen_mode: true },
       elements: [
         {
           tag: 'div',
           text: {
-            content: detail ? `${content}\n${detail}` : content,
+            content: bugShareLinkMarkdown(candidate)
+              ? `${content}\n${bugShareLinkMarkdown(candidate)}`
+              : content,
             tag: 'lark_md',
           },
         },
@@ -7789,6 +7814,7 @@ async function buildTestBugAssignedFeishuCandidate(event: TestBugAssignedEvent) 
            b.reproduction_steps,
            b.expected_result,
            b.actual_result,
+           bug_share.token_encrypted as bug_share_token_encrypted,
            b.assignee_user_id,
            space.name as test_space_name,
            plan.name as test_plan_name,
@@ -7808,6 +7834,10 @@ async function buildTestBugAssignedFeishuCandidate(event: TestBugAssignedEvent) 
       on plan.id = b.test_plan_id
      and plan.test_space_id = b.test_space_id
     left join projects project on project.id = plan.project_id
+    left join bug_share_links bug_share
+      on bug_share.test_bug_id = b.id
+     and bug_share.revoked_at is null
+     and bug_share.expires_at > now()
     where b.id = $1
       and b.assignee_user_id = $2
       and b.assignee_user_id <> $3
@@ -7841,6 +7871,9 @@ async function buildTestBugAssignedFeishuCandidate(event: TestBugAssignedEvent) 
     bugExpectedResult: bug.expected_result ? decryptText(bug.expected_result) : '',
     bugPriority: bug.priority,
     bugReproductionSteps: bug.reproduction_steps ? decryptText(bug.reproduction_steps) : '',
+    bugShareUrl: bug.bug_share_token_encrypted
+      ? buildBugShareUrl(decryptText(bug.bug_share_token_encrypted))
+      : undefined,
     bugSeverity: bug.severity,
     bugTransferReason: event.transferReason,
     kind: 'test_bug_assigned' as const,
@@ -7884,6 +7917,9 @@ function testWorkbenchNotificationCandidate<
   return {
     body: `${operatorName} ${activity}`,
     bugTitle: row.bug_title ? decryptText(row.bug_title) : undefined,
+    bugShareUrl: row.bug_share_token_encrypted
+      ? buildBugShareUrl(decryptText(row.bug_share_token_encrypted))
+      : undefined,
     kind,
     operatorName,
     projectId: row.project_id ? Number(row.project_id) : 0,
@@ -7947,6 +7983,7 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
   const result = await query<TestWorkbenchNotificationRow>(
     `
     select b.id, b.title as bug_title, b.status as bug_status,
+           bug_share.token_encrypted as bug_share_token_encrypted,
            b.reporter_user_id as recipient_user_id,
            space.name as test_space_name, plan.name as test_plan_name,
            plan.project_id, project.name as project_name,
@@ -7960,6 +7997,10 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
     join users recipient on recipient.id = b.reporter_user_id and recipient.id <> $2
     left join test_plans plan on plan.id = b.test_plan_id and plan.test_space_id = b.test_space_id
     left join projects project on project.id = plan.project_id
+    left join bug_share_links bug_share
+      on bug_share.test_bug_id = b.id
+     and bug_share.revoked_at is null
+     and bug_share.expires_at > now()
     left join users actor on actor.id = $2
     where b.id = $1 and b.status = $3
     limit 1
@@ -7980,6 +8021,7 @@ async function buildTestBugRejectedFeishuCandidate(event: TestBugRejectedEvent) 
   const result = await query<TestWorkbenchNotificationRow>(
     `
     select b.id, b.title as bug_title, b.status as bug_status,
+           bug_share.token_encrypted as bug_share_token_encrypted,
            b.reporter_user_id as recipient_user_id,
            space.name as test_space_name, plan.name as test_plan_name,
            plan.project_id, project.name as project_name,
@@ -7993,6 +8035,10 @@ async function buildTestBugRejectedFeishuCandidate(event: TestBugRejectedEvent) 
     join users recipient on recipient.id = b.reporter_user_id and recipient.id <> $2
     left join test_plans plan on plan.id = b.test_plan_id and plan.test_space_id = b.test_space_id
     left join projects project on project.id = plan.project_id
+    left join bug_share_links bug_share
+      on bug_share.test_bug_id = b.id
+     and bug_share.revoked_at is null
+     and bug_share.expires_at > now()
     left join users actor on actor.id = $2
     where b.id = $1 and b.status = 'rejected'
     limit 1
@@ -8016,6 +8062,7 @@ async function buildTestBugCommentFeishuCandidates(event: TestBugCommentAddedEve
   const result = await query<TestWorkbenchNotificationRow>(
     `
     select c.id, b.title as bug_title, b.status as bug_status,
+           bug_share.token_encrypted as bug_share_token_encrypted,
            c.content as comment_content, recipient.id as recipient_user_id,
            space.name as test_space_name, plan.name as test_plan_name,
            plan.project_id, project.name as project_name,
@@ -8033,6 +8080,10 @@ async function buildTestBugCommentFeishuCandidates(event: TestBugCommentAddedEve
                            and recipient.id <> $3
     left join test_plans plan on plan.id = b.test_plan_id and plan.test_space_id = b.test_space_id
     left join projects project on project.id = plan.project_id
+    left join bug_share_links bug_share
+      on bug_share.test_bug_id = b.id
+     and bug_share.revoked_at is null
+     and bug_share.expires_at > now()
     left join users actor on actor.id = $3
     where c.id = $1 and c.test_bug_id = $2
     order by recipient.id

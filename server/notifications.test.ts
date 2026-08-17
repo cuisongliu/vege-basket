@@ -342,6 +342,8 @@ test('routes Bug assignments to the developer and only project-linked Bugs to pr
   assert.match(serverSource, /kind: 'test_bug_assigned'/)
   assert.match(serverSource, /bugAssignmentKind: event\.assignmentKind/u)
   assert.match(serverSource, /给你分配了 Bug/u)
+  assert.match(serverSource, /bug_share\.token_encrypted as bug_share_token_encrypted/u)
+  assert.match(serverSource, /bugShareUrl: bug\.bug_share_token_encrypted/u)
 
   const targetResolverStart = serverSource.indexOf('async function resolveFeishuDeliveryTargets(')
   const targetResolverEnd = serverSource.indexOf('async function upsertFeishuDelivery(', targetResolverStart)
@@ -363,6 +365,8 @@ test('routes Bug assignments to the developer and only project-linked Bugs to pr
   assert.match(bugCardSource, /\*\*优先级\*\*[\s\S]*\*\*负责人\*\*/)
   assert.match(bugCardSource, /bugTransferReason/u)
   assert.match(bugCardSource, /\*\*转移理由\*\*/u)
+  assert.match(bugCardSource, /bugShareLinkMarkdown\(candidate\)/u)
+  assert.match(serverSource, /function bugShareLinkMarkdown\(candidate: FeishuNotificationCandidate\)[\s\S]*\*\*Bug 分享链接\*\*/u)
 })
 
 test('transfers an assigned organization Bug atomically with an immutable collaboration record', () => {
@@ -448,6 +452,7 @@ test('covers test-workbench Feishu private notification events', () => {
   assert.match(serverSource, /delete from notification_deliveries where kind = 'test_plan_assigned'/)
   assert.match(serverSource, /delete from notification_deliveries where kind = 'test_bug_status_changed'/)
   assert.match(serverSource, /recipient\.id = b\.reporter_user_id or recipient\.id = b\.assignee_user_id/)
+  assert.equal((serverSource.match(/left join bug_share_links bug_share/g) ?? []).length, 4)
 
   const textBuilderStart = serverSource.indexOf('function buildFeishuNotificationText(')
   const cardBuilderStart = serverSource.indexOf('function buildFeishuInteractiveCard(')
@@ -478,6 +483,7 @@ test('covers test-workbench Feishu private notification events', () => {
   assert.match(cardBranch, /const detail = candidate\.testCommentContent\s*\?\s*`\*\*\$\{isRejection \? '驳回理由' : '评论内容'\}\*\*\\n/)
   assert.doesNotMatch(cardBranch, /\\n\\n\*\*评论内容\*\*/)
   assert.match(cardBranch, /title: \{ content: `\$\{isRejection \? '⛔' : '🔔'\} \$\{activityTitle\}`,/)
+  assert.match(cardBranch, /bugShareLinkMarkdown\(candidate\)/u)
   assert.match(serverSource, /event\.nextStatus === 'pending_confirmation' \? '将 Bug 打回待确认' : '修复了你创建的 Bug，请验证'/)
   assert.doesNotMatch(serverSource, /退回了你创建的 Bug/)
 })
