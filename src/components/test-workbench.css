@@ -968,8 +968,9 @@
   border-block: 1px solid var(--line);
 }
 
-.test-detail-meta span,
+.test-detail-meta > span,
 .test-plan-progress > div {
+  min-width: 0;
   padding: 11px 10px;
   display: grid;
   gap: 3px;
@@ -978,15 +979,39 @@
   font-size: 12px;
 }
 
-.test-detail-meta span:last-child,
+.test-detail-meta > span:last-child,
 .test-plan-progress > div:last-child {
   border-right: 0;
 }
 
 .test-detail-meta strong,
 .test-plan-progress strong {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--strong);
   font-size: 14px;
+}
+
+.test-detail-meta-label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.test-detail-meta-copy[data-slot="button"] {
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  color: var(--muted-text);
+}
+
+.test-detail-meta-copy[data-slot="button"]:hover {
+  color: var(--foreground);
 }
 
 .test-case-detail-meta {

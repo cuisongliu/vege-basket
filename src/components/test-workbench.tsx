@@ -2125,10 +2125,25 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   const developers = users.filter((user) => user.roles.includes('developer'))
   const [shareOpen, setShareOpen] = useState(false)
   const [timelineOpen, setTimelineOpen] = useState(false)
+  const [environmentCopyState, setEnvironmentCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  useEffect(() => {
+    setEnvironmentCopyState('idle')
+  }, [bug.environment, bug.id])
+
+  async function copyEnvironment() {
+    try {
+      await navigator.clipboard.writeText(bug.environment)
+      setEnvironmentCopyState('copied')
+    } catch {
+      setEnvironmentCopyState('failed')
+    }
+  }
+
   return <>
     <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions"><Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick={() => setTimelineOpen(true)}><Clock /></Button>{(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
     <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
-    <div className="test-detail-meta test-bug-detail-meta"><span>测试对象 <strong>{bug.testSubjectName || '未记录'}</strong></span><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span>环境 <strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
+    <div className="test-detail-meta test-bug-detail-meta"><span>测试对象 <strong>{bug.testSubjectName || '未记录'}</strong></span><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span><span className="test-detail-meta-label">环境 <Button aria-label={environmentCopyState === 'copied' ? '已复制环境链接' : '复制环境链接'} className="test-detail-meta-copy" disabled={!bug.environment} onClick={() => void copyEnvironment()} size="icon-xs" title={environmentCopyState === 'copied' ? '已复制' : environmentCopyState === 'failed' ? '复制失败' : '复制环境链接'} variant="ghost">{environmentCopyState === 'copied' ? <CheckCircle weight="bold" /> : <CopySimple />}</Button></span><strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
     <BugCommentsSection
       bug={bug}
