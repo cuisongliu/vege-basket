@@ -116,7 +116,7 @@ test('reopening a rejected or closed Bug is a dedicated button next to share tha
 
 test('Bug timeline records creation, assignment, transfer and status changes without comments', () => {
   assert.match(schemaSource, /create table if not exists test_bug_events/u)
-  assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'status_changed'\)\)/u)
+  assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'status_changed', 'space_transferred'\)\)/u)
   assert.match(schemaSource, /create index if not exists idx_test_bug_events_bug/u)
   assert.match(schemaSource, /on test_bug_events\(test_bug_id, created_at, id\)/u)
 
@@ -126,15 +126,19 @@ test('Bug timeline records creation, assignment, transfer and status changes wit
   assert.match(testWorkbenchSource, /eventType: 'assigned'/u)
   assert.match(testWorkbenchSource, /eventType: 'transferred'/u)
   assert.match(testWorkbenchSource, /eventType: 'status_changed'/u)
+  assert.match(testWorkbenchSource, /eventType: 'space_transferred'/u)
+  assert.match(testWorkbenchSource, /previous_test_space_id, next_test_space_id/u)
   assert.match(testWorkbenchSource, /events: eventsByBug\.get\(Number\(row\.id\)\) \?\? \[\]/u)
   assert.match(testWorkbenchSource, /reporter\.display_name as reporter_display_name/u)
   assert.match(testWorkbenchSource, /reporterName: row\.reporter_display_name \|\| row\.reporter_email \|\| undefined/u)
   assert.match(testWorkbenchSource, /assigneeName: row\.assignee_display_name \|\| row\.assignee_email \|\| undefined/u)
 })
 
-test('Bug detail offers an icon-only timeline button that opens the lifecycle dialog', () => {
-  assert.match(testWorkbenchClientSource, /aria-label="时间线"/u)
-  assert.match(testWorkbenchClientSource, /<Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick=\{\(\) => setTimelineOpen\(true\)\}><Clock \/><\/Button>/u)
+test('Bug detail header actions use icon-only buttons with accessible labels', () => {
+  assert.match(testWorkbenchClientSource, /aria-label="转移空间"[\s\S]*?size="icon-sm"[\s\S]*?title="转移空间"[\s\S]*?<ArrowsLeftRight \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /aria-label="时间线"[\s\S]*?size="icon-sm"[\s\S]*?title="时间线"[\s\S]*?<Clock \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /aria-label="分享 Bug"[\s\S]*?size="icon-sm"[\s\S]*?title="分享 Bug"[\s\S]*?<LinkSimple \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /aria-label="编辑"[\s\S]*?size="icon-sm"[\s\S]*?title="编辑"[\s\S]*?<PencilSimple \/><\/Button>/u)
   assert.match(testWorkbenchClientSource, /function BugTimelineDialog/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>Bug 时间线<\/DialogTitle>/u)
   assert.match(testWorkbenchClientSource, /eventType === 'created' \? \(/u)
@@ -147,6 +151,44 @@ test('Bug detail offers an icon-only timeline button that opens the lifecycle di
   assert.match(testWorkbenchClientSource, /eventType: comment\.kind === 'reject' \? 'rejected' as const : 'transferred' as const/u)
   assert.match(testWorkbenchClientSource, /转移给「\(\[\^」\]\+\)」/u)
   assert.match(testWorkbenchClientSource, /驳回了该 Bug/u)
+  assert.match(testWorkbenchClientSource, /eventType === 'space_transferred'/u)
+  assert.match(testWorkbenchClientSource, /previousSpaceName/u)
+  assert.match(testWorkbenchClientSource, /nextSpaceName/u)
+})
+
+test('test-space data import supports copied cases and plans only', () => {
+  assert.match(schemaSource, /create table if not exists test_space_data_imports/u)
+  assert.match(schemaSource, /unique \(target_test_space_id, source_test_space_id, data_type, source_record_id\)/u)
+  assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/data-import'/u)
+  assert.match(testWorkbenchSource, /requireSpaceOwner\(response, targetSpaceId, session\.userId\)/u)
+  assert.match(testWorkbenchSource, /category === 'cases' \|\| category === 'plans'/u)
+  assert.match(testWorkbenchClientSource, /复制到当前空间/u)
+  assert.match(testWorkbenchClientSource, /全部用例/u)
+  assert.match(testWorkbenchClientSource, /全部测试计划/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /全部复制到当前空间/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /转移到当前空间/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /movedBugs/u)
+  assert.match(testWorkbenchClientSource, /<Checkbox/u)
+  assert.match(testWorkbenchClientSource, /importTestSpaceData\(selectedSpace\.id, sources\)/u)
+})
+
+test('case workbench exports the current test-object cases and labels import as cases', () => {
+  assert.match(testWorkbenchClientSource, /function downloadTestCaseCsv\(/u)
+  assert.match(testWorkbenchClientSource, /onExport=\{\(\) => downloadTestCaseCsv\(cases, data\.folders\)\}/u)
+  assert.match(testWorkbenchClientSource, /<DownloadSimple \/> 导出用例/u)
+  assert.match(testWorkbenchClientSource, /<UploadSimple \/> 导入用例/u)
+  assert.match(testWorkbenchClientSource, /testCaseCsvTemplateHeaders, \.\.\.rows/u)
+})
+
+test('Bug details offer owner-only single-space transfer with the existing transfer transaction', () => {
+  assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/bugs\/:bugId\/transfer-space'/u)
+  assert.match(testWorkbenchSource, /bugIds: \[bugId\], categories: \['bugs'\], spaceId/u)
+  assert.match(testWorkbenchSource, /canTransferSpace: ownedSpaces\.some/u)
+  assert.match(testWorkbenchSource, /transferSpaceCandidates: ownedSpaces/u)
+  assert.match(testWorkbenchClientSource, /bug\.canTransferSpace/u)
+  assert.match(testWorkbenchClientSource, /<BugSpaceTransferDialog/u)
+  assert.match(testWorkbenchClientSource, /<DialogTitle>转移 Bug 到其他空间<\/DialogTitle>/u)
+  assert.match(testWorkbenchClientSource, /transferTestBugToSpace\(bug\.testSpaceId, bug\.id, targetSpaceId\)/u)
 })
 
 test('assigned Bug selection keeps the current item when parent callbacks refresh counts', () => {

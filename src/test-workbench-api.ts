@@ -9,6 +9,8 @@ import type {
   TestPlanStatus,
   TestResult,
   TestSpaceInviteLink,
+  TestSpaceDataImportResult,
+  TestSpaceImportSource,
   TestSpaceSettings,
   TestWorkbenchData,
 } from './test-workbench-types'
@@ -40,10 +42,27 @@ export function updateTestSpace(spaceId: number, payload: { name: string; organi
   })
 }
 
+export function importTestSpaceData(
+  targetSpaceId: number,
+  sources: TestSpaceImportSource[],
+) {
+  return request<{ result: TestSpaceDataImportResult; settings: TestSpaceSettings }>(
+    `/api/test-spaces/${targetSpaceId}/data-import`,
+    { method: 'POST', body: JSON.stringify({ sources }) },
+  )
+}
+
 export function deleteTestSpace(spaceId: number, confirmationName: string) {
   return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}`, {
     method: 'DELETE',
     body: JSON.stringify({ confirmationName }),
+  })
+}
+
+export function transferTestBugToSpace(spaceId: number, bugId: number, targetSpaceId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/transfer-space`, {
+    method: 'POST',
+    body: JSON.stringify({ targetSpaceId }),
   })
 }
 

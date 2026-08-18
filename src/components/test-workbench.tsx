@@ -36,6 +36,7 @@ import {
 } from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { JournalDatePicker } from '@/components/journal-date-picker'
 import { notificationRefreshIntervalMs } from '@/notifications'
 import {
@@ -96,12 +97,14 @@ import {
   fetchTestSpaceSettings,
   fetchTestWorkbench,
   importTestCases,
+  importTestSpaceData,
   inviteTestSpaceMember,
   previewTestCaseImport,
   removeTestPlanCase,
   removeTestSpaceMember,
   rejectAssignedTestBug,
   transferAssignedTestBug,
+  transferTestBugToSpace,
   updateTestSpace,
   updateAssignedTestBugComment,
   updateAssignedTestBug,
@@ -123,10 +126,14 @@ import type {
   TestBugComment,
   TestBugEvent,
   TestCase,
+  TestCaseFolder,
   TestCaseType,
   TestCaseImportPreview,
   TestPlan,
   TestResult,
+  TestSpaceDataImportResult,
+  TestSpaceImportCategory,
+  TestSpaceImportSource,
   TestSpaceInvitation,
   TestSpaceSettings,
   TestSubject,
@@ -1125,6 +1132,7 @@ export function TestWorkbench({
                   setCaseDeleteDialogOpen(true)
                 }}
                 onEdit={(testCase) => { setEditingCase(testCase); setCaseDialogOpen(true) }}
+                onExport={() => downloadTestCaseCsv(cases, data.folders)}
                 onImport={() => setCaseImportDialogOpen(true)}
                 onArchive={(testCase) => void mutate(() => updateTestCase(testCase.testSpaceId, testCase.id, { caseKind: 'baseline', status: 'active' }))}
               />
@@ -1183,6 +1191,7 @@ export function TestWorkbench({
                 onCreate={() => { setEditingBug(undefined); setBugSeed({ testSubjectId: subjectId }); setBugDialogOpen(true) }}
                 onEdit={(bug) => { setEditingBug(bug); setBugSeed(bug); setBugDialogOpen(true) }}
                 onStatus={(bug, status) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))}
+                onTransferSpace={(bug, targetSpaceId) => mutate(() => transferTestBugToSpace(bug.testSpaceId, bug.id, targetSpaceId))}
                 onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'pending_confirmation' : 'new' }))}
                 onComment={(bug, content) => mutate(() => addTestBugComment(bug.testSpaceId, bug.id, content))}
                 onUpdateComment={(bug, comment, content) => mutate(() => updateTestBugComment(bug.testSpaceId, bug.id, comment.id, content))}
@@ -1669,7 +1678,7 @@ function NotificationsView({
   )
 }
 
-function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onDelete, onEdit, onImport, onSelect }: {
+function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onDelete, onEdit, onExport, onImport, onSelect }: {
   cases: TestCase[]
   data: TestWorkbenchData
   readOnly: boolean
@@ -1679,6 +1688,7 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
   onCreateFolder: () => void
   onDelete: (testCase: TestCase) => void
   onEdit: (testCase: TestCase) => void
+  onExport: () => void
   onImport: () => void
   onSelect: (id: number) => void
 }) {
@@ -1766,7 +1776,7 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
     <div className="test-module-view test-cases-module-view">
       <div className="test-module-toolbar">
         <div><span>用例库</span><h1>用例管理</h1></div>
-        {!readOnly ? <div><Button variant="outline" onClick={onImport}><UploadSimple /> 导入 CSV</Button><Button variant="outline" onClick={onCreateFolder}><FolderPlus /> 模块</Button><Button onClick={onCreate}><Plus /> 新建用例</Button></div> : null}
+        {!readOnly ? <div><Button variant="outline" disabled={!cases.length} onClick={onExport}><DownloadSimple /> 导出用例</Button><Button variant="outline" onClick={onImport}><UploadSimple /> 导入用例</Button><Button variant="outline" onClick={onCreateFolder}><FolderPlus /> 模块</Button><Button onClick={onCreate}><Plus /> 新建用例</Button></div> : null}
       </div>
       <div className="test-case-filters" aria-label="用例搜索与筛选">
         <label className="test-case-search">
@@ -2042,7 +2052,7 @@ function PlanCaseDetailDialog({ onClose, planCase }: {
   )
 }
 
-function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, onCreate, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onSelect, onStatus, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
+function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, onCreate, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
   bugs: TestBug[]
   busy: boolean
   data: TestWorkbenchData
@@ -2057,6 +2067,7 @@ function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, o
   onSearchQueryChange: (value: string) => void
   onSelect: (id: number) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
+  onTransferSpace: (bug: TestBug, targetSpaceId: number) => Promise<boolean>
   onUpdateComment: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
   readOnly: boolean
   searchQuery: string
@@ -2103,14 +2114,14 @@ function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, o
           {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试对象还没有 Bug。'}</div>}
         </div>
         <div className="test-record-detail">
-          {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
+          {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
         </div>
       </div>
     </div>
   )
 }
 
-function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, onStatus, onUpdateComment, readOnly, users }: {
+function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
   bug: TestBug
   busy: boolean
   onAssignee: (bug: TestBug, assigneeUserId?: number) => void
@@ -2118,6 +2129,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
   onEdit: (bug: TestBug) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
+  onTransferSpace: (bug: TestBug, targetSpaceId: number) => Promise<boolean>
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
   readOnly: boolean
   users: TestWorkbenchData['users']
@@ -2125,6 +2137,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   const developers = users.filter((user) => user.roles.includes('developer'))
   const [shareOpen, setShareOpen] = useState(false)
   const [timelineOpen, setTimelineOpen] = useState(false)
+  const [transferSpaceOpen, setTransferSpaceOpen] = useState(false)
   const [environmentCopyState, setEnvironmentCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   useEffect(() => {
@@ -2141,7 +2154,16 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
   }
 
   return <>
-    <div className="test-detail-heading"><div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div><div className="test-detail-heading-actions"><Button size="icon-sm" variant="outline" title="时间线" aria-label="时间线" onClick={() => setTimelineOpen(true)}><Clock /></Button>{(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}{bug.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}{bug.canEdit && !readOnly ? <Button variant="outline" disabled={busy} onClick={() => onEdit(bug)}><PencilSimple /> 编辑</Button> : null}</div></div>
+    <div className="test-detail-heading">
+      <div><code>BUG-{bug.id}</code><h2>{bug.title}</h2></div>
+      <div className="test-detail-heading-actions">
+        {bug.canTransferSpace ? <Button aria-label="转移空间" disabled={busy} onClick={() => setTransferSpaceOpen(true)} size="icon-sm" title="转移空间" variant="outline"><ArrowsLeftRight /></Button> : null}
+        <Button aria-label="时间线" onClick={() => setTimelineOpen(true)} size="icon-sm" title="时间线" variant="outline"><Clock /></Button>
+        {(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}
+        {bug.canShare ? <Button aria-label="分享 Bug" disabled={busy} onClick={() => setShareOpen(true)} size="icon-sm" title="分享 Bug" variant="outline"><LinkSimple /></Button> : null}
+        {bug.canEdit && !readOnly ? <Button aria-label="编辑" disabled={busy} onClick={() => onEdit(bug)} size="icon-sm" title="编辑" variant="outline"><PencilSimple /></Button> : null}
+      </div>
+    </div>
     <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
     <div className="test-detail-meta test-bug-detail-meta"><span>测试对象 <strong>{bug.testSubjectName || '未记录'}</strong></span><span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span><span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span><span><span className="test-detail-meta-label">环境 <Button aria-label={environmentCopyState === 'copied' ? '已复制环境链接' : '复制环境链接'} className="test-detail-meta-copy" disabled={!bug.environment} onClick={() => void copyEnvironment()} size="icon-xs" title={environmentCopyState === 'copied' ? '已复制' : environmentCopyState === 'failed' ? '复制失败' : '复制环境链接'} variant="ghost">{environmentCopyState === 'copied' ? <CheckCircle weight="bold" /> : <CopySimple />}</Button></span><strong>{bug.environment || '未记录'}</strong></span><span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span></div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
@@ -2154,8 +2176,58 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
       onUpdateComment={onUpdateComment}
     />
     <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
+    <BugSpaceTransferDialog bug={bug} busy={busy} open={transferSpaceOpen} onOpenChange={setTransferSpaceOpen} onSubmit={onTransferSpace} />
     <BugTimelineDialog bug={bug} open={timelineOpen} onOpenChange={setTimelineOpen} />
   </>
+}
+
+function BugSpaceTransferDialog({ bug, busy, onOpenChange, onSubmit, open }: {
+  bug: TestBug
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (bug: TestBug, targetSpaceId: number) => Promise<boolean>
+  open: boolean
+}) {
+  const [targetSpaceId, setTargetSpaceId] = useState('')
+
+  useEffect(() => {
+    if (open) setTargetSpaceId('')
+  }, [bug.id, open])
+
+  async function submit() {
+    if (!targetSpaceId) return
+    const transferred = await onSubmit(bug, Number(targetSpaceId))
+    if (transferred) onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent fixedHeader className="test-workbench-dialog">
+        <DialogHeader>
+          <DialogTitle>转移 Bug 到其他空间</DialogTitle>
+          <DialogDescription>选择目标测试空间后，Bug 编号、评论、分享链接和时间线都会保留。</DialogDescription>
+        </DialogHeader>
+        {(bug.transferSpaceCandidates?.length ?? 0) > 0 ? (
+          <Label>目标测试空间
+            <Select value={targetSpaceId} onValueChange={setTargetSpaceId}>
+              <SelectTrigger aria-label="目标测试空间"><SelectValue placeholder="选择测试空间" /></SelectTrigger>
+              <SelectContent>
+                {bug.transferSpaceCandidates?.map((space) => (
+                  <SelectItem key={space.id} value={String(space.id)}>
+                    {space.name}{space.versionLabel ? ` · ${space.versionLabel}` : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Label>
+        ) : <p className="test-list-empty">名下没有其他可用的测试空间。</p>}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button disabled={busy || !targetSpaceId} onClick={() => void submit()}><ArrowsLeftRight />{busy ? '转移中...' : '确认转移'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function BugTimelineDialog({ bug, onOpenChange, open }: {
@@ -2170,7 +2242,9 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
     createdAt: string
     eventType: TestBugEvent['eventType'] | 'rejected'
     id: number
+    nextSpaceName?: string
     nextStatus?: BugStatus
+    previousSpaceName?: string
     previousStatus?: BugStatus
   }> = [
     ...(hasCreatedEvent ? [] : [{ eventType: 'created' as const, actorName: bug.reporterName, createdAt: bug.createdAt, id: 0 }]),
@@ -2199,7 +2273,7 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
             <div className="bug-timeline-empty">暂无记录</div>
           ) : timeline.map((event) => (
             <div className="bug-timeline-item" key={event.id}>
-              <span className="bug-timeline-icon">{event.eventType === 'created' ? <Plus size={15} /> : event.eventType === 'assigned' ? <UserPlus size={15} /> : event.eventType === 'transferred' ? <ArrowsLeftRight size={15} /> : event.eventType === 'rejected' ? <XCircle size={15} /> : <ArrowCounterClockwise size={15} />}</span>
+              <span className="bug-timeline-icon">{event.eventType === 'created' ? <Plus size={15} /> : event.eventType === 'assigned' ? <UserPlus size={15} /> : event.eventType === 'transferred' || event.eventType === 'space_transferred' ? <ArrowsLeftRight size={15} /> : event.eventType === 'rejected' ? <XCircle size={15} /> : <ArrowCounterClockwise size={15} />}</span>
               <div className="bug-timeline-content">
                 {event.eventType === 'created' ? (
                   <strong>创建了 Bug</strong>
@@ -2207,6 +2281,8 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
                   <strong>指派给 {event.assigneeName ?? '未分配'}</strong>
                 ) : event.eventType === 'transferred' ? (
                   <strong>转移给 {event.assigneeName ?? '未分配'}</strong>
+                ) : event.eventType === 'space_transferred' ? (
+                  <strong>从「{event.previousSpaceName ?? '未知空间'}」转移到「{event.nextSpaceName ?? '未知空间'}」</strong>
                 ) : event.eventType === 'rejected' ? (
                   <strong>驳回了该 Bug</strong>
                 ) : (
@@ -2819,6 +2895,96 @@ function TestSpaceCreateDialog({ busy, onOpenChange, onSubmit, open, organizatio
   )
 }
 
+function TestSpaceDataImportDialog({ busy, error, onOpenChange, onSubmit, open, spaces, targetSpaceId }: {
+  busy: boolean
+  error: string
+  onOpenChange: (open: boolean) => void
+  onSubmit: (sources: TestSpaceImportSource[]) => Promise<TestSpaceDataImportResult | null>
+  open: boolean
+  spaces: TestSpaceSettings['spaces']
+  targetSpaceId: number
+}) {
+  const [selections, setSelections] = useState<Record<number, TestSpaceImportCategory[]>>({})
+  const [status, setStatus] = useState('')
+  const sourceSpaces = spaces.filter((space) => space.accessLevel === 'owner' && space.id !== targetSpaceId)
+  const options: Array<{ category: TestSpaceImportCategory; label: string; action: string }> = [
+    { action: '复制到当前空间', category: 'cases', label: '全部用例' },
+    { action: '复制到当前空间', category: 'plans', label: '全部测试计划' },
+  ]
+
+  useEffect(() => {
+    if (open) {
+      setSelections({})
+      setStatus('')
+    }
+  }, [open, targetSpaceId])
+
+  function toggleCategory(spaceId: number, category: TestSpaceImportCategory, checked: boolean) {
+    setSelections((current) => {
+      const categories = new Set(current[spaceId] ?? [])
+      if (checked) categories.add(category)
+      else categories.delete(category)
+      return { ...current, [spaceId]: Array.from(categories) }
+    })
+  }
+
+  function toggleSpace(spaceId: number, checked: boolean) {
+    setSelections((current) => ({
+      ...current,
+      [spaceId]: checked ? options.map((option) => option.category) : [],
+    }))
+  }
+
+  async function submit() {
+    const sources = Object.entries(selections)
+      .map(([spaceId, categories]) => ({ categories, spaceId: Number(spaceId) }))
+      .filter((source) => source.categories.length > 0)
+    if (sources.length === 0) return
+    const result = await onSubmit(sources)
+    if (!result) return
+    setStatus(`已复制 ${result.copiedCases} 个用例、${result.copiedPlans} 个测试计划`)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent fixedHeader className="test-space-data-import-dialog">
+        <DialogHeader>
+          <DialogTitle>数据转入</DialogTitle>
+          <DialogDescription>选择来源测试空间和要转入的数据。</DialogDescription>
+        </DialogHeader>
+        <WorkspaceError message={error} />
+        <div className="test-space-import-list">
+          {sourceSpaces.length === 0 ? <p className="test-list-empty">没有可用的来源测试空间。</p> : sourceSpaces.map((space) => {
+            const selected = selections[space.id] ?? []
+            return (
+              <section className="test-space-import-source" key={space.id}>
+                <div className="test-space-import-source-heading">
+                  <label><Checkbox aria-label={`选择${space.name}`} checked={selected.length === options.length ? true : selected.length > 0 ? 'indeterminate' : false} onCheckedChange={(checked) => toggleSpace(space.id, checked === true)} /><strong>{space.name}</strong></label>
+                  <small>{space.versionLabel || '未指定版本号'}</small>
+                </div>
+                <div className="test-space-import-options">
+                  {options.map((option) => (
+                    <label key={option.category}>
+                      <Checkbox checked={selected.includes(option.category)} onCheckedChange={(checked) => toggleCategory(space.id, option.category, checked === true)} />
+                      <span>{option.label}</span>
+                      <Badge variant="outline">{option.action}</Badge>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </div>
+        {status ? <p className="test-space-import-status">{status}</p> : null}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button disabled={busy || Object.values(selections).every((categories) => categories.length === 0)} onClick={() => void submit()}><DownloadSimple />{busy ? '转入中...' : '开始转入'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, onWorkbenchChange, open }: {
   currentSpaceId?: number
   onCreateSpace: () => void
@@ -2841,6 +3007,9 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   const [inviteExpiresInMinutes, setInviteExpiresInMinutes] = useState(10)
   const [encryptedInviteShare, setEncryptedInviteShare] = useState(false)
   const [inviteLinkStatus, setInviteLinkStatus] = useState('')
+  const [dataImportOpen, setDataImportOpen] = useState(false)
+  const [dataImportBusy, setDataImportBusy] = useState(false)
+  const [dataImportError, setDataImportError] = useState('')
   const selectedSpace = settings.spaces.find((space) => space.id === selectedSpaceId)
   const isOwner = selectedSpace?.accessLevel === 'owner'
 
@@ -2915,9 +3084,27 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
     }
   }
 
+  async function importData(sources: TestSpaceImportSource[]) {
+    if (!selectedSpace || !isOwner) return null
+    setDataImportBusy(true)
+    setDataImportError('')
+    try {
+      const result = await importTestSpaceData(selectedSpace.id, sources)
+      setSettings(result.settings)
+      await onWorkbenchChange()
+      return result.result
+    } catch (mutationError) {
+      setDataImportError(mutationError instanceof Error ? mutationError.message : '数据转入失败。')
+      return null
+    } finally {
+      setDataImportBusy(false)
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent fixedHeader className="test-space-admin-dialog">
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent fixedHeader className="test-space-admin-dialog">
         <DialogHeader>
           <DialogTitle>管理测试空间</DialogTitle>
           <DialogDescription>维护测试空间信息、组织归属、成员与协作权限。</DialogDescription>
@@ -2980,6 +3167,11 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                     <div><span>归属组织</span><strong>{selectedSpace.organizationName ?? '不归属组织'}</strong></div>
                     <Badge variant="outline">{selectedSpace.accessLevel === 'editor' ? '可编辑' : '只读'}</Badge>
                   </div>}
+
+                  {isOwner ? <section className="test-space-data-import-entry">
+                    <div><span>数据转入</span><small>用例、测试计划复制</small></div>
+                    <Button type="button" variant="outline" disabled={busy || dataImportBusy} onClick={() => { setDataImportError(''); setDataImportOpen(true) }}><DownloadSimple /> 数据转入</Button>
+                  </section> : null}
 
                   <section className="test-space-members-section">
                     <div className="test-space-admin-section-heading"><div><span>成员与邀请</span><strong>{selectedSpace.members.length}</strong></div></div>
@@ -3053,8 +3245,18 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
             </section>
           </div>
         )}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      {selectedSpace ? <TestSpaceDataImportDialog
+        busy={dataImportBusy}
+        error={dataImportError}
+        onOpenChange={setDataImportOpen}
+        onSubmit={importData}
+        open={dataImportOpen && Boolean(isOwner)}
+        spaces={settings.spaces}
+        targetSpaceId={selectedSpace.id}
+      /> : null}
+    </>
   )
 }
 
@@ -3239,7 +3441,7 @@ function FolderDialog({
               </article>
             )
           }) : (
-            <div className="test-folder-empty">当前测试对象还没有模块，创建用例或导入 CSV 时也会自动生成模块。</div>
+            <div className="test-folder-empty">当前测试对象还没有模块，创建用例或导入用例时也会自动生成模块。</div>
           )}
         </div>
         <DialogFooter>
@@ -3391,6 +3593,33 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
   )
 }
 
+function escapeCsvCell(value: unknown) {
+  return `"${String(value ?? '').replace(/"/gu, '""')}"`
+}
+
+function downloadTestCaseCsv(cases: TestCase[], folders: TestCaseFolder[]) {
+  const rows = cases.map((testCase) => [
+    testCase.title,
+    folders.find((folder) => folder.id === testCase.folderId)?.name || '未分类',
+    testCase.preconditions,
+    testCase.steps,
+    testCase.expectedResult,
+    testCase.remarks,
+    caseLevelLabel[testCase.priority],
+    testCase.customTags.join('、'),
+  ])
+  const csvContent = `\uFEFF${[testCaseCsvTemplateHeaders, ...rows].map((row) => row.map(escapeCsvCell).join(',')).join('\r\n')}\r\n`
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = '测试用例.csv'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 function downloadTestCaseCsvTemplate() {
   const csvContent = `\uFEFF${testCaseCsvTemplateHeaders.join(',')}\r\n`
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
@@ -3472,7 +3701,7 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent fixedHeader className="test-wide-dialog test-import-dialog">
         <DialogHeader>
-          <DialogTitle>导入测试用例</DialogTitle>
+          <DialogTitle>导入用例</DialogTitle>
           <DialogDescription>CSV 中的用例将导入到“{subject?.name || '当前测试对象'}”，新模块会自动创建。</DialogDescription>
         </DialogHeader>
         <div className="test-import-picker">

@@ -67,6 +67,20 @@ export type TestSpaceSettings = {
   spaces: ManagedTestSpace[]
 }
 
+export type TestSpaceImportCategory = 'cases' | 'plans'
+
+export type TestSpaceImportSource = {
+  categories: TestSpaceImportCategory[]
+  spaceId: number
+}
+
+export type TestSpaceDataImportResult = {
+  copiedCases: number
+  copiedFolders: number
+  copiedPlans: number
+  copiedSubjects: number
+}
+
 export type TestSpaceInviteLink = {
   accessLevel: 'editor' | 'viewer'
   expiresAt: string
@@ -167,9 +181,11 @@ export type TestBugEvent = {
   assigneeName?: string
   assigneeUserId?: number
   createdAt: string
-  eventType: 'created' | 'assigned' | 'transferred' | 'status_changed'
+  eventType: 'created' | 'assigned' | 'transferred' | 'status_changed' | 'space_transferred'
   id: number
+  nextSpaceName?: string
   nextStatus?: BugStatus
+  previousSpaceName?: string
   previousStatus?: BugStatus
 }
 
@@ -181,6 +197,7 @@ export type TestBug = {
   canEdit?: boolean
   canManage?: boolean
   canShare?: boolean
+  canTransferSpace?: boolean
   canTransfer?: boolean
   comments: TestBugComment[]
   createdAt: string
@@ -204,6 +221,7 @@ export type TestBug = {
   testSubjectId?: number
   testSubjectName?: string
   title: string
+  transferSpaceCandidates?: Array<{ id: number; name: string; versionLabel?: string }>
   transferCandidates?: Array<{ id: number; name: string }>
   updatedAt: string
 }

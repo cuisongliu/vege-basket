@@ -236,9 +236,13 @@ async function userCanBeAssignedInSpace(
   userId: number | null,
   spaceId: number,
   role: 'developer' | 'tester',
+  client?: PoolClient,
 ) {
   if (!userId) return true
-  const result = await query<{ assigned: boolean }>(
+  const run = client
+    ? (sql: string, params: unknown[]) => client.query<{ assigned: boolean }>(sql, params)
+    : (sql: string, params: unknown[]) => query<{ assigned: boolean }>(sql, params)
+  const result = await run(
     `
     select exists(
       select 1
@@ -515,6 +519,525 @@ async function getTestSpaceSettings(userId: number) {
   }
 }
 
+type TestSpaceImportCategory = 'cases' | 'plans' | 'bugs'
+type TestSpaceImportSource = { bugIds?: number[]; categories: TestSpaceImportCategory[]; spaceId: number }
+
+type ImportSubjectRow = {
+  created_by_user_id: string | null
+  description: string
+  environment: string
+  id: string
+  name: string
+  name_lookup: string | null
+  project_id: string | null
+  version_label: string
+}
+
+type ImportFolderRow = {
+  id: string
+  name: string
+  name_lookup: string | null
+  test_subject_id: string
+}
+
+type ImportCaseRow = {
+  case_kind: TestCaseKind
+  case_type: string
+  created_at: Date
+  custom_tags: string
+  expected_result: string
+  folder_id: string | null
+  id: string
+  preconditions: string
+  priority: string
+  remarks: string
+  status: string
+  steps: string
+  test_subject_id: string
+  title: string
+  updated_at: Date
+  version: number
+}
+
+type ImportPlanRow = {
+  created_at: Date
+  created_by_user_id: string | null
+  ends_on: string | null
+  environment: string
+  id: string
+  name: string
+  owner_user_id: string | null
+  project_id: string | null
+  starts_on: string | null
+  status: string
+  test_subject_id: string
+  updated_at: Date
+  version_label: string
+}
+
+type ImportPlanSubjectRow = { test_plan_id: string; test_subject_id: string }
+
+type ImportPlanCaseRow = {
+  executed_at: Date | null
+  executed_by_user_id: string | null
+  id: string
+  result: string
+  result_note: string
+  snapshot_case_version: number
+  snapshot_expected_result: string
+  snapshot_preconditions: string
+  snapshot_steps: string
+  snapshot_title: string
+  test_case_id: string | null
+  test_plan_id: string
+  test_subject_id: string | null
+}
+
+type ImportBugRow = {
+  assignee_user_id: string | null
+  id: string
+  test_plan_case_id: string | null
+  test_plan_id: string | null
+  test_subject_id: string
+}
+
+function importFailure(message: string, status = 409) {
+  return Object.assign(new Error(message), { status })
+}
+
+function parseTestSpaceImportSources(value: unknown, targetSpaceId: number) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
+    throw importFailure('至少选择一个来源测试空间', 400)
+  }
+  const sources = new Map<number, Set<TestSpaceImportCategory>>()
+  for (const item of value) {
+    const spaceId = positiveId((item as { spaceId?: unknown })?.spaceId)
+    const categories = Array.isArray((item as { categories?: unknown })?.categories)
+      ? (item as { categories: unknown[] }).categories
+      : []
+    if (!spaceId || spaceId === targetSpaceId || categories.length === 0) {
+      throw importFailure('来源测试空间和数据类别必须有效，且不能选择当前空间', 400)
+    }
+    const validCategories = categories.filter(
+      (category): category is TestSpaceImportCategory => category === 'cases' || category === 'plans',
+    )
+    if (validCategories.length !== categories.length) throw importFailure('数据类别不合法', 400)
+    const selected = sources.get(spaceId) ?? new Set<TestSpaceImportCategory>()
+    validCategories.forEach((category) => selected.add(category))
+    sources.set(spaceId, selected)
+  }
+  return Array.from(sources, ([spaceId, categories]) => ({ spaceId, categories: Array.from(categories) }))
+}
+
+async function projectCanBeCopied(client: PoolClient, projectId: number, userId: number) {
+  const result = await client.query<{ allowed: boolean }>(
+    `
+    select exists(
+      select 1 from projects p
+      left join project_memberships pm on pm.project_id = p.id
+        and pm.invited_user_id = $2 and pm.status = 'active'
+      where p.id = $1 and (p.user_id = $2 or pm.id is not null)
+    ) as allowed
+    `,
+    [projectId, userId],
+  )
+  return Boolean(result.rows[0]?.allowed)
+}
+
+async function importTestSpaceData(
+  targetSpaceId: number,
+  sources: TestSpaceImportSource[],
+  userId: number,
+) {
+  return transaction(async (client) => {
+    const sourceIds = sources.map((source) => source.spaceId)
+    const spaces = await client.query<{ id: string; name: string; owner_user_id: string }>(
+      `select id, name, owner_user_id from test_spaces where id = any($1::bigint[]) or id = $2 order by id for update`,
+      [sourceIds, targetSpaceId],
+    )
+    const spacesById = new Map(spaces.rows.map((space) => [Number(space.id), space]))
+    const targetSpace = spacesById.get(targetSpaceId)
+    if (!targetSpace || Number(targetSpace.owner_user_id) !== userId) {
+      throw importFailure('只有当前测试空间所有者可以转入数据', 403)
+    }
+    for (const source of sources) {
+      const sourceSpace = spacesById.get(source.spaceId)
+      if (!sourceSpace || Number(sourceSpace.owner_user_id) !== userId) {
+        throw importFailure('只能从自己拥有的测试空间转入数据', 403)
+      }
+    }
+
+    const subjectMap = new Map<string, number>()
+    const folderMap = new Map<string, number>()
+    const caseMap = new Map<string, number>()
+    const planMap = new Map<string, number>()
+    const planCaseMap = new Map<string, number>()
+    const sourceSubjects = new Map<number, Map<number, ImportSubjectRow>>()
+    const sourceFolders = new Map<number, Map<number, ImportFolderRow>>()
+    const sourceCases = new Map<number, Map<number, ImportCaseRow>>()
+    const sourcePlans = new Map<number, Map<number, ImportPlanRow>>()
+    const sourcePlanSubjects = new Map<number, ImportPlanSubjectRow[]>()
+    const sourcePlanCases = new Map<number, ImportPlanCaseRow[]>()
+    const sourceBugs = new Map<number, ImportBugRow[]>()
+    const existingMappings = await client.query<{
+      data_type: 'subject' | 'folder' | 'case' | 'plan' | 'plan_case'
+      source_record_id: string
+      source_test_space_id: string
+      target_record_id: string
+    }>(
+      `select data_type, source_record_id, source_test_space_id, target_record_id
+       from test_space_data_imports
+       where target_test_space_id = $1 and source_test_space_id = any($2::bigint[])`,
+      [targetSpaceId, sourceIds],
+    )
+    for (const mapping of existingMappings.rows) {
+      const key = `${mapping.source_test_space_id}:${mapping.source_record_id}`
+      const targetId = Number(mapping.target_record_id)
+      if (mapping.data_type === 'subject') subjectMap.set(key, targetId)
+      if (mapping.data_type === 'folder') folderMap.set(key, targetId)
+      if (mapping.data_type === 'case') caseMap.set(key, targetId)
+      if (mapping.data_type === 'plan') planMap.set(key, targetId)
+      if (mapping.data_type === 'plan_case') planCaseMap.set(key, targetId)
+    }
+
+    for (const source of sources) {
+      const subjects = await client.query<ImportSubjectRow>('select * from test_subjects where test_space_id = $1 order by id', [source.spaceId])
+      const folders = await client.query<ImportFolderRow>('select * from test_case_folders where test_space_id = $1 order by id', [source.spaceId])
+      const cases = await client.query<ImportCaseRow>('select * from test_cases where test_space_id = $1 order by id', [source.spaceId])
+      const plans = await client.query<ImportPlanRow>('select * from test_plans where test_space_id = $1 order by id', [source.spaceId])
+      const planSubjects = await client.query<ImportPlanSubjectRow>(
+        `select test_plan_id, test_subject_id from test_plan_subjects where test_space_id = $1 order by test_plan_id, test_subject_id`,
+        [source.spaceId],
+      )
+      const planCases = await client.query<ImportPlanCaseRow>(
+        `
+        select pc.*
+        from test_plan_cases pc
+        join test_plans p on p.id = pc.test_plan_id
+        where p.test_space_id = $1
+        order by pc.test_plan_id, pc.id
+        `,
+        [source.spaceId],
+      )
+      sourceSubjects.set(source.spaceId, new Map(subjects.rows.map((row) => [Number(row.id), row])))
+      sourceFolders.set(source.spaceId, new Map(folders.rows.map((row) => [Number(row.id), row])))
+      sourceCases.set(source.spaceId, new Map(cases.rows.map((row) => [Number(row.id), row])))
+      sourcePlans.set(source.spaceId, new Map(plans.rows.map((row) => [Number(row.id), row])))
+      sourcePlanSubjects.set(source.spaceId, planSubjects.rows)
+      sourcePlanCases.set(source.spaceId, planCases.rows)
+      if (source.categories.includes('bugs')) {
+        const bugIds = source.bugIds
+        const bugs = await client.query<ImportBugRow>(
+          bugIds
+            ? `select id, assignee_user_id, test_plan_case_id, test_plan_id, test_subject_id from test_bugs where test_space_id = $1 and id = any($2::bigint[]) for update`
+            : `select id, assignee_user_id, test_plan_case_id, test_plan_id, test_subject_id from test_bugs where test_space_id = $1 for update`,
+          bugIds ? [source.spaceId, bugIds] : [source.spaceId],
+        )
+        if (bugIds && bugs.rows.length !== bugIds.length) throw importFailure('Bug 不存在或不属于当前测试空间', 404)
+        sourceBugs.set(source.spaceId, bugs.rows)
+      }
+    }
+
+    const copiedCaseIds = new Map<number, Set<number>>()
+    const copiedPlanIds = new Map<number, Set<number>>()
+    const copiedSubjectIds = new Map<number, Set<number>>()
+    for (const source of sources) {
+      const subjects = sourceSubjects.get(source.spaceId) ?? new Map()
+      const cases = sourceCases.get(source.spaceId) ?? new Map()
+      const plans = sourcePlans.get(source.spaceId) ?? new Map()
+      const planSubjects = sourcePlanSubjects.get(source.spaceId) ?? []
+      const planCases = sourcePlanCases.get(source.spaceId) ?? []
+      const bugs = sourceBugs.get(source.spaceId) ?? []
+      const selectedCases = new Set<number>()
+      const selectedPlans = new Set<number>()
+      const selectedSubjects = new Set<number>()
+
+      if (source.categories.includes('cases')) cases.forEach((_row, id) => selectedCases.add(id))
+      if (source.categories.includes('plans')) plans.forEach((_row, id) => selectedPlans.add(id))
+      if (source.categories.includes('bugs')) {
+        for (const bug of bugs) {
+          selectedSubjects.add(Number(bug.test_subject_id))
+          if (bug.test_plan_id) selectedPlans.add(Number(bug.test_plan_id))
+          if (bug.test_plan_case_id) {
+            const planCase = planCases.find((row) => Number(row.id) === Number(bug.test_plan_case_id))
+            if (planCase?.test_case_id) selectedCases.add(Number(planCase.test_case_id))
+          }
+        }
+      }
+      for (const planId of selectedPlans) {
+        const plan = plans.get(planId)
+        if (!plan) throw importFailure('来源测试计划不存在')
+        selectedSubjects.add(Number(plan.test_subject_id))
+        planSubjects.filter((row) => Number(row.test_plan_id) === planId).forEach((row) => selectedSubjects.add(Number(row.test_subject_id)))
+        planCases
+          .filter((row) => Number(row.test_plan_id) === planId)
+          .forEach((row) => { if (row.test_case_id) selectedCases.add(Number(row.test_case_id)) })
+      }
+      for (const caseId of selectedCases) {
+        const testCase = cases.get(caseId)
+        if (!testCase) throw importFailure('来源用例不存在')
+        selectedSubjects.add(Number(testCase.test_subject_id))
+      }
+      for (const subjectId of selectedSubjects) {
+        if (!subjects.has(subjectId)) throw importFailure('来源测试对象不存在')
+      }
+      copiedCaseIds.set(source.spaceId, selectedCases)
+      copiedPlanIds.set(source.spaceId, selectedPlans)
+      copiedSubjectIds.set(source.spaceId, selectedSubjects)
+    }
+
+    for (const source of sources) {
+      for (const bug of sourceBugs.get(source.spaceId) ?? []) {
+        if (!await userCanBeAssignedInSpace(
+          bug.assignee_user_id ? Number(bug.assignee_user_id) : null,
+          targetSpaceId,
+          'developer',
+          client,
+        )) {
+          throw importFailure('Bug 负责人不具备当前空间的处理权限，数据转入已取消')
+        }
+      }
+      for (const planId of copiedPlanIds.get(source.spaceId) ?? []) {
+        const projectId = sourcePlans.get(source.spaceId)?.get(planId)?.project_id
+        if (projectId && !(await projectCanBeCopied(client, Number(projectId), userId))) {
+          throw importFailure('来源测试计划关联的项目无权在当前账号下复制')
+        }
+      }
+    }
+
+    async function copySubject(sourceSpaceId: number, sourceSubjectId: number) {
+      const key = `${sourceSpaceId}:${sourceSubjectId}`
+      const existingMap = subjectMap.get(key)
+      if (existingMap) return existingMap
+      const sourceSubject = sourceSubjects.get(sourceSpaceId)?.get(sourceSubjectId)
+      if (!sourceSubject) throw importFailure('来源测试对象不存在')
+      const existing = await client.query<{ id: string }>(
+        'select id from test_subjects where test_space_id = $1 and name_lookup = $2 limit 1',
+        [targetSpaceId, sourceSubject.name_lookup],
+      )
+      const inserted = existing.rows[0] ?? (await client.query<{ id: string }>(
+        `
+        insert into test_subjects
+          (test_space_id, project_id, created_by_user_id, name, name_lookup, description, version_label, environment)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id
+        `,
+        [targetSpaceId, sourceSubject.project_id, userId, sourceSubject.name, sourceSubject.name_lookup,
+          sourceSubject.description, sourceSubject.version_label, sourceSubject.environment],
+      )).rows[0]
+      const targetId = Number(inserted.id)
+      subjectMap.set(key, targetId)
+      await client.query(
+        `
+        insert into test_space_data_imports
+          (target_test_space_id, source_test_space_id, data_type, source_record_id, target_record_id, created_by_user_id)
+        values ($1, $2, 'subject', $3, $4, $5)
+        on conflict (target_test_space_id, source_test_space_id, data_type, source_record_id) do nothing
+        `,
+        [targetSpaceId, sourceSpaceId, sourceSubjectId, targetId, userId],
+      )
+      return targetId
+    }
+
+    async function copyFolder(sourceSpaceId: number, sourceFolderId: number, targetSubjectId: number) {
+      const key = `${sourceSpaceId}:${sourceFolderId}`
+      const existingMap = folderMap.get(key)
+      if (existingMap) return existingMap
+      const sourceFolder = sourceFolders.get(sourceSpaceId)?.get(sourceFolderId)
+      if (!sourceFolder) throw importFailure('来源用例模块不存在')
+      const existing = await client.query<{ id: string }>(
+        'select id from test_case_folders where test_space_id = $1 and test_subject_id = $2 and name_lookup = $3 limit 1',
+        [targetSpaceId, targetSubjectId, sourceFolder.name_lookup],
+      )
+      const inserted = existing.rows[0] ?? (await client.query<{ id: string }>(
+        `insert into test_case_folders (test_space_id, test_subject_id, name, name_lookup) values ($1, $2, $3, $4) returning id`,
+        [targetSpaceId, targetSubjectId, sourceFolder.name, sourceFolder.name_lookup],
+      )).rows[0]
+      const targetId = Number(inserted.id)
+      folderMap.set(key, targetId)
+      await client.query(
+        `
+        insert into test_space_data_imports
+          (target_test_space_id, source_test_space_id, data_type, source_record_id, target_record_id, created_by_user_id)
+        values ($1, $2, 'folder', $3, $4, $5)
+        on conflict (target_test_space_id, source_test_space_id, data_type, source_record_id) do nothing
+        `,
+        [targetSpaceId, sourceSpaceId, sourceFolderId, targetId, userId],
+      )
+      return targetId
+    }
+
+    async function copyCase(sourceSpaceId: number, sourceCaseId: number) {
+      const key = `${sourceSpaceId}:${sourceCaseId}`
+      const existingMap = caseMap.get(key)
+      if (existingMap) return existingMap
+      const sourceCase = sourceCases.get(sourceSpaceId)?.get(sourceCaseId)
+      if (!sourceCase) throw importFailure('来源用例不存在')
+      const targetSubjectId = await copySubject(sourceSpaceId, Number(sourceCase.test_subject_id))
+      const targetFolderId = sourceCase.folder_id
+        ? await copyFolder(sourceSpaceId, Number(sourceCase.folder_id), targetSubjectId)
+        : null
+      const inserted = await client.query<{ id: string }>(
+        `
+        insert into test_cases
+          (test_space_id, test_subject_id, folder_id, title, preconditions, steps, expected_result, remarks,
+           priority, case_type, case_kind, custom_tags, status, owner_user_id, version, created_by_user_id,
+           created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $14, $16, $17)
+        returning id
+        `,
+        [targetSpaceId, targetSubjectId, targetFolderId, sourceCase.title, sourceCase.preconditions,
+          sourceCase.steps, sourceCase.expected_result, sourceCase.remarks, sourceCase.priority,
+          sourceCase.case_type, sourceCase.case_kind, sourceCase.custom_tags, sourceCase.status, userId,
+          sourceCase.version, sourceCase.created_at, sourceCase.updated_at],
+      )
+      const targetId = Number(inserted.rows[0].id)
+      caseMap.set(key, targetId)
+      await client.query(
+        `insert into test_space_data_imports
+          (target_test_space_id, source_test_space_id, data_type, source_record_id, target_record_id, created_by_user_id)
+         values ($1, $2, 'case', $3, $4, $5)
+         on conflict (target_test_space_id, source_test_space_id, data_type, source_record_id) do nothing`,
+        [targetSpaceId, sourceSpaceId, sourceCaseId, targetId, userId],
+      )
+      return targetId
+    }
+
+    async function copyPlan(sourceSpaceId: number, sourcePlanId: number) {
+      const key = `${sourceSpaceId}:${sourcePlanId}`
+      const existingMap = planMap.get(key)
+      if (existingMap) return existingMap
+      const sourcePlan = sourcePlans.get(sourceSpaceId)?.get(sourcePlanId)
+      if (!sourcePlan) throw importFailure('来源测试计划不存在')
+      const targetSubjectId = await copySubject(sourceSpaceId, Number(sourcePlan.test_subject_id))
+      const projectId = sourcePlan.project_id ? Number(sourcePlan.project_id) : null
+      if (projectId && !(await projectCanBeCopied(client, projectId, userId))) {
+        throw importFailure('来源测试计划关联的项目无权在当前账号下复制')
+      }
+      const inserted = await client.query<{ id: string }>(
+        `
+        insert into test_plans
+          (test_space_id, test_subject_id, project_id, name, version_label, environment, starts_on, ends_on,
+           status, owner_user_id, created_by_user_id, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12)
+        returning id
+        `,
+        [targetSpaceId, targetSubjectId, projectId, sourcePlan.name, sourcePlan.version_label,
+          sourcePlan.environment, sourcePlan.starts_on, sourcePlan.ends_on, sourcePlan.status, userId,
+          sourcePlan.created_at, sourcePlan.updated_at],
+      )
+      const targetId = Number(inserted.rows[0].id)
+      planMap.set(key, targetId)
+      await client.query(
+        `insert into test_space_data_imports
+          (target_test_space_id, source_test_space_id, data_type, source_record_id, target_record_id, created_by_user_id)
+         values ($1, $2, 'plan', $3, $4, $5)
+         on conflict (target_test_space_id, source_test_space_id, data_type, source_record_id) do nothing`,
+        [targetSpaceId, sourceSpaceId, sourcePlanId, targetId, userId],
+      )
+      return targetId
+    }
+
+    let copiedCases = 0
+    let copiedFolders = 0
+    let copiedPlans = 0
+    let copiedSubjects = 0
+    let movedBugs = 0
+    for (const source of sources) {
+      const selectedSubjects = copiedSubjectIds.get(source.spaceId) ?? new Set()
+      const selectedCases = copiedCaseIds.get(source.spaceId) ?? new Set()
+      const selectedPlans = copiedPlanIds.get(source.spaceId) ?? new Set()
+      for (const subjectId of selectedSubjects) {
+        const before = subjectMap.has(`${source.spaceId}:${subjectId}`)
+        await copySubject(source.spaceId, subjectId)
+        if (!before) copiedSubjects += 1
+      }
+      for (const caseId of selectedCases) {
+        const sourceCase = sourceCases.get(source.spaceId)?.get(caseId)
+        const folderWasMapped = sourceCase?.folder_id
+          ? folderMap.has(`${source.spaceId}:${sourceCase.folder_id}`)
+          : true
+        const before = caseMap.has(`${source.spaceId}:${caseId}`)
+        await copyCase(source.spaceId, caseId)
+        if (!before) copiedCases += 1
+        if (sourceCase?.folder_id && !folderWasMapped) copiedFolders += 1
+      }
+      for (const planId of selectedPlans) {
+        const before = planMap.has(`${source.spaceId}:${planId}`)
+        const targetPlanId = await copyPlan(source.spaceId, planId)
+        if (!before) copiedPlans += 1
+        for (const row of (sourcePlanSubjects.get(source.spaceId) ?? []).filter((item) => Number(item.test_plan_id) === planId)) {
+          const targetSubjectId = await copySubject(source.spaceId, Number(row.test_subject_id))
+          await client.query(
+            `insert into test_plan_subjects (test_plan_id, test_space_id, test_subject_id) values ($1, $2, $3) on conflict do nothing`,
+            [targetPlanId, targetSpaceId, targetSubjectId],
+          )
+        }
+        for (const row of (sourcePlanCases.get(source.spaceId) ?? []).filter((item) => Number(item.test_plan_id) === planId)) {
+          const targetCaseId = row.test_case_id ? await copyCase(source.spaceId, Number(row.test_case_id)) : null
+          const targetSubjectId = row.test_subject_id ? await copySubject(source.spaceId, Number(row.test_subject_id)) : null
+          const planCaseKey = `${source.spaceId}:${row.id}`
+          let targetPlanCaseId = planCaseMap.get(planCaseKey)
+          if (!targetPlanCaseId) {
+            const inserted = await client.query<{ id: string }>(
+              `
+              insert into test_plan_cases
+                (test_plan_id, test_case_id, test_subject_id, snapshot_title, snapshot_preconditions,
+                 snapshot_steps, snapshot_expected_result, snapshot_case_version, result, result_note,
+                 executed_by_user_id, executed_at)
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              on conflict (test_plan_id, test_case_id) do nothing
+              returning id
+              `,
+              [targetPlanId, targetCaseId, targetSubjectId, row.snapshot_title, row.snapshot_preconditions,
+                row.snapshot_steps, row.snapshot_expected_result, row.snapshot_case_version, row.result,
+                row.result_note, row.executed_by_user_id, row.executed_at],
+            )
+            targetPlanCaseId = inserted.rows[0] ? Number(inserted.rows[0].id) : Number((await client.query<{ id: string }>(
+              `select id from test_plan_cases where test_plan_id = $1 and test_case_id is not distinct from $2`,
+              [targetPlanId, targetCaseId],
+            )).rows[0]?.id)
+            planCaseMap.set(planCaseKey, targetPlanCaseId)
+            await client.query(
+              `insert into test_space_data_imports
+                (target_test_space_id, source_test_space_id, data_type, source_record_id, target_record_id, created_by_user_id)
+               values ($1, $2, 'plan_case', $3, $4, $5)
+               on conflict (target_test_space_id, source_test_space_id, data_type, source_record_id) do nothing`,
+              [targetSpaceId, source.spaceId, Number(row.id), targetPlanCaseId, userId],
+            )
+          }
+        }
+      }
+      for (const bug of sourceBugs.get(source.spaceId) ?? []) {
+        const targetSubjectId = await copySubject(source.spaceId, Number(bug.test_subject_id))
+        const targetPlanId = bug.test_plan_id ? await copyPlan(source.spaceId, Number(bug.test_plan_id)) : null
+        const targetPlanCaseId = bug.test_plan_case_id ? planCaseMap.get(`${source.spaceId}:${bug.test_plan_case_id}`) : null
+        await client.query(
+          `update test_bugs
+           set test_space_id = $1, test_subject_id = $2, test_plan_id = $3, test_plan_case_id = $4, updated_at = now()
+           where id = $5 and test_space_id = $6`,
+          [targetSpaceId, targetSubjectId, targetPlanId, targetPlanCaseId ?? null, Number(bug.id), source.spaceId],
+        )
+        await recordTestBugEvent({
+          actorUserId: userId,
+          bugId: Number(bug.id),
+          eventType: 'space_transferred',
+          nextTestSpaceId: targetSpaceId,
+          previousTestSpaceId: source.spaceId,
+        }, client)
+        movedBugs += 1
+      }
+    }
+    return {
+      copiedCases,
+      copiedFolders,
+      copiedPlans,
+      copiedSubjects,
+      movedBugs,
+    }
+  })
+}
+
 async function getOrCreateCaseFolder(
   client: PoolClient,
   spaceId: number,
@@ -539,8 +1062,10 @@ async function recordTestBugEvent(
     actorUserId: number | null
     assigneeUserId?: number | null
     bugId: number
-    eventType: 'created' | 'assigned' | 'transferred' | 'status_changed'
+    eventType: 'created' | 'assigned' | 'transferred' | 'status_changed' | 'space_transferred'
+    nextTestSpaceId?: number | null
     nextStatus?: BugStatus
+    previousTestSpaceId?: number | null
     previousStatus?: BugStatus
   },
   client?: PoolClient,
@@ -550,8 +1075,9 @@ async function recordTestBugEvent(
     : (sql: string, params: unknown[]) => query(sql, params)
   await run(
     `insert into test_bug_events
-       (test_bug_id, event_type, actor_user_id, previous_status, next_status, assignee_user_id)
-     values ($1, $2, $3, $4, $5, $6)`,
+       (test_bug_id, event_type, actor_user_id, previous_status, next_status, assignee_user_id,
+        previous_test_space_id, next_test_space_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       event.bugId,
       event.eventType,
@@ -559,6 +1085,8 @@ async function recordTestBugEvent(
       event.previousStatus ?? null,
       event.nextStatus ?? null,
       event.assigneeUserId ?? null,
+      event.previousTestSpaceId ?? null,
+      event.nextTestSpaceId ?? null,
     ],
   )
 }
@@ -811,13 +1339,17 @@ async function getTestWorkbench(userId: number) {
       created_at: Date
       event_type: string
       id: string
+      next_test_space_name: string | null
       next_status: string | null
+      previous_test_space_name: string | null
       previous_status: string | null
       test_bug_id: string
     }>(
       `
       select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
-             assignee.display_name as assignee_display_name, assignee.email as assignee_email
+             assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+             previous_space.name as previous_test_space_name,
+             next_space.name as next_test_space_name
       from test_bug_events e
       join test_bugs b on b.id = e.test_bug_id
       join test_spaces space on space.id = b.test_space_id
@@ -825,6 +1357,8 @@ async function getTestWorkbench(userId: number) {
         on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
       left join users actor on actor.id = e.actor_user_id
       left join users assignee on assignee.id = e.assignee_user_id
+      left join test_spaces previous_space on previous_space.id = e.previous_test_space_id
+      left join test_spaces next_space on next_space.id = e.next_test_space_id
       where ${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')}
       order by e.created_at, e.id
       `,
@@ -965,7 +1499,9 @@ async function getTestWorkbench(userId: number) {
         createdAt: row.created_at.toISOString(),
         eventType: row.event_type,
         id: Number(row.id),
+        nextSpaceName: row.next_test_space_name ? decryptText(row.next_test_space_name) : undefined,
         nextStatus: row.next_status ?? undefined,
+        previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
         previousStatus: row.previous_status ?? undefined,
       },
     ])
@@ -975,6 +1511,7 @@ async function getTestWorkbench(userId: number) {
     const planId = Number(row.test_plan_id)
     subjectIdsByPlan.set(planId, [...(subjectIdsByPlan.get(planId) ?? []), Number(row.test_subject_id)])
   }
+  const ownedSpaces = spaces.rows.filter((row) => Number(row.owner_user_id) === userId)
 
   return {
     bugs: bugs.rows.map((row) => ({
@@ -985,6 +1522,7 @@ async function getTestWorkbench(userId: number) {
       canShare: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
         || Number(row.assignee_user_id) === userId
         || Boolean(row.organization_admin_access),
+      canTransferSpace: ownedSpaces.some((space) => Number(space.id) === Number(row.test_space_id)),
       comments: commentsByBug.get(Number(row.id)) ?? [],
       createdAt: row.created_at.toISOString(),
       environment: decryptText(row.environment),
@@ -1005,6 +1543,13 @@ async function getTestWorkbench(userId: number) {
       testSubjectId: Number(row.test_subject_id),
       testSubjectName: decryptText(row.test_subject_name),
       title: decryptText(row.title),
+      transferSpaceCandidates: ownedSpaces
+        .filter((space) => Number(space.id) !== Number(row.test_space_id))
+        .map((space) => ({
+          id: Number(space.id),
+          name: decryptText(space.name),
+          versionLabel: space.version_label ? decryptText(space.version_label) : undefined,
+        })),
       updatedAt: row.updated_at.toISOString(),
     })),
     cases: cases.rows.map((row) => ({
@@ -1123,6 +1668,28 @@ router.get('/test-spaces/settings', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'tester')
   if (!session) return
   response.json(await getTestSpaceSettings(session.userId))
+}))
+
+router.post('/test-spaces/:spaceId/data-import', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const targetSpaceId = positiveId(request.params.spaceId)
+  if (!targetSpaceId) {
+    response.status(400).json({ error: 'Valid target test space is required' })
+    return
+  }
+  if (!(await requireSpaceOwner(response, targetSpaceId, session.userId))) return
+  const sources = parseTestSpaceImportSources(request.body?.sources, targetSpaceId)
+  const importResult = await importTestSpaceData(targetSpaceId, sources, session.userId)
+  response.json({
+    result: {
+      copiedCases: importResult.copiedCases,
+      copiedFolders: importResult.copiedFolders,
+      copiedPlans: importResult.copiedPlans,
+      copiedSubjects: importResult.copiedSubjects,
+    },
+    settings: await getTestSpaceSettings(session.userId),
+  })
 }))
 
 router.post('/test-spaces', asyncRoute(async (request, response) => {
@@ -2727,6 +3294,28 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
   response.status(201).json(await getTestWorkbench(session.userId))
 }))
 
+router.post('/test-spaces/:spaceId/bugs/:bugId/transfer-space', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const bugId = positiveId(request.params.bugId)
+  const targetSpaceId = positiveId(request.body?.targetSpaceId)
+  if (!spaceId || !bugId || !targetSpaceId || targetSpaceId === spaceId) {
+    response.status(400).json({ error: 'Valid source, Bug, and target test spaces are required' })
+    return
+  }
+  const result = await importTestSpaceData(
+    targetSpaceId,
+    [{ bugIds: [bugId], categories: ['bugs'], spaceId }],
+    session.userId,
+  )
+  if (result.movedBugs !== 1) {
+    response.status(404).json({ error: 'Bug not found' })
+    return
+  }
+  response.json(await getTestWorkbench(session.userId))
+}))
+
 router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'tester')
   if (!session) return
@@ -3062,18 +3651,24 @@ async function getAssignedBugs(userId: number) {
     created_at: Date
     event_type: string
     id: string
+    next_test_space_name: string | null
     next_status: string | null
+    previous_test_space_name: string | null
     previous_status: string | null
     test_bug_id: string
   }>(
     `
     select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
-           assignee.display_name as assignee_display_name, assignee.email as assignee_email
+           assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+           previous_space.name as previous_test_space_name,
+           next_space.name as next_test_space_name
     from test_bug_events e
     join test_bugs b on b.id = e.test_bug_id
     join test_spaces space on space.id = b.test_space_id
     left join users actor on actor.id = e.actor_user_id
     left join users assignee on assignee.id = e.assignee_user_id
+    left join test_spaces previous_space on previous_space.id = e.previous_test_space_id
+    left join test_spaces next_space on next_space.id = e.next_test_space_id
     where (
       b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
     ) or ${managedOrganizationReadScopeSql('space.organization_id')}
@@ -3094,7 +3689,9 @@ async function getAssignedBugs(userId: number) {
         createdAt: row.created_at.toISOString(),
         eventType: row.event_type,
         id: Number(row.id),
+        nextSpaceName: row.next_test_space_name ? decryptText(row.next_test_space_name) : undefined,
         nextStatus: row.next_status ?? undefined,
+        previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
         previousStatus: row.previous_status ?? undefined,
       },
     ])

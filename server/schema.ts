@@ -1778,13 +1778,41 @@ create table if not exists test_bug_events (
   id bigserial primary key,
   test_bug_id bigint not null references test_bugs(id) on delete cascade,
   event_type text not null
-    check (event_type in ('created', 'assigned', 'transferred', 'status_changed')),
+    check (event_type in ('created', 'assigned', 'transferred', 'status_changed', 'space_transferred')),
   actor_user_id bigint references users(id) on delete set null,
   previous_status text,
   next_status text,
   assignee_user_id bigint references users(id) on delete set null,
+  previous_test_space_id bigint references test_spaces(id) on delete set null,
+  next_test_space_id bigint references test_spaces(id) on delete set null,
   created_at timestamptz not null default now()
 );
+
+alter table test_bug_events
+  add column if not exists previous_test_space_id bigint references test_spaces(id) on delete set null,
+  add column if not exists next_test_space_id bigint references test_spaces(id) on delete set null;
+
+alter table test_bug_events
+  drop constraint if exists test_bug_events_event_type_check;
+
+alter table test_bug_events
+  add constraint test_bug_events_event_type_check
+  check (event_type in ('created', 'assigned', 'transferred', 'status_changed', 'space_transferred'));
+
+create table if not exists test_space_data_imports (
+  id bigserial primary key,
+  target_test_space_id bigint not null references test_spaces(id) on delete cascade,
+  source_test_space_id bigint not null references test_spaces(id) on delete cascade,
+  data_type text not null check (data_type in ('subject', 'folder', 'case', 'plan', 'plan_case')),
+  source_record_id bigint not null,
+  target_record_id bigint not null,
+  created_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (target_test_space_id, source_test_space_id, data_type, source_record_id)
+);
+
+create index if not exists idx_test_space_data_imports_target
+  on test_space_data_imports(target_test_space_id, source_test_space_id, data_type);
 
 create index if not exists idx_test_bug_events_bug
   on test_bug_events(test_bug_id, created_at, id);
