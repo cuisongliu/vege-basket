@@ -15,8 +15,9 @@ import { fetchTodoActivity } from '@/api'
 import type { TodoActivityEvent } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { UserName } from '@/components/user-name'
 
-export function TodoActivityPanel({ projectId }: { projectId: number }) {
+export function TodoActivityPanel({ departedUserIds = [], projectId }: { departedUserIds?: readonly number[]; projectId: number }) {
   const [events, setEvents] = useState<TodoActivityEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -144,7 +145,7 @@ export function TodoActivityPanel({ projectId }: { projectId: number }) {
                     <strong>{event.todoTitle}</strong>
                     <span>{eventMeta.label}</span>
                   </div>
-                  <p>{event.actorName} {eventMeta.description}</p>
+                  <p><UserName departedUserIds={departedUserIds} name={event.actorName} userId={event.actorUserId} /> {eventMeta.description}</p>
                 </div>
                 <time dateTime={event.occurredAt}>{event.occurredAt}</time>
               </li>

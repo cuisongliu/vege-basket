@@ -25,6 +25,7 @@ import {
   verifyFeishuCardSignature,
 } from './organization-policy.ts'
 import { getAuthenticatedRoleSession, isSystemAdmin } from './roles.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
 import {
   buildOrganizationInvitationCard,
   buildOrganizationInvitationStatusCard,
@@ -549,6 +550,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     query<{
       assignee_display_name: string | null
       assignee_email: string | null
+      assignee_user_id: string | null
       done: boolean
       due_date: Date
       id: string
@@ -560,7 +562,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     }>(
       `
       select t.id, t.project_id, p.name as project_name, t.title, t.priority, t.done,
-        t.due_date, t.updated_at, assignee.email as assignee_email,
+        t.due_date, t.updated_at, t.assignee_user_id, assignee.email as assignee_email,
         assignee.display_name as assignee_display_name
       from todos t
       join projects p on p.id = t.project_id
@@ -576,6 +578,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     query<{
       assignee_display_name: string | null
       assignee_email: string | null
+      assignee_user_id: string | null
       delivery_date: Date
       id: string
       project_id: string
@@ -586,7 +589,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     }>(
       `
       select e.id, e.project_id, p.name as project_name, e.title, e.status,
-        e.delivery_date, e.updated_at, assignee.email as assignee_email,
+        e.delivery_date, e.updated_at, e.assignee_user_id, assignee.email as assignee_email,
         assignee.display_name as assignee_display_name
       from project_package_events e
       join projects p on p.id = e.project_id
@@ -602,6 +605,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     query<{
       assignee_display_name: string | null
       assignee_email: string | null
+      assignee_user_id: string | null
       id: string
       priority: string
       severity: string
@@ -613,7 +617,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     }>(
       `
       select b.id, b.test_space_id, s.name as test_space_name, b.title, b.priority,
-        b.severity, b.status, b.updated_at, assignee.email as assignee_email,
+        b.severity, b.status, b.updated_at, b.assignee_user_id, assignee.email as assignee_email,
         assignee.display_name as assignee_display_name
       from test_bugs b
       join test_spaces s on s.id = b.test_space_id
@@ -684,11 +688,13 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
   ])
   const row = organization.rows[0]
   if (!row) return null
+  const departedUserIds = await getDepartedUserIds()
   const taskRows = [
     ...todos.rows.map((task) => ({
       assigneeName: task.assignee_email
         ? String(task.assignee_display_name || task.assignee_email)
         : '',
+      assigneeUserId: task.assignee_user_id ? Number(task.assignee_user_id) : undefined,
       id: Number(task.id),
       kind: 'todo' as const,
       projectId: Number(task.project_id),
@@ -701,6 +707,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
       assigneeName: task.assignee_email
         ? String(task.assignee_display_name || task.assignee_email)
         : '',
+      assigneeUserId: task.assignee_user_id ? Number(task.assignee_user_id) : undefined,
       id: Number(task.id),
       kind: 'delivery' as const,
       projectId: Number(task.project_id),
@@ -713,6 +720,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
       assigneeName: task.assignee_email
         ? String(task.assignee_display_name || task.assignee_email)
         : '',
+      assigneeUserId: task.assignee_user_id ? Number(task.assignee_user_id) : undefined,
       id: Number(task.id),
       kind: 'bug' as const,
       projectName: decryptText(task.test_space_name),
@@ -798,6 +806,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
 
   return {
     accessRole: membership.access_role,
+    departedUserIds,
     attachableProjects: attachableProjects.rows.map((project) => ({
       id: Number(project.id),
       name: decryptText(project.name),

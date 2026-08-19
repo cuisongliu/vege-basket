@@ -168,6 +168,12 @@ import {
   revokeTodoShareLink,
 } from './todo-share.ts'
 import { buildBugShareUrl } from './bug-share.ts'
+import type { UserAccountStatus } from '../shared/user-lifecycle.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
+import {
+  configureAccountOffboardingNotifications,
+  type AccountOffboardingNotificationEvent,
+} from './account-offboarding.ts'
 import {
   configureTestWorkbenchNotifications,
   testWorkbenchRouter,
@@ -211,6 +217,7 @@ type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
 type ProjectMembershipStatus = 'pending' | 'active' | 'declined'
 type NotificationKind =
+  | 'account_offboarding_received'
   | 'project_invite'
   | 'project_transfer'
   | 'assigned_todo'
@@ -230,12 +237,9 @@ type NotificationKind =
   | 'test_bug_rejected'
   | 'test_bug_comment_added'
   | 'test_case_activity'
-type TestWorkbenchNotificationKind = Extract<
-  NotificationKind,
-  'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_rejected' | 'test_bug_comment_added'
->
 type PackageMarketChannel = 'release' | 'ci'
 type UserRow = {
+  account_status: UserAccountStatus
   id: string
   email: string
   display_name: string
@@ -297,6 +301,16 @@ type NotificationStateRow = {
   source_id: string
   read_at: Date | null
   dismissed_at: Date | null
+}
+type AccountOffboardingNotificationSummary = {
+  departedUserName: string
+  organizations: Array<{
+    bugCount: number
+    name: string
+    projectNames: string[]
+    testSpaceNames: string[]
+    transferredTodoCount: number
+  }>
 }
 type ProjectModuleRow = {
   id: string
@@ -512,6 +526,9 @@ configureTestWorkbenchNotifications({
   onTestBugCommentAdded: enqueueTestBugCommentAddedDelivery,
   onTestCaseChanged: enqueueTestCaseChangedDelivery,
   onTestExecutionResultChanged: enqueueTestExecutionResultChangedDelivery,
+})
+configureAccountOffboardingNotifications(({ notificationId }: AccountOffboardingNotificationEvent) => {
+  enqueueAccountOffboardingNotificationDelivery(notificationId)
 })
 app.use('/api', testWorkbenchRouter)
 
@@ -762,6 +779,7 @@ function serializeUser(row: UserRow) {
   const feishuOpenId = String(row.feishu_user_id ?? '').trim()
   return {
     id: Number(row.id),
+    accountStatus: row.account_status,
     displayName: row.display_name,
     feishuEmail: row.feishu_email || (feishuOpenId.includes('@') ? feishuOpenId : ''),
     feishuLinked: feishuOpenId.startsWith('ou_'),
@@ -1335,11 +1353,12 @@ async function findOrCreateFeishuOAuthUser(
         end,
         feishu_receive_id_type = 'open_id'
     where feishu_user_id = $1
-    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
     `,
     [feishuUser.openId, displayName, feishuUser.email],
   )
   if (byOpenId.rows[0]) {
+    if (byOpenId.rows[0].account_status !== 'active') throw new Error('该账号已被禁用或已离职')
     const userId = Number(byOpenId.rows[0].id)
     await linkPendingMemberships(userId, byOpenId.rows[0].email)
     await acceptProjectInviteToken(userId, inviteToken, invitePassword)
@@ -1359,11 +1378,12 @@ async function findOrCreateFeishuOAuthUser(
             else display_name
           end
       where email = $1
-      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
       `,
       [feishuUser.email, feishuUser.openId, displayName],
     )
     if (byEmail.rows[0]) {
+      if (byEmail.rows[0].account_status !== 'active') throw new Error('该账号已被禁用或已离职')
       const userId = Number(byEmail.rows[0].id)
       await linkPendingMemberships(userId, byEmail.rows[0].email)
       await acceptProjectInviteToken(userId, inviteToken, invitePassword)
@@ -1378,7 +1398,7 @@ async function findOrCreateFeishuOAuthUser(
     `
     insert into users (email, password_hash, display_name, feishu_email, feishu_user_id, feishu_receive_id_type)
     values ($1, $2, $3, $4, $5, 'open_id')
-    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
     `,
     [username, '', newDisplayName, feishuUser.email, feishuUser.openId],
   )
@@ -3287,9 +3307,10 @@ async function requireUserId(request: express.Request) {
 
   const result = await query<{ user_id: string }>(
     `
-    select user_id
+    select sessions.user_id
     from sessions
-    where token = $1 and expires_at > now()
+    join users on users.id = sessions.user_id and users.account_status = 'active'
+    where sessions.token = $1 and sessions.expires_at > now()
     `,
     [token],
   )
@@ -3622,7 +3643,7 @@ async function registerPasswordUser(params: {
       `
       insert into users (email, password_hash, display_name)
       values ($1, $2, $3)
-      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
       `,
       [params.username, params.passwordHash, params.username],
     )
@@ -4079,6 +4100,7 @@ async function getWorkspace(userId: number) {
       watchers_json: Array<{ id: string; email: string; display_name: string | null }> | null
       reviewer_user_id: string | null
       assigned_by_user_id: string | null
+      offboarding_transferred_from_name: string | null
       assignee_email: string | null
       assignee_display_name: string | null
       watcher_email: string | null
@@ -4120,6 +4142,17 @@ async function getWorkspace(userId: number) {
              watchers.watchers_json,
              t.reviewer_user_id,
              t.assigned_by_user_id,
+             (
+               select coalesce(nullif(departed_user.display_name, ''), departed_user.email)
+               from account_offboarding_asset_transfers transfer
+               join users departed_user on departed_user.id = transfer.previous_assignee_user_id
+               where transfer.asset_type = 'todo'
+                 and transfer.asset_id = t.id
+                 and transfer.next_assignee_user_id = t.assignee_user_id
+                 and transfer.action = 'transferred'
+               order by transfer.created_at desc, transfer.id desc
+               limit 1
+             ) as offboarding_transferred_from_name,
              assignee.email as assignee_email,
              assignee.display_name as assignee_display_name,
              watcher.email as watcher_email,
@@ -4298,6 +4331,7 @@ async function getWorkspace(userId: number) {
       [userId],
     ),
   ])
+  const departedUserIds = await getDepartedUserIds()
 
   const journalsByProject = new Map<
     number,
@@ -4400,6 +4434,7 @@ async function getWorkspace(userId: number) {
   }
 
   return {
+    departedUserIds,
     projects: projectsResult.rows.map((project) => ({
       id: Number(project.id),
       accessRole: project.access_role,
@@ -4469,6 +4504,7 @@ async function getWorkspace(userId: number) {
           display_name: todo.assigner_display_name ?? '',
         })
         : undefined,
+      offboardingTransferredFromName: todo.offboarding_transferred_from_name ?? undefined,
       creatorName: todo.created_by_user_id
         ? displayNameFromUser({
           email: todo.creator_email ?? '',
@@ -4591,12 +4627,12 @@ app.post('/api/auth/login', asyncHandler(async (request, response) => {
   const username = normalizeUsername(request.body.username ?? request.body.email)
   const password = String(request.body.password ?? '')
   const user = await query<UserRow & { password_hash: string }>(
-    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, password_hash from users where email = $1',
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, password_hash, account_status from users where email = $1',
     [username],
   )
   const row = user.rows[0]
 
-  if (!row || !row.password_hash || !(await bcrypt.compare(password, row.password_hash))) {
+  if (!row || row.account_status !== 'active' || !row.password_hash || !(await bcrypt.compare(password, row.password_hash))) {
     response.status(401).json({ error: 'Invalid username or password' })
     return
   }
@@ -4618,7 +4654,7 @@ app.get('/api/auth/me', asyncHandler(async (request, response) => {
   if (!userId) return
 
   const user = await query<UserRow>(
-    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type from users where id = $1',
+    'select id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status from users where id = $1',
     [userId],
   )
   response.json({
@@ -4646,7 +4682,7 @@ app.patch('/api/auth/me', asyncHandler(async (request, response) => {
           else feishu_receive_id_type
         end
     where id = $2
-    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+    returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
     `,
     [displayName, userId],
   )
@@ -4766,7 +4802,7 @@ app.delete('/api/auth/feishu/oauth', asyncHandler(async (request, response) => {
           feishu_user_id = '',
           feishu_receive_id_type = 'open_id'
       where id = $1
-      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type
+      returning id, email, display_name, feishu_email, feishu_user_id, feishu_receive_id_type, account_status
       `,
       [userId],
     )
@@ -4889,6 +4925,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
   )
 
   response.json({
+    departedUserIds: await getDepartedUserIds(),
     events: result.rows.map((event) => ({
       id: Number(event.id),
       projectId,
@@ -5044,6 +5081,7 @@ async function getNotifications(userId: number) {
     dueTomorrowResult,
     noteMentionsResult,
     packageEventCommentMentionsResult,
+    accountOffboardingNotificationsResult,
   ] = await Promise.all([
     query<{
       id: string
@@ -5360,9 +5398,40 @@ async function getNotifications(userId: number) {
       `,
       [userId],
     ),
+    query<{
+      created_at: Date
+      id: string
+      summary: string
+    }>(
+      `
+      select notification.id, notification.summary, notification.created_at
+      from account_offboarding_notifications notification
+      join notification_deliveries delivery
+        on delivery.kind = 'account_offboarding_received'
+       and delivery.source_id = notification.id
+       and delivery.channel = 'in_app'
+       and delivery.target_type = 'user'
+       and delivery.status = 'sent'
+       and delivery.user_id = $1
+      order by notification.created_at desc, notification.id desc
+      limit 200
+      `,
+      [userId],
+    ),
   ])
 
   return {
+    accountOffboardingReceived: accountOffboardingNotificationsResult.rows.map((notification) => {
+      const summary = JSON.parse(decryptText(notification.summary)) as AccountOffboardingNotificationSummary
+      return {
+        ...stateFor('account_offboarding_received', notification.id),
+        createdAt: formatDateTime(notification.created_at),
+        departedUserName: summary.departedUserName,
+        id: Number(notification.id),
+        organizations: summary.organizations,
+        sortAt: notification.created_at.toISOString(),
+      }
+    }),
     assignedTodos: assignedTodosResult.rows.map((todo) => ({
       ...stateFor('assigned_todo', todo.id),
       assignedAt: todo.assigned_at ? formatUpdatedAt(todo.assigned_at) : undefined,
@@ -5803,6 +5872,14 @@ function bugShareLinkMarkdown(candidate: FeishuNotificationCandidate) {
 }
 
 function buildFeishuNotificationText(candidate: FeishuNotificationCandidate, target: FeishuDeliveryTarget) {
+  if (candidate.kind === 'account_offboarding_received') {
+    return [
+      '【Veges 通知】你已接收离职成员的资产',
+      '',
+      candidate.body,
+    ].join('\n')
+  }
+
   if (candidate.kind === 'assigned_todo' || candidate.kind === 'watched_todo' || candidate.kind === 'todo_mention') {
     const isWatchedTodo = candidate.kind === 'watched_todo'
     const isTodoMention = candidate.kind === 'todo_mention'
@@ -6055,6 +6132,30 @@ function buildFeishuInteractiveCard(
   target: FeishuDeliveryTarget,
   options: { mention?: boolean } = {},
 ) {
+  if (candidate.kind === 'account_offboarding_received') {
+    return {
+      config: {
+        wide_screen_mode: true,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            content: candidate.body,
+            tag: 'lark_md',
+          },
+        },
+      ],
+      header: {
+        template: 'green',
+        title: {
+          content: '📦 有新的离职资产接受，请前往 Veges 查看',
+          tag: 'plain_text',
+        },
+      },
+    }
+  }
+
   if (candidate.kind === 'assigned_todo' || candidate.kind === 'watched_todo' || candidate.kind === 'todo_mention') {
     const isWatchedTodo = candidate.kind === 'watched_todo'
     const isTodoMention = candidate.kind === 'todo_mention'
@@ -7014,7 +7115,7 @@ async function upsertFeishuDelivery(params: {
 }
 
 async function recordTestWorkbenchInAppNotification(
-  candidate: FeishuNotificationCandidate & { kind: TestWorkbenchNotificationKind },
+  candidate: FeishuNotificationCandidate,
 ) {
   await query(
     `
@@ -7048,6 +7149,68 @@ async function recordTestWorkbenchInAppNotification(
     `,
     [candidate.userId, candidate.kind, candidate.sourceId, String(candidate.userId)],
   )
+}
+
+function formatAccountOffboardingNotificationBody(summary: AccountOffboardingNotificationSummary) {
+  const organizationLines = summary.organizations.map((organization) => {
+    const assets = [
+      organization.projectNames.length > 0 ? `项目：${organization.projectNames.join('、')}` : '',
+      organization.testSpaceNames.length > 0 ? `测试空间：${organization.testSpaceNames.join('、')}` : '',
+      organization.transferredTodoCount > 0 ? `待办：${organization.transferredTodoCount} 条` : '',
+      organization.bugCount > 0 ? `Bug：${organization.bugCount} 个` : '',
+    ].filter(Boolean)
+    return [`组织：${organization.name}`, ...(assets.length > 0 ? assets : ['未接收可转移资产'])].join('\n')
+  })
+  return [`离职成员：${summary.departedUserName}`, ...organizationLines].join('\n\n')
+}
+
+async function deliverAccountOffboardingNotification(notificationId: number) {
+  const result = await query<{
+    id: string
+    recipient_display_name: string | null
+    recipient_email: string
+    recipient_user_id: string
+    summary: string
+  }>(
+    `
+    select notification.id,
+           notification.recipient_user_id,
+           notification.summary,
+           recipient.email as recipient_email,
+           recipient.display_name as recipient_display_name
+    from account_offboarding_notifications notification
+    join users recipient on recipient.id = notification.recipient_user_id
+    where notification.id = $1
+    `,
+    [notificationId],
+  )
+  const notification = result.rows[0]
+  if (!notification) throw new Error('Account offboarding notification not found')
+  const summary = JSON.parse(decryptText(notification.summary)) as AccountOffboardingNotificationSummary
+  const candidate: FeishuNotificationCandidate = {
+    body: formatAccountOffboardingNotificationBody(summary),
+    kind: 'account_offboarding_received',
+    projectId: 0,
+    recipientName: displayNameFromUser({
+      email: notification.recipient_email,
+      display_name: notification.recipient_display_name ?? '',
+    }),
+    sourceId: Number(notification.id),
+    title: '离职资产接收',
+    userId: Number(notification.recipient_user_id),
+  }
+  await recordTestWorkbenchInAppNotification(candidate)
+  if (process.env.FEISHU_DELIVERY_ENABLED === 'false') return { failed: 0, sent: 0, skipped: 1 }
+  if (!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET)) return { failed: 0, sent: 0, skipped: 1 }
+  return deliverFeishuNotification(candidate)
+}
+
+function enqueueAccountOffboardingNotificationDelivery(notificationId: number) {
+  setTimeout(() => {
+    void deliverAccountOffboardingNotification(notificationId).catch((error) => {
+      console.error('Account offboarding notification delivery failed', error)
+    })
+  }, 0)
 }
 
 async function markFeishuDeliverySkipped(candidate: FeishuNotificationCandidate, reason: string) {
@@ -8676,6 +8839,7 @@ app.patch('/api/notifications/read-all', asyncHandler(async (request, response) 
   const entries: Array<{ kind: NotificationKind; sourceId: number }> = [
     ...notifications.invites.map((item) => ({ kind: 'project_invite' as const, sourceId: item.id })),
     ...notifications.projectTransfers.map((item) => ({ kind: 'project_transfer' as const, sourceId: item.id })),
+    ...notifications.accountOffboardingReceived.map((item) => ({ kind: 'account_offboarding_received' as const, sourceId: item.id })),
     ...notifications.assignedTodos.map((item) => ({ kind: 'assigned_todo' as const, sourceId: item.id })),
     ...notifications.watchedTodos.map((item) => ({ kind: 'watched_todo' as const, sourceId: item.id })),
     ...notifications.dueTomorrowTodos.map((item) => ({ kind: 'todo_due_tomorrow' as const, sourceId: item.id })),

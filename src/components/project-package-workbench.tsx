@@ -99,6 +99,7 @@ import type {
   Todo,
 } from '@/types'
 import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
+import { UserName } from '@/components/user-name'
 
 type PackageWorkbenchProps = {
   onAddEventComment: (eventId: number, content: string) => Promise<boolean>
@@ -3221,7 +3222,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     <span>{eventTypeLabel(event.type)} · {formatEventDeliveryWindow(event)}</span>
                     <span className="project-event-badges">
                       <span className="project-event-assignee">
-                        交付人：{event.assigneeName || '未指派'}
+                        交付人：<UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} />
                       </span>
                       <span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>
                         {eventStatusLabel(eventDisplayStatus(event))}
@@ -3278,7 +3279,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <div>
                   <span>草稿</span>
                   <h3>{selectedEvent.title}</h3>
-                  <p>{eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)} · {selectedEvent.assigneeName || '未指派'}</p>
+                  <p>{eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)} · <UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></p>
                 </div>
                 {canManageProject ? (
                   <Button className="solid-button" onClick={() => openDraftEventEditor(selectedEvent)} type="button">
@@ -4411,6 +4412,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       </Dialog>
       <PackageEventCommentsDrawer
         currentUserId={currentUserId}
+        departedUserIds={timeline?.departedUserIds ?? []}
         event={selectedEvent}
         mentionMembers={timeline?.mentionableMembers ?? memberOptions}
         open={commentsDrawerOpen && selectedEvent != null}
@@ -4426,6 +4428,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 function PackageEventCommentItem({
   comment,
   currentUserId,
+  departedUserIds,
   disabled,
   mentionMembers,
   onDelete,
@@ -4433,6 +4436,7 @@ function PackageEventCommentItem({
 }: {
   comment: ProjectPackageEventComment
   currentUserId?: number
+  departedUserIds: readonly number[]
   disabled: boolean
   mentionMembers: MentionMember[]
   onDelete: (comment: ProjectPackageEventComment) => Promise<boolean>
@@ -4453,7 +4457,7 @@ function PackageEventCommentItem({
     <article className="package-event-comment-item">
       <div className="package-event-comment-header">
         <div className="package-event-comment-byline">
-          <strong>{comment.authorName}</strong>
+          <UserName departedUserIds={departedUserIds} name={comment.authorName} userId={comment.authorUserId} />
           <span aria-hidden="true">·</span>
           <time>{comment.createdAt}{edited ? ` · 编辑于 ${comment.updatedAt}` : ''}</time>
         </div>
@@ -4519,6 +4523,7 @@ function PackageEventCommentItem({
 
 function PackageEventCommentsDrawer({
   currentUserId,
+  departedUserIds,
   event,
   mentionMembers,
   onAddComment,
@@ -4528,6 +4533,7 @@ function PackageEventCommentsDrawer({
   open,
 }: {
   currentUserId?: number
+  departedUserIds: readonly number[]
   event: ProjectPackageEvent | null
   mentionMembers: MentionMember[]
   onAddComment: (eventId: number, content: string) => Promise<boolean>
@@ -4564,6 +4570,7 @@ function PackageEventCommentsDrawer({
               <PackageEventCommentItem
                 comment={comment}
                 currentUserId={currentUserId}
+                departedUserIds={departedUserIds}
                 disabled={submitting}
                 key={comment.id}
                 mentionMembers={mentionMembers}

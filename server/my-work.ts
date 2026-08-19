@@ -15,6 +15,7 @@ type MyWorkRow = {
   title: string
   status: string
   priority: 'high' | 'medium' | 'low' | null
+  offboarding_transferred_from_name: string | null
   due_at: string | null
   updated_at: Date
   relation: MyWorkItem['relation']
@@ -62,7 +63,18 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         case
           when t.reviewer_user_id = $1 then 'reviewer'
           else 'assignee'
-        end as relation
+        end as relation,
+        (
+          select coalesce(nullif(departed_user.display_name, ''), departed_user.email)
+          from account_offboarding_asset_transfers transfer
+          join users departed_user on departed_user.id = transfer.previous_assignee_user_id
+          where transfer.asset_type = 'todo'
+            and transfer.asset_id = t.id
+            and transfer.next_assignee_user_id = $1::bigint
+            and transfer.action = 'transferred'
+          order by transfer.created_at desc, transfer.id desc
+          limit 1
+        ) as offboarding_transferred_from_name
       from todos t
       join projects p on p.id = t.project_id
       left join users todo_creator on todo_creator.id = t.created_by_user_id
@@ -82,7 +94,8 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         coalesce(nullif(delivery_creator.display_name, ''), delivery_creator.email)::text,
         null::boolean,
         e.title,
-        e.status, null::text, e.delivery_date::text, e.updated_at, 'assignee'::text
+        e.status, null::text, e.delivery_date::text, e.updated_at, 'assignee'::text,
+        null::text as offboarding_transferred_from_name
       from project_package_events e
       join projects p on p.id = e.project_id
       left join users delivery_creator on delivery_creator.id = e.created_by_user_id
@@ -95,7 +108,8 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         coalesce(nullif(milestone_creator.display_name, ''), milestone_creator.email)::text,
         null::boolean,
         m.title,
-        m.status, null::text, m.target_date::text, m.updated_at, 'responsible'::text
+        m.status, null::text, m.target_date::text, m.updated_at, 'responsible'::text,
+        null::text as offboarding_transferred_from_name
       from project_milestones m
       join projects p on p.id = m.project_id
       left join users milestone_creator on milestone_creator.id = m.created_by_user_id
@@ -108,7 +122,8 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         coalesce(nullif(bug_creator.display_name, ''), bug_creator.email)::text,
         null::boolean,
         b.title,
-        b.status, b.priority, null::text, b.updated_at, 'assignee'::text
+        b.status, b.priority, null::text, b.updated_at, 'assignee'::text,
+        null::text as offboarding_transferred_from_name
       from test_bugs b
       join test_spaces space on space.id = b.test_space_id
       left join test_plans bug_plan
@@ -160,6 +175,7 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
     title: decryptText(row.title),
     status: row.status,
     priority: row.priority ?? undefined,
+    offboardingTransferredFromName: row.offboarding_transferred_from_name ?? undefined,
     dueAt: row.due_at ?? undefined,
     updatedAt: row.updated_at.toISOString(),
     relation: row.relation,

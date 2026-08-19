@@ -116,6 +116,8 @@ test('reopening a rejected or closed Bug is a dedicated button next to share tha
 
 test('Bug timeline records creation, assignment, transfer and status changes without comments', () => {
   assert.match(schemaSource, /create table if not exists test_bug_events/u)
+  assert.match(schemaSource, /transfer_source text/u)
+  assert.match(schemaSource, /test_bug_events_transfer_source_check/u)
   assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'status_changed', 'space_transferred'\)\)/u)
   assert.match(schemaSource, /create index if not exists idx_test_bug_events_bug/u)
   assert.match(schemaSource, /on test_bug_events\(test_bug_id, created_at, id\)/u)
@@ -125,6 +127,8 @@ test('Bug timeline records creation, assignment, transfer and status changes wit
   assert.match(testWorkbenchSource, /eventType: 'created'/u)
   assert.match(testWorkbenchSource, /eventType: 'assigned'/u)
   assert.match(testWorkbenchSource, /eventType: 'transferred'/u)
+  assert.match(testWorkbenchSource, /transferSource: 'manual'/u)
+  assert.match(testWorkbenchSource, /transferSource: row\.transfer_source \?\? undefined/u)
   assert.match(testWorkbenchSource, /eventType: 'status_changed'/u)
   assert.match(testWorkbenchSource, /eventType: 'space_transferred'/u)
   assert.match(testWorkbenchSource, /previous_test_space_id, next_test_space_id/u)
@@ -132,6 +136,7 @@ test('Bug timeline records creation, assignment, transfer and status changes wit
   assert.match(testWorkbenchSource, /reporter\.display_name as reporter_display_name/u)
   assert.match(testWorkbenchSource, /reporterName: row\.reporter_display_name \|\| row\.reporter_email \|\| undefined/u)
   assert.match(testWorkbenchSource, /assigneeName: row\.assignee_display_name \|\| row\.assignee_email \|\| undefined/u)
+  assert.match(testWorkbenchClientSource, /assigneeTransferSource === 'offboarding' \? '（离职转移）' : null/u)
 })
 
 test('Bug detail header actions use icon-only buttons with accessible labels', () => {
@@ -143,11 +148,12 @@ test('Bug detail header actions use icon-only buttons with accessible labels', (
   assert.match(testWorkbenchClientSource, /<DialogTitle>Bug 时间线<\/DialogTitle>/u)
   assert.match(testWorkbenchClientSource, /eventType === 'created' \? \(/u)
   assert.match(testWorkbenchClientSource, /创建了 Bug/u)
-  assert.match(testWorkbenchClientSource, /指派给 \{event\.assigneeName \?\? '未分配'\}/u)
-  assert.match(testWorkbenchClientSource, /转移给 \{event\.assigneeName \?\? '未分配'\}/u)
+  assert.match(testWorkbenchClientSource, /指派给 <UserName/u)
+  assert.match(testWorkbenchClientSource, /转移给 <UserName/u)
   assert.match(testWorkbenchClientSource, /状态从「\{event\.previousStatus \? bugStatusLabel\[event\.previousStatus\] : '未知'\}」改为「\{event\.nextStatus \? bugStatusLabel\[event\.nextStatus\] : '未知'\}」/u)
   assert.match(testWorkbenchClientSource, /hasCreatedEvent = bug\.events\.some\(\(event\) => event\.eventType === 'created'\)/u)
-  assert.match(testWorkbenchClientSource, /comment\.kind === 'reject' \|\| comment\.kind === 'transfer'/u)
+  assert.match(testWorkbenchClientSource, /isNamedTransferComment/u)
+  assert.match(testWorkbenchClientSource, /comment\.kind === 'transfer' && \/转移给「\(\[\^」\]\+\)」\/u\.test\(comment\.content\)/u)
   assert.match(testWorkbenchClientSource, /eventType: comment\.kind === 'reject' \? 'rejected' as const : 'transferred' as const/u)
   assert.match(testWorkbenchClientSource, /转移给「\(\[\^」\]\+\)」/u)
   assert.match(testWorkbenchClientSource, /驳回了该 Bug/u)

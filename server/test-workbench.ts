@@ -4,6 +4,7 @@ import express, { Router } from 'express'
 import type { PoolClient } from 'pg'
 import { blindIndex, decryptJson, decryptText, encryptJson, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
+import { getDepartedUserIds, getDepartedUsers } from './user-lifecycle.ts'
 import {
   managedOrganizationReadScopeSql,
   testSpaceMembershipPresentSql,
@@ -1063,6 +1064,7 @@ async function recordTestBugEvent(
     assigneeUserId?: number | null
     bugId: number
     eventType: 'created' | 'assigned' | 'transferred' | 'status_changed' | 'space_transferred'
+    transferSource?: 'manual' | 'offboarding'
     nextTestSpaceId?: number | null
     nextStatus?: BugStatus
     previousTestSpaceId?: number | null
@@ -1076,8 +1078,8 @@ async function recordTestBugEvent(
   await run(
     `insert into test_bug_events
        (test_bug_id, event_type, actor_user_id, previous_status, next_status, assignee_user_id,
-        previous_test_space_id, next_test_space_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        transfer_source, previous_test_space_id, next_test_space_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [
       event.bugId,
       event.eventType,
@@ -1085,6 +1087,7 @@ async function recordTestBugEvent(
       event.previousStatus ?? null,
       event.nextStatus ?? null,
       event.assigneeUserId ?? null,
+      event.transferSource ?? null,
       event.previousTestSpaceId ?? null,
       event.nextTestSpaceId ?? null,
     ],
@@ -1339,6 +1342,7 @@ async function getTestWorkbench(userId: number) {
       created_at: Date
       event_type: string
       id: string
+      transfer_source: 'manual' | 'offboarding' | null
       next_test_space_name: string | null
       next_status: string | null
       previous_test_space_name: string | null
@@ -1487,8 +1491,14 @@ async function getTestWorkbench(userId: number) {
     ])
   }
   const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
+  const assigneeTransferSourceByBug = new Map<number, 'manual' | 'offboarding' | undefined>()
   for (const row of events.rows) {
     const bugId = Number(row.test_bug_id)
+    if (row.event_type === 'assigned') {
+      assigneeTransferSourceByBug.set(bugId, undefined)
+    } else if (row.event_type === 'transferred') {
+      assigneeTransferSourceByBug.set(bugId, row.transfer_source ?? 'manual')
+    }
     eventsByBug.set(bugId, [
       ...(eventsByBug.get(bugId) ?? []),
       {
@@ -1499,6 +1509,7 @@ async function getTestWorkbench(userId: number) {
         createdAt: row.created_at.toISOString(),
         eventType: row.event_type,
         id: Number(row.id),
+        transferSource: row.transfer_source ?? undefined,
         nextSpaceName: row.next_test_space_name ? decryptText(row.next_test_space_name) : undefined,
         nextStatus: row.next_status ?? undefined,
         previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
@@ -1512,12 +1523,19 @@ async function getTestWorkbench(userId: number) {
     subjectIdsByPlan.set(planId, [...(subjectIdsByPlan.get(planId) ?? []), Number(row.test_subject_id)])
   }
   const ownedSpaces = spaces.rows.filter((row) => Number(row.owner_user_id) === userId)
+  const [departedUserIds, departedUsers] = await Promise.all([
+    getDepartedUserIds(),
+    getDepartedUsers(),
+  ])
 
   return {
+    departedUserIds,
+    departedUsers,
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
       assigneeName: row.assignee_display_name || row.assignee_email || undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+      assigneeTransferSource: assigneeTransferSourceByBug.get(Number(row.id)),
       canEdit: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
       canShare: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
         || Number(row.assignee_user_id) === userId
@@ -3651,6 +3669,7 @@ async function getAssignedBugs(userId: number) {
     created_at: Date
     event_type: string
     id: string
+    transfer_source: 'manual' | 'offboarding' | null
     next_test_space_name: string | null
     next_status: string | null
     previous_test_space_name: string | null
@@ -3677,8 +3696,14 @@ async function getAssignedBugs(userId: number) {
     [userId],
   )
   const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
+  const assigneeTransferSourceByBug = new Map<number, 'manual' | 'offboarding' | undefined>()
   for (const row of events.rows) {
     const bugId = Number(row.test_bug_id)
+    if (row.event_type === 'assigned') {
+      assigneeTransferSourceByBug.set(bugId, undefined)
+    } else if (row.event_type === 'transferred') {
+      assigneeTransferSourceByBug.set(bugId, row.transfer_source ?? 'manual')
+    }
     eventsByBug.set(bugId, [
       ...(eventsByBug.get(bugId) ?? []),
       {
@@ -3689,6 +3714,7 @@ async function getAssignedBugs(userId: number) {
         createdAt: row.created_at.toISOString(),
         eventType: row.event_type,
         id: Number(row.id),
+        transferSource: row.transfer_source ?? undefined,
         nextSpaceName: row.next_test_space_name ? decryptText(row.next_test_space_name) : undefined,
         nextStatus: row.next_status ?? undefined,
         previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
@@ -3758,11 +3784,13 @@ async function getAssignedBugs(userId: number) {
     ])
   }
   return {
+    departedUserIds: await getDepartedUserIds(),
     members: [],
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
       assigneeName: row.assignee_display_name || row.assignee_email || undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
+      assigneeTransferSource: assigneeTransferSourceByBug.get(Number(row.id)),
       canComment: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
       canManage: Number(row.assignee_user_id) === userId,
       canShare: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
@@ -3981,6 +4009,7 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
       assigneeUserId,
       bugId,
       eventType: 'transferred',
+      transferSource: 'manual',
     }, client)
     await recordTestBugEvent({
       actorUserId: session.userId,

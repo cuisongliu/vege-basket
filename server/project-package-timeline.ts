@@ -2,6 +2,7 @@ import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
 import { createPackageItemDownloadUrl } from './package-market.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
@@ -118,6 +119,7 @@ export type ProjectPackageEvent = {
 }
 
 export type ProjectPackageTimeline = {
+  departedUserIds: number[]
   events: ProjectPackageEvent[]
   mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
@@ -1504,6 +1506,7 @@ export async function getProjectPackageTimeline(projectId: number) {
   }
 
   return {
+    departedUserIds: await getDepartedUserIds(),
     projectId,
     events: eventsResult.rows.map((row) => ({
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,

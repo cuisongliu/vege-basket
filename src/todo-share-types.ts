@@ -1,5 +1,6 @@
 export type TodoShareNote = {
   authorName: string
+  authorUserId?: number
   content: string
   createdAt: string
   fromShare: boolean
@@ -9,9 +10,12 @@ export type TodoShareNote = {
 
 export type TodoShareView = {
   assigneeName: string | null
+  assigneeUserId?: number
   confirmationStatus: string
   createdAt: string
   creatorName: string
+  creatorUserId?: number
+  departedUserIds: number[]
   detail: string
   done: boolean
   dueDate: string
@@ -21,6 +25,7 @@ export type TodoShareView = {
   priority: string
   projectName: string
   reviewerName: string | null
+  reviewerUserId?: number
   title: string
   todoId: number
   updatedAt: string

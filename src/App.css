@@ -13967,3 +13967,62 @@ textarea:focus {
   .changelog-entry-detail { padding: 0 10px 16px; }
   .changelog-entry-excerpt { white-space: normal; }
 }
+.role-managed-user strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.role-managed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.offboarding-dialog {
+  width: min(92vw, 560px);
+}
+
+.offboarding-organizations {
+  display: grid;
+  gap: 0.8rem;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.offboarding-organization {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.offboarding-organization-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.offboarding-organization-heading small,
+.offboarding-organization > small {
+  color: var(--muted-foreground);
+}
+
+.user-departed-badge {
+  margin-left: 0.25rem;
+  padding: 0.05em 0.3em;
+  vertical-align: middle;
+  border-color: color-mix(in oklch, #53685d 42%, var(--line));
+  background: color-mix(in oklch, #53685d 18%, var(--surface));
+  color: color-mix(in oklch, #2f4d40 82%, var(--strong));
+  font-size: 0.72em;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.dark .user-departed-badge {
+  border-color: color-mix(in oklch, #a8c4b4 42%, var(--line));
+  background: color-mix(in oklch, #789b88 24%, var(--surface));
+  color: #dbece2;
+}

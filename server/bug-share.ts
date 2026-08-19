@@ -5,6 +5,7 @@ import { pool, query } from './db.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 import { hashBugShareToken } from './organization-policy.ts'
 import { normalizePublicAppUrl } from './todo-digest.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
 
 const shareLifetimeMs = 30 * 24 * 60 * 60 * 1_000
 const shareLockTimeout = '5s'
@@ -12,6 +13,7 @@ const shareStatementTimeout = '15s'
 
 export type BugShareComment = {
   authorName: string
+  authorUserId?: number
   content: string
   createdAt: string
   id: number
@@ -24,9 +26,11 @@ export type BugShareMentionableMember = {
 
 export type BugShareView = {
   assigneeName: string | null
+  assigneeUserId?: number
   bugId: number
   comments: BugShareComment[]
   createdAt: string
+  departedUserIds: number[]
   environment: string
   expectedResult: string
   actualResult: string
@@ -147,12 +151,13 @@ async function readView(token: string, userId?: number | null) {
     : { rows: [] as Array<{ display_name: string | null; email: string | null; id: string }> }
   const comments = await query<{
     author_display_name: string | null
+    author_user_id: string | null
     content: string
     created_at: Date
     id: string
   }>(
     `
-    select c.id, c.content, c.created_at,
+    select c.id, c.author_user_id, c.content, c.created_at,
            u.display_name as author_display_name
     from test_bug_comments c
     left join users u on u.id = c.author_user_id
@@ -163,14 +168,17 @@ async function readView(token: string, userId?: number | null) {
   )
   return {
     assigneeName: bug.assignee_display_name || null,
+    assigneeUserId: bug.assignee_user_id ? Number(bug.assignee_user_id) : undefined,
     bugId: Number(bug.bug_id),
     comments: comments.rows.map((comment) => ({
       authorName: comment.author_display_name || '未知用户',
+      authorUserId: comment.author_user_id ? Number(comment.author_user_id) : undefined,
       content: decryptText(comment.content),
       createdAt: comment.created_at.toISOString(),
       id: Number(comment.id),
     })),
     createdAt: bug.created_at.toISOString(),
+    departedUserIds: await getDepartedUserIds(),
     environment: decryptText(bug.environment),
     expectedResult: decryptText(bug.expected_result),
     actualResult: decryptText(bug.actual_result),

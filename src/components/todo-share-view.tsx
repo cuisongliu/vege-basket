@@ -7,6 +7,7 @@ import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
 import { MentionTextarea } from './mention-textarea'
 import { MarkdownPreview } from './markdown-preview'
+import { UserName } from './user-name'
 
 const priorityLabels: Record<string, string> = { high: '高优先级', low: '低优先级', medium: '中优先级' }
 const confirmationLabels: Record<string, string> = {
@@ -127,9 +128,9 @@ export function TodoShareView({ authUser, onBackToShare, onLogin, onOpenTodo, to
               {data.moduleName ? <span>{data.moduleName}</span> : null}
             </div>
             <div className="bug-share-meta">
-              <span>创建人：{data.creatorName}</span>
-              {data.assigneeName ? <span>负责人：{data.assigneeName}</span> : null}
-              {data.reviewerName ? <span>验收人：{data.reviewerName}</span> : null}
+              <span>创建人：<UserName departedUserIds={data.departedUserIds} name={data.creatorName} userId={data.creatorUserId} /></span>
+              {data.assigneeName ? <span>负责人：<UserName departedUserIds={data.departedUserIds} name={data.assigneeName} userId={data.assigneeUserId} /></span> : null}
+              {data.reviewerName ? <span>验收人：<UserName departedUserIds={data.departedUserIds} name={data.reviewerName} userId={data.reviewerUserId} /></span> : null}
               {data.watcherNames.length > 0 ? <span>关注人：{data.watcherNames.join('、')}</span> : null}
               <span>截止日期：{data.dueDate}</span>
               <span>更新时间：{new Date(data.updatedAt).toLocaleString()}</span>
@@ -146,7 +147,7 @@ export function TodoShareView({ authUser, onBackToShare, onLogin, onOpenTodo, to
               {data.notes.length === 0 ? <p className="bug-share-empty">还没有留言备注。</p> : null}
               {data.notes.map((note) => (
                 <article key={note.id}>
-                  <strong>{note.authorName}</strong>
+                  <UserName departedUserIds={data.departedUserIds} name={note.authorName} userId={note.authorUserId} />
                   {note.kind === 'acceptance' ? <span className="todo-share-note-kind">验收备注</span> : null}
                   <time>{new Date(note.createdAt).toLocaleString()}</time>
                   <div className="bug-share-comment-markdown">

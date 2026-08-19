@@ -90,6 +90,7 @@ import {
   SelectValue,
 } from './ui/select'
 import { Textarea } from './ui/textarea'
+import { UserName } from './user-name'
 import './organization-workbench.css'
 
 type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'members' | 'reports'
@@ -850,7 +851,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
             </div>
             <section className="organization-section">
               <header><h3>最近任务</h3></header>
-              <TaskTable tasks={detail.tasks.slice(0, 8)} />
+              <TaskTable departedUserIds={detail.departedUserIds} tasks={detail.tasks.slice(0, 8)} />
             </section>
           </div>
         ) : null}
@@ -1102,7 +1103,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
               {detail.members.map((member) => (
                 <div className="organization-member-row" key={member.id}>
                   <div className="organization-member-identity">
-                    <strong>{member.displayName}</strong>
+                    <UserName departedUserIds={detail.departedUserIds} name={member.displayName} userId={member.id} />
                     <span>{member.username}</span>
                   </div>
                   <div className="organization-professions">
@@ -1282,7 +1283,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
                     <details className="organization-weekly-member" key={member.userId}>
                       <summary>
                         <span>
-                          <strong>{member.memberName}</strong>
+                          <UserName departedUserIds={detail.departedUserIds} name={member.memberName} userId={member.userId} />
                           <small>{member.submittedAt ? `最近提交 ${formatDateTime(member.submittedAt)}` : '尚未提交本周周报'}</small>
                         </span>
                         <span className={`organization-weekly-state ${member.state}`}>
@@ -2154,7 +2155,7 @@ function EmptyRow({ text }: { text: string }) {
   return <div className="organization-empty-row">{text}</div>
 }
 
-function TaskTable({ tasks }: { tasks: OrganizationTask[] }) {
+function TaskTable({ departedUserIds, tasks }: { departedUserIds: number[]; tasks: OrganizationTask[] }) {
   if (tasks.length === 0) return <EmptyRow text="暂无任务" />
   return (
     <div className="organization-task-table">
@@ -2164,7 +2165,7 @@ function TaskTable({ tasks }: { tasks: OrganizationTask[] }) {
             {task.kind === 'bug' ? <Bug size={14} /> : null}{taskKindLabel[task.kind]}
           </span>
           <div><strong>{task.title}</strong><span>{task.projectName}</span></div>
-          <span>{task.assigneeName || '未分配'}</span>
+          <UserName departedUserIds={departedUserIds} name={task.assigneeName || '未分配'} userId={task.assigneeUserId} />
           <span>{taskStatusLabel[task.status] ?? task.status}</span>
           <time>{formatDateTime(task.updatedAt)}</time>
         </div>

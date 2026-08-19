@@ -187,12 +187,14 @@ export type TestBugEvent = {
   nextStatus?: BugStatus
   previousSpaceName?: string
   previousStatus?: BugStatus
+  transferSource?: 'manual' | 'offboarding'
 }
 
 export type TestBug = {
   actualResult: string
   assigneeName?: string
   assigneeUserId?: number
+  assigneeTransferSource?: 'manual' | 'offboarding'
   canComment?: boolean
   canEdit?: boolean
   canManage?: boolean
@@ -252,6 +254,8 @@ export type TestWorkbenchNotification = {
 export type TestWorkbenchData = {
   bugs: TestBug[]
   cases: TestCase[]
+  departedUserIds: number[]
+  departedUsers: Array<{ id: number; name: string }>
   folders: TestCaseFolder[]
   notifications: TestWorkbenchNotification[]
   planCases: TestPlanCase[]

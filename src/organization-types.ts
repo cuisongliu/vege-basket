@@ -72,6 +72,7 @@ export type OrganizationTestSpace = {
 
 export type OrganizationTask = {
   assigneeName: string
+  assigneeUserId?: number
   id: number
   kind: 'bug' | 'delivery' | 'todo'
   projectId?: number
@@ -165,6 +166,7 @@ export type OrganizationDetail = {
   canManageProjects: boolean
   canManageWeeklyReports: boolean
   createdAt: string
+  departedUserIds: number[]
   id: number
   invitations: Array<{
     createdAt: string

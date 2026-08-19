@@ -382,6 +382,7 @@ export function deleteTestBugComment(spaceId: number, bugId: number, commentId: 
 export function fetchAssignedTestBugs() {
   return request<{
     bugs: TestWorkbenchData['bugs']
+    departedUserIds: number[]
     members: Array<{ id: number; name: string }>
   }>('/api/test-bugs/assigned')
 }

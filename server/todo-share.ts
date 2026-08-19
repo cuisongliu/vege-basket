@@ -5,6 +5,7 @@ import { pool, query } from './db.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 import { hashTodoShareToken } from './organization-policy.ts'
 import { normalizePublicAppUrl } from './todo-digest.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
 
 const shareLifetimeMs = 30 * 24 * 60 * 60 * 1_000
 const shareLockTimeout = '5s'
@@ -12,6 +13,7 @@ const shareStatementTimeout = '15s'
 
 export type TodoShareNote = {
   authorName: string
+  authorUserId?: number
   content: string
   createdAt: string
   fromShare: boolean
@@ -21,9 +23,12 @@ export type TodoShareNote = {
 
 export type TodoShareView = {
   assigneeName: string | null
+  assigneeUserId?: number
   confirmationStatus: string
   createdAt: string
   creatorName: string
+  creatorUserId?: number
+  departedUserIds: number[]
   detail: string
   done: boolean
   dueDate: string
@@ -33,6 +38,7 @@ export type TodoShareView = {
   priority: string
   projectName: string
   reviewerName: string | null
+  reviewerUserId?: number
   title: string
   todoId: number
   updatedAt: string
@@ -46,6 +52,7 @@ type ShareTodoRow = {
   confirmation_status: string
   created_at: Date
   creator_display_name: string | null
+  creator_user_id: string
   detail: string
   done: boolean
   due_date: Date | string
@@ -153,7 +160,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
     select t.id as todo_id, t.project_id, t.title, t.detail, t.due_date, t.priority,
            t.done, t.confirmation_status, t.created_at, t.updated_at,
            p.name as project_name, module.name as module_name,
-           creator.display_name as creator_display_name,
+           creator.id as creator_user_id, creator.display_name as creator_display_name,
            assignee.id as assignee_user_id, assignee.display_name as assignee_display_name,
            reviewer.id as reviewer_user_id, reviewer.display_name as reviewer_display_name
     from todo_share_links link
@@ -178,6 +185,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
   const [notes, watchers, memberAccess] = await Promise.all([
     query<{
       author_display_name: string | null
+      author_user_id: string | null
       content: string
       created_at: Date
       from_share: boolean
@@ -187,7 +195,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
       `
       select note.id, note.content, note.kind, note.created_at,
              note.source_share_link_id is not null as from_share,
-             author.display_name as author_display_name
+             author.id as author_user_id, author.display_name as author_display_name
       from (
         select id, author_user_id, content, kind, created_at, source_share_link_id
         from todo_notes
@@ -238,9 +246,12 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
     assigneeName: todo.assignee_user_id
       ? publicDisplayName(todo.assignee_display_name)
       : null,
+    assigneeUserId: todo.assignee_user_id ? Number(todo.assignee_user_id) : undefined,
     confirmationStatus: todo.confirmation_status,
     createdAt: todo.created_at.toISOString(),
     creatorName: publicDisplayName(todo.creator_display_name),
+    creatorUserId: Number(todo.creator_user_id),
+    departedUserIds: await getDepartedUserIds(),
     detail: decryptText(todo.detail),
     done: todo.done,
     dueDate: todo.due_date instanceof Date
@@ -250,6 +261,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
     moduleName: todo.module_name || null,
     notes: notes.rows.map((note) => ({
       authorName: publicDisplayName(note.author_display_name),
+      authorUserId: note.author_user_id ? Number(note.author_user_id) : undefined,
       content: decryptText(note.content),
       createdAt: note.created_at.toISOString(),
       fromShare: note.from_share,
@@ -261,6 +273,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
     reviewerName: todo.reviewer_user_id
       ? publicDisplayName(todo.reviewer_display_name)
       : null,
+    reviewerUserId: todo.reviewer_user_id ? Number(todo.reviewer_user_id) : undefined,
     title: decryptText(todo.title),
     todoId: Number(todo.todo_id),
     updatedAt: todo.updated_at.toISOString(),

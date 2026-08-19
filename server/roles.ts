@@ -1,6 +1,12 @@
 import type express from 'express'
 import { Router } from 'express'
+import {
+  getOffboardingPreview,
+  offboardUser,
+  updateManagedAccountStatus,
+} from './account-offboarding.ts'
 import { pool, query } from './db.ts'
+import type { UserAccountStatus } from '../shared/user-lifecycle.ts'
 
 export const userRoles = ['developer', 'tester', 'organization_admin'] as const
 export type UserRole = (typeof userRoles)[number]
@@ -8,6 +14,7 @@ export const switchableUserRoles = ['developer', 'tester'] as const
 export type SwitchableUserRole = (typeof switchableUserRoles)[number]
 
 type SessionRoleRow = {
+  account_status: UserAccountStatus
   active_role: UserRole
   email: string
   user_id: string
@@ -85,10 +92,10 @@ export async function getAuthenticatedRoleSession(request: express.Request) {
   if (!token) return null
   const result = await query<SessionRoleRow>(
     `
-    select s.user_id, s.active_role, u.email
+    select s.user_id, s.active_role, u.email, u.account_status
     from sessions s
     join users u on u.id = s.user_id
-    where s.token = $1 and s.expires_at > now()
+    where s.token = $1 and s.expires_at > now() and u.account_status = 'active'
     `,
     [token],
   )
@@ -177,10 +184,11 @@ roleRouter.get('/admin/users', async (request, response, next) => {
       display_name: string
       email: string
       id: string
+      account_status: UserAccountStatus
       roles: UserRole[]
     }>(
       `
-      select u.id, u.email, u.display_name,
+      select u.id, u.email, u.display_name, u.account_status,
         coalesce(array_agg(ur.role order by ur.role) filter (where ur.role is not null), '{}') as roles
       from users u
       left join user_roles ur on ur.user_id = u.id
@@ -192,10 +200,89 @@ roleRouter.get('/admin/users', async (request, response, next) => {
       users: result.rows.map((row) => ({
         displayName: row.display_name || row.email,
         id: Number(row.id),
+        accountStatus: row.account_status,
         roles: row.roles,
         username: row.email,
       })),
     })
+  } catch (error) {
+    next(error)
+  }
+})
+
+roleRouter.get('/admin/users/:userId/offboarding-preview', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    if (!isSystemAdmin(session.username)) {
+      response.status(403).json({ error: 'System administrator access is required' })
+      return
+    }
+    const userId = Number(request.params.userId)
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      response.status(400).json({ error: 'Valid user is required' })
+      return
+    }
+    const preview = await getOffboardingPreview(userId)
+    if (!preview) {
+      response.status(404).json({ error: 'User not found' })
+      return
+    }
+    response.json(preview)
+  } catch (error) {
+    next(error)
+  }
+})
+
+roleRouter.post('/admin/users/:userId/offboard', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    if (!isSystemAdmin(session.username)) {
+      response.status(403).json({ error: 'System administrator access is required' })
+      return
+    }
+    const userId = Number(request.params.userId)
+    const selections = Array.isArray(request.body?.selections)
+      ? request.body.selections.map((selection: { organizationId?: unknown; targetAdminUserId?: unknown }) => ({
+        organizationId: Number(selection.organizationId),
+        targetAdminUserId: Number(selection.targetAdminUserId),
+      }))
+      : []
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      response.status(400).json({ error: 'Valid user is required' })
+      return
+    }
+    response.json(await offboardUser(userId, session.userId, selections))
+  } catch (error) {
+    next(error)
+  }
+})
+
+roleRouter.patch('/admin/users/:userId/status', async (request, response, next) => {
+  try {
+    const session = await getAuthenticatedRoleSession(request)
+    if (!session) {
+      response.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+    if (!isSystemAdmin(session.username)) {
+      response.status(403).json({ error: 'System administrator access is required' })
+      return
+    }
+    const userId = Number(request.params.userId)
+    const status = request.body?.status
+    if (!Number.isSafeInteger(userId) || userId <= 0 || (status !== 'active' && status !== 'disabled')) {
+      response.status(400).json({ error: 'Valid user and account status are required' })
+      return
+    }
+    response.json({ accountStatus: await updateManagedAccountStatus(userId, session.userId, status) })
   } catch (error) {
     next(error)
   }

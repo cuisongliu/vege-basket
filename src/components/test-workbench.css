@@ -166,7 +166,7 @@
   align-items: center;
 }
 
-.test-module-toolbar span,
+.test-module-toolbar > div:first-child > span,
 .assigned-bugs-shell header span {
   color: var(--muted-text);
   font-size: 12px;
@@ -610,6 +610,10 @@
   gap: 12px;
 }
 
+.test-bugs-module-view {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .test-case-filters {
   min-width: 0;
   display: grid;
@@ -717,12 +721,18 @@
 }
 
 .test-bug-filter-summary {
+  min-width: 0;
   min-height: 28px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   color: var(--muted-text);
   font-size: 12px;
+}
+
+.test-bug-filter-summary > span {
+  min-width: 0;
 }
 
 .test-module-toolbar h1,
@@ -2186,8 +2196,15 @@
 
 .test-space-admin-section-heading > div {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   align-items: center;
+}
+
+.test-space-departed-member {
+  color: var(--muted-text);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .test-space-admin-section-heading span {
@@ -3127,18 +3144,69 @@
   width: 140px;
 }
 
-.test-bug-status.pending_verification,
+.test-bug-status.new,
+.test-bug-status.pending_confirmation {
+  border-color: color-mix(in oklch, #4d7bab 45%, var(--line));
+  background: color-mix(in oklch, #4d7bab 14%, var(--surface));
+  color: #2e5e89;
+}
+
+.test-bug-status.assigned {
+  border-color: color-mix(in oklch, #a97827 48%, var(--line));
+  background: color-mix(in oklch, #d59a36 17%, var(--surface));
+  color: #765019;
+}
+
 .test-bug-status.in_progress {
-  border-color: color-mix(in oklch, var(--primary) 45%, var(--line));
-  color: var(--primary);
+  border-color: color-mix(in oklch, #2d806d 45%, var(--line));
+  background: color-mix(in oklch, #2d806d 14%, var(--surface));
+  color: #216554;
+}
+
+.test-bug-status.pending_verification {
+  border-color: color-mix(in oklch, #5c72aa 45%, var(--line));
+  background: color-mix(in oklch, #5c72aa 14%, var(--surface));
+  color: #435c91;
+}
+
+.test-bug-status.rejected {
+  border-color: color-mix(in oklch, #a35f38 44%, var(--line));
+  background: color-mix(in oklch, #c47a4e 16%, var(--surface));
+  color: #864a2e;
 }
 
 .test-bug-status.closed {
+  border-color: color-mix(in oklch, #707a76 38%, var(--line));
+  background: color-mix(in oklch, #707a76 13%, var(--surface));
   color: var(--muted-text);
+}
+
+.dark .test-bug-status.new,
+.dark .test-bug-status.pending_confirmation {
+  color: #b9d7f3;
+}
+
+.dark .test-bug-status.assigned {
+  color: #f2d39a;
+}
+
+.dark .test-bug-status.in_progress {
+  color: #b2dfd2;
+}
+
+.dark .test-bug-status.pending_verification {
+  color: #c1cef1;
+}
+
+.dark .test-bug-status.rejected {
+  color: #f0c2a6;
 }
 
 .test-bug-status {
   flex-shrink: 0;
+  padding: 0 0.42rem;
+  font-size: 12px;
+  line-height: 1.35;
   white-space: nowrap;
 }
 
@@ -3237,6 +3305,7 @@
   min-height: 32px;
 }
 
+.test-bug-filter-count,
 .assigned-bugs-filter-count {
   min-width: 18px;
   height: 18px;
@@ -3246,7 +3315,7 @@
   align-items: center;
   justify-content: center;
   background: var(--primary);
-  color: var(--primary-foreground);
+  color: #fff;
   font-size: 11px;
   line-height: 1;
 }
@@ -3609,7 +3678,7 @@
   min-height: 76px;
   padding: 12px 14px;
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(430px, 500px) 72px;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1fr) minmax(250px, auto);
   column-gap: 16px;
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -3623,6 +3692,12 @@
 
 .role-management-list article > [data-slot='button'] {
   justify-self: end;
+}
+
+.role-management-list article > .role-managed-actions {
+  min-width: 0;
+  justify-self: end;
+  align-self: center;
 }
 
 .role-managed-user {
@@ -3675,6 +3750,10 @@
   }
 
   .role-management-list article > [data-slot='button'] {
+    justify-self: start;
+  }
+
+  .role-management-list article > .role-managed-actions {
     justify-self: start;
   }
 }

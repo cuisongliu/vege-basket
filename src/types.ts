@@ -3,6 +3,7 @@ export type Priority = 'high' | 'medium' | 'low'
 export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
+export type { UserAccountStatus } from '../shared/user-lifecycle'
 
 export type ImageSyncArchitecture = 'amd64' | 'arm64'
 export type ImageSyncArtifactKind = 'tar' | 'md5'
@@ -75,6 +76,7 @@ export type Todo = {
   reviewerName?: string
   assignedByUserId?: number
   assignedByName?: string
+  offboardingTransferredFromName?: string
   title: string
   detail: string
   dueDate: string
@@ -187,7 +189,23 @@ export type PackageEventCommentMentionNotification = NotificationState & {
   projectName: string
 }
 
+export type AccountOffboardingNotificationOrganization = {
+  bugCount: number
+  name: string
+  projectNames: string[]
+  testSpaceNames: string[]
+  transferredTodoCount: number
+}
+
+export type AccountOffboardingNotification = NotificationState & {
+  createdAt: string
+  departedUserName: string
+  id: number
+  organizations: AccountOffboardingNotificationOrganization[]
+}
+
 export type NotificationCenterData = {
+  accountOffboardingReceived: AccountOffboardingNotification[]
   assignedPackageEvents: PackageEventNotification[]
   assignedTodos: TodoNotification[]
   watchedTodos: TodoNotification[]
@@ -409,6 +427,7 @@ export type ProjectPackageEventSavePayload = {
 }
 
 export type ProjectPackageTimeline = {
+  departedUserIds: number[]
   projectId: number
   events: ProjectPackageEvent[]
   mentionableMembers: Array<{ id: number; name: string }>

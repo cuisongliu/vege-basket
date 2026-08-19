@@ -13,6 +13,7 @@ export type MyWorkItem = {
   title: string
   status: string
   priority?: 'high' | 'medium' | 'low'
+  offboardingTransferredFromName?: string
   dueAt?: string
   updatedAt: string
   relation: MyWorkRelation

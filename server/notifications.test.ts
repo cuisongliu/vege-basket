@@ -105,6 +105,7 @@ function todoNotification(id: number): TodoNotification {
 
 test('removes a completed todo from actionable todo notification categories', () => {
   const notifications: NotificationCenterData = {
+    accountOffboardingReceived: [],
     assignedPackageEvents: [{
       eventStatus: 'draft',
       eventType: 'upgrade',
@@ -140,6 +141,7 @@ test('removes a completed todo from actionable todo notification categories', ()
 
 test('removes only the delivery event whose status advanced', () => {
   const notifications: NotificationCenterData = {
+    accountOffboardingReceived: [],
     assignedPackageEvents: [
       {
         eventStatus: 'draft',
@@ -250,6 +252,19 @@ test('renders failed acceptance notifications as interactive Feishu cards', () =
   assert.match(cardSource, /\*\*验收备注\*\*/u)
   assert.match(cardSource, /template: 'red'/u)
   assert.match(serverSource, /msgType: interactiveCard \? 'interactive' : 'text'/u)
+})
+
+test('renders account offboarding notifications as interactive Feishu cards', () => {
+  const cardBuilderStart = serverSource.indexOf('function buildFeishuInteractiveCard(')
+  const offboardingCardStart = serverSource.indexOf("if (candidate.kind === 'account_offboarding_received')", cardBuilderStart)
+  const todoCardStart = serverSource.indexOf("if (candidate.kind === 'assigned_todo'", offboardingCardStart)
+  assert.ok(offboardingCardStart >= 0)
+  assert.ok(todoCardStart > offboardingCardStart)
+  const cardSource = serverSource.slice(offboardingCardStart, todoCardStart)
+  assert.match(cardSource, /content: candidate\.body/u)
+  assert.match(cardSource, /tag: 'lark_md'/u)
+  assert.match(cardSource, /template: 'green'/u)
+  assert.match(cardSource, /📦 有新的离职资产接受，请前往 Veges 查看/u)
 })
 
 test('prioritizes the todo creator while keeping project-owner access separate', () => {

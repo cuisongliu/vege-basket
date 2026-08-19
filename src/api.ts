@@ -45,6 +45,7 @@ import {
   type AiIntentClassification,
 } from '../shared/ai-input-intent'
 import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
+import type { UserAccountStatus } from '../shared/user-lifecycle'
 import type {
   OrganizationAccessRole,
   OrganizationDetail,
@@ -64,6 +65,7 @@ export { ApiError, formatApiErrorDiagnostic } from './api-error'
 export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
 export type WorkspaceData = {
+  departedUserIds: number[]
   inbox: InboxItem[]
   memberships: ProjectMembership[]
   projects: Project[]
@@ -92,6 +94,7 @@ export type ChangelogResponse = {
 }
 
 export type AuthUser = {
+  accountStatus: UserAccountStatus
   activeRole: UserRole
   displayName: string
   feishuEmail: string
@@ -105,6 +108,7 @@ export type AuthUser = {
 export type UserRole = 'developer' | 'tester' | 'organization_admin'
 
 export type ManagedUser = {
+  accountStatus: UserAccountStatus
   displayName: string
   id: number
   roles: UserRole[]
@@ -479,6 +483,58 @@ export function switchActiveRole(role: UserRole) {
 
 export function fetchManagedUsers() {
   return request<{ users: ManagedUser[] }>('/api/admin/users')
+}
+
+export type OffboardingPreview = {
+  user: {
+    accountStatus: UserAccountStatus
+    displayName: string
+    id: number
+    username: string
+  }
+  organizations: Array<{
+    admins: Array<{ displayName: string; id: number; username: string }>
+    bugCount: number
+    id: number
+    name: string
+    ownedProjects: Array<{ id: number; name: string }>
+    ownedTestSpaces: Array<{ id: number; name: string }>
+    openTodoCount: number
+  }>
+}
+
+export function fetchOffboardingPreview(userId: number) {
+  return request<OffboardingPreview>(`/api/admin/users/${userId}/offboarding-preview`)
+}
+
+export function offboardManagedUser(userId: number, selections: Array<{
+  organizationId: number
+  targetAdminUserId: number
+}>) {
+  return request<{
+    accountStatus: 'departed'
+    bugCount: number
+    offboardingId: string
+    organizations: Array<{
+      bugCount: number
+      id: number
+      openTodoCount: number
+      transferredTodoCount: number
+      unassignedTodoCount: number
+      transferredProjectCount: number
+      transferredTestSpaceCount: number
+    }>
+  }>(`/api/admin/users/${userId}/offboard`, {
+    method: 'POST',
+    body: JSON.stringify({ selections }),
+  })
+}
+
+export function updateManagedUserStatus(userId: number, status: 'active' | 'disabled') {
+  return request<{ accountStatus: UserAccountStatus }>(`/api/admin/users/${userId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
 }
 
 export function updateManagedUserRoles(userId: number, roles: UserRole[]) {
@@ -1125,7 +1181,7 @@ export function createAiTurnDocument(conversationId: string, turnId: string) {
 }
 
 export function fetchTodoActivity(projectId: number) {
-  return request<{ events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
+  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
 }
 
 export function fetchNotificationSubscription() {

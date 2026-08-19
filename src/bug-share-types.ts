@@ -1,5 +1,6 @@
 export type BugShareComment = {
   authorName: string
+  authorUserId?: number
   content: string
   createdAt: string
   id: number
@@ -12,9 +13,11 @@ export type BugShareMentionableMember = {
 
 export type BugShareView = {
   assigneeName: string | null
+  assigneeUserId?: number
   bugId: number
   comments: BugShareComment[]
   createdAt: string
+  departedUserIds: number[]
   environment: string
   expectedResult: string
   actualResult: string

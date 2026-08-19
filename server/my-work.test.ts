@@ -63,3 +63,17 @@ test('does not treat a todo creator or project owner as responsible without an e
 test('renders failed acceptance status in Chinese', () => {
   assert.match(myWorkWorkbenchSource, /acceptance_failed: '验收未通过'/u)
 })
+
+test('renders Bug confirmation status in Chinese', () => {
+  assert.match(myWorkWorkbenchSource, /pending_confirmation: '待确认'/u)
+})
+
+test('marks todos transferred through offboarding', () => {
+  assert.match(myWorkSource, /account_offboarding_asset_transfers/u)
+  assert.match(myWorkSource, /offboarding_transferred_from_name/u)
+  assert.match(myWorkSource, /previous_assignee_user_id/u)
+  assert.match(myWorkSource, /transfer.next_assignee_user_id = \$1::bigint/u)
+  assert.match(myWorkWorkbenchSource, /item\.offboardingTransferredFromName/u)
+  assert.match(myWorkWorkbenchSource, /-离职转移/u)
+  assert.match(myWorkWorkbenchSource, /离职转移/u)
+})

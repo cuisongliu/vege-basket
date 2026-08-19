@@ -28,6 +28,7 @@ const statusLabels: Record<string, string> = {
   delivered: '已交付',
   draft: '草稿',
   in_progress: '进行中',
+  pending_confirmation: '待确认',
   pending_verification: '待验证',
   new: '新建',
   pending: '待达成',
@@ -232,7 +233,12 @@ export function MyWorkWorkbench({
                   <span className={`my-work-kind-icon is-${item.kind}`}>
                     {item.kind === 'bug' ? <Bug size={17} /> : item.kind === 'milestone' ? <Flag size={17} /> : item.kind === 'delivery' ? <FolderSimple size={17} /> : <ListChecks size={17} />}
                   </span>
-                  <span className="my-work-row-copy"><strong>{item.title}</strong></span>
+                  <span className="my-work-row-copy">
+                    <span className="my-work-item-title">
+                      <strong>{item.title}</strong>
+                      {item.offboardingTransferredFromName ? <Badge className="my-work-offboarding-badge" variant="outline">{item.offboardingTransferredFromName}-离职转移</Badge> : null}
+                    </span>
+                  </span>
                 </button>
                 <span className="my-work-table-cell">{item.projectName ?? item.contextName ?? '未关联项目'}</span>
                 <span className="my-work-table-cell"><Badge variant="outline">{kindLabels[item.kind]}</Badge></span>

@@ -238,6 +238,7 @@ import type {
   TodoNote,
 } from './types'
 import { TodoActivityPanel } from './components/todo-activity-panel'
+import { UserName } from './components/user-name'
 import {
   TodoProposalWorkflow,
   type TodoProposalWorkflowHandle,
@@ -1672,6 +1673,7 @@ const initialTodos: Todo[] = [
 
 const initialMemberships: ProjectMembership[] = []
 const emptyNotifications: NotificationCenterData = {
+  accountOffboardingReceived: [],
   assignedPackageEvents: [],
   assignedTodos: [],
   watchedTodos: [],
@@ -1767,6 +1769,7 @@ function App() {
   const [projects, setProjects] = useState(initialProjects)
   const [todos, setTodos] = useState(initialTodos)
   const [memberships, setMemberships] = useState(initialMemberships)
+  const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [openTodoCount, setOpenTodoCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
@@ -2028,6 +2031,7 @@ function App() {
     setProjects(data.projects)
     setTodos(data.todos)
     setMemberships(data.memberships)
+    setDepartedUserIds(data.departedUserIds)
     setInbox(data.inbox)
     setSummaries(data.summaries)
     setProjectPackageTimelines((current) => {
@@ -2743,6 +2747,7 @@ function App() {
     () =>
       notifications.invites.filter((item) => !item.dismissedAt && !item.readAt).length +
       notifications.projectTransfers.filter((item) => !item.dismissedAt && !item.readAt).length +
+      notifications.accountOffboardingReceived.filter((item) => !item.dismissedAt && !item.readAt).length +
       notifications.assignedPackageEvents.filter((item) => !item.dismissedAt && !item.readAt).length +
       notifications.assignedTodos.filter((item) => !item.dismissedAt && !item.readAt && !item.done).length +
       notifications.watchedTodos.filter((item) => !item.dismissedAt && !item.readAt).length +
@@ -3073,6 +3078,7 @@ function App() {
     setView('notifications')
     const readAt = new Date().toISOString()
     setNotifications((current) => ({
+      accountOffboardingReceived: current.accountOffboardingReceived.map((item) => ({ ...item, readAt })),
       invites: current.invites.map((item) => ({ ...item, readAt })),
       assignedPackageEvents: current.assignedPackageEvents.map((item) => ({ ...item, readAt })),
       assignedTodos: current.assignedTodos.map((item) => ({ ...item, readAt })),
@@ -4930,6 +4936,7 @@ ${packageTimelineText}`
                           </DialogDescription>
                         </DialogHeader>
                         <ProjectMembersPanel
+                          departedUserIds={departedUserIds}
                           memberships={memberships.filter(
                             (membership) => membership.projectId === selectedProject.id,
                           )}
@@ -5017,6 +5024,7 @@ ${packageTimelineText}`
             notificationDetailActive={detailEntrySource !== 'project'}
             journalDraft={journalDraft}
             packageTimeline={projectPackageTimelines[selectedProject.id] ?? null}
+            departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
             onAddTodo={addTodo}
@@ -5792,6 +5800,7 @@ function NewProjectForm({
 }
 
 function ProjectDetail({
+  departedUserIds,
   initialTodoId,
   journalDraft,
   notificationDetailActive,
@@ -5853,6 +5862,7 @@ function ProjectDetail({
   todoModuleId,
   todoPriority,
 }: {
+  departedUserIds: readonly number[]
   initialTodoId?: number | null
   journalDraft: string
   notificationDetailActive: boolean
@@ -6100,7 +6110,7 @@ function ProjectDetail({
     >
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
-          <TodoActivityPanel projectId={project.id} />
+          <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
@@ -6397,6 +6407,7 @@ function ProjectDetail({
             <div className="side-panel-scroll-area">
               {isTodoCreateDialogOpen ? (
                 <TodoEditorDialog
+                  departedUserIds={departedUserIds}
                   assigneeUserId={todoAssigneeUserId}
                   watcherUserIds={todoWatcherUserIds}
                   reviewerUserId={todoReviewerUserId}
@@ -6432,6 +6443,7 @@ function ProjectDetail({
                 />
               ) : (
                 <TodoList
+                  departedUserIds={departedUserIds}
                   key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
                   currentUserId={currentUser?.id}
                   detailBackLabel={notificationDetailActive ? '返回' : undefined}
@@ -6476,6 +6488,7 @@ function generateInviteSharePassword(length = 8) {
 }
 
 function ProjectMembersPanel({
+  departedUserIds,
   memberships,
   onCopyInviteLink,
   onInvite,
@@ -6483,6 +6496,7 @@ function ProjectMembersPanel({
   onSaveFeishuSettings,
   project,
 }: {
+  departedUserIds: readonly number[]
   memberships: ProjectMembership[]
   onCopyInviteLink: (payload: {
     encryptedShare: boolean
@@ -6608,7 +6622,7 @@ function ProjectMembersPanel({
             visibleMemberships.map((membership) => (
               <article className="member-item" key={membership.id}>
                 <span>
-                  <strong>{membership.memberName}</strong>
+                  <UserName departedUserIds={departedUserIds} name={membership.memberName} userId={membership.invitedUserId} />
                   <small>
                     {membership.invitedUsername} · {membership.status === 'pending'
                       ? '待确认'
@@ -7031,6 +7045,23 @@ function NotificationCenterView({
         time: transfer.createdAt,
         transferId: transfer.id,
         transferProjectName: transfer.projectName,
+      })
+    }
+    for (const notification of visible(notifications.accountOffboardingReceived)) {
+      const organizationText = notification.organizations.map((organization) => {
+        const assets = [
+          organization.projectNames.length > 0 ? `项目 ${organization.projectNames.join('、')}` : '',
+          organization.testSpaceNames.length > 0 ? `测试空间 ${organization.testSpaceNames.join('、')}` : '',
+          organization.transferredTodoCount > 0 ? `待办 ${organization.transferredTodoCount} 条` : '',
+          organization.bugCount > 0 ? `Bug ${organization.bugCount} 个` : '',
+        ].filter(Boolean)
+        return `${organization.name}：${assets.length > 0 ? assets.join('、') : '无可转移资产'}`
+      }).join('；')
+      result.push({
+        id: `account-offboarding-${notification.id}`,
+        message: `你已接收「${notification.departedUserName}」离职后的资产：${organizationText}。`,
+        sortAt: sortTime(notification),
+        time: notification.createdAt,
       })
     }
     for (const todo of visible(notifications.assignedTodos)) {
@@ -10686,12 +10717,14 @@ function TodoFilterBuilderDialog({
 }
 
 function TodoNotesPanel({
+  departedUserIds,
   currentUserId,
   members,
   onCreateNote,
   onUpdateNote,
   todo,
 }: {
+  departedUserIds: readonly number[]
   currentUserId?: number
   members?: Array<{ id: number; name: string }>
   onCreateNote?: (todoId: number, content: string) => void
@@ -10770,7 +10803,7 @@ function TodoNotesPanel({
                 <header className="todo-note-card-header">
                   <div className="todo-note-card-meta">
                     <div className="todo-note-card-heading">
-                      <strong>{note.authorName}</strong>
+                      <UserName departedUserIds={departedUserIds} name={note.authorName} userId={note.authorUserId} />
                       <span>{note.createdAt}</span>
                       {note.kind === 'acceptance' ? (
                         <span className="todo-note-kind acceptance">验收备注</span>
@@ -11036,6 +11069,7 @@ function TodoPropertiesPanel({
 
 function TodoEditorDialog({
   assigneeUserId,
+  departedUserIds,
   watcherUserIds,
   reviewerUserId,
   backLabel = '返回待办列表',
@@ -11082,6 +11116,7 @@ function TodoEditorDialog({
   dueDate,
 }: {
   assigneeUserId: number | null
+  departedUserIds: readonly number[]
   watcherUserIds: number[]
   reviewerUserId: number | null
   backLabel?: string
@@ -11175,6 +11210,11 @@ function TodoEditorDialog({
                   <span className={todo?.done ? 'todo-status-chip done detail-status-chip' : 'todo-status-chip detail-status-chip'}>
                     {statusLabel}
                   </span>
+                  {todo?.offboardingTransferredFromName ? (
+                    <Badge className="my-work-offboarding-badge" variant="outline">
+                      {todo.offboardingTransferredFromName}-离职转移
+                    </Badge>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -11354,6 +11394,7 @@ function TodoEditorDialog({
             {showNotesSidebar && todo ? (
               <TodoNotesPanel
                 currentUserId={currentUserId}
+                departedUserIds={departedUserIds}
                 members={members}
                 onCreateNote={onCreateTodoNote}
                 onUpdateNote={onUpdateTodoNote}
@@ -11388,6 +11429,7 @@ function TodoEditorDialog({
             {showNotesSidebar && todo ? (
               <TodoNotesPanel
                 currentUserId={currentUserId}
+                departedUserIds={departedUserIds}
                 members={members}
                 onCreateNote={onCreateTodoNote}
                 onUpdateNote={onUpdateTodoNote}
@@ -11501,6 +11543,7 @@ function TodoEditorDialog({
 function TodoList({
   compact = false,
   currentUserId,
+  departedUserIds,
   detailBackLabel,
   initialTodoId,
   onCreateTodoNote,
@@ -11516,6 +11559,7 @@ function TodoList({
 }: {
   compact?: boolean
   currentUserId?: number
+  departedUserIds: readonly number[]
   detailBackLabel?: string
   initialTodoId?: number | null
   onCreateTodoNote?: (todoId: number, content: string) => void
@@ -11872,6 +11916,7 @@ function TodoList({
           }}
         />
         <TodoEditorDialog
+          departedUserIds={departedUserIds}
           assigneeUserId={todoEditAssigneeUserId}
           watcherUserIds={todoEditWatcherUserIds}
           reviewerUserId={todoEditReviewerUserId}
@@ -12082,13 +12127,11 @@ function TodoList({
                   </span>
                   <small>
                     <span className="todo-created-at">
-                      {todo.creatorName
-                        ? `${todo.creatorName} 创建于 ${todo.createdAt.slice(0, 16)}`
-                        : `创建于 ${todo.createdAt.slice(0, 16)}`}
+                      {todo.creatorName ? <><UserName departedUserIds={departedUserIds} name={todo.creatorName} userId={todo.createdByUserId} /> 创建于 {todo.createdAt.slice(0, 16)}</> : `创建于 ${todo.createdAt.slice(0, 16)}`}
                     </span>
                     {compact ? `截止 ${todo.dueDate}` : `${project?.name} · 截止 ${todo.dueDate}`}
                     {todo.assigneeName && (
-                      <span className="todo-assignee-inline">@{todo.assigneeName}</span>
+                      <span className="todo-assignee-inline">@<UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /></span>
                     )}
                     {getTodoWatcherNames(todo).length > 0 && (
                       <span className="todo-watcher-inline">

@@ -4,6 +4,12 @@ create table if not exists users (
   email text not null unique,
   display_name text not null default '',
   password_hash text not null default '',
+  account_status text not null default 'active'
+    check (account_status in ('active', 'disabled', 'departed')),
+  disabled_at timestamptz,
+  disabled_by_user_id bigint references users(id) on delete set null,
+  departed_at timestamptz,
+  departed_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now()
 );
 
@@ -11,6 +17,18 @@ alter table users add column if not exists display_name text not null default ''
 alter table users add column if not exists feishu_user_id text not null default '';
 alter table users add column if not exists feishu_receive_id_type text not null default 'user_id';
 alter table users add column if not exists feishu_email text not null default '';
+alter table users add column if not exists account_status text not null default 'active';
+alter table users add column if not exists disabled_at timestamptz;
+alter table users add column if not exists disabled_by_user_id bigint references users(id) on delete set null;
+alter table users add column if not exists departed_at timestamptz;
+alter table users add column if not exists departed_by_user_id bigint references users(id) on delete set null;
+
+alter table users
+  drop constraint if exists users_account_status_check;
+
+alter table users
+  add constraint users_account_status_check
+  check (account_status in ('active', 'disabled', 'departed'));
 
 update users
 set feishu_email = feishu_user_id
@@ -212,6 +230,40 @@ create table if not exists organization_audit_events (
   subject_id text not null default '',
   detail text not null default '',
   created_at timestamptz not null default now()
+);
+
+create table if not exists account_offboarding_records (
+  id uuid primary key default gen_random_uuid(),
+  user_id bigint not null references users(id) on delete restrict,
+  actor_user_id bigint not null references users(id) on delete restrict,
+  status text not null default 'completed'
+    check (status in ('completed')),
+  organization_targets jsonb not null default '{}'::jsonb,
+  summary jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists account_offboarding_asset_transfers (
+  id bigserial primary key,
+  offboarding_id uuid not null references account_offboarding_records(id) on delete cascade,
+  organization_id bigint references organizations(id) on delete set null,
+  asset_type text not null check (asset_type in ('project', 'test_space', 'todo', 'test_bug')),
+  asset_id bigint not null,
+  previous_assignee_user_id bigint references users(id) on delete set null,
+  next_assignee_user_id bigint references users(id) on delete set null,
+  previous_owner_user_id bigint references users(id) on delete set null,
+  next_owner_user_id bigint references users(id) on delete set null,
+  action text not null check (action in ('transferred', 'unassigned')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists account_offboarding_notifications (
+  id bigserial primary key,
+  offboarding_id uuid not null references account_offboarding_records(id) on delete cascade,
+  recipient_user_id bigint not null references users(id) on delete cascade,
+  summary text not null,
+  created_at timestamptz not null default now(),
+  unique (offboarding_id, recipient_user_id)
 );
 
 create table if not exists organization_weekly_reports (
@@ -1783,14 +1835,34 @@ create table if not exists test_bug_events (
   previous_status text,
   next_status text,
   assignee_user_id bigint references users(id) on delete set null,
+  transfer_source text,
   previous_test_space_id bigint references test_spaces(id) on delete set null,
   next_test_space_id bigint references test_spaces(id) on delete set null,
   created_at timestamptz not null default now()
 );
 
 alter table test_bug_events
+  add column if not exists transfer_source text,
   add column if not exists previous_test_space_id bigint references test_spaces(id) on delete set null,
   add column if not exists next_test_space_id bigint references test_spaces(id) on delete set null;
+
+alter table test_bug_events
+  drop constraint if exists test_bug_events_transfer_source_check;
+
+alter table test_bug_events
+  add constraint test_bug_events_transfer_source_check
+  check (transfer_source in ('manual', 'offboarding') or transfer_source is null);
+
+update test_bug_events event
+set transfer_source = 'offboarding'
+from account_offboarding_asset_transfers transfer
+where event.transfer_source is null
+  and event.event_type = 'transferred'
+  and transfer.asset_type = 'test_bug'
+  and transfer.asset_id = event.test_bug_id
+  and transfer.action = 'transferred'
+  and transfer.next_assignee_user_id = event.assignee_user_id
+  and transfer.created_at = event.created_at;
 
 alter table test_bug_events
   drop constraint if exists test_bug_events_event_type_check;
@@ -1923,6 +1995,12 @@ create unique index if not exists idx_project_transfer_requests_pending_project
   where status = 'pending';
 create index if not exists idx_sessions_user_id on sessions(user_id);
 create index if not exists idx_sessions_expires_at on sessions(expires_at);
+create index if not exists idx_users_account_status on users(account_status, id);
+create index if not exists idx_account_offboarding_records_user on account_offboarding_records(user_id, created_at desc);
+create index if not exists idx_account_offboarding_asset_transfers_lookup
+  on account_offboarding_asset_transfers(asset_type, asset_id, created_at desc);
+create index if not exists idx_account_offboarding_notifications_recipient
+  on account_offboarding_notifications(recipient_user_id, created_at desc);
 create index if not exists idx_user_roles_role on user_roles(role, user_id);
 create index if not exists idx_image_sync_workflow_runs_user_created
   on image_sync_workflow_runs(user_id, created_at desc);

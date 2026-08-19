@@ -61,6 +61,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
 import { WeeklyReportWorkbench } from './weekly-report-workbench'
 import { BugShareDialog } from './bug-share-dialog'
+import { UserName } from './user-name'
 import {
   BugFilterBuilderDialog,
   type BugFilterOption,
@@ -149,6 +150,8 @@ type WorkbenchTab = 'cases' | 'plans' | 'bugs' | 'weekly_report' | 'notification
 const emptyWorkbench: TestWorkbenchData = {
   bugs: [],
   cases: [],
+  departedUserIds: [],
+  departedUsers: [],
   folders: [],
   notifications: [],
   planCases: [],
@@ -1203,6 +1206,7 @@ export function TestWorkbench({
 
       <TestSpaceSettingsDialog
         currentSpaceId={spaceId}
+        departedUsers={data.departedUsers}
         open={spaceAdministrationOpen}
         onOpenChange={setSpaceAdministrationOpen}
         onCreateSpace={() => {
@@ -2075,7 +2079,7 @@ function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, o
 }) {
   const selected = bugs.find((item) => item.id === selectedId)
   return (
-    <div className="test-module-view">
+    <div className="test-module-view test-bugs-module-view">
       <div className="test-module-toolbar">
         <div><span>缺陷闭环</span><h1>Bug 追踪</h1></div>
         <div className="test-bug-toolbar-actions">
@@ -2097,7 +2101,7 @@ function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, o
           >
             <FunnelSimple />
             筛选
-            {filterConditions.length > 0 ? <span className="assigned-bugs-filter-count">{filterConditions.length}</span> : null}
+            {filterConditions.length > 0 ? <span className="test-bug-filter-count">{filterConditions.length}</span> : null}
           </Button>
           {!readOnly ? <Button onClick={onCreate}><Plus /> 新建 Bug</Button> : null}
         </div>
@@ -2110,20 +2114,21 @@ function BugsView({ bugs, busy, data, filterConditions, onAssignee, onComment, o
         </div>
       ) : null}
       <div className="test-split-view">
-        <div className="test-record-list">
-          {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · {data.users.find((user) => user.id === bug.assigneeUserId)?.displayName || '未分配'}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试对象还没有 Bug。'}</div>}
+          <div className="test-record-list">
+            {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · <UserName departedUserIds={data.departedUserIds} name={bug.assigneeName || '未分配'} userId={bug.assigneeUserId} />{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试对象还没有 Bug。'}</div>}
         </div>
         <div className="test-record-detail">
-          {selected ? <BugDetail bug={selected} busy={busy} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
+          {selected ? <BugDetail bug={selected} busy={busy} departedUserIds={data.departedUserIds} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
         </div>
       </div>
     </div>
   )
 }
 
-function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
+function BugDetail({ bug, busy, departedUserIds, onAssignee, onComment, onDeleteComment, onEdit, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
   bug: TestBug
   busy: boolean
+  departedUserIds: readonly number[]
   onAssignee: (bug: TestBug, assigneeUserId?: number) => void
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
@@ -2170,6 +2175,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
     <BugCommentsSection
       bug={bug}
       busy={busy}
+      departedUserIds={departedUserIds}
       placeholder="补充验证信息或处理记录，支持粘贴、拖入或上传图片和视频。"
       onComment={onComment}
       onDeleteComment={onDeleteComment}
@@ -2177,7 +2183,7 @@ function BugDetail({ bug, busy, onAssignee, onComment, onDeleteComment, onEdit, 
     />
     <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
     <BugSpaceTransferDialog bug={bug} busy={busy} open={transferSpaceOpen} onOpenChange={setTransferSpaceOpen} onSubmit={onTransferSpace} />
-    <BugTimelineDialog bug={bug} open={timelineOpen} onOpenChange={setTimelineOpen} />
+    <BugTimelineDialog bug={bug} departedUserIds={departedUserIds} open={timelineOpen} onOpenChange={setTimelineOpen} />
   </>
 }
 
@@ -2230,14 +2236,20 @@ function BugSpaceTransferDialog({ bug, busy, onOpenChange, onSubmit, open }: {
   )
 }
 
-function BugTimelineDialog({ bug, onOpenChange, open }: {
+function BugTimelineDialog({ bug, departedUserIds, onOpenChange, open }: {
   bug: TestBug
+  departedUserIds: readonly number[]
   onOpenChange: (open: boolean) => void
   open: boolean
 }) {
   const hasCreatedEvent = bug.events.some((event) => event.eventType === 'created')
+  const isNamedTransferComment = (comment: TestBugComment) => (
+    comment.kind === 'transfer' && /转移给「([^」]+)」/u.test(comment.content)
+  )
   const timeline: Array<{
+    actorUserId?: number
     actorName?: string
+    assigneeUserId?: number
     assigneeName?: string
     createdAt: string
     eventType: TestBugEvent['eventType'] | 'rejected'
@@ -2246,12 +2258,14 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
     nextStatus?: BugStatus
     previousSpaceName?: string
     previousStatus?: BugStatus
+    transferSource?: 'manual' | 'offboarding'
   }> = [
-    ...(hasCreatedEvent ? [] : [{ eventType: 'created' as const, actorName: bug.reporterName, createdAt: bug.createdAt, id: 0 }]),
+    ...(hasCreatedEvent ? [] : [{ eventType: 'created' as const, actorName: bug.reporterName, actorUserId: bug.reporterUserId, createdAt: bug.createdAt, id: 0 }]),
     ...bug.comments
-      .filter((comment) => comment.kind === 'reject' || comment.kind === 'transfer')
+      .filter((comment) => comment.kind === 'reject' || isNamedTransferComment(comment))
       .map((comment) => ({
         actorName: comment.authorName,
+        actorUserId: comment.authorUserId,
         assigneeName: comment.kind === 'transfer'
           ? (comment.content.match(/转移给「([^」]+)」/u)?.[1] ?? undefined)
           : undefined,
@@ -2259,7 +2273,7 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
         eventType: comment.kind === 'reject' ? 'rejected' as const : 'transferred' as const,
         id: -comment.id,
       })),
-    ...bug.events,
+    ...bug.events.map((event) => ({ ...event, actorUserId: event.actorUserId, assigneeUserId: event.assigneeUserId })),
   ].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2278,9 +2292,9 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
                 {event.eventType === 'created' ? (
                   <strong>创建了 Bug</strong>
                 ) : event.eventType === 'assigned' ? (
-                  <strong>指派给 {event.assigneeName ?? '未分配'}</strong>
+                  <strong>指派给 <UserName departedUserIds={departedUserIds} name={event.assigneeName ?? '未分配'} userId={event.assigneeUserId} /></strong>
                 ) : event.eventType === 'transferred' ? (
-                  <strong>转移给 {event.assigneeName ?? '未分配'}</strong>
+                  <strong>转移给 <UserName departedUserIds={departedUserIds} name={event.assigneeName ?? '未分配'} userId={event.assigneeUserId} />{event.transferSource === 'offboarding' ? '（离职转移）' : null}</strong>
                 ) : event.eventType === 'space_transferred' ? (
                   <strong>从「{event.previousSpaceName ?? '未知空间'}」转移到「{event.nextSpaceName ?? '未知空间'}」</strong>
                 ) : event.eventType === 'rejected' ? (
@@ -2288,7 +2302,7 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
                 ) : (
                   <strong>状态从「{event.previousStatus ? bugStatusLabel[event.previousStatus] : '未知'}」改为「{event.nextStatus ? bugStatusLabel[event.nextStatus] : '未知'}」</strong>
                 )}
-                <span>{event.actorName ?? '未知用户'}</span>
+                <UserName departedUserIds={departedUserIds} name={event.actorName ?? '未知用户'} userId={event.actorUserId} />
               </div>
               <time>{formatTimestamp(event.createdAt)}</time>
             </div>
@@ -2299,10 +2313,11 @@ function BugTimelineDialog({ bug, onOpenChange, open }: {
   )
 }
 
-function BugCommentsSection({ bug, busy, currentUserId, mentionMembers, onComment, onDeleteComment, onUpdateComment, placeholder }: {
+function BugCommentsSection({ bug, busy, currentUserId, departedUserIds = [], mentionMembers, onComment, onDeleteComment, onUpdateComment, placeholder }: {
   bug: TestBug
   busy: boolean
   currentUserId?: number
+  departedUserIds?: readonly number[]
   mentionMembers?: MentionMember[]
   onComment?: (bug: TestBug, content: string) => Promise<boolean>
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
@@ -2327,6 +2342,7 @@ function BugCommentsSection({ bug, busy, currentUserId, mentionMembers, onCommen
           busy={busy}
           comment={item}
           currentUserId={currentUserId}
+          departedUserIds={departedUserIds}
           onDeleteComment={onDeleteComment}
           onUpdateComment={onUpdateComment}
         />
@@ -2352,11 +2368,12 @@ function BugCommentsSection({ bug, busy, currentUserId, mentionMembers, onCommen
   )
 }
 
-function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment, onUpdateComment }: {
+function BugCommentArticle({ bug, busy, comment, currentUserId, departedUserIds = [], onDeleteComment, onUpdateComment }: {
   bug: TestBug
   busy: boolean
   comment: TestBugComment
   currentUserId?: number
+  departedUserIds?: readonly number[]
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
 }) {
@@ -2380,7 +2397,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, onDeleteComment,
     <article className="test-comment-item">
       <div className="test-comment-header">
         <div className="test-comment-byline">
-          <strong>{comment.authorName}</strong>
+          <UserName departedUserIds={departedUserIds} name={comment.authorName} userId={comment.authorUserId} />
           {comment.kind === 'transfer' ? <Badge variant="outline">转移记录</Badge> : null}
           {comment.kind === 'reject' ? <Badge variant="outline">驳回记录</Badge> : null}
           <span aria-hidden="true">·</span>
@@ -2985,8 +3002,9 @@ function TestSpaceDataImportDialog({ busy, error, onOpenChange, onSubmit, open, 
   )
 }
 
-function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, onWorkbenchChange, open }: {
+function TestSpaceSettingsDialog({ currentSpaceId, departedUsers, onCreateSpace, onOpenChange, onWorkbenchChange, open }: {
   currentSpaceId?: number
+  departedUsers: Array<{ id: number; name: string }>
   onCreateSpace: () => void
   onOpenChange: (open: boolean) => void
   onWorkbenchChange: () => Promise<void>
@@ -3174,7 +3192,14 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                   </section> : null}
 
                   <section className="test-space-members-section">
-                    <div className="test-space-admin-section-heading"><div><span>成员与邀请</span><strong>{selectedSpace.members.length}</strong></div></div>
+                    <div className="test-space-admin-section-heading">
+                      <div>
+                        <span>{departedUsers.length > 0 ? '成员' : '成员与邀请'}</span>
+                        {departedUsers.map((user) => <Badge className="test-space-departed-member" key={user.id} variant="outline">{user.name} · 已离职</Badge>)}
+                        {departedUsers.length > 0 ? <span>与邀请</span> : null}
+                        <strong>{selectedSpace.members.length}</strong>
+                      </div>
+                    </div>
                     {isOwner ? <form
                       className="test-space-member-add-row"
                       onSubmit={async (event) => {
@@ -4292,6 +4317,7 @@ export function AssignedTestBugs({
 }) {
   const [bugs, setBugs] = useState<TestBug[]>([])
   const [mentionMembers, setMentionMembers] = useState<MentionMember[]>([])
+  const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
   const [selectedId, setSelectedId] = useState<number>()
   const [shareOpen, setShareOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -4328,6 +4354,7 @@ export function AssignedTestBugs({
     fetchAssignedTestBugs()
       .then((result) => {
         setBugs(result.bugs)
+        setDepartedUserIds(result.departedUserIds)
         setMentionMembers(result.members ?? [])
         onBugsChangeRef.current?.(result.bugs)
         const rememberedSpaceId = readAssignedBugSpaceId(currentUserId)
@@ -4356,6 +4383,7 @@ export function AssignedTestBugs({
         .then((result) => {
           if (!active) return
           setBugs(result.bugs)
+          setDepartedUserIds(result.departedUserIds)
           setMentionMembers(result.members ?? [])
           onBugsChangeRef.current?.(result.bugs)
           setSelectedSpaceId((current) => {
@@ -4528,12 +4556,12 @@ export function AssignedTestBugs({
         </div>
       ) : (
         <div className="test-split-view">
-          <div className="test-record-list">
+                <div className="test-record-list">
             {filteredBugs.map((bug) => (
               <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(bug.id)}>
-                <div><code>BUG-{bug.id}</code><Badge variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
+                <div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
                 <strong>{bug.title}</strong>
-                <small>{formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}</small>
+                <small>{formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small>
               </button>
             ))}
           </div>
@@ -4586,7 +4614,7 @@ export function AssignedTestBugs({
                   </div>
                 </div>
                 <div className="test-detail-meta assigned-bug-detail-meta">
-                  <span>负责人 <strong>{selected.assigneeName || '未分配'}</strong></span>
+                  <span>负责人 <UserName departedUserIds={departedUserIds} name={selected.assigneeName || '未分配'} userId={selected.assigneeUserId} /></span>
                   <span>测试对象 <strong>{selected.testSubjectName}</strong></span>
                   <span>版本号 <strong>{selected.testSpaceVersionLabel || '未指定'}</strong></span>
                   <span>严重程度 <strong>{severityLabel[selected.severity]}</strong></span>
@@ -4598,6 +4626,7 @@ export function AssignedTestBugs({
                   bug={selected}
                   busy={busy}
                   currentUserId={currentUserId}
+                  departedUserIds={departedUserIds}
                   mentionMembers={selected.organizationMembers ?? mentionMembers}
                   placeholder="说明修复内容或提交版本，支持粘贴、拖入或上传图片和视频。"
                   onComment={selected.canComment

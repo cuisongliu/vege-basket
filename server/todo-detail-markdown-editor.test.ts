@@ -36,6 +36,13 @@ test('todo details use the stable shared Markdown editor without a page reload',
   )
 })
 
+test('todo detail shows the offboarding transfer source beside the title', () => {
+  assert.match(appSource, /offboardingTransferredFromName/u)
+  assert.match(todoEditorDialogSource, /todo\?\.offboardingTransferredFromName/u)
+  assert.match(todoEditorDialogSource, /-离职转移/u)
+  assert.match(todoEditorDialogSource, /todo-status-chip[\s\S]*?offboardingTransferredFromName/u)
+})
+
 test('todo detail image pastes stay connected to the existing upload flow', () => {
   assert.match(todoDetailEditorSource, /onPasteImages=/u)
   assert.match(todoDetailEditorSource, /uploadImagesIntoTodoDetail/u)
