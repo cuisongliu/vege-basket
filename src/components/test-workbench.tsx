@@ -151,7 +151,6 @@ const emptyWorkbench: TestWorkbenchData = {
   bugs: [],
   cases: [],
   departedUserIds: [],
-  departedUsers: [],
   folders: [],
   notifications: [],
   planCases: [],
@@ -1206,7 +1205,6 @@ export function TestWorkbench({
 
       <TestSpaceSettingsDialog
         currentSpaceId={spaceId}
-        departedUsers={data.departedUsers}
         open={spaceAdministrationOpen}
         onOpenChange={setSpaceAdministrationOpen}
         onCreateSpace={() => {
@@ -3002,9 +3000,8 @@ function TestSpaceDataImportDialog({ busy, error, onOpenChange, onSubmit, open, 
   )
 }
 
-function TestSpaceSettingsDialog({ currentSpaceId, departedUsers, onCreateSpace, onOpenChange, onWorkbenchChange, open }: {
+function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, onWorkbenchChange, open }: {
   currentSpaceId?: number
-  departedUsers: Array<{ id: number; name: string }>
   onCreateSpace: () => void
   onOpenChange: (open: boolean) => void
   onWorkbenchChange: () => Promise<void>
@@ -3194,9 +3191,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, departedUsers, onCreateSpace,
                   <section className="test-space-members-section">
                     <div className="test-space-admin-section-heading">
                       <div>
-                        <span>{departedUsers.length > 0 ? '成员' : '成员与邀请'}</span>
-                        {departedUsers.map((user) => <Badge className="test-space-departed-member" key={user.id} variant="outline">{user.name} · 已离职</Badge>)}
-                        {departedUsers.length > 0 ? <span>与邀请</span> : null}
+                        <span>成员与邀请</span>
                         <strong>{selectedSpace.members.length}</strong>
                       </div>
                     </div>

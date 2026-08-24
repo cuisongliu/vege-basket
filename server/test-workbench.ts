@@ -4,7 +4,7 @@ import express, { Router } from 'express'
 import type { PoolClient } from 'pg'
 import { blindIndex, decryptJson, decryptText, encryptJson, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
-import { getDepartedUserIds, getDepartedUsers } from './user-lifecycle.ts'
+import { getDepartedUserIds } from './user-lifecycle.ts'
 import {
   managedOrganizationReadScopeSql,
   testSpaceMembershipPresentSql,
@@ -1523,14 +1523,10 @@ async function getTestWorkbench(userId: number) {
     subjectIdsByPlan.set(planId, [...(subjectIdsByPlan.get(planId) ?? []), Number(row.test_subject_id)])
   }
   const ownedSpaces = spaces.rows.filter((row) => Number(row.owner_user_id) === userId)
-  const [departedUserIds, departedUsers] = await Promise.all([
-    getDepartedUserIds(),
-    getDepartedUsers(),
-  ])
+  const departedUserIds = await getDepartedUserIds()
 
   return {
     departedUserIds,
-    departedUsers,
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
       assigneeName: row.assignee_display_name || row.assignee_email || undefined,

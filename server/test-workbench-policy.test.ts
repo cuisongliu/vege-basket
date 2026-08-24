@@ -33,6 +33,13 @@ test('test spaces persist and expose an optional version label', () => {
   assert.match(testWorkbenchClientSource, /TestSpaceSelectLabel/u)
 })
 
+test('test-space member settings do not show unrelated departed accounts', () => {
+  assert.doesNotMatch(testWorkbenchSource, /getDepartedUsers/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /departedUsers.*TestSpaceSettingsDialog/u)
+  assert.match(testWorkbenchClientSource, /<span>成员与邀请<\/span>/u)
+  assert.match(testWorkbenchClientSource, /selectedSpace\.members\.length/u)
+})
+
 test('Bug scope stays within the current space while its subject is returned as detail metadata', () => {
   assert.match(testWorkbenchSource, /join test_subjects subject on subject\.id = b\.test_subject_id/u)
   assert.match(testWorkbenchSource, /subject\.name as test_subject_name/u)

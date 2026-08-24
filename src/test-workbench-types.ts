@@ -255,7 +255,6 @@ export type TestWorkbenchData = {
   bugs: TestBug[]
   cases: TestCase[]
   departedUserIds: number[]
-  departedUsers: Array<{ id: number; name: string }>
   folders: TestCaseFolder[]
   notifications: TestWorkbenchNotification[]
   planCases: TestPlanCase[]
