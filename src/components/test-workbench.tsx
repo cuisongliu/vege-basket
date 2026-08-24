@@ -3179,6 +3179,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                     </form>
                   ) : <div className="test-space-readonly-heading">
                     <div><span>空间名称</span><strong>{selectedSpace.name}</strong></div>
+                    <div><span>版本号</span><strong>{selectedSpace.versionLabel || '未指定'}</strong></div>
                     <div><span>归属组织</span><strong>{selectedSpace.organizationName ?? '不归属组织'}</strong></div>
                     <Badge variant="outline">{selectedSpace.accessLevel === 'editor' ? '可编辑' : '只读'}</Badge>
                   </div>}

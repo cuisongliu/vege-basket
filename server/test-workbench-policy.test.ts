@@ -31,6 +31,7 @@ test('test spaces persist and expose an optional version label', () => {
   assert.match(testWorkbenchSource, /versionLabel: row\.version_label \? decryptText\(row\.version_label\) : undefined/u)
   assert.match(testWorkbenchClientSource, /createTestSpace\(normalizedName, versionLabel\.trim\(\)/u)
   assert.match(testWorkbenchClientSource, /TestSpaceSelectLabel/u)
+  assert.match(testWorkbenchClientSource, /<span>版本号<\/span><strong>\{selectedSpace\.versionLabel \|\| '未指定'\}<\/strong>/u)
 })
 
 test('test-space member settings do not show unrelated departed accounts', () => {
