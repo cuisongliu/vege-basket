@@ -8,6 +8,7 @@ import {
   canManageOrganizationWeeklyReports,
   hashOrganizationInviteToken,
   isFreshFeishuTimestamp,
+  isOrganizationTodoFieldUpdate,
   matchesOrganizationDeleteConfirmation,
   normalizeOrganizationName,
   normalizeOrganizationProjectHealthStatus,
@@ -42,6 +43,26 @@ test('system administrator access requires an explicit username configuration', 
     if (previous === undefined) delete process.env.VEGES_ADMIN_USERNAMES
     else process.env.VEGES_ADMIN_USERNAMES = previous
   }
+})
+
+test('system administrator todo updates are limited to assignment metadata', () => {
+  assert.equal(isOrganizationTodoFieldUpdate({ dueDate: '2026-08-27' }), true)
+  assert.equal(isOrganizationTodoFieldUpdate({ watcherUserIds: [2, 3], reviewerUserId: 4 }), true)
+  assert.equal(isOrganizationTodoFieldUpdate({ title: '改变标题' }), false)
+  assert.equal(isOrganizationTodoFieldUpdate({ dueDate: '2026-08-27', detail: '改变详情' }), false)
+  assert.equal(isOrganizationTodoFieldUpdate({}), false)
+})
+
+test('todo update route keeps system administrator access organization-scoped', () => {
+  const routeStart = appSource.indexOf("app.patch('/api/todos/:todoId'")
+  const routeEnd = appSource.indexOf("app.delete('/api/todos/:todoId'", routeStart)
+  const routeSource = appSource.slice(routeStart, routeEnd)
+
+  assert.match(routeSource, /isSystemAdmin\(session\.username\)/u)
+  assert.match(routeSource, /systemAdmin && existingTodo\.rows\[0\]\.organization_id != null/u)
+  assert.match(routeSource, /isOrganizationTodoFieldUpdate\(request\.body\)/u)
+  assert.match(routeSource, /nextTitle =/u)
+  assert.match(routeSource, /canManageTodo && typeof request\.body\.title/u)
 })
 
 test('organization administrators are account roles independent of membership access role', () => {

@@ -6443,6 +6443,7 @@ function ProjectDetail({
                 />
               ) : (
                 <TodoList
+                  canManageOrganizationTodos={project.canManageOrganizationTodos}
                   departedUserIds={departedUserIds}
                   key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
                   currentUserId={currentUser?.id}
@@ -6453,7 +6454,7 @@ function ProjectDetail({
                   onDeleteTodo={canWriteProject ? onDeleteTodo : undefined}
                   onDetailModeChange={setIsProjectTodoDetailOpen}
                   onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
-                  onUpdateTodo={canWriteProject ? onUpdateTodo : undefined}
+                  onUpdateTodo={canWriteProject || project.canManageOrganizationTodos ? onUpdateTodo : undefined}
                   onUpdateTodoNote={canWriteProject ? onUpdateTodoNote : undefined}
                   project={project}
                   projects={projects}
@@ -11074,6 +11075,7 @@ function TodoEditorDialog({
   reviewerUserId,
   backLabel = '返回待办列表',
   canEdit = false,
+  canEditProperties = canEdit,
   canRespondToTodo = false,
   canShare = false,
   canCreateModule = false,
@@ -11121,6 +11123,7 @@ function TodoEditorDialog({
   reviewerUserId: number | null
   backLabel?: string
   canEdit?: boolean
+  canEditProperties?: boolean
   canRespondToTodo?: boolean
   canShare?: boolean
   canCreateModule?: boolean
@@ -11443,7 +11446,7 @@ function TodoEditorDialog({
         <div className="todo-editor-sidebar">
           <TodoPropertiesPanel
             assigneeUserId={assigneeUserId}
-            canEdit={canEdit}
+            canEdit={canEditProperties}
             canRespondToTodo={canRespondToTodo}
             createdAt={createdAt}
             dueDate={dueDate}
@@ -11541,6 +11544,7 @@ function TodoEditorDialog({
 }
 
 function TodoList({
+  canManageOrganizationTodos = false,
   compact = false,
   currentUserId,
   departedUserIds,
@@ -11557,6 +11561,7 @@ function TodoList({
   projects,
   todos,
 }: {
+  canManageOrganizationTodos?: boolean
   compact?: boolean
   currentUserId?: number
   departedUserIds: readonly number[]
@@ -11749,6 +11754,11 @@ function TodoList({
       currentUserId != null &&
       editingTodo.createdByUserId === currentUserId,
   )
+  const editingCanManageTodoFields = Boolean(
+    editingTodo && editingProject && (
+      canManageOrganizationTodos || editingCanManageTodo
+    ),
+  )
   const editingCanRespondToTodo = editingTodo ? canRespondToTodo(editingTodo) : false
 
   function canShareTodo(todo: Todo) {
@@ -11932,6 +11942,7 @@ function TodoList({
           priority={todoEditPriority}
           project={editingProject}
           canEdit={editingCanManageTodo}
+          canEditProperties={editingCanManageTodoFields}
           canRespondToTodo={editingCanRespondToTodo}
           canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
@@ -11966,7 +11977,7 @@ function TodoList({
           onSubmit={saveTodoEdit}
           onTitleChange={setTodoEditDraft}
           onInlineUpdate={(payload) => {
-            if ((!editingCanManageTodo && !editingCanRespondToTodo) || !onUpdateTodo) return
+            if ((!editingCanManageTodoFields && !editingCanRespondToTodo) || !onUpdateTodo) return
             onUpdateTodo(editingTodo.id, payload)
           }}
           onUpdateTodoNote={onUpdateTodoNote}
