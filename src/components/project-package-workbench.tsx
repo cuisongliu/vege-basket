@@ -100,6 +100,17 @@ import type {
 } from '@/types'
 import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
 import { UserName } from '@/components/user-name'
+import type {
+  PackageMarketRequestContext,
+  PackageMarketRulesResponse,
+} from '@/api'
+import type { OrganizationListItem } from '@/organization-types'
+import {
+  canonicalPackageMarketRuleId,
+  isPackageMarketRuleVisible,
+  organizationPackageMarketPolicyHasVisibleChannel,
+  packageMarketDependencyChannel,
+} from '../../shared/organization-package-market'
 
 type PackageWorkbenchProps = {
   onAddEventComment: (eventId: number, content: string) => Promise<boolean>
@@ -131,13 +142,11 @@ type PackageWorkbenchProps = {
     includeAll?: boolean
     packageId: string
     releaseVersion?: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onLoadPackageItemDownloadUrl: (itemId: number) => Promise<string>
-  onLoadPackageMarketCiBranches: (packageId: string) => Promise<PackageMarketCiBranch[]>
-  onLoadPackageMarketRules: () => Promise<{
-    expireMinutes: number
-    rules: PackageMarketRule[]
-  }>
+  onLoadPackageMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
+  onLoadPackageMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onLoadPackageMarketVersions: (payload: {
     arch: string
     ciBranch?: string
@@ -145,6 +154,7 @@ type PackageWorkbenchProps = {
     deployType?: 'pro' | 'oss'
     includeAll?: boolean
     packageId: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketVersion[]>
   onSaveEvent: (
     eventId: number | null,
@@ -255,6 +265,7 @@ type PackageMarketDependencyState = {
 }
 
 type PackageMarketBrowserProps = {
+  onLoadPackageMarketOrganizations: () => Promise<OrganizationListItem[]>
   onLoadPackageMarketCiBranches: PackageWorkbenchProps['onLoadPackageMarketCiBranches']
   onLoadPackageMarketDetail: PackageWorkbenchProps['onLoadPackageMarketDetail']
   onLoadPackageMarketRules: PackageWorkbenchProps['onLoadPackageMarketRules']
@@ -635,11 +646,20 @@ function PackageMarketRuleList({ children }: { children: ReactNode }) {
 }
 
 export function PackageMarketBrowser({
+  onLoadPackageMarketOrganizations,
   onLoadPackageMarketCiBranches,
   onLoadPackageMarketDetail,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
 }: PackageMarketBrowserProps) {
+  const [marketOrganizations, setMarketOrganizations] = useState<OrganizationListItem[]>([])
+  const [marketOrganizationId, setMarketOrganizationId] = useState<number | null>(null)
+  const [marketOrganizationLoading, setMarketOrganizationLoading] = useState(true)
+  const [marketPolicy, setMarketPolicy] = useState<PackageMarketRulesResponse['policy'] | null>(null)
+  const [marketVisibleRuleIds, setMarketVisibleRuleIds] = useState<PackageMarketRulesResponse['visibleRuleIds']>({
+    release: [],
+    ci: [],
+  })
   const [copiedValue, setCopiedValue] = useState('')
   const [marketRules, setMarketRules] = useState<PackageMarketRule[]>([])
   const [marketExpireMinutes, setMarketExpireMinutes] = useState(packageMarketExpireOptions[0].value)
@@ -665,15 +685,23 @@ export function PackageMarketBrowser({
     middleware: true,
   })
   const marketDetailRequestIdRef = useRef(0)
+  const loadMarketOrganizationsRef = useRef(onLoadPackageMarketOrganizations)
   const loadMarketRulesRef = useRef(onLoadPackageMarketRules)
+  useEffect(() => {
+    loadMarketOrganizationsRef.current = onLoadPackageMarketOrganizations
+    loadMarketRulesRef.current = onLoadPackageMarketRules
+  }, [onLoadPackageMarketOrganizations, onLoadPackageMarketRules])
   const refreshMarketDetailRef = useRef<(
     nextOverrides?: Partial<{
       arch: 'amd64' | 'arm64'
       channel: PackageMarketChannel
+      ciBranch: string
       ciVersion: string
       expireMinutes: number
       includeAll: boolean
       marketRules: PackageMarketRule[]
+      visibleRuleIds: PackageMarketRulesResponse['visibleRuleIds']
+      organizationId: number
       packageId: string
       releaseVersion: string
       dependencyVersions: Record<string, string>
@@ -682,12 +710,23 @@ export function PackageMarketBrowser({
 
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
-    const baseRules = [...getPackageMarketBaseRules(), ...marketRules]
+    const visibleIds = new Set(marketVisibleRuleIds[marketChannel] ?? [])
+    const baseRules = [
+      ...getPackageMarketBaseRules().filter((rule) => visibleIds.has(rule.id)),
+      ...marketRules.filter((rule) => {
+        if (rule.category === 'dependency') {
+          const dependencyChannel = packageMarketDependencyChannel(rule)
+          return dependencyChannel === marketChannel && visibleIds.has(canonicalPackageMarketRuleId(rule.parent))
+        }
+        const id = canonicalPackageMarketRuleId(rule.id)
+        return visibleIds.has(id)
+      }),
+    ]
     return baseRules.filter((rule) => {
       if (!query) return true
       return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
     })
-  }, [marketRules, marketSearch])
+  }, [marketRules, marketSearch, marketVisibleRuleIds, marketChannel])
 
   const groupedMarketRules = useMemo(() => {
     const base = filteredRules.filter((rule) => rule.id === 'base-pro' || rule.id === 'base-oss')
@@ -700,10 +739,17 @@ export function PackageMarketBrowser({
     return { apps, base, middleware }
   }, [filteredRules])
 
-  const selectedMarketDependencyRules = useMemo(
-    () => marketRules.filter((rule) => rule.category === 'dependency' && rule.parent === marketSelectedPackage),
-    [marketRules, marketSelectedPackage],
-  )
+  const selectedMarketDependencyRules = useMemo(() => {
+    if (!marketPolicy) return []
+    const selectedPackageId = canonicalPackageMarketRuleId(marketSelectedPackage)
+    return marketRules.filter((rule) => {
+      const dependencyChannel = packageMarketDependencyChannel(rule)
+      return rule.category === 'dependency' &&
+        dependencyChannel != null &&
+        canonicalPackageMarketRuleId(rule.parent) === selectedPackageId &&
+        isPackageMarketRuleVisible(rule, marketPolicy, dependencyChannel)
+    })
+  }, [marketPolicy, marketRules, marketSelectedPackage])
 
   async function copyToClipboard(value: string, feedbackKey: string) {
     if (!value) return
@@ -723,10 +769,19 @@ export function PackageMarketBrowser({
     expireMinutes: number
     includeAll: boolean
     requestId: number
+    requestContext?: PackageMarketRequestContext
     rules: PackageMarketRule[]
     selectedVersions?: Record<string, string>
   }) {
-    const { arch, expireMinutes, includeAll, requestId, rules, selectedVersions = {} } = params
+    const {
+      arch,
+      expireMinutes,
+      includeAll,
+      requestContext,
+      requestId,
+      rules,
+      selectedVersions = {},
+    } = params
     if (rules.length === 0) {
       setMarketDependencyDetails([])
       return
@@ -750,6 +805,7 @@ export function PackageMarketBrowser({
           kind: dependencyChannel,
           includeAll,
           packageId: rule.id,
+          context: requestContext,
         })
         const selectedVersion =
           selectedVersions[rule.id] ||
@@ -763,6 +819,7 @@ export function PackageMarketBrowser({
           includeAll,
           ciVersion: dependencyChannel === 'ci' ? selectedVersion : '',
           releaseVersion: dependencyChannel === 'release' ? selectedVersion : '',
+          context: requestContext,
         })
         return {
           context: {
@@ -805,6 +862,8 @@ export function PackageMarketBrowser({
     expireMinutes: number
     includeAll: boolean
     marketRules: PackageMarketRule[]
+    visibleRuleIds?: PackageMarketRulesResponse['visibleRuleIds']
+    organizationId: number
     packageId: string
     releaseVersion: string
     dependencyVersions: Record<string, string>
@@ -818,6 +877,11 @@ export function PackageMarketBrowser({
     const expireMinutes = nextOverrides?.expireMinutes ?? marketExpireMinutes
     const includeAll = nextOverrides?.includeAll ?? marketIncludeAll
     const rules = nextOverrides?.marketRules ?? marketRules
+    const visibleRuleIds = nextOverrides?.visibleRuleIds ?? marketVisibleRuleIds
+    const requestOrganizationId = nextOverrides?.organizationId ?? marketOrganizationId
+    const requestContext: PackageMarketRequestContext | undefined = requestOrganizationId == null
+      ? undefined
+      : { organizationId: requestOrganizationId }
     const requestId = ++marketDetailRequestIdRef.current
     setMarketLoading(true)
     setMarketError('')
@@ -826,7 +890,7 @@ export function PackageMarketBrowser({
     setMarketDependencyDetails([])
     try {
       const ciBranches = channel === 'ci'
-        ? await onLoadPackageMarketCiBranches(packageId)
+        ? await onLoadPackageMarketCiBranches(packageId, requestContext)
         : []
       if (requestId !== marketDetailRequestIdRef.current) return
       const ciBranch = requestedCiBranch && ciBranches.some((item) => item.name === requestedCiBranch)
@@ -848,6 +912,7 @@ export function PackageMarketBrowser({
               kind: 'ci',
               includeAll,
               packageId,
+              context: requestContext,
             })
           : onLoadPackageMarketVersions({
               arch,
@@ -855,6 +920,7 @@ export function PackageMarketBrowser({
               deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
               includeAll,
               packageId,
+              context: requestContext,
             }),
         onLoadPackageMarketDetail({
           packageId,
@@ -866,6 +932,7 @@ export function PackageMarketBrowser({
           includeAll,
           releaseVersion,
           ciVersion,
+          context: requestContext,
         }),
       ])
       if (requestId !== marketDetailRequestIdRef.current) return
@@ -880,13 +947,19 @@ export function PackageMarketBrowser({
       }
       setMarketDetail(detail)
       setMarketDetailContext(context)
-      const dependencyRules =
-        rules.filter((rule) => rule.category === 'dependency' && rule.parent === packageId)
+      const dependencyRules = rules.filter((rule) => {
+        const dependencyChannel = packageMarketDependencyChannel(rule)
+        return rule.category === 'dependency' &&
+          dependencyChannel != null &&
+          canonicalPackageMarketRuleId(rule.parent) === canonicalPackageMarketRuleId(packageId) &&
+          visibleRuleIds[dependencyChannel].includes(canonicalPackageMarketRuleId(rule.parent))
+      })
       void refreshMarketDependencyDetails({
         arch,
         expireMinutes,
         includeAll,
         requestId,
+        requestContext,
         rules: dependencyRules,
         selectedVersions: nextOverrides?.dependencyVersions,
       })
@@ -968,38 +1041,167 @@ export function PackageMarketBrowser({
     )
   }
 
+  async function loadMarketOrganization(organizationId: number, requestId: number) {
+    setMarketOrganizationLoading(true)
+    setMarketPolicy(null)
+    setMarketRules([])
+    setMarketVisibleRuleIds({ release: [], ci: [] })
+    setMarketDetail(null)
+    setMarketDetailContext(null)
+    setMarketDependencyDetails([])
+    setMarketReleaseVersions([])
+    setMarketCiBranches([])
+    setMarketCiVersions([])
+    const rulesPayload = await loadMarketRulesRef.current({ organizationId })
+    if (requestId !== marketDetailRequestIdRef.current) return
+    setMarketOrganizationId(organizationId)
+    setMarketOrganizationLoading(false)
+    setMarketPolicy(rulesPayload.policy)
+    setMarketVisibleRuleIds(rulesPayload.visibleRuleIds)
+    setMarketRules(rulesPayload.rules)
+    const releaseIds = rulesPayload.visibleRuleIds.release
+    const ciIds = rulesPayload.visibleRuleIds.ci
+    const activeChannel: PackageMarketChannel = rulesPayload.policy.channels.release.enabled && releaseIds.length > 0
+      ? 'release'
+      : rulesPayload.policy.channels.ci.enabled && ciIds.length > 0 ? 'ci' : 'release'
+    const visibleIds = rulesPayload.visibleRuleIds[activeChannel]
+    const nextPackage = visibleIds[0] ?? ''
+    setMarketChannel(activeChannel)
+    setMarketSelectedPackage(nextPackage)
+    setMarketReleaseVersion('')
+    setMarketCiBranch('')
+    setMarketCiVersion('')
+    const expireMinutes = packageMarketExpireOptions.some(
+      (option) => option.value === rulesPayload.expireMinutes,
+    )
+      ? rulesPayload.expireMinutes
+      : packageMarketExpireOptions[0].value
+    setMarketExpireMinutes(expireMinutes)
+    if (!nextPackage || !rulesPayload.policy.enabled) {
+      setMarketDetail(null)
+      setMarketDetailContext(null)
+      setMarketLoading(false)
+      return
+    }
+    await refreshMarketDetailRef.current({
+      channel: activeChannel,
+      expireMinutes,
+      marketRules: rulesPayload.rules,
+      visibleRuleIds: rulesPayload.visibleRuleIds,
+      organizationId,
+      packageId: nextPackage,
+      releaseVersion: '',
+      ciBranch: '',
+      ciVersion: '',
+    })
+  }
+
   useEffect(() => {
     const requestId = ++marketDetailRequestIdRef.current
     setMarketDetail(null)
     setMarketDetailContext(null)
     setMarketLoading(true)
     setMarketError('')
-    void loadMarketRulesRef.current()
-      .then((rulesPayload) => {
-        if (requestId !== marketDetailRequestIdRef.current) return
+    let cancelled = false
+    void loadMarketOrganizationsRef.current()
+      .then((organizations) => {
+        if (cancelled || requestId !== marketDetailRequestIdRef.current) return null
+        setMarketOrganizations(organizations)
+        setMarketOrganizationLoading(false)
+        const firstAvailable = organizations.find((organization) => organization.packageMarketEnabled)
+        if (!firstAvailable) {
+          setMarketOrganizationId(null)
+          setMarketPolicy(null)
+          setMarketRules([])
+          setMarketVisibleRuleIds({ release: [], ci: [] })
+          setMarketError('当前没有可用的组织安装包市场。')
+          setMarketLoading(false)
+          return null
+        }
+        setMarketOrganizationId(firstAvailable.id)
+        return loadMarketRulesRef.current({ organizationId: firstAvailable.id }).then((payload) => ({
+          organizationId: firstAvailable.id,
+          payload,
+        }))
+      })
+      .then((result) => {
+        if (!result || cancelled || requestId !== marketDetailRequestIdRef.current) return
+        const { organizationId, payload: rulesPayload } = result
+        setMarketPolicy(rulesPayload.policy)
+        setMarketVisibleRuleIds(rulesPayload.visibleRuleIds)
         setMarketRules(rulesPayload.rules)
+        const activeChannel = rulesPayload.policy.channels.release.enabled && rulesPayload.visibleRuleIds.release.length > 0
+          ? 'release'
+          : rulesPayload.policy.channels.ci.enabled && rulesPayload.visibleRuleIds.ci.length > 0 ? 'ci' : 'release'
+        setMarketChannel(activeChannel)
+        const visibleIds = rulesPayload.visibleRuleIds[activeChannel]
+        const nextPackage = visibleIds[0] ?? ''
+        setMarketSelectedPackage(nextPackage)
         const expireMinutes = packageMarketExpireOptions.some(
           (option) => option.value === rulesPayload.expireMinutes,
         )
           ? rulesPayload.expireMinutes
           : packageMarketExpireOptions[0].value
         setMarketExpireMinutes(expireMinutes)
+        if (!nextPackage || !rulesPayload.policy.enabled) {
+          setMarketDetail(null)
+          setMarketLoading(false)
+          return
+        }
         void refreshMarketDetailRef.current({
           expireMinutes,
           marketRules: rulesPayload.rules,
+          visibleRuleIds: rulesPayload.visibleRuleIds,
+          organizationId,
+          packageId: nextPackage,
+          channel: activeChannel,
         })
       })
       .catch((error) => {
-        if (requestId !== marketDetailRequestIdRef.current) return
+        if (cancelled || requestId !== marketDetailRequestIdRef.current) return
+        setMarketOrganizationLoading(false)
         setMarketError(error instanceof Error ? error.message : '包市场读取失败')
         setMarketLoading(false)
       })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   return (
     <section className="package-market-workspace" aria-label="安装包市场">
       <div className="package-market-grid">
           <div className="package-market-sidebar">
+            <Label>
+              组织上下文
+              <Select
+                value={marketOrganizationId == null ? '' : String(marketOrganizationId)}
+                onValueChange={(value) => {
+                  const organizationId = Number(value)
+                  if (!Number.isSafeInteger(organizationId) || organizationId <= 0) return
+                  const requestId = ++marketDetailRequestIdRef.current
+                  setMarketLoading(true)
+                  setMarketError('')
+                  void loadMarketOrganization(organizationId, requestId).catch((error) => {
+                    if (requestId !== marketDetailRequestIdRef.current) return
+                    setMarketOrganizationLoading(false)
+                    setMarketError(error instanceof Error ? error.message : '组织安装包市场读取失败')
+                    setMarketLoading(false)
+                  })
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={marketOrganizationLoading ? '正在读取组织...' : '选择组织'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {marketOrganizations.filter((organization) => organization.packageMarketEnabled).map((organization) => (
+                    <SelectItem key={organization.id} value={String(organization.id)}>
+                      {organization.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Label>
             <Label>
               搜索
               <Input
@@ -1013,6 +1215,7 @@ export function PackageMarketBrowser({
               variant={marketIncludeAll ? 'default' : 'outline'}
               type="button"
               aria-pressed={marketIncludeAll}
+              disabled={marketOrganizationId == null || marketPolicy == null || marketOrganizationLoading}
               title={marketIncludeAll ? '关闭全部包展示' : '展示全部包'}
               onClick={() => {
                 const nextIncludeAll = !marketIncludeAll
@@ -1099,21 +1302,43 @@ export function PackageMarketBrowser({
                 渠道
                 <Select
                   value={marketChannel}
+                  disabled={marketOrganizationId == null || marketPolicy == null || marketOrganizationLoading}
                   onValueChange={(value) => {
                     const next = value as PackageMarketChannel
+                    if (!marketPolicy?.channels[next].enabled) return
+                    const visibleIds = marketVisibleRuleIds[next] ?? []
+                    if (visibleIds.length === 0) return
+                    const currentPackageId = canonicalPackageMarketRuleId(marketSelectedPackage)
+                    const nextPackage = visibleIds.includes(currentPackageId)
+                      ? currentPackageId
+                      : visibleIds[0] ?? ''
                     setMarketChannel(next)
+                    setMarketSelectedPackage(nextPackage)
                     setMarketCiBranch('')
                     setMarketCiVersion('')
                     setMarketReleaseVersion('')
-                    void refreshMarketDetail({ channel: next, ciBranch: '', ciVersion: '', releaseVersion: '' })
+                    if (!nextPackage) {
+                      setMarketDetail(null)
+                      setMarketDetailContext(null)
+                      return
+                    }
+                    void refreshMarketDetail({
+                      channel: next,
+                      ciBranch: '',
+                      ciVersion: '',
+                      packageId: nextPackage,
+                      releaseVersion: '',
+                    })
                   }}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="release">正式包</SelectItem>
-                    {marketSelectedPackage !== 'base-oss' ? (
+                    {marketPolicy?.channels.release.enabled && marketVisibleRuleIds.release.length > 0 ? (
+                      <SelectItem value="release">正式包</SelectItem>
+                    ) : null}
+                    {marketPolicy?.channels.ci.enabled && marketVisibleRuleIds.ci.length > 0 ? (
                       <SelectItem value="ci">测试包</SelectItem>
                     ) : null}
                   </SelectContent>
@@ -1123,6 +1348,7 @@ export function PackageMarketBrowser({
                 架构
                 <Select
                   value={marketArch}
+                  disabled={marketOrganizationId == null || marketPolicy == null || marketOrganizationLoading}
                   onValueChange={(value) => {
                     const next = value as 'amd64' | 'arm64'
                     setMarketArch(next)
@@ -1214,7 +1440,11 @@ export function PackageMarketBrowser({
             </div>
             <div className="package-market-detail-area">
               {marketError ? <p className="form-error">{marketError}</p> : null}
-              {marketLoading ? (
+              {marketPolicy && !marketPolicy.enabled ? (
+                <p className="empty-state">当前组织已关闭安装包市场。</p>
+              ) : marketPolicy && !organizationPackageMarketPolicyHasVisibleChannel(marketPolicy, marketVisibleRuleIds) ? (
+                <p className="empty-state">当前组织没有开放可用的安装包。</p>
+              ) : marketLoading ? (
                 <p className="empty-state">正在读取 OSS 包信息...</p>
               ) : marketDetail ? (
                 <div className="package-market-link-list">
@@ -1241,11 +1471,14 @@ export function PackageMarketBrowser({
                                     marketDependencyDetails.map((item) => [item.rule.id, item.selectedVersion]),
                                   )
                                   selectedVersions[dependency.rule.id] = value
-                                    void refreshMarketDependencyDetails({
-                                      arch: marketArch,
-                                      expireMinutes: marketExpireMinutes,
-                                      includeAll: marketIncludeAll,
-                                      requestId: marketDetailRequestIdRef.current,
+                                  void refreshMarketDependencyDetails({
+                                    arch: marketArch,
+                                    expireMinutes: marketExpireMinutes,
+                                    includeAll: marketIncludeAll,
+                                    requestId: marketDetailRequestIdRef.current,
+                                    requestContext: marketOrganizationId == null
+                                      ? undefined
+                                      : { organizationId: marketOrganizationId },
                                     rules: selectedMarketDependencyRules,
                                     selectedVersions,
                                   })
@@ -1507,6 +1740,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [exportContent, setExportContent] = useState('')
   const [marketOpen, setMarketOpen] = useState(false)
   const [marketRules, setMarketRules] = useState<PackageMarketRule[]>([])
+  const [marketPolicy, setMarketPolicy] = useState<PackageMarketRulesResponse['policy'] | null>(null)
+  const [marketAvailabilityLoading, setMarketAvailabilityLoading] = useState(true)
+  const [marketVisibleRuleIds, setMarketVisibleRuleIds] = useState<PackageMarketRulesResponse['visibleRuleIds']>({
+    release: [],
+    ci: [],
+  })
   const [marketExpireMinutes, setMarketExpireMinutes] = useState(packageMarketExpireOptions[0].value)
   const [marketExpireMode, setMarketExpireMode] = useState<'delivery-end' | 'custom'>('delivery-end')
   const [marketExpireDays, setMarketExpireDays] = useState('1')
@@ -1553,6 +1792,40 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const todoPickerSearchRef = useRef<HTMLInputElement | null>(null)
   const todoPickerOptionsRef = useRef<HTMLDivElement | null>(null)
   const [todoPickerOptionsOverflowing, setTodoPickerOptionsOverflowing] = useState(false)
+  const projectMarketContext: PackageMarketRequestContext = { projectId: project.id }
+  const packageMarketRulesLoaderRef = useRef(onLoadPackageMarketRules)
+  const packageMarketSelectionAvailable = !marketAvailabilityLoading &&
+    marketPolicy != null &&
+    organizationPackageMarketPolicyHasVisibleChannel(marketPolicy, marketVisibleRuleIds)
+
+  useEffect(() => {
+    packageMarketRulesLoaderRef.current = onLoadPackageMarketRules
+  }, [onLoadPackageMarketRules])
+
+  useEffect(() => {
+    let cancelled = false
+    setMarketAvailabilityLoading(true)
+    setMarketPolicy(null)
+    setMarketVisibleRuleIds({ release: [], ci: [] })
+    void packageMarketRulesLoaderRef.current({ projectId: project.id })
+      .then((payload) => {
+        if (cancelled) return
+        setMarketPolicy(payload.policy)
+        setMarketVisibleRuleIds(payload.visibleRuleIds)
+        setMarketRules(payload.rules)
+        setMarketAvailabilityLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setMarketPolicy(null)
+        setMarketVisibleRuleIds({ release: [], ci: [] })
+        setMarketRules([])
+        setMarketAvailabilityLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
 
   const events = useMemo(() => timeline?.events ?? [], [timeline])
   const memberOptions = useMemo(() => {
@@ -1875,15 +2148,23 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
+    const visibleIds = new Set(marketVisibleRuleIds[marketChannel] ?? [])
     const baseRules: PackageMarketRule[] = [
-      ...getPackageMarketBaseRules(),
-      ...marketRules,
+      ...getPackageMarketBaseRules().filter((rule) => visibleIds.has(rule.id)),
+      ...marketRules.filter((rule) => {
+        if (rule.category === 'dependency') {
+          const dependencyChannel = packageMarketDependencyChannel(rule)
+          return dependencyChannel === marketChannel && visibleIds.has(canonicalPackageMarketRuleId(rule.parent))
+        }
+        const id = canonicalPackageMarketRuleId(rule.id)
+        return visibleIds.has(id)
+      }),
     ]
     return baseRules.filter((rule) => {
       if (!query) return true
       return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
     })
-  }, [marketRules, marketSearch])
+  }, [marketChannel, marketRules, marketSearch, marketVisibleRuleIds])
 
   const groupedMarketRules = useMemo(() => {
     const base = filteredRules.filter((rule) => rule.id === 'base-pro' || rule.id === 'base-oss')
@@ -1895,10 +2176,17 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     const middleware = filteredRules.filter((rule) => rule.category === 'middleware')
     return { apps, base, middleware }
   }, [filteredRules])
-  const selectedMarketDependencyRules = useMemo(
-    () => marketRules.filter((rule) => rule.category === 'dependency' && rule.parent === marketSelectedPackage),
-    [marketRules, marketSelectedPackage],
-  )
+  const selectedMarketDependencyRules = useMemo(() => {
+    if (!marketPolicy) return []
+    const selectedPackageId = canonicalPackageMarketRuleId(marketSelectedPackage)
+    return marketRules.filter((rule) => {
+      const dependencyChannel = packageMarketDependencyChannel(rule)
+      return rule.category === 'dependency' &&
+        dependencyChannel != null &&
+        canonicalPackageMarketRuleId(rule.parent) === selectedPackageId &&
+        isPackageMarketRuleVisible(rule, marketPolicy, dependencyChannel)
+    })
+  }, [marketPolicy, marketRules, marketSelectedPackage])
 
   async function copyToClipboard(value: string, feedbackKey: string) {
     if (!value) return
@@ -2000,8 +2288,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   async function loadMarketContext(requestId: number) {
     setMarketError('')
     try {
-      const rulesPayload = await onLoadPackageMarketRules()
+      const rulesPayload = await onLoadPackageMarketRules(projectMarketContext)
       if (requestId !== marketDetailRequestIdRef.current) return null
+      setMarketPolicy(rulesPayload.policy)
+      setMarketVisibleRuleIds(rulesPayload.visibleRuleIds)
       setMarketRules(rulesPayload.rules)
       const expireMinutes = getExpireMinutesUntil(eventDeliveryEndAt)
       const defaultDays = Math.floor(expireMinutes / (24 * 60))
@@ -2010,7 +2300,25 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       setMarketExpireDays(String(defaultDays))
       setMarketExpireHours(String(defaultHours))
       setMarketExpireMinutes(expireMinutes)
-      return { expireMinutes, rules: rulesPayload.rules }
+      const releaseIds = rulesPayload.visibleRuleIds.release
+      const ciIds = rulesPayload.visibleRuleIds.ci
+      const activeChannel: PackageMarketChannel = rulesPayload.policy.channels.release.enabled && releaseIds.length > 0
+        ? 'release'
+        : rulesPayload.policy.channels.ci.enabled && ciIds.length > 0 ? 'ci' : 'release'
+      const packageId = rulesPayload.visibleRuleIds[activeChannel][0] ?? ''
+      setMarketChannel(activeChannel)
+      setMarketSelectedPackage(packageId)
+      setMarketReleaseVersion('')
+      setMarketCiBranch('')
+      setMarketCiVersion('')
+      return {
+        channel: activeChannel,
+        enabled: rulesPayload.policy.enabled,
+        expireMinutes,
+        packageId,
+        rules: rulesPayload.rules,
+        visibleRuleIds: rulesPayload.visibleRuleIds,
+      }
     } catch (error) {
       if (requestId !== marketDetailRequestIdRef.current) return null
       setMarketError(error instanceof Error ? error.message : '包市场读取失败')
@@ -2023,10 +2331,19 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     expireMinutes: number
     includeAll: boolean
     requestId: number
+    requestContext?: PackageMarketRequestContext
     rules: PackageMarketRule[]
     selectedVersions?: Record<string, string>
   }) {
-    const { arch, expireMinutes, includeAll, requestId, rules, selectedVersions = {} } = params
+    const {
+      arch,
+      expireMinutes,
+      includeAll,
+      requestContext,
+      requestId,
+      rules,
+      selectedVersions = {},
+    } = params
     if (rules.length === 0) {
       setMarketDependencyDetails([])
       return
@@ -2050,6 +2367,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           kind: dependencyChannel,
           includeAll,
           packageId: rule.id,
+          context: requestContext,
         })
         const selectedVersion =
           selectedVersions[rule.id] ||
@@ -2063,6 +2381,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           includeAll,
           ciVersion: dependencyChannel === 'ci' ? selectedVersion : '',
           releaseVersion: dependencyChannel === 'release' ? selectedVersion : '',
+          context: requestContext,
         })
         return {
           context: {
@@ -2105,6 +2424,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     expireMinutes: number
     includeAll: boolean
     marketRules: PackageMarketRule[]
+    visibleRuleIds?: PackageMarketRulesResponse['visibleRuleIds']
+    requestContext: PackageMarketRequestContext
     packageId: string
     releaseVersion: string
     dependencyVersions: Record<string, string>
@@ -2118,6 +2439,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     const expireMinutes = nextOverrides?.expireMinutes ?? marketExpireMinutes
     const includeAll = nextOverrides?.includeAll ?? marketIncludeAll
     const rules = nextOverrides?.marketRules ?? marketRules
+    const visibleRuleIds = nextOverrides?.visibleRuleIds ?? marketVisibleRuleIds
+    const requestContext = nextOverrides?.requestContext ?? projectMarketContext
     const requestId = ++marketDetailRequestIdRef.current
     setMarketLoading(true)
     setMarketError('')
@@ -2126,7 +2449,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setMarketDependencyDetails([])
     try {
       const ciBranches = channel === 'ci'
-        ? await onLoadPackageMarketCiBranches(packageId)
+        ? await onLoadPackageMarketCiBranches(packageId, requestContext)
         : []
       if (requestId !== marketDetailRequestIdRef.current) return
       const ciBranch = requestedCiBranch && ciBranches.some((item) => item.name === requestedCiBranch)
@@ -2148,6 +2471,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               kind: 'ci',
               includeAll,
               packageId,
+              context: requestContext,
             })
           : onLoadPackageMarketVersions({
               arch,
@@ -2155,6 +2479,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               deployType: packageId === 'base-oss' ? 'oss' : packageId === 'base-pro' ? 'pro' : undefined,
               includeAll,
               packageId,
+              context: requestContext,
             }),
         onLoadPackageMarketDetail({
           packageId,
@@ -2166,6 +2491,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           includeAll,
           releaseVersion,
           ciVersion,
+          context: requestContext,
         }),
       ])
       if (requestId !== marketDetailRequestIdRef.current) return
@@ -2180,13 +2506,19 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       }
       setMarketDetail(detail)
       setMarketDetailContext(context)
-      const dependencyRules =
-        rules.filter((rule) => rule.category === 'dependency' && rule.parent === packageId)
+      const dependencyRules = rules.filter((rule) => {
+        const dependencyChannel = packageMarketDependencyChannel(rule)
+        return rule.category === 'dependency' &&
+          dependencyChannel != null &&
+          canonicalPackageMarketRuleId(rule.parent) === canonicalPackageMarketRuleId(packageId) &&
+          visibleRuleIds[dependencyChannel].includes(canonicalPackageMarketRuleId(rule.parent))
+      })
       void refreshMarketDependencyDetails({
         arch,
         expireMinutes,
         includeAll,
         requestId,
+        requestContext,
         rules: dependencyRules,
         selectedVersions: nextOverrides?.dependencyVersions,
       })
@@ -2237,6 +2569,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }
 
   function openPackageMarket() {
+    if (!packageMarketSelectionAvailable) return
     const openRequestId = ++marketDetailRequestIdRef.current
     setMarketDetail(null)
     setMarketDetailContext(null)
@@ -2249,9 +2582,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         setMarketLoading(false)
         return
       }
+      if (!context.packageId || !context.enabled) {
+        setMarketLoading(false)
+        return
+      }
       void refreshMarketDetail({
+        channel: context.channel,
         expireMinutes: context.expireMinutes,
         marketRules: context.rules,
+        visibleRuleIds: context.visibleRuleIds,
+        packageId: context.packageId,
       })
       })
   }
@@ -2866,9 +3206,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <h4>安装包</h4>
                   <p>{cartItems.length > 0 ? `已选择 ${cartItems.length} 个安装包文件` : '当前事件不包含安装包'}</p>
                 </div>
-                <Button className="solid-button" type="button" onClick={openPackageMarket}>
-                  <ShoppingCartSimple size={16} /> 从安装包市场选择
-                </Button>
+                {packageMarketSelectionAvailable ? (
+                  <Button className="solid-button" type="button" onClick={openPackageMarket}>
+                    <ShoppingCartSimple size={16} /> 从安装包市场选择
+                  </Button>
+                ) : null}
               </div>
               {cartItems.length > 0 ? (
                 <div className="event-wizard-package-list">
@@ -4114,23 +4456,44 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <div className="package-market-controls">
                 <Label>
                   渠道
-                  <Select
-                    value={marketChannel}
-                    onValueChange={(value) => {
+                <Select
+                  value={marketChannel}
+                  onValueChange={(value) => {
                       const next = value as PackageMarketChannel
+                      if (!marketPolicy?.channels[next].enabled) return
+                      const visibleIds = marketVisibleRuleIds[next] ?? []
+                      if (visibleIds.length === 0) return
+                      const currentPackageId = canonicalPackageMarketRuleId(marketSelectedPackage)
+                      const nextPackage = visibleIds.includes(currentPackageId)
+                        ? currentPackageId
+                        : visibleIds[0] ?? ''
                       setMarketChannel(next)
+                      setMarketSelectedPackage(nextPackage)
                       setMarketCiBranch('')
                       setMarketCiVersion('')
                       setMarketReleaseVersion('')
-                      void refreshMarketDetail({ channel: next, ciBranch: '', ciVersion: '', releaseVersion: '' })
+                      if (!nextPackage) {
+                        setMarketDetail(null)
+                        setMarketDetailContext(null)
+                        return
+                      }
+                      void refreshMarketDetail({
+                        channel: next,
+                        ciBranch: '',
+                        ciVersion: '',
+                        packageId: nextPackage,
+                        releaseVersion: '',
+                      })
                     }}
                   >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="release">正式包</SelectItem>
-                      {marketSelectedPackage !== 'base-oss' ? (
+                      {marketPolicy?.channels.release.enabled && marketVisibleRuleIds.release.length > 0 ? (
+                        <SelectItem value="release">正式包</SelectItem>
+                      ) : null}
+                      {marketPolicy?.channels.ci.enabled && marketVisibleRuleIds.ci.length > 0 ? (
                         <SelectItem value="ci">测试包</SelectItem>
                       ) : null}
                     </SelectContent>
@@ -4138,9 +4501,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </Label>
                 <Label>
                   架构
-                  <Select
-                    value={marketArch}
-                    onValueChange={(value) => {
+                <Select
+                  value={marketArch}
+                  onValueChange={(value) => {
                       const next = value as 'amd64' | 'arm64'
                       setMarketArch(next)
                       setMarketCiBranch('')
@@ -4231,7 +4594,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </div>
               <div className="package-market-detail-area">
                 {marketError ? <p className="form-error">{marketError}</p> : null}
-                {marketLoading ? (
+                {marketPolicy && !marketPolicy.enabled ? (
+                  <p className="empty-state">当前组织已关闭安装包市场。</p>
+                ) : marketPolicy && !organizationPackageMarketPolicyHasVisibleChannel(marketPolicy, marketVisibleRuleIds) ? (
+                  <p className="empty-state">当前组织没有开放可用的安装包。</p>
+                ) : marketLoading ? (
                   <p className="empty-state">正在读取 OSS 包信息...</p>
                 ) : marketDetail ? (
                   <div className="package-market-link-list">
@@ -4263,9 +4630,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                       expireMinutes: marketExpireMinutes,
                                       includeAll: marketIncludeAll,
                                       requestId: marketDetailRequestIdRef.current,
+                                      requestContext: projectMarketContext,
                                       rules: selectedMarketDependencyRules,
                                       selectedVersions,
-                                    })
+                                  })
                                   }}
                                 >
                                   <SelectTrigger>

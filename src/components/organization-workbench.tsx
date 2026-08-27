@@ -30,6 +30,7 @@ import {
   createOrganization,
   deleteOrganization,
   fetchOrganization,
+  fetchOrganizationPackageMarketCatalog,
   fetchOrganizations,
   fetchWeeklyReportCollection,
   generateOrganizationWeeklySummary,
@@ -40,6 +41,7 @@ import {
   remindWeeklyReportMembers,
   saveOrganizationWeeklyReport,
   updateOrganization,
+  updateOrganizationPackageMarketPolicy,
   updateOrganizationWeeklyReportRules,
   updateOrganizationMemberRole,
   updateOrganizationProjectGovernance,
@@ -57,9 +59,15 @@ import type {
   OrganizationProjectMilestoneStatus,
   OrganizationProjectStatus,
   OrganizationTask,
+  OrganizationPackageMarketCatalogRule,
   WeeklyReportCollection,
   WeeklyReportRules,
 } from '../organization-types'
+import type {
+  OrganizationPackageMarketChannel,
+  OrganizationPackageMarketPolicy,
+} from '../../shared/organization-package-market'
+import { organizationPackageMarketPolicyHasVisibleChannel } from '../../shared/organization-package-market'
 import {
   defaultWeeklyReportRules,
   getShanghaiDateTime,
@@ -127,6 +135,21 @@ const weeklyReportDayOptions = Array.from({ length: 7 }, (_, index) => ({
   label: `第 ${index + 1} 天`,
   value: String(index + 1),
 }))
+
+function clonePackageMarketPolicy(policy: OrganizationPackageMarketPolicy): OrganizationPackageMarketPolicy {
+  return {
+    enabled: policy.enabled,
+    revision: policy.revision,
+    channels: {
+      release: { ...policy.channels.release, ruleIds: [...policy.channels.release.ruleIds] },
+      ci: { ...policy.channels.ci, ruleIds: [...policy.channels.ci.ruleIds] },
+    },
+  }
+}
+
+function packageMarketPolicyHasVisibleChannel(policy: OrganizationPackageMarketPolicy) {
+  return organizationPackageMarketPolicyHasVisibleChannel(policy)
+}
 
 const taskKindLabel: Record<OrganizationTask['kind'], string> = {
   bug: 'Bug',
@@ -267,7 +290,15 @@ function buildOrganizationInviteUrl(token: string) {
   return url.toString()
 }
 
-export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { currentUser: AuthUser; refreshToken?: number }) {
+export function OrganizationWorkbench({
+  currentUser,
+  onPackageMarketVisibilityChange,
+  refreshToken = 0,
+}: {
+  currentUser: AuthUser
+  onPackageMarketVisibilityChange?: (organizationId: number, enabled: boolean) => void
+  refreshToken?: number
+}) {
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(0)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
@@ -278,6 +309,10 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [organizationSettingsError, setOrganizationSettingsError] = useState('')
+  const [packageMarketCatalog, setPackageMarketCatalog] = useState<OrganizationPackageMarketCatalogRule[]>([])
+  const [packageMarketPolicyDraft, setPackageMarketPolicyDraft] = useState<OrganizationPackageMarketPolicy | null>(null)
+  const [packageMarketCatalogLoading, setPackageMarketCatalogLoading] = useState(false)
+  const [packageMarketPolicySaving, setPackageMarketPolicySaving] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -373,6 +408,36 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
   }, [detail?.id, detail?.name])
 
   useEffect(() => {
+    if (!detail) {
+      setPackageMarketCatalog([])
+      setPackageMarketPolicyDraft(null)
+      return
+    }
+    setPackageMarketPolicyDraft(clonePackageMarketPolicy(detail.packageMarketPolicy))
+  }, [detail])
+
+  useEffect(() => {
+    if (!settingsOpen || !detail) return
+    let active = true
+    setPackageMarketCatalogLoading(true)
+    fetchOrganizationPackageMarketCatalog(detail.id)
+      .then((result) => {
+        if (!active) return
+        setPackageMarketCatalog(result.rules)
+        setPackageMarketPolicyDraft(clonePackageMarketPolicy(result.policy))
+      })
+      .catch((catalogError) => {
+        if (active) setOrganizationSettingsError(errorMessage(catalogError))
+      })
+      .finally(() => {
+        if (active) setPackageMarketCatalogLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [detail, settingsOpen])
+
+  useEffect(() => {
     if (detail) {
       setWeeklyRulesDraft(detail.weeklyReportRules)
       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
@@ -436,6 +501,58 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
       setOrganizationSettingsError(errorMessage(renameError))
     } finally {
       setBusy(false)
+    }
+  }
+
+  function updatePackageMarketChannel(
+    channel: OrganizationPackageMarketChannel,
+    patch: Partial<OrganizationPackageMarketPolicy['channels'][OrganizationPackageMarketChannel]>,
+  ) {
+    setPackageMarketPolicyDraft((current) => current ? {
+      ...current,
+      channels: {
+        ...current.channels,
+        [channel]: { ...current.channels[channel], ...patch },
+      },
+    } : current)
+  }
+
+  function togglePackageMarketRule(channel: OrganizationPackageMarketChannel, ruleId: string) {
+    const current = packageMarketPolicyDraft?.channels[channel]
+    if (!current) return
+    const ruleIds = current.ruleIds.includes(ruleId)
+      ? current.ruleIds.filter((id) => id !== ruleId)
+      : [...current.ruleIds, ruleId]
+    updatePackageMarketChannel(channel, { ruleIds })
+  }
+
+  async function submitPackageMarketPolicy() {
+    if (!detail || !packageMarketPolicyDraft) return
+    setPackageMarketPolicySaving(true)
+    setOrganizationSettingsError('')
+    try {
+      const nextDetail = await updateOrganizationPackageMarketPolicy(detail.id, {
+        featureEnabled: packageMarketPolicyDraft.enabled,
+        revision: packageMarketPolicyDraft.revision,
+        channels: packageMarketPolicyDraft.channels,
+      })
+      setDetail(nextDetail)
+      setOrganizations((current) => current.map((organization) => (
+        organization.id === nextDetail.id
+          ? {
+              ...organization,
+              packageMarketEnabled: packageMarketPolicyHasVisibleChannel(nextDetail.packageMarketPolicy),
+            }
+          : organization
+      )))
+      onPackageMarketVisibilityChange?.(
+        nextDetail.id,
+        packageMarketPolicyHasVisibleChannel(nextDetail.packageMarketPolicy),
+      )
+    } catch (policyError) {
+      setOrganizationSettingsError(errorMessage(policyError))
+    } finally {
+      setPackageMarketPolicySaving(false)
     }
   }
 
@@ -698,7 +815,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
               <DialogContent className="organization-settings-dialog">
                 <DialogHeader>
                   <DialogTitle>组织设置</DialogTitle>
-                  <DialogDescription>修改当前组织的名称，或处理不可逆的组织删除操作。</DialogDescription>
+                  <DialogDescription>配置组织可见的安装包市场和组织名称，或处理不可逆的组织删除操作。</DialogDescription>
                 </DialogHeader>
                 {organizationSettingsError ? (
                   <div className="organization-error" role="alert">{organizationSettingsError}</div>
@@ -722,6 +839,99 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
                     </Button>
                   </div>
                 </form>
+                <section className="organization-package-market-settings" aria-labelledby="organization-package-market-title">
+                  <div className="organization-settings-section-heading">
+                    <div>
+                      <strong id="organization-package-market-title">安装包市场</strong>
+                      <span>控制组织成员能看到的包和渠道。关闭总开关后，该组织不会出现在全局市场上下文和项目选择器中。</span>
+                    </div>
+                    <label className="organization-checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={packageMarketPolicyDraft?.enabled ?? false}
+                        disabled={packageMarketCatalogLoading || packageMarketPolicySaving}
+                        onChange={(event) => setPackageMarketPolicyDraft((current) => current ? {
+                          ...current,
+                          enabled: event.target.checked,
+                        } : current)}
+                      />
+                      <span>启用市场</span>
+                    </label>
+                  </div>
+                  {packageMarketCatalogLoading ? (
+                    <p className="organization-settings-hint">正在读取可配置安装包...</p>
+                  ) : packageMarketPolicyDraft ? (
+                    <div className="organization-package-market-channels">
+                      {(['release', 'ci'] as const).map((channel) => {
+                        const channelPolicy = packageMarketPolicyDraft.channels[channel]
+                        const channelLabel = channel === 'ci' ? '测试包（CI）' : '正式包（Release）'
+                        const selectableRules = packageMarketCatalog.filter((rule) => (
+                          rule.selectable && (channel === 'release' || rule.ciSupported)
+                        ))
+                        return (
+                          <div className="organization-package-market-channel" key={channel}>
+                            <div className="organization-package-market-channel-head">
+                              <label className="organization-checkbox-row">
+                                <input
+                                  type="checkbox"
+                                  checked={channelPolicy.enabled}
+                                  disabled={packageMarketPolicySaving}
+                                  onChange={(event) => updatePackageMarketChannel(channel, {
+                                    enabled: event.target.checked,
+                                  })}
+                                />
+                                <strong>{channelLabel}</strong>
+                              </label>
+                              <Select
+                                value={channelPolicy.mode}
+                                onValueChange={(value) => updatePackageMarketChannel(channel, {
+                                  mode: value as 'all' | 'selected',
+                                })}
+                                disabled={packageMarketPolicySaving || !channelPolicy.enabled}
+                              >
+                                <SelectTrigger className="organization-package-market-mode">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">显示全部安装包</SelectItem>
+                                  <SelectItem value="selected">仅显示指定安装包</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {channelPolicy.mode === 'selected' ? (
+                              <div className="organization-package-market-rule-grid">
+                                {selectableRules.length === 0 ? (
+                                  <span className="organization-settings-hint">当前没有可选择的安装包。</span>
+                                ) : selectableRules.map((rule) => (
+                                  <label className="organization-checkbox-row" key={`${channel}-${rule.canonicalId}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={channelPolicy.ruleIds.includes(rule.canonicalId)}
+                                      disabled={packageMarketPolicySaving || !channelPolicy.enabled}
+                                      onChange={() => togglePackageMarketRule(channel, rule.canonicalId)}
+                                    />
+                                    <span>{rule.name}<small>{rule.canonicalId}</small></span>
+                                  </label>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                  <div className="organization-package-market-actions">
+                    <Button
+                      className="organization-settings-action"
+                      disabled={!packageMarketPolicyDraft || packageMarketCatalogLoading || packageMarketPolicySaving}
+                      size="lg"
+                      type="button"
+                      onClick={() => void submitPackageMarketPolicy()}
+                    >
+                      {packageMarketPolicySaving ? '保存中...' : '保存市场设置'}
+                    </Button>
+                  </div>
+                </section>
                 <section className="organization-danger-zone" aria-labelledby="organization-danger-title">
                   <div>
                     <strong id="organization-danger-title">删除组织</strong>

@@ -33,6 +33,21 @@ import {
   type ProjectTransferStatus,
 } from './organization-cards.ts'
 import { formatShanghaiCalendarDate } from '../shared/calendar-date.ts'
+import {
+  canonicalPackageMarketRuleId,
+  isSelectablePackageMarketRule,
+  isPackageMarketRuleVisible,
+  packageMarketRuleSupportsChannel,
+  type OrganizationPackageMarketChannel,
+} from '../shared/organization-package-market.ts'
+import {
+  getOrganizationPackageMarketPolicy,
+  OrganizationPackageMarketPolicyError,
+  normalizePackageMarketPolicyInput,
+  saveOrganizationPackageMarketPolicy,
+  validatePackageMarketPolicyInput,
+} from './organization-package-market.ts'
+import { listPackageMarketRules } from './package-market.ts'
 
 type OrganizationRouterDependencies = {
   generateWeeklySummary: (userId: number, source: string) => Promise<{
@@ -381,7 +396,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
   const canManage = canManageOrganization(membership.access_role, assignedRoles)
   const canManageProjects = canManageOrganizationProjects(membership.access_role, assignedRoles)
   const canManageWeeklyReports = canManageOrganizationWeeklyReports(membership.access_role, assignedRoles)
-  const [organization, members, projects, projectMemberships, milestones, testSpaces, todos, packageEvents, bugs, reports, summaries, invitations, attachableProjects, attachableTestSpaces] = await Promise.all([
+  const [organization, members, projects, projectMemberships, milestones, testSpaces, todos, packageEvents, bugs, reports, summaries, invitations, attachableProjects, attachableTestSpaces, packageMarketPolicy] = await Promise.all([
     query<{
       created_at: Date
       id: string
@@ -685,6 +700,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
        where owner_user_id = $1 and organization_id is null order by updated_at desc`,
       [userId],
     ),
+    getOrganizationPackageMarketPolicy(organizationId),
   ])
   const row = organization.rows[0]
   if (!row) return null
@@ -839,6 +855,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     })),
     name: decryptText(row.name),
     ownerUserId: Number(row.owner_user_id),
+    packageMarketPolicy,
     projects: projects.rows.map((project) => ({
       healthNote: project.health_note_encrypted ? decryptText(project.health_note_encrypted) : '',
       healthStatus: normalizeOrganizationProjectHealthStatus(project.health_status) ?? 'on_track',
@@ -903,15 +920,53 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       id: string
       member_count: string
       name: string
+      package_market_enabled: boolean | null
     }>(
       `
       select o.id, o.name, mine.access_role,
-        count(m.user_id) filter (where m.status = 'active') as member_count
+        count(m.user_id) filter (where m.status = 'active') as member_count,
+        (
+          coalesce(feature.enabled, true)
+          and (
+            (
+              coalesce(release_channel.enabled, true)
+              and (
+                coalesce(release_channel.mode, 'all') = 'all'
+                or exists (
+                  select 1
+                  from organization_package_market_selections release_selection
+                  where release_selection.organization_id = o.id
+                    and release_selection.channel = 'release'
+                )
+              )
+            )
+            or (
+              coalesce(ci_channel.enabled, true)
+              and (
+                coalesce(ci_channel.mode, 'all') = 'all'
+                or exists (
+                  select 1
+                  from organization_package_market_selections ci_selection
+                  where ci_selection.organization_id = o.id
+                    and ci_selection.channel = 'ci'
+                )
+              )
+            )
+          )
+        ) as package_market_enabled
       from organization_memberships mine
       join organizations o on o.id = mine.organization_id
       left join organization_memberships m on m.organization_id = o.id
+      left join organization_feature_settings feature
+        on feature.organization_id = o.id and feature.feature_key = 'package_market'
+      left join organization_package_market_channel_policies release_channel
+        on release_channel.organization_id = o.id and release_channel.channel = 'release'
+      left join organization_package_market_channel_policies ci_channel
+        on ci_channel.organization_id = o.id and ci_channel.channel = 'ci'
       where mine.user_id = $1 and mine.status = 'active'
-      group by o.id, mine.access_role
+      group by o.id, mine.access_role, feature.enabled,
+        release_channel.enabled, release_channel.mode,
+        ci_channel.enabled, ci_channel.mode
       order by lower(o.name), o.id
       `,
       [session.userId],
@@ -921,6 +976,7 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       id: Number(organization.id),
       memberCount: Number(organization.member_count),
       name: decryptText(organization.name),
+      packageMarketEnabled: organization.package_market_enabled !== false,
     })).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     response.json({
       canCreate: isSystemAdmin(session.username),
@@ -987,6 +1043,87 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       return
     }
     const detail = await getOrganizationDetail(organizationId, session.userId)
+    if (!detail) {
+      response.status(404).json({ error: 'Organization not found' })
+      return
+    }
+    response.json(detail)
+  }))
+
+  router.get('/organizations/:organizationId/package-market/catalog', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    if (!(await requireOrganizationAdmin(response, organizationId, session.userId))) return
+    const policy = await getOrganizationPackageMarketPolicy(organizationId!)
+    const rules = await listPackageMarketRules()
+    response.json({
+      policy,
+      rules: rules.map((rule) => ({
+        ...rule,
+        canonicalId: canonicalPackageMarketRuleId(rule.id),
+        ciVisible: isPackageMarketRuleVisible(rule, policy, 'ci' as OrganizationPackageMarketChannel),
+        ciSupported: packageMarketRuleSupportsChannel(canonicalPackageMarketRuleId(rule.id), 'ci'),
+        releaseVisible: isPackageMarketRuleVisible(rule, policy, 'release' as OrganizationPackageMarketChannel),
+        selectable: isSelectablePackageMarketRule(rule),
+      })),
+    })
+  }))
+
+  router.put('/organizations/:organizationId/package-market/policy', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    if (!(await requireOrganizationAdmin(response, organizationId, session.userId))) return
+    const input = normalizePackageMarketPolicyInput(request.body)
+    const rules = await listPackageMarketRules()
+    try {
+      validatePackageMarketPolicyInput(input, rules)
+    } catch (error) {
+      if (error instanceof OrganizationPackageMarketPolicyError) {
+        response.status(error.status).json({ error: error.message, code: error.code })
+        return
+      }
+      throw error
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const organization = await lockManagedOrganization(client, organizationId!, session.userId)
+      if (!organization) {
+        await client.query('rollback')
+        response.status(409).json({ error: '组织权限已变化，请刷新后重试' })
+        return
+      }
+      const currentPolicy = await getOrganizationPackageMarketPolicy(organizationId!, client)
+      const savedPolicy = await saveOrganizationPackageMarketPolicy({
+        client,
+        input: input!,
+        organizationId: organizationId!,
+        updatedByUserId: session.userId,
+      })
+      await writeAudit(
+        client,
+        organizationId!,
+        session.userId,
+        'organization.package_market_policy_changed',
+        'organization_feature',
+        'package_market',
+        JSON.stringify({ from: currentPolicy, to: savedPolicy }),
+      )
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      if (error instanceof OrganizationPackageMarketPolicyError) {
+        response.status(error.status).json({ error: error.message, code: error.code })
+        return
+      }
+      throw error
+    } finally {
+      client.release()
+    }
+    const detail = await getOrganizationDetail(organizationId!, session.userId)
     if (!detail) {
       response.status(404).json({ error: 'Organization not found' })
       return

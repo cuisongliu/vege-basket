@@ -133,6 +133,35 @@ alter table organizations
   add column if not exists weekly_report_close_day smallint not null default 1,
   add column if not exists weekly_report_close_time time not null default '23:59';
 
+create table if not exists organization_feature_settings (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  feature_key text not null,
+  enabled boolean not null default true,
+  config jsonb not null default '{}'::jsonb check (jsonb_typeof(config) = 'object'),
+  revision integer not null default 0 check (revision >= 0),
+  updated_by_user_id bigint references users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (organization_id, feature_key)
+);
+
+create table if not exists organization_package_market_channel_policies (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  channel text not null check (channel in ('release', 'ci')),
+  enabled boolean not null default true,
+  mode text not null default 'all' check (mode in ('all', 'selected')),
+  updated_by_user_id bigint references users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (organization_id, channel)
+);
+
+create table if not exists organization_package_market_selections (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  channel text not null check (channel in ('release', 'ci')),
+  rule_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (organization_id, channel, rule_id)
+);
+
 do $$
 begin
   if not exists (
@@ -1969,6 +1998,8 @@ create index if not exists idx_organization_weekly_reports_lookup
   on organization_weekly_reports(organization_id, week_start, status);
 create index if not exists idx_organization_audit_events_lookup
   on organization_audit_events(organization_id, created_at desc);
+create index if not exists idx_organization_package_market_selections_lookup
+  on organization_package_market_selections(organization_id, channel, rule_id);
 create index if not exists idx_project_memberships_project_id on project_memberships(project_id);
 create index if not exists idx_project_memberships_owner_user_id on project_memberships(owner_user_id);
 create index if not exists idx_project_memberships_invited_user_id on project_memberships(invited_user_id);

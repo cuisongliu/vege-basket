@@ -1464,6 +1464,93 @@
   line-height: 1;
 }
 
+.organization-package-market-settings {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.organization-settings-section-heading,
+.organization-package-market-channel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.organization-settings-section-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.organization-settings-section-heading strong {
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.organization-settings-section-heading span,
+.organization-settings-hint {
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.organization-checkbox-row {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--strong);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.organization-checkbox-row input {
+  accent-color: var(--brand);
+  margin-top: 2px;
+}
+
+.organization-checkbox-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.organization-checkbox-row small {
+  color: var(--muted-text);
+  font-size: 10px;
+}
+
+.organization-package-market-channels {
+  display: grid;
+  gap: 10px;
+}
+
+.organization-package-market-channel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 11px 12px;
+}
+
+.organization-package-market-mode {
+  width: 170px;
+}
+
+.organization-package-market-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.organization-package-market-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .organization-danger-zone {
   display: flex;
   align-items: center;
@@ -1700,6 +1787,20 @@
   }
 
   .organization-settings-name-row {
+    grid-template-columns: 1fr;
+  }
+
+  .organization-settings-section-heading,
+  .organization-package-market-channel-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .organization-package-market-mode {
+    width: 100%;
+  }
+
+  .organization-package-market-rule-grid {
     grid-template-columns: 1fr;
   }
 

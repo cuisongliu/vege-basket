@@ -47,8 +47,13 @@ import {
 import { parseAiTurnRunResponse } from '../shared/ai-conversation-wire'
 import type { UserAccountStatus } from '../shared/user-lifecycle'
 import type {
+  OrganizationPackageMarketChannelPolicy,
+  OrganizationPackageMarketPolicy,
+} from '../shared/organization-package-market'
+import type {
   OrganizationAccessRole,
   OrganizationDetail,
+  OrganizationPackageMarketCatalogRule,
   OrganizationListItem,
   OrganizationProjectHealthStatus,
   OrganizationProjectMilestoneStatus,
@@ -85,7 +90,15 @@ export type NotificationResponse = {
 
 export type PackageMarketRulesResponse = {
   expireMinutes: number
+  organizationId: number | null
+  policy: OrganizationPackageMarketPolicy
   rules: PackageMarketRule[]
+  visibleRuleIds: Record<'release' | 'ci', string[]>
+}
+
+export type PackageMarketRequestContext = {
+  organizationId?: number
+  projectId?: number
 }
 
 export type ChangelogResponse = {
@@ -546,6 +559,27 @@ export function updateManagedUserRoles(userId: number, roles: UserRole[]) {
 
 export function fetchOrganizations() {
   return request<{ canCreate: boolean; organizations: OrganizationListItem[] }>('/api/organizations')
+}
+
+export function fetchOrganizationPackageMarketCatalog(organizationId: number) {
+  return request<{
+    policy: OrganizationPackageMarketPolicy
+    rules: OrganizationPackageMarketCatalogRule[]
+  }>(`/api/organizations/${organizationId}/package-market/catalog`)
+}
+
+export function updateOrganizationPackageMarketPolicy(
+  organizationId: number,
+  payload: {
+    channels: Record<'release' | 'ci', OrganizationPackageMarketChannelPolicy>
+    featureEnabled: boolean
+    revision: number
+  },
+) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/package-market/policy`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function createOrganization(payload: { name: string; ownerUsername?: string }) {
@@ -1554,8 +1588,16 @@ export function fetchProjectPackageItemDownloadUrl(
   )
 }
 
-export function fetchPackageMarketRules() {
-  return request<PackageMarketRulesResponse>('/api/package-market/rules')
+function appendPackageMarketContext(params: URLSearchParams, context?: PackageMarketRequestContext) {
+  if (context?.organizationId != null) params.set('organizationId', String(context.organizationId))
+  if (context?.projectId != null) params.set('projectId', String(context.projectId))
+}
+
+export function fetchPackageMarketRules(context?: PackageMarketRequestContext) {
+  const params = new URLSearchParams()
+  appendPackageMarketContext(params, context)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return request<PackageMarketRulesResponse>(`/api/package-market/rules${suffix}`)
 }
 
 export function fetchPackageMarketBaseDetail(payload: {
@@ -1567,6 +1609,7 @@ export function fetchPackageMarketBaseDetail(payload: {
   expireMinutes?: number
   includeAll?: boolean
   releaseVersion?: string
+  context?: PackageMarketRequestContext
 }) {
   const params = new URLSearchParams({
     arch: payload.arch,
@@ -1578,6 +1621,7 @@ export function fetchPackageMarketBaseDetail(payload: {
   if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
   if (payload.includeAll) params.set('includeAll', 'true')
   if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
+  appendPackageMarketContext(params, payload.context)
   return request<PackageMarketDetail>(`/api/package-market/packages/base?${params.toString()}`)
 }
 
@@ -1585,12 +1629,14 @@ export function fetchPackageMarketBaseReleaseVersions(payload: {
   arch: string
   deployType: 'pro' | 'oss'
   includeAll?: boolean
+  context?: PackageMarketRequestContext
 }) {
   const params = new URLSearchParams({
     arch: payload.arch,
     deployType: payload.deployType,
   })
   if (payload.includeAll) params.set('includeAll', 'true')
+  appendPackageMarketContext(params, payload.context)
   return request<{ versions: PackageMarketVersion[] }>(
     `/api/package-market/packages/base/release-versions?${params.toString()}`,
   )
@@ -1606,6 +1652,7 @@ export function fetchPackageMarketDetail(payload: {
   includeAll?: boolean
   packageId: string
   releaseVersion?: string
+  context?: PackageMarketRequestContext
 }) {
   const params = new URLSearchParams({
     arch: payload.arch,
@@ -1617,6 +1664,7 @@ export function fetchPackageMarketDetail(payload: {
   if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
   if (payload.includeAll) params.set('includeAll', 'true')
   if (payload.releaseVersion) params.set('releaseVersion', payload.releaseVersion)
+  appendPackageMarketContext(params, payload.context)
   return request<PackageMarketDetail>(
     `/api/package-market/packages/${encodeURIComponent(payload.packageId)}?${params.toString()}`,
   )
@@ -1627,18 +1675,26 @@ export function fetchPackageMarketReleaseVersions(payload: {
   deployType?: string
   includeAll?: boolean
   packageId: string
+  context?: PackageMarketRequestContext
 }) {
   const params = new URLSearchParams({ arch: payload.arch })
   if (payload.deployType) params.set('deployType', payload.deployType)
   if (payload.includeAll) params.set('includeAll', 'true')
+  appendPackageMarketContext(params, payload.context)
   return request<{ versions: PackageMarketVersion[] }>(
     `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/release-versions?${params.toString()}`,
   )
 }
 
-export function fetchPackageMarketCiBranches(payload: { packageId: string }) {
+export function fetchPackageMarketCiBranches(payload: {
+  packageId: string
+  context?: PackageMarketRequestContext
+}) {
+  const params = new URLSearchParams()
+  appendPackageMarketContext(params, payload.context)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
   return request<{ branches: PackageMarketCiBranch[] }>(
-    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-branches`,
+    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-branches${suffix}`,
   )
 }
 
@@ -1647,10 +1703,12 @@ export function fetchPackageMarketCiVersions(payload: {
   ciBranch?: string
   includeAll?: boolean
   packageId: string
+  context?: PackageMarketRequestContext
 }) {
   const params = new URLSearchParams({ arch: payload.arch })
   if (payload.ciBranch) params.set('ciBranch', payload.ciBranch)
   if (payload.includeAll) params.set('includeAll', 'true')
+  appendPackageMarketContext(params, payload.context)
   return request<{ versions: PackageMarketVersion[] }>(
     `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-versions?${params.toString()}`,
   )

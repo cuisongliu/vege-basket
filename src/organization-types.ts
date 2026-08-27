@@ -1,6 +1,8 @@
 import type { UserRole } from './api'
 import type { ProjectMembership } from './types'
+import type { PackageMarketRule } from './types'
 import type { WeeklyReportRules } from '../shared/weekly-report-availability'
+import type { OrganizationPackageMarketPolicy } from '../shared/organization-package-market'
 
 export type { WeeklyReportRules } from '../shared/weekly-report-availability'
 
@@ -14,6 +16,15 @@ export type OrganizationListItem = {
   id: number
   memberCount: number
   name: string
+  packageMarketEnabled: boolean
+}
+
+export type OrganizationPackageMarketCatalogRule = PackageMarketRule & {
+  canonicalId: string
+  ciSupported: boolean
+  ciVisible: boolean
+  releaseVisible: boolean
+  selectable: boolean
 }
 
 export type OrganizationMember = {
@@ -178,6 +189,7 @@ export type OrganizationDetail = {
   members: OrganizationMember[]
   name: string
   ownerUserId: number
+  packageMarketPolicy: OrganizationPackageMarketPolicy
   projects: OrganizationProject[]
   reports: OrganizationWeeklyReport[]
   summaries: OrganizationWeeklySummary[]

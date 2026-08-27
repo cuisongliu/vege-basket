@@ -3,6 +3,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as yaml from 'js-yaml'
+import {
+  canonicalPackageMarketRuleId,
+  packageMarketDependencyChannel,
+  packageMarketRuleSupportsChannel,
+} from '../shared/organization-package-market.ts'
 
 export type PackageMarketRule = {
   category: 'apps' | 'middleware' | 'dependency'
@@ -382,34 +387,60 @@ function ciObjectMatches(
   return matchesPackageMarketCiFileName(rule, fileName, hash, arch, includeAll)
 }
 
-function ruleAllowsObjectKey(rule: PackageMarketRule, objectKey: string) {
-  for (const root of rule.releaseRoots) {
-    if (!objectKey.startsWith(root)) continue
-    const [version, fileName, ...extra] = objectKey.slice(root.length).split('/')
-    if (!version || !fileName || extra.length > 0) continue
-    if (fileNameMatchesFormats(fileName, rule.fileNameFormats, normalizeVersion(version))) return true
-  }
+type PackageMarketObjectKeyChannel = 'release' | 'ci'
 
-  for (const root of rule.flatFileRoots) {
-    if (!objectKey.startsWith(root)) continue
-    const fileName = objectKey.slice(root.length)
-    if (fileName && !fileName.includes('/') && fileNameMatchesFormats(fileName, rule.fileNameFormats)) {
-      return true
+function objectKeyArch(fileName: string): 'amd64' | 'arm64' {
+  return /-arm64\.tar(?:\.gz)?$/u.test(fileName) ? 'arm64' : 'amd64'
+}
+
+function ruleAllowsObjectKey(
+  rule: PackageMarketRule,
+  objectKey: string,
+  channel: PackageMarketObjectKeyChannel | 'any' = 'any',
+  includeAll = false,
+) {
+  if (channel !== 'ci') {
+    for (const root of rule.releaseRoots) {
+      if (!objectKey.startsWith(root)) continue
+      const [version, fileName, ...extra] = objectKey.slice(root.length).split('/')
+      if (!version || !fileName || extra.length > 0) continue
+      const normalizedVersion = normalizeVersion(version)
+      const arch = objectKeyArch(fileName)
+      if (
+        fileNameMatchesFormats(fileName, rule.fileNameFormats, normalizedVersion) ||
+        (includeAll && matchesPackageMarketReleaseFileName(rule, fileName, normalizedVersion, arch, true))
+      ) {
+        return true
+      }
+    }
+
+    for (const root of rule.flatFileRoots) {
+      if (!objectKey.startsWith(root)) continue
+      const fileName = objectKey.slice(root.length)
+      if (fileName && !fileName.includes('/') && fileNameMatchesFormats(fileName, rule.fileNameFormats)) {
+        return true
+      }
     }
   }
 
-  for (const root of ciBaseRootsForRule(rule)) {
-    if (!objectKey.startsWith(root)) continue
-    const [branch, hash, fileName, ...extra] = objectKey.slice(root.length).split('/')
-    const formats = rule.ciFileNameFormats.length > 0 ? rule.ciFileNameFormats : rule.fileNameFormats
-    if (
-      isValidCiBranch(branch) &&
-      hash &&
-      fileName &&
-      extra.length === 0 &&
-      fileNameMatchesFormats(fileName, formats, hash)
-    ) {
-      return true
+  if (channel !== 'release') {
+    for (const root of ciBaseRootsForRule(rule)) {
+      if (!objectKey.startsWith(root)) continue
+      const [branch, hash, fileName, ...extra] = objectKey.slice(root.length).split('/')
+      const formats = rule.ciFileNameFormats.length > 0 ? rule.ciFileNameFormats : rule.fileNameFormats
+      const arch = objectKeyArch(fileName)
+      if (
+        isValidCiBranch(branch) &&
+        hash &&
+        fileName &&
+        extra.length === 0 &&
+        (
+          fileNameMatchesFormats(fileName, formats, hash) ||
+          (includeAll && matchesPackageMarketCiFileName(rule, fileName, hash, arch, true))
+        )
+      ) {
+        return true
+      }
     }
   }
   return false
@@ -447,11 +478,11 @@ function cacheClusterPackageAllowsObjectKey(objectKey: string) {
   }
 
   const ciMatch = objectKey.match(
-    /^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/ci\/main\/([a-zA-Z0-9._-]+)\/([^/]+)$/,
+    /^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/ci\/([^/]+)\/([a-zA-Z0-9._-]+)\/([^/]+)$/,
   )
   if (!ciMatch) return false
 
-  const [, packageName, rawHash, fileName] = ciMatch
+  const [, packageName, , rawHash, fileName] = ciMatch
   const hash = normalizeString(rawHash)
   if (!packageName || !hash || !fileName) return false
 
@@ -508,6 +539,139 @@ export function isAllowedPackageMarketObjectKey(value: unknown) {
     }
   }
   return false
+}
+
+function packageRuleObjectNames(rule: PackageMarketRule) {
+  const names = new Set<string>([normalizeString(rule.id), normalizeString(rule.name)])
+  for (const root of [...rule.releaseRoots, ...rule.flatFileRoots, ...rule.dependencyRoots]) {
+    const match = root.match(/\/([^/]+)\/(?:releases?|ci)\/$/u)
+    if (match?.[1]) names.add(match[1])
+  }
+  return names
+}
+
+function cacheClusterRuleAllowsObjectKey(
+  rule: PackageMarketRule,
+  objectKey: string,
+  channel: PackageMarketObjectKeyChannel,
+) {
+  const match = channel === 'release'
+    ? objectKey.match(/^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/releases?\/[^/]+\/[^/]+$/u)
+    : objectKey.match(/^offline\/sealos-apps\/([a-zA-Z0-9._-]+)\/ci\/[^/]+\/[^/]+\/[^/]+$/u)
+  return Boolean(
+    match?.[1] &&
+    packageRuleObjectNames(rule).has(match[1]) &&
+    cacheClusterPackageAllowsObjectKey(objectKey),
+  )
+}
+
+function proMiddlewareRuleAllowsObjectKey(
+  rule: PackageMarketRule,
+  objectKey: string,
+  channel: PackageMarketObjectKeyChannel,
+) {
+  const name = proMiddlewareNameFromId(rule.id)
+  if (!name) return false
+  const roots = rule.releaseRoots.length > 0
+    ? rule.releaseRoots
+    : middlewareRoots.map((root) => `${root}${name}/`)
+  for (const root of roots) {
+    if (!objectKey.startsWith(root)) continue
+    const parts = objectKey.slice(root.length).split('/')
+    const fileName = parts.at(-1) ?? ''
+    if (!fileName || !isArchiveObjectKey(fileName) || !/-((?:amd64|arm64))\.tar(?:\.gz)?$/u.test(fileName)) {
+      continue
+    }
+    if (channel === 'release' && parts.length === 1) return true
+    if (channel === 'ci' && parts.length === 2 && parts[0]) return true
+  }
+  return false
+}
+
+function dependencyRuleAllowsObjectKey(
+  rule: PackageMarketRule,
+  objectKey: string,
+  channel: PackageMarketObjectKeyChannel,
+) {
+  if (packageMarketDependencyChannel(rule) !== channel) return false
+  for (const root of rule.dependencyRoots) {
+    if (!objectKey.startsWith(root)) continue
+    const [hash, fileName, ...extra] = objectKey.slice(root.length).split('/')
+    if (!hash || !fileName || extra.length > 0) continue
+    for (const arch of ['amd64', 'arm64']) {
+      if (dependencyObjectMatches(rule, fileName, hash, arch, true)) return true
+    }
+  }
+  return false
+}
+
+function baseTemplateAllowsObjectKey(packageId: string, objectKey: string) {
+  const deployType = packageId === 'base-oss' ? 'oss' : 'pro'
+  if (templateMatcher(baseObjectTemplate, false, { deployType })?.test(objectKey)) return true
+  const prefixMatch = templateMatcher(baseListPrefixTemplate, true, { deployType })?.exec(objectKey)
+  if (!prefixMatch) return false
+  const [version, fileName, ...extra] = objectKey.slice(prefixMatch[0].length).split('/')
+  return Boolean(
+    version &&
+    fileName &&
+    extra.length === 0 &&
+    /^sealos-(?:pro|commercial|oss)-[^/]+-[^/]+\.tar(?:\.gz)?$/u.test(fileName),
+  )
+}
+
+/**
+ * Binds a persisted package item to the rule that produced its object key.
+ * This intentionally does not consult the organization policy: historical
+ * timeline items remain downloadable after an organization changes visibility,
+ * while forged cross-package object keys are rejected.
+ */
+export function isPackageMarketObjectKeyAllowedForRule(params: {
+  channel: PackageMarketObjectKeyChannel
+  objectKey: unknown
+  packageId: string
+  rules?: readonly PackageMarketRule[]
+}) {
+  const objectKey = normalizeString(params.objectKey)
+  if (!isSafePackageMarketObjectKey(objectKey)) return false
+
+  const packageId = normalizeString(params.packageId)
+  if (!packageId) return false
+  const appRuleId = resolvePackageMarketAppRuleId(packageId)
+  const rules = params.rules ?? parseRulesFile()
+  const rule = rules.find((candidate) => candidate.id === (appRuleId || packageId))
+  if (rule) {
+    if (rule.category === 'dependency') {
+      return dependencyRuleAllowsObjectKey(rule, objectKey, params.channel)
+    }
+    if (!packageMarketRuleSupportsChannel(canonicalPackageMarketRuleId(packageId), params.channel)) {
+      return false
+    }
+    return (
+      ruleAllowsObjectKey(rule, objectKey, params.channel, true) ||
+      proMiddlewareRuleAllowsObjectKey(rule, objectKey, params.channel) ||
+      cacheClusterRuleAllowsObjectKey(rule, objectKey, params.channel)
+    )
+  }
+
+  if (packageId.startsWith('pro:')) {
+    return proMiddlewareRuleAllowsObjectKey({
+      id: packageId,
+      name: packageId.slice('pro:'.length),
+      category: 'middleware',
+      mode: 'pro-middleware',
+      releaseRoots: [],
+      flatFileRoots: [],
+      dependencyRoots: [],
+      dependencyFilePatterns: [],
+      fileNameFormats: [],
+      ciFileNameFormats: [],
+      flatFileNamePrefix: '',
+      flatFileNameSuffix: '',
+      flatFileNameSuffixes: [],
+      parent: '',
+    }, objectKey, params.channel)
+  }
+  return Boolean(appRuleId && params.channel === 'release' && baseTemplateAllowsObjectKey(packageId, objectKey))
 }
 
 function ossClient() {

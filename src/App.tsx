@@ -204,6 +204,8 @@ import {
   type AiTurnStreamPhase,
   verifyProjectInviteLink,
   type AuthUser,
+  type PackageMarketRequestContext,
+  type PackageMarketRulesResponse,
   type UserRole,
   type WorkspaceData,
 } from './api'
@@ -214,7 +216,6 @@ import type {
   PackageMarketChannel,
   PackageMarketCiBranch,
   PackageMarketDetail,
-  PackageMarketRule,
   PackageMarketVersion,
   NotificationCenterData,
   Priority,
@@ -1773,6 +1774,8 @@ function App() {
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [openTodoCount, setOpenTodoCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
+  const [packageMarketOrganizations, setPackageMarketOrganizations] = useState<OrganizationListItem[]>([])
+  const [packageMarketOrganizationsLoaded, setPackageMarketOrganizationsLoaded] = useState(false)
   const [assignedBugCommentReadAtByBugId, setAssignedBugCommentReadAtByBugId] = useState<Record<number, string>>(() =>
     loadAssignedBugCommentReadAt(authUser?.id),
   )
@@ -2391,6 +2394,40 @@ function App() {
       setInterval: (listener, delay) => window.setInterval(listener, delay),
     })
   }, [loggedIn, refreshWorkspace])
+
+  useEffect(() => {
+    if (!loggedIn || !workspaceLoaded) {
+      setPackageMarketOrganizations([])
+      setPackageMarketOrganizationsLoaded(false)
+      return
+    }
+    let cancelled = false
+    setPackageMarketOrganizationsLoaded(false)
+    fetchOrganizations()
+      .then(({ organizations }) => {
+        if (cancelled) return
+        setPackageMarketOrganizations(organizations)
+        setPackageMarketOrganizationsLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setPackageMarketOrganizations([])
+        setPackageMarketOrganizationsLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [loggedIn, workspaceLoaded, workspaceRefreshVersion])
+
+  const packageMarketVisible = packageMarketOrganizationsLoaded && packageMarketOrganizations.some(
+    (organization) => organization.packageMarketEnabled,
+  )
+
+  useEffect(() => {
+    if (view === 'package_market' && packageMarketOrganizationsLoaded && !packageMarketVisible) {
+      setView('search')
+    }
+  }, [packageMarketOrganizationsLoaded, packageMarketVisible, view])
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded) return
@@ -3651,11 +3688,17 @@ function App() {
     }
   }
 
-  async function loadPackageMarketRules(): Promise<{
-    expireMinutes: number
-    rules: PackageMarketRule[]
-  }> {
-    return fetchPackageMarketRules()
+  async function loadPackageMarketOrganizations() {
+    const result = await fetchOrganizations()
+    setPackageMarketOrganizations(result.organizations)
+    setPackageMarketOrganizationsLoaded(true)
+    return result.organizations
+  }
+
+  async function loadPackageMarketRules(
+    context?: PackageMarketRequestContext,
+  ): Promise<PackageMarketRulesResponse> {
+    return fetchPackageMarketRules(context)
   }
 
   async function loadPackageMarketDetail(payload: {
@@ -3668,6 +3711,7 @@ function App() {
     includeAll?: boolean
     packageId: string
     releaseVersion?: string
+    context?: PackageMarketRequestContext
   }): Promise<PackageMarketDetail> {
     if (payload.packageId === 'base-pro' || payload.packageId === 'base-oss') {
       return fetchPackageMarketBaseDetail({
@@ -3679,13 +3723,17 @@ function App() {
         expireMinutes: payload.expireMinutes,
         includeAll: payload.includeAll,
         releaseVersion: payload.releaseVersion,
+        context: payload.context,
       })
     }
     return fetchPackageMarketDetail(payload)
   }
 
-  async function loadPackageMarketCiBranches(packageId: string): Promise<PackageMarketCiBranch[]> {
-    return (await fetchPackageMarketCiBranches({ packageId })).branches
+  async function loadPackageMarketCiBranches(
+    packageId: string,
+    context?: PackageMarketRequestContext,
+  ): Promise<PackageMarketCiBranch[]> {
+    return (await fetchPackageMarketCiBranches({ context, packageId })).branches
   }
 
   async function loadPackageMarketVersions(payload: {
@@ -3695,6 +3743,7 @@ function App() {
     deployType?: 'pro' | 'oss'
     includeAll?: boolean
     packageId: string
+    context?: PackageMarketRequestContext
   }): Promise<PackageMarketVersion[]> {
     if (payload.kind === 'ci') {
       return (await fetchPackageMarketCiVersions({
@@ -3702,6 +3751,7 @@ function App() {
         ciBranch: payload.ciBranch,
         includeAll: payload.includeAll,
         packageId: payload.packageId,
+        context: payload.context,
       })).versions
     }
 
@@ -3710,6 +3760,7 @@ function App() {
         arch: payload.arch,
         deployType: payload.packageId === 'base-oss' ? 'oss' : 'pro',
         includeAll: payload.includeAll,
+        context: payload.context,
       })).versions
     }
 
@@ -4642,9 +4693,11 @@ ${packageTimelineText}`
                   <Flask size={18} weight="duotone" /> 测试工作台
                 </NavButton>
               ) : null}
-              <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
-                <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
-              </NavButton>
+              {packageMarketVisible ? (
+                <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
+                  <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
+                </NavButton>
+              ) : null}
               <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
                 <CloudArrowUp size={18} weight="duotone" /> 镜像同步
               </NavButton>
@@ -5153,7 +5206,17 @@ ${packageTimelineText}`
         )}
 
         {view === 'organization' && authUser ? (
-          <OrganizationWorkbench currentUser={authUser} refreshToken={workspaceRefreshVersion} />
+          <OrganizationWorkbench
+            currentUser={authUser}
+            onPackageMarketVisibilityChange={(organizationId, enabled) => {
+              setPackageMarketOrganizations((current) => current.map((organization) => (
+                organization.id === organizationId
+                  ? { ...organization, packageMarketEnabled: enabled }
+                  : organization
+              )))
+            }}
+            refreshToken={workspaceRefreshVersion}
+          />
         ) : null}
 
         {view === 'weekly_report' ? (
@@ -5185,6 +5248,7 @@ ${packageTimelineText}`
 
         {view === 'package_market' ? (
           <PackageMarketBrowser
+            onLoadPackageMarketOrganizations={loadPackageMarketOrganizations}
             onLoadPackageMarketCiBranches={loadPackageMarketCiBranches}
             onLoadPackageMarketDetail={loadPackageMarketDetail}
             onLoadPackageMarketRules={loadPackageMarketRules}
@@ -5899,13 +5963,11 @@ function ProjectDetail({
     includeAll?: boolean
     packageId: string
     releaseVersion?: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
-  onInstallLoadMarketCiBranches: (packageId: string) => Promise<PackageMarketCiBranch[]>
-  onInstallLoadMarketRules: () => Promise<{
-    expireMinutes: number
-    rules: PackageMarketRule[]
-  }>
+  onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
+  onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onInstallLoadMarketVersions: (payload: {
     arch: string
     ciBranch?: string
@@ -5913,6 +5975,7 @@ function ProjectDetail({
     deployType?: 'pro' | 'oss'
     includeAll?: boolean
     packageId: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketVersion[]>
   onSaveInstallEvent: (
     eventId: number | null,
