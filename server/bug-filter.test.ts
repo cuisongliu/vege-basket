@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  createDefaultBugFilterConditions,
   getDefaultBugFilterValue,
   matchesBugFilterConditions,
   normalizeBugFilterCondition,
@@ -10,6 +11,7 @@ import {
 import type { TestBug } from '../src/test-workbench-types.ts'
 
 const filterDialogSource = readFileSync(new URL('../src/components/bug-filter-builder-dialog.tsx', import.meta.url), 'utf8')
+const testWorkbenchSource = readFileSync(new URL('../src/components/test-workbench.tsx', import.meta.url), 'utf8')
 
 const baseBug: TestBug = {
   actualResult: '页面返回 500',
@@ -68,6 +70,19 @@ test('bug filters support status, text, date range, and or matching', () => {
     condition('severity', 'equals', 'minor'),
     condition('environment', 'contains', 'chrome'),
   ], 'or'), true)
+})
+
+test('Bug 工作台 starts with a non-closed status filter', () => {
+  const [defaultCondition] = createDefaultBugFilterConditions()
+  assert.deepEqual(defaultCondition, {
+    field: 'status',
+    id: defaultCondition.id,
+    operator: 'not_equals',
+    value: 'closed',
+  })
+  assert.equal(matchesBugFilterConditions(baseBug, [defaultCondition], 'and'), true)
+  assert.equal(matchesBugFilterConditions({ ...baseBug, status: 'closed' }, [defaultCondition], 'and'), false)
+  assert.match(testWorkbenchSource, /const \[filterConditions, setFilterConditions\] = useState<BugFilterCondition\[\]\s*>\(createDefaultBugFilterConditions\)/u)
 })
 
 test('pending confirmation filter covers unassigned and assigned confirmation states', () => {

@@ -116,6 +116,14 @@ export function createBugFilterCondition(
   }
 }
 
+export function createDefaultBugFilterConditions(): BugFilterCondition[] {
+  return [{
+    ...createBugFilterCondition('status'),
+    operator: 'not_equals',
+    value: 'closed',
+  }]
+}
+
 export function parseBugFilterDateRange(value: string) {
   const [rawStart, rawEnd] = value.split('..')
   const start = rawStart || getBugFilterTodayStamp()

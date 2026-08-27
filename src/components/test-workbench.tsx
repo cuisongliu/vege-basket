@@ -68,6 +68,7 @@ import {
   type BugFilterOptions,
 } from './bug-filter-builder-dialog'
 import {
+  createDefaultBugFilterConditions,
   matchesBugFilterConditions,
   type BugFilterCondition,
   type BugFilterJoin,
@@ -4325,7 +4326,7 @@ export function AssignedTestBugs({
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [filterDialogOpen, setFilterDialogOpen] = useState(false)
   const [filterJoin, setFilterJoin] = useState<BugFilterJoin>('and')
-  const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>([])
+  const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>(createDefaultBugFilterConditions)
   const [selectedSpaceId, setSelectedSpaceId] = useState<number>()
   const [searchQuery, setSearchQuery] = useState('')
   const refreshInFlightRef = useRef(false)
