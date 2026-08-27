@@ -4336,7 +4336,10 @@ export function AssignedTestBugs({
   }, [onBugsChange])
 
   const spaceOptions = useMemo(() => uniqueBugFilterOptions(bugs, (bug) => bug.testSpaceName
-    ? { label: bug.testSpaceName, value: String(bug.testSpaceId) }
+    ? {
+      label: `${bug.testSpaceName}${bug.testSpaceVersionLabel ? ` · ${bug.testSpaceVersionLabel}` : ''}`,
+      value: String(bug.testSpaceId),
+    }
     : undefined), [bugs])
 
   function selectAssignedBugSpace(value: string) {
@@ -4557,7 +4560,7 @@ export function AssignedTestBugs({
               <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(bug.id)}>
                 <div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
                 <strong>{bug.title}</strong>
-                <small>{formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small>
+                <small>版本号 {bug.testSpaceVersionLabel || '未指定'} · {formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small>
               </button>
             ))}
           </div>

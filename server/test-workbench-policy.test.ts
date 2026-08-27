@@ -59,6 +59,8 @@ test('assigned Bug details include their test subject and space version label', 
   assert.match(testWorkbenchSource, /testSpaceVersionLabel: row\.test_space_version_label\s*\? decryptText\(row\.test_space_version_label\)\s*:\s*undefined/u)
   assert.match(testWorkbenchClientSource, /selected\.testSubjectName/u)
   assert.match(testWorkbenchClientSource, /selected\.testSpaceVersionLabel \|\| '未指定'/u)
+  assert.match(testWorkbenchClientSource, /<small>版本号 \{bug\.testSpaceVersionLabel \|\| '未指定'\}/u)
+  assert.match(testWorkbenchClientSource, /label: `\$\{bug\.testSpaceName\}\$\{bug\.testSpaceVersionLabel \? ` · \$\{bug\.testSpaceVersionLabel\}` : ''\}`/u)
 })
 
 test('developer bug transitions stop at pending verification', () => {
