@@ -247,6 +247,20 @@
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.organization-package-market-resource-row {
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+
+.organization-package-market-resource-row > [data-slot='checkbox'] {
+  justify-self: center;
+}
+
+.organization-package-market-resource-content {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
 .organization-resource-row > div:first-child,
 .organization-member-identity,
 .organization-task-row > div {
@@ -276,8 +290,13 @@
 
 .organization-resource-counts {
   display: flex;
+  align-items: center;
   gap: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.organization-package-market-row-actions {
+  gap: 8px;
 }
 
 .organization-section-heading,
@@ -962,6 +981,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.organization-package-market-remove-toolbar {
+  padding: 12px 16px;
+}
+
+.organization-package-market-remove-button {
+  color: var(--strong);
 }
 
 .organization-package-market-select-all,

@@ -752,6 +752,20 @@ export function attachPackageMarketsToOrganization(organizationId: number, packa
   })
 }
 
+export function removePackageMarketFromOrganization(organizationId: number, packageMarketId: string) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/package-markets/${encodeURIComponent(packageMarketId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function removePackageMarketsFromOrganization(organizationId: number, packageMarketIds: string[]) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/package-markets`, {
+    method: 'DELETE',
+    body: JSON.stringify({ packageMarketIds }),
+  })
+}
+
 export function saveOrganizationWeeklyReport(
   organizationId: number,
   weekStart: string,

@@ -39,6 +39,8 @@ import {
   inviteOrganizationMemberByUsername,
   removeOrganizationProjectMember,
   removeOrganizationMember,
+  removePackageMarketFromOrganization,
+  removePackageMarketsFromOrganization,
   remindWeeklyReportMembers,
   saveOrganizationWeeklyReport,
   updateOrganization,
@@ -291,6 +293,7 @@ export function OrganizationWorkbench({
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(0)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
   const [selectedPackageMarketIds, setSelectedPackageMarketIds] = useState<string[]>([])
+  const [selectedAttachedPackageMarketIds, setSelectedAttachedPackageMarketIds] = useState<string[]>([])
   const [canCreate, setCanCreate] = useState(false)
   const [tab, setTab] = useState<OrganizationTab>('overview')
   const [busy, setBusy] = useState(false)
@@ -394,8 +397,10 @@ export function OrganizationWorkbench({
 
   useEffect(() => {
     const attachableIds = new Set(detail?.attachablePackageMarkets.map((market) => market.id) ?? [])
+    const attachedIds = new Set(detail?.packageMarkets.map((market) => market.id) ?? [])
     setSelectedPackageMarketIds((current) => current.filter((id) => attachableIds.has(id)))
-  }, [detail?.attachablePackageMarkets])
+    setSelectedAttachedPackageMarketIds((current) => current.filter((id) => attachedIds.has(id)))
+  }, [detail?.attachablePackageMarkets, detail?.packageMarkets])
 
   useEffect(() => {
     if (detail) {
@@ -425,6 +430,13 @@ export function OrganizationWorkbench({
     const selectedIds = [...selectedPackageMarketIds]
     const success = await mutate(() => attachPackageMarketsToOrganization(detail.id, selectedIds))
     if (success) setSelectedPackageMarketIds([])
+  }
+
+  async function removeSelectedPackageMarkets() {
+    if (!detail || selectedAttachedPackageMarketIds.length === 0) return
+    const selectedIds = [...selectedAttachedPackageMarketIds]
+    const success = await mutate(() => removePackageMarketsFromOrganization(detail.id, selectedIds))
+    if (success) setSelectedAttachedPackageMarketIds([])
   }
 
   async function submitOrganization(event: FormEvent) {
@@ -1032,12 +1044,61 @@ export function OrganizationWorkbench({
         {tab === 'packageMarkets' ? (
           <section className="organization-section organization-resource-panel">
             <header><h3>组织安装包市场</h3><span>{detail.packageMarkets.length}</span></header>
+            {detail.packageMarkets.length > 0 ? (
+              <div className="organization-package-market-selection-toolbar organization-package-market-remove-toolbar">
+                <label className="organization-package-market-select-all">
+                  <Checkbox
+                    aria-label="全选已绑定安装包市场"
+                    checked={selectedAttachedPackageMarketIds.length === detail.packageMarkets.length
+                      ? true
+                      : selectedAttachedPackageMarketIds.length > 0 ? 'indeterminate' : false}
+                    disabled={busy}
+                    onCheckedChange={(checked) => setSelectedAttachedPackageMarketIds(
+                      checked === true ? detail.packageMarkets.map((market) => market.id) : [],
+                    )}
+                  />
+                  <span>全选</span>
+                  <small>已选 {selectedAttachedPackageMarketIds.length}</small>
+                </label>
+                <Button
+                  className="organization-package-market-remove-button"
+                  disabled={busy || selectedAttachedPackageMarketIds.length === 0}
+                  type="button"
+                  variant="outline"
+                  onClick={() => void removeSelectedPackageMarkets()}
+                >
+                  <Trash size={15} /> {busy ? '移除中...' : '移除已选'}
+                </Button>
+              </div>
+            ) : null}
             <div className="organization-list">
               {detail.packageMarkets.map((market) => (
-                <div className="organization-resource-row" key={market.id}>
-                  <div><strong>{market.name}</strong><span>{market.id}</span></div>
-                  <div className="organization-resource-counts">
+                <div className="organization-resource-row organization-package-market-resource-row" key={market.id}>
+                  <Checkbox
+                    aria-label={`选择已绑定的${market.name}`}
+                    checked={selectedAttachedPackageMarketIds.includes(market.id)}
+                    disabled={busy}
+                    onCheckedChange={(checked) => setSelectedAttachedPackageMarketIds((current) => (
+                      checked === true
+                        ? [...current, market.id]
+                        : current.filter((id) => id !== market.id)
+                    ))}
+                  />
+                  <div className="organization-package-market-resource-content">
+                    <strong>{market.name}</strong><span>{market.id}</span>
+                  </div>
+                  <div className="organization-resource-counts organization-package-market-row-actions">
                     <span>{packageMarketCategoryLabel[market.category]}</span>
+                    <Button
+                      aria-label={`移除${market.name}`}
+                      disabled={busy}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                      onClick={() => void mutate(() => removePackageMarketFromOrganization(detail.id, market.id))}
+                    >
+                      <Trash size={15} />
+                    </Button>
                   </div>
                 </div>
               ))}

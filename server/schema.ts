@@ -237,9 +237,11 @@ create table if not exists organization_package_markets (
   package_market_id text not null,
   attached_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
-  primary key (organization_id, package_market_id),
-  unique (package_market_id)
+  primary key (organization_id, package_market_id)
 );
+
+alter table organization_package_markets
+  drop constraint if exists organization_package_markets_package_market_id_key;
 
 create index if not exists idx_organization_package_markets_organization_id
   on organization_package_markets(organization_id, package_market_id);
