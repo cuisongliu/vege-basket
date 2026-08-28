@@ -33,6 +33,7 @@ import {
   type ProjectTransferStatus,
 } from './organization-cards.ts'
 import { formatShanghaiCalendarDate } from '../shared/calendar-date.ts'
+import { listPackageMarketCatalog } from './package-market.ts'
 
 type OrganizationRouterDependencies = {
   generateWeeklySummary: (userId: number, source: string) => Promise<{
@@ -381,7 +382,8 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
   const canManage = canManageOrganization(membership.access_role, assignedRoles)
   const canManageProjects = canManageOrganizationProjects(membership.access_role, assignedRoles)
   const canManageWeeklyReports = canManageOrganizationWeeklyReports(membership.access_role, assignedRoles)
-  const [organization, members, projects, projectMemberships, milestones, testSpaces, todos, packageEvents, bugs, reports, summaries, invitations, attachableProjects, attachableTestSpaces] = await Promise.all([
+  const packageMarketCatalog = await listPackageMarketCatalog()
+  const [organization, members, projects, projectMemberships, milestones, testSpaces, todos, packageEvents, bugs, reports, summaries, invitations, attachableProjects, attachableTestSpaces, packageMarkets, linkedPackageMarkets] = await Promise.all([
     query<{
       created_at: Date
       id: string
@@ -685,6 +687,16 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
        where owner_user_id = $1 and organization_id is null order by updated_at desc`,
       [userId],
     ),
+    query<{ package_market_id: string }>(
+      `select package_market_id from organization_package_markets
+       where organization_id = $1
+       order by created_at, package_market_id`,
+      [organizationId],
+    ),
+    query<{ package_market_id: string }>(
+      `select package_market_id from organization_package_markets
+       order by package_market_id`,
+    ),
   ])
   const row = organization.rows[0]
   if (!row) return null
@@ -803,9 +815,25 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     })
     membershipsByProject.set(projectId, memberships)
   }
+  const packageMarketById = new Map(packageMarketCatalog.map((rule) => [rule.id, rule]))
+  const toOrganizationPackageMarket = (packageMarketId: string) => {
+    const rule = packageMarketById.get(packageMarketId)
+    return rule
+      ? { category: rule.category, id: rule.id, name: rule.name }
+      : null
+  }
+  const organizationPackageMarkets = packageMarkets.rows.flatMap((market) => {
+    const item = toOrganizationPackageMarket(market.package_market_id)
+    return item ? [item] : []
+  })
+  const linkedPackageMarketIds = new Set(linkedPackageMarkets.rows.map((market) => market.package_market_id))
+  const attachablePackageMarkets = packageMarketCatalog
+    .filter((rule) => !linkedPackageMarketIds.has(rule.id))
+    .map((rule) => ({ category: rule.category, id: rule.id, name: rule.name }))
 
   return {
     accessRole: membership.access_role,
+    attachablePackageMarkets,
     departedUserIds,
     attachableProjects: attachableProjects.rows.map((project) => ({
       id: Number(project.id),
@@ -839,6 +867,7 @@ async function getOrganizationDetail(organizationId: number, userId: number) {
     })),
     name: decryptText(row.name),
     ownerUserId: Number(row.owner_user_id),
+    packageMarkets: organizationPackageMarkets,
     projects: projects.rows.map((project) => ({
       healthNote: project.health_note_encrypted ? decryptText(project.health_note_encrypted) : '',
       healthStatus: normalizeOrganizationProjectHealthStatus(project.health_status) ?? 'on_track',
@@ -2329,6 +2358,51 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
         [spaceId],
       )
       await writeAudit(client, organizationId!, session.userId, 'test_space.attached', 'test_space', String(spaceId))
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+    response.json(await getOrganizationDetail(organizationId!, session.userId))
+  }))
+
+  router.post('/organizations/:organizationId/package-markets/:packageMarketId', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    const packageMarketId = String(request.params.packageMarketId ?? '').trim()
+    if (!(await requireOrganizationMember(response, organizationId, session.userId)) || !packageMarketId) return
+    const packageMarketCatalog = await listPackageMarketCatalog()
+    if (!packageMarketCatalog.some((rule) => rule.id === packageMarketId)) {
+      response.status(404).json({ error: 'Package market not found' })
+      return
+    }
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const attached = await client.query<{ package_market_id: string }>(
+        `insert into organization_package_markets
+          (organization_id, package_market_id, attached_by_user_id)
+         values ($1, $2, $3)
+         on conflict (package_market_id) do nothing
+         returning package_market_id`,
+        [organizationId, packageMarketId, session.userId],
+      )
+      if (!attached.rows[0]) {
+        await client.query('rollback')
+        response.status(409).json({ error: 'Package market is already attached to an organization' })
+        return
+      }
+      await writeAudit(
+        client,
+        organizationId!,
+        session.userId,
+        'package_market.attached',
+        'package_market',
+        packageMarketId,
+      )
       await client.query('commit')
     } catch (error) {
       await client.query('rollback')

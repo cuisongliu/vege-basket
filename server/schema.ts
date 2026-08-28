@@ -232,6 +232,18 @@ create table if not exists organization_audit_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists organization_package_markets (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  package_market_id text not null,
+  attached_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (organization_id, package_market_id),
+  unique (package_market_id)
+);
+
+create index if not exists idx_organization_package_markets_organization_id
+  on organization_package_markets(organization_id, package_market_id);
+
 create table if not exists account_offboarding_records (
   id uuid primary key default gen_random_uuid(),
   user_id bigint not null references users(id) on delete restrict,

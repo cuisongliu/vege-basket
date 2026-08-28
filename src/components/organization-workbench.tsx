@@ -14,6 +14,7 @@ import {
   Heartbeat,
   PencilSimple,
   PaperPlaneTilt,
+  Package,
   Plus,
   Sparkle,
   Target,
@@ -23,6 +24,7 @@ import {
 } from '@phosphor-icons/react'
 import {
   attachProjectToOrganization,
+  attachPackageMarketToOrganization,
   attachTestSpaceToOrganization,
   createProject,
   createOrganizationInviteLink,
@@ -93,24 +95,32 @@ import { Textarea } from './ui/textarea'
 import { UserName } from './user-name'
 import './organization-workbench.css'
 
-type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'members' | 'reports'
+type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'packageMarkets' | 'members' | 'reports'
 
 const organizationTabs: Array<{
   icon: typeof Buildings
   id: OrganizationTab
   label: string
+  visible?: boolean
 }> = [
   { icon: Buildings, id: 'overview', label: '概览' },
   { icon: FolderSimple, id: 'projects', label: '项目管理' },
   { icon: Flask, id: 'testSpaces', label: '测试空间管理' },
   { icon: Users, id: 'members', label: '成员' },
   { icon: Sparkle, id: 'reports', label: '周报' },
+  { icon: Package, id: 'packageMarkets', label: '安装包市场管理', visible: false },
 ]
 
 const organizationRoleLabel = {
   admin: '管理员',
   member: '成员',
   owner: '所有者',
+} as const
+
+const packageMarketCategoryLabel = {
+  apps: '应用',
+  dependency: '依赖包',
+  middleware: '中间件',
 } as const
 
 const organizationWeekdayOptions = [
@@ -267,7 +277,15 @@ function buildOrganizationInviteUrl(token: string) {
   return url.toString()
 }
 
-export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { currentUser: AuthUser; refreshToken?: number }) {
+export function OrganizationWorkbench({
+  currentUser,
+  onOrganizationsChanged,
+  refreshToken = 0,
+}: {
+  currentUser: AuthUser
+  onOrganizationsChanged?: () => void
+  refreshToken?: number
+}) {
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(0)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
@@ -409,6 +427,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
       setCreateOpen(false)
       await loadOrganizations(created.id)
       setDetail(created)
+      onOrganizationsChanged?.()
     } catch (createError) {
       setError(errorMessage(createError))
     } finally {
@@ -432,6 +451,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
           : organization
       )))
       setSettingsOpen(false)
+      onOrganizationsChanged?.()
     } catch (renameError) {
       setOrganizationSettingsError(errorMessage(renameError))
     } finally {
@@ -452,6 +472,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
       setDetail(null)
       setSelectedOrganizationId(0)
       await loadOrganizations()
+      onOrganizationsChanged?.()
     } catch (deleteError) {
       setOrganizationSettingsError(errorMessage(deleteError))
     } finally {
@@ -817,7 +838,7 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
 
       <div className="organization-tabs-row">
         <div className="organization-tabs" role="tablist" aria-label="组织模块">
-          {organizationTabs.map((item) => {
+          {organizationTabs.filter((item) => item.visible !== false).map((item) => {
             const Icon = item.icon
             return (
               <button
@@ -987,6 +1008,38 @@ export function OrganizationWorkbench({ currentUser, refreshToken = 0 }: { curre
                     onClick={() => void mutate(() => attachTestSpaceToOrganization(detail.id, space.id))}
                   >
                     <Plus size={15} /> {space.name}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {tab === 'packageMarkets' ? (
+          <section className="organization-section organization-resource-panel">
+            <header><h3>组织安装包市场</h3><span>{detail.packageMarkets.length}</span></header>
+            <div className="organization-list">
+              {detail.packageMarkets.map((market) => (
+                <div className="organization-resource-row" key={market.id}>
+                  <div><strong>{market.name}</strong><span>{market.id}</span></div>
+                  <div className="organization-resource-counts">
+                    <span>{packageMarketCategoryLabel[market.category]}</span>
+                  </div>
+                </div>
+              ))}
+              {detail.packageMarkets.length === 0 ? <EmptyRow text="暂无组织安装包市场" /> : null}
+            </div>
+            {detail.attachablePackageMarkets.length > 0 ? (
+              <div className="organization-attach-list">
+                {detail.attachablePackageMarkets.map((market) => (
+                  <Button
+                    disabled={busy}
+                    key={market.id}
+                    type="button"
+                    variant="outline"
+                    onClick={() => void mutate(() => attachPackageMarketToOrganization(detail.id, market.id))}
+                  >
+                    <Plus size={15} /> {market.name}
                   </Button>
                 ))}
               </div>

@@ -1414,6 +1414,51 @@ export async function listPackageMarketRules() {
   }
 }
 
+const basePackageMarketRules: PackageMarketRule[] = [
+  {
+    category: 'apps',
+    ciFileNameFormats: [],
+    dependencyFilePatterns: [],
+    dependencyRoots: [],
+    fileNameFormats: [],
+    flatFileNamePrefix: '',
+    flatFileNameSuffix: '',
+    flatFileNameSuffixes: [],
+    flatFileRoots: [],
+    id: 'base-pro',
+    mode: 'release',
+    name: 'sealos-pro',
+    parent: '',
+    releaseRoots: [],
+  },
+  {
+    category: 'apps',
+    ciFileNameFormats: [],
+    dependencyFilePatterns: [],
+    dependencyRoots: [],
+    fileNameFormats: [],
+    flatFileNamePrefix: '',
+    flatFileNameSuffix: '',
+    flatFileNameSuffixes: [],
+    flatFileRoots: [],
+    id: 'base-oss',
+    mode: 'release',
+    name: 'sealos-oss',
+    parent: '',
+    releaseRoots: [],
+  },
+]
+
+export async function listPackageMarketCatalog() {
+  const yamlRules = await listPackageMarketRules()
+  const seen = new Set<string>()
+  return [...basePackageMarketRules, ...yamlRules].filter((rule) => {
+    if (rule.id === 'sealos-pro' || rule.id === 'sealos-oss' || seen.has(rule.id)) return false
+    seen.add(rule.id)
+    return true
+  }).map(publicRule)
+}
+
 export async function getPackageMarketDetail(params: {
   arch: string
   channel: 'release' | 'ci'

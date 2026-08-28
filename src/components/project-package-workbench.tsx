@@ -255,6 +255,7 @@ type PackageMarketDependencyState = {
 }
 
 type PackageMarketBrowserProps = {
+  organizationId: number | null
   onLoadPackageMarketCiBranches: PackageWorkbenchProps['onLoadPackageMarketCiBranches']
   onLoadPackageMarketDetail: PackageWorkbenchProps['onLoadPackageMarketDetail']
   onLoadPackageMarketRules: PackageWorkbenchProps['onLoadPackageMarketRules']
@@ -509,31 +510,6 @@ function packageMarketSearchMeta(value: string) {
   return value.trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
 }
 
-function getPackageMarketBaseRules(): PackageMarketRule[] {
-  return [
-    {
-      id: 'base-pro',
-      name: 'sealos-pro',
-      category: 'apps',
-      mode: 'release',
-      releaseRoots: [],
-      flatFileRoots: [],
-      fileNameFormats: [],
-      ciFileNameFormats: [],
-    },
-    {
-      id: 'base-oss',
-      name: 'sealos-oss',
-      category: 'apps',
-      mode: 'release',
-      releaseRoots: [],
-      flatFileRoots: [],
-      fileNameFormats: [],
-      ciFileNameFormats: [],
-    },
-  ]
-}
-
 function PackageMarketRuleList({ children }: { children: ReactNode }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const [scrollbar, setScrollbar] = useState({ height: 0, scrollable: false, top: 0, value: 0 })
@@ -635,6 +611,7 @@ function PackageMarketRuleList({ children }: { children: ReactNode }) {
 }
 
 export function PackageMarketBrowser({
+  organizationId,
   onLoadPackageMarketCiBranches,
   onLoadPackageMarketDetail,
   onLoadPackageMarketRules,
@@ -682,8 +659,10 @@ export function PackageMarketBrowser({
 
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
-    const baseRules = [...getPackageMarketBaseRules(), ...marketRules]
-    return baseRules.filter((rule) => {
+    const seen = new Set<string>()
+    return marketRules.filter((rule) => {
+      if (seen.has(rule.id)) return false
+      seen.add(rule.id)
       if (!query) return true
       return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
     })
@@ -978,15 +957,24 @@ export function PackageMarketBrowser({
       .then((rulesPayload) => {
         if (requestId !== marketDetailRequestIdRef.current) return
         setMarketRules(rulesPayload.rules)
+        const nextPackageId = rulesPayload.rules.some((rule) => rule.id === 'base-pro')
+          ? 'base-pro'
+          : rulesPayload.rules[0]?.id ?? ''
+        setMarketSelectedPackage(nextPackageId)
         const expireMinutes = packageMarketExpireOptions.some(
           (option) => option.value === rulesPayload.expireMinutes,
         )
           ? rulesPayload.expireMinutes
           : packageMarketExpireOptions[0].value
         setMarketExpireMinutes(expireMinutes)
+        if (!nextPackageId) {
+          setMarketLoading(false)
+          return
+        }
         void refreshMarketDetailRef.current({
           expireMinutes,
           marketRules: rulesPayload.rules,
+          packageId: nextPackageId,
         })
       })
       .catch((error) => {
@@ -994,7 +982,7 @@ export function PackageMarketBrowser({
         setMarketError(error instanceof Error ? error.message : '包市场读取失败')
         setMarketLoading(false)
       })
-  }, [])
+  }, [organizationId])
 
   return (
     <section className="package-market-workspace" aria-label="安装包市场">
@@ -1875,11 +1863,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   const filteredRules = useMemo(() => {
     const query = packageMarketSearchMeta(marketSearch)
-    const baseRules: PackageMarketRule[] = [
-      ...getPackageMarketBaseRules(),
-      ...marketRules,
-    ]
-    return baseRules.filter((rule) => {
+    const seen = new Set<string>()
+    return marketRules.filter((rule) => {
+      if (seen.has(rule.id)) return false
+      seen.add(rule.id)
       if (!query) return true
       return packageMarketSearchMeta(`${rule.id} ${rule.name}`).includes(query)
     })
@@ -2249,9 +2236,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         setMarketLoading(false)
         return
       }
+      const nextPackageId = context.rules.some((rule) => rule.id === 'base-pro')
+        ? 'base-pro'
+        : context.rules[0]?.id ?? ''
+      setMarketSelectedPackage(nextPackageId)
+      if (!nextPackageId) {
+        setMarketLoading(false)
+        return
+      }
       void refreshMarketDetail({
         expireMinutes: context.expireMinutes,
         marketRules: context.rules,
+        packageId: nextPackageId,
       })
       })
   }

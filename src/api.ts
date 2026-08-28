@@ -738,6 +738,13 @@ export function attachTestSpaceToOrganization(organizationId: number, spaceId: n
   })
 }
 
+export function attachPackageMarketToOrganization(organizationId: number, packageMarketId: string) {
+  return request<OrganizationDetail>(
+    `/api/organizations/${organizationId}/package-markets/${encodeURIComponent(packageMarketId)}`,
+    { method: 'POST' },
+  )
+}
+
 export function saveOrganizationWeeklyReport(
   organizationId: number,
   weekStart: string,
@@ -1554,8 +1561,13 @@ export function fetchProjectPackageItemDownloadUrl(
   )
 }
 
-export function fetchPackageMarketRules() {
-  return request<PackageMarketRulesResponse>('/api/package-market/rules')
+function packageMarketScopeQuery(organizationId: number | null) {
+  return new URLSearchParams({ organizationId: organizationId == null ? 'personal' : String(organizationId) })
+}
+
+export function fetchPackageMarketRules(organizationId: number | null) {
+  const params = packageMarketScopeQuery(organizationId)
+  return request<PackageMarketRulesResponse>(`/api/package-market/rules?${params.toString()}`)
 }
 
 export function fetchPackageMarketBaseDetail(payload: {
@@ -1566,6 +1578,7 @@ export function fetchPackageMarketBaseDetail(payload: {
   deployType: 'pro' | 'oss'
   expireMinutes?: number
   includeAll?: boolean
+  organizationId: number | null
   releaseVersion?: string
 }) {
   const params = new URLSearchParams({
@@ -1573,6 +1586,7 @@ export function fetchPackageMarketBaseDetail(payload: {
     channel: payload.channel,
     deployType: payload.deployType,
   })
+  packageMarketScopeQuery(payload.organizationId).forEach((value, key) => params.set(key, value))
   if (payload.ciBranch) params.set('ciBranch', payload.ciBranch)
   if (payload.ciVersion) params.set('ciVersion', payload.ciVersion)
   if (payload.expireMinutes) params.set('expireMinutes', String(payload.expireMinutes))
@@ -1585,11 +1599,13 @@ export function fetchPackageMarketBaseReleaseVersions(payload: {
   arch: string
   deployType: 'pro' | 'oss'
   includeAll?: boolean
+  organizationId: number | null
 }) {
   const params = new URLSearchParams({
     arch: payload.arch,
     deployType: payload.deployType,
   })
+  packageMarketScopeQuery(payload.organizationId).forEach((value, key) => params.set(key, value))
   if (payload.includeAll) params.set('includeAll', 'true')
   return request<{ versions: PackageMarketVersion[] }>(
     `/api/package-market/packages/base/release-versions?${params.toString()}`,
@@ -1605,12 +1621,14 @@ export function fetchPackageMarketDetail(payload: {
   expireMinutes?: number
   includeAll?: boolean
   packageId: string
+  organizationId: number | null
   releaseVersion?: string
 }) {
   const params = new URLSearchParams({
     arch: payload.arch,
     channel: payload.channel,
   })
+  packageMarketScopeQuery(payload.organizationId).forEach((value, key) => params.set(key, value))
   if (payload.ciBranch) params.set('ciBranch', payload.ciBranch)
   if (payload.ciVersion) params.set('ciVersion', payload.ciVersion)
   if (payload.deployType) params.set('deployType', payload.deployType)
@@ -1627,8 +1645,10 @@ export function fetchPackageMarketReleaseVersions(payload: {
   deployType?: string
   includeAll?: boolean
   packageId: string
+  organizationId: number | null
 }) {
   const params = new URLSearchParams({ arch: payload.arch })
+  packageMarketScopeQuery(payload.organizationId).forEach((value, key) => params.set(key, value))
   if (payload.deployType) params.set('deployType', payload.deployType)
   if (payload.includeAll) params.set('includeAll', 'true')
   return request<{ versions: PackageMarketVersion[] }>(
@@ -1636,9 +1656,10 @@ export function fetchPackageMarketReleaseVersions(payload: {
   )
 }
 
-export function fetchPackageMarketCiBranches(payload: { packageId: string }) {
+export function fetchPackageMarketCiBranches(payload: { packageId: string; organizationId: number | null }) {
+  const params = packageMarketScopeQuery(payload.organizationId)
   return request<{ branches: PackageMarketCiBranch[] }>(
-    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-branches`,
+    `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-branches?${params.toString()}`,
   )
 }
 
@@ -1647,8 +1668,10 @@ export function fetchPackageMarketCiVersions(payload: {
   ciBranch?: string
   includeAll?: boolean
   packageId: string
+  organizationId: number | null
 }) {
   const params = new URLSearchParams({ arch: payload.arch })
+  packageMarketScopeQuery(payload.organizationId).forEach((value, key) => params.set(key, value))
   if (payload.ciBranch) params.set('ciBranch', payload.ciBranch)
   if (payload.includeAll) params.set('includeAll', 'true')
   return request<{ versions: PackageMarketVersion[] }>(

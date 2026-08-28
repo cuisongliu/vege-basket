@@ -160,6 +160,7 @@ export type WeeklyReportCollection = {
 
 export type OrganizationDetail = {
   accessRole: OrganizationAccessRole
+  attachablePackageMarkets: OrganizationPackageMarket[]
   attachableProjects: Array<{ id: number; name: string; status: string }>
   attachableTestSpaces: Array<{ id: number; name: string }>
   canManage: boolean
@@ -178,6 +179,7 @@ export type OrganizationDetail = {
   members: OrganizationMember[]
   name: string
   ownerUserId: number
+  packageMarkets: OrganizationPackageMarket[]
   projects: OrganizationProject[]
   reports: OrganizationWeeklyReport[]
   summaries: OrganizationWeeklySummary[]
@@ -185,4 +187,10 @@ export type OrganizationDetail = {
   testSpaces: OrganizationTestSpace[]
   weeklyReportRules: WeeklyReportRules
   weekStartsOn: number
+}
+
+export type OrganizationPackageMarket = {
+  category: 'apps' | 'middleware' | 'dependency'
+  id: string
+  name: string
 }

@@ -66,7 +66,7 @@ import {
   listPackageMarketCiBranches,
   listPackageMarketCiVersions,
   listPackageMarketReleaseVersions,
-  listPackageMarketRules,
+  listPackageMarketCatalog,
   normalizePackageMarketExpireMinutes,
   putOssObject,
 } from './package-market.ts'
@@ -3396,6 +3396,67 @@ function ensurePackageMarketExpireMinutes(value: unknown) {
 
 function ensurePackageMarketIncludeAll(value: unknown) {
   return value === 'true'
+}
+
+function parsePackageMarketOrganizationScope(value: unknown): number | null | undefined {
+  const raw = String(value ?? '').trim()
+  if (raw === 'personal') return null
+  const organizationId = Number(raw)
+  return Number.isSafeInteger(organizationId) && organizationId > 0 ? organizationId : undefined
+}
+
+async function ensurePackageMarketScope(
+  request: express.Request,
+  response: express.Response,
+  userId: number,
+) {
+  const organizationId = parsePackageMarketOrganizationScope(request.query.organizationId)
+  if (organizationId === undefined) {
+    response.status(400).json({ error: 'Valid package market organization scope is required' })
+    return undefined
+  }
+  if (organizationId !== null) {
+    const membership = await query(
+      `select 1 from organization_memberships
+       where organization_id = $1 and user_id = $2 and status = 'active'`,
+      [organizationId, userId],
+    )
+    if (!membership.rows[0]) {
+      response.status(404).json({ error: 'Organization not found' })
+      return undefined
+    }
+  }
+  return organizationId
+}
+
+async function ensurePackageMarketRuleAccess(
+  response: express.Response,
+  organizationId: number | null,
+  packageMarketId: string,
+) {
+  const catalog = await listPackageMarketCatalog()
+  if (!catalog.some((rule) => rule.id === packageMarketId)) {
+    response.status(404).json({ error: 'Package market not found' })
+    return false
+  }
+  const result = organizationId === null
+    ? await query(
+        `select 1 where not exists (
+           select 1 from organization_package_markets
+           where package_market_id = $1
+         )`,
+        [packageMarketId],
+      )
+    : await query(
+        `select 1 from organization_package_markets
+         where organization_id = $1 and package_market_id = $2`,
+        [organizationId, packageMarketId],
+      )
+  if (!result.rows[0]) {
+    response.status(404).json({ error: 'Package market is not available in the current organization' })
+    return false
+  }
+  return true
 }
 
 type SqlExecutor = (text: string, params: unknown[]) => Promise<unknown>
@@ -11069,10 +11130,21 @@ app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, respo
 app.get('/api/package-market/rules', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  void userId
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  const catalog = await listPackageMarketCatalog()
+  const linked = await query<{ package_market_id: string }>(
+    organizationId === null
+      ? `select package_market_id from organization_package_markets`
+      : `select package_market_id from organization_package_markets where organization_id = $1`,
+    organizationId === null ? [] : [organizationId],
+  )
+  const linkedIds = new Set(linked.rows.map((row) => row.package_market_id))
   response.json({
     expireMinutes: getPackageMarketExpireMinutes(),
-    rules: await listPackageMarketRules(),
+    rules: catalog.filter((rule) => organizationId === null
+      ? !linkedIds.has(rule.id)
+      : linkedIds.has(rule.id)),
   })
 }))
 
@@ -11080,6 +11152,9 @@ app.get('/api/package-market/packages/base', asyncHandler(async (request, respon
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, packageId)) return
   response.json(await getPackageMarketDetail({
     packageId,
     arch: String(request.query.arch ?? 'amd64'),
@@ -11096,6 +11171,9 @@ app.get('/api/package-market/packages/base/release-versions', asyncHandler(async
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, packageId)) return
   response.json({
     versions: await listPackageMarketReleaseVersions({
       packageId,
@@ -11108,6 +11186,9 @@ app.get('/api/package-market/packages/base/release-versions', asyncHandler(async
 app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
   response.json(await getPackageMarketDetail({
     packageId: String(request.params.packageId),
     arch: String(request.query.arch ?? 'amd64'),
@@ -11123,6 +11204,9 @@ app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, 
 app.get('/api/package-market/packages/:packageId/ci-branches', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
   response.json({
     branches: await listPackageMarketCiBranches({
       packageId: String(request.params.packageId),
@@ -11133,6 +11217,9 @@ app.get('/api/package-market/packages/:packageId/ci-branches', asyncHandler(asyn
 app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
   response.json({
     versions: await listPackageMarketCiVersions({
       packageId: String(request.params.packageId),
@@ -11146,6 +11233,9 @@ app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(asyn
 app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const organizationId = await ensurePackageMarketScope(request, response, userId)
+  if (organizationId === undefined) return
+  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
   response.json({
     versions: await listPackageMarketReleaseVersions({
       packageId: String(request.params.packageId),
