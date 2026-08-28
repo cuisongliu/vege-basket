@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Buildings,
@@ -14,7 +14,7 @@ import {
   Heartbeat,
   PencilSimple,
   PaperPlaneTilt,
-  Package,
+  Package as PackageIcon,
   Plus,
   Sparkle,
   Target,
@@ -24,7 +24,6 @@ import {
 } from '@phosphor-icons/react'
 import {
   attachProjectToOrganization,
-  attachPackageMarketsToOrganization,
   attachTestSpaceToOrganization,
   createProject,
   createOrganizationInviteLink,
@@ -32,6 +31,7 @@ import {
   createOrganization,
   deleteOrganization,
   fetchOrganization,
+  fetchOrganizationPackageMarketCatalog,
   fetchOrganizations,
   fetchWeeklyReportCollection,
   generateOrganizationWeeklySummary,
@@ -39,11 +39,10 @@ import {
   inviteOrganizationMemberByUsername,
   removeOrganizationProjectMember,
   removeOrganizationMember,
-  removePackageMarketFromOrganization,
-  removePackageMarketsFromOrganization,
   remindWeeklyReportMembers,
   saveOrganizationWeeklyReport,
   updateOrganization,
+  updateOrganizationPackageMarketPolicy,
   updateOrganizationWeeklyReportRules,
   updateOrganizationMemberRole,
   updateOrganizationProjectGovernance,
@@ -61,9 +60,14 @@ import type {
   OrganizationProjectMilestoneStatus,
   OrganizationProjectStatus,
   OrganizationTask,
+  OrganizationPackageMarketCatalogRule,
   WeeklyReportCollection,
   WeeklyReportRules,
 } from '../organization-types'
+import type {
+  OrganizationPackageMarketPolicy,
+} from '../../shared/organization-package-market'
+import { organizationPackageMarketPolicyHasVisibleChannel } from '../../shared/organization-package-market'
 import {
   defaultWeeklyReportRules,
   getShanghaiDateTime,
@@ -72,7 +76,6 @@ import {
 } from '../../shared/weekly-report-availability'
 import { userRoleLabel } from '../user-roles'
 import { Button } from './ui/button'
-import { Checkbox } from './ui/checkbox'
 import {
   Dialog,
   DialogClose,
@@ -96,34 +99,28 @@ import {
 } from './ui/select'
 import { Textarea } from './ui/textarea'
 import { UserName } from './user-name'
+import { OrganizationPackageMarketPanel } from './organization-package-market-panel'
 import './organization-workbench.css'
 
-type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'packageMarkets' | 'members' | 'reports'
+type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'members' | 'reports' | 'packageMarket'
 
 const organizationTabs: Array<{
   icon: typeof Buildings
   id: OrganizationTab
   label: string
-  visible?: boolean
 }> = [
   { icon: Buildings, id: 'overview', label: '概览' },
   { icon: FolderSimple, id: 'projects', label: '项目管理' },
   { icon: Flask, id: 'testSpaces', label: '测试空间管理' },
   { icon: Users, id: 'members', label: '成员' },
   { icon: Sparkle, id: 'reports', label: '周报' },
-  { icon: Package, id: 'packageMarkets', label: '安装包市场管理', visible: true },
+  { icon: PackageIcon, id: 'packageMarket', label: '安装包市场' },
 ]
 
 const organizationRoleLabel = {
   admin: '管理员',
   member: '成员',
   owner: '所有者',
-} as const
-
-const packageMarketCategoryLabel = {
-  apps: '应用',
-  dependency: '依赖包',
-  middleware: '中间件',
 } as const
 
 const organizationWeekdayOptions = [
@@ -140,6 +137,22 @@ const weeklyReportDayOptions = Array.from({ length: 7 }, (_, index) => ({
   label: `第 ${index + 1} 天`,
   value: String(index + 1),
 }))
+
+function clonePackageMarketPolicy(policy: OrganizationPackageMarketPolicy): OrganizationPackageMarketPolicy {
+  return {
+    enabled: policy.enabled,
+    revision: policy.revision,
+    channels: {
+      release: { ...policy.channels.release },
+      ci: { ...policy.channels.ci },
+    },
+    selection: { ...policy.selection, ruleIds: [...policy.selection.ruleIds] },
+  }
+}
+
+function packageMarketPolicyHasVisibleChannel(policy: OrganizationPackageMarketPolicy) {
+  return organizationPackageMarketPolicyHasVisibleChannel(policy)
+}
 
 const taskKindLabel: Record<OrganizationTask['kind'], string> = {
   bug: 'Bug',
@@ -283,17 +296,17 @@ function buildOrganizationInviteUrl(token: string) {
 export function OrganizationWorkbench({
   currentUser,
   onOrganizationsChanged,
+  onPackageMarketVisibilityChange,
   refreshToken = 0,
 }: {
   currentUser: AuthUser
   onOrganizationsChanged?: () => void
+  onPackageMarketVisibilityChange?: (organizationId: number, enabled: boolean) => void
   refreshToken?: number
 }) {
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(0)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
-  const [selectedPackageMarketIds, setSelectedPackageMarketIds] = useState<string[]>([])
-  const [selectedAttachedPackageMarketIds, setSelectedAttachedPackageMarketIds] = useState<string[]>([])
   const [canCreate, setCanCreate] = useState(false)
   const [tab, setTab] = useState<OrganizationTab>('overview')
   const [busy, setBusy] = useState(false)
@@ -301,6 +314,10 @@ export function OrganizationWorkbench({
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [organizationSettingsError, setOrganizationSettingsError] = useState('')
+  const [packageMarketCatalog, setPackageMarketCatalog] = useState<OrganizationPackageMarketCatalogRule[]>([])
+  const [packageMarketPolicyDraft, setPackageMarketPolicyDraft] = useState<OrganizationPackageMarketPolicy | null>(null)
+  const [packageMarketCatalogLoading, setPackageMarketCatalogLoading] = useState(false)
+  const [packageMarketPolicySaving, setPackageMarketPolicySaving] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -328,6 +345,7 @@ export function OrganizationWorkbench({
   const [weeklyRulesError, setWeeklyRulesError] = useState('')
   const [weeklyRulesDraft, setWeeklyRulesDraft] = useState<WeeklyReportRules>(defaultWeeklyReportRules)
   const [weeklyRulesWeekStartsOn, setWeeklyRulesWeekStartsOn] = useState(1)
+  const packageMarketDraftOrganizationId = useRef(0)
 
   useEffect(() => {
     setTopbarActionHost(document.getElementById('organization-topbar-actions'))
@@ -359,7 +377,7 @@ export function OrganizationWorkbench({
     return () => {
       active = false
     }
-  }, [loadOrganizations, refreshToken])
+  }, [loadOrganizations, refreshToken, selectedOrganizationId])
 
   useEffect(() => {
     if (!selectedOrganizationId) {
@@ -396,11 +414,51 @@ export function OrganizationWorkbench({
   }, [detail?.id, detail?.name])
 
   useEffect(() => {
-    const attachableIds = new Set(detail?.attachablePackageMarkets.map((market) => market.id) ?? [])
-    const attachedIds = new Set(detail?.packageMarkets.map((market) => market.id) ?? [])
-    setSelectedPackageMarketIds((current) => current.filter((id) => attachableIds.has(id)))
-    setSelectedAttachedPackageMarketIds((current) => current.filter((id) => attachedIds.has(id)))
-  }, [detail?.attachablePackageMarkets, detail?.packageMarkets])
+    if (!detail) {
+      packageMarketDraftOrganizationId.current = 0
+      setPackageMarketCatalog([])
+      setPackageMarketPolicyDraft(null)
+      return
+    }
+    const organizationChanged = packageMarketDraftOrganizationId.current !== detail.id
+    const nextRevision = detail.packageMarketPolicy.revision
+    packageMarketDraftOrganizationId.current = detail.id
+    setPackageMarketPolicyDraft((current) => (
+      !organizationChanged && current?.revision === nextRevision
+        ? current
+        : clonePackageMarketPolicy(detail.packageMarketPolicy)
+    ))
+  }, [detail])
+
+  const packageMarketOrganizationId = detail?.id ?? 0
+  useEffect(() => {
+    if (tab !== 'packageMarket' || !packageMarketOrganizationId) return
+    let active = true
+    setPackageMarketCatalogLoading(true)
+    setOrganizationSettingsError('')
+    fetchOrganizationPackageMarketCatalog(packageMarketOrganizationId)
+      .then((result) => {
+        if (!active) return
+        setPackageMarketCatalog(result.rules)
+        // Catalog refreshes can happen when returning to this tab. Preserve an
+        // unsaved draft for the same server revision; a newer revision means
+        // another save won the race and the draft must be rebased.
+        setPackageMarketPolicyDraft((current) => (
+          !current || current.revision !== result.policy.revision
+            ? clonePackageMarketPolicy(result.policy)
+            : current
+        ))
+      })
+      .catch((catalogError) => {
+        if (active) setOrganizationSettingsError(errorMessage(catalogError))
+      })
+      .finally(() => {
+        if (active) setPackageMarketCatalogLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [packageMarketOrganizationId, refreshToken, tab])
 
   useEffect(() => {
     if (detail) {
@@ -423,20 +481,6 @@ export function OrganizationWorkbench({
     } finally {
       setBusy(false)
     }
-  }
-
-  async function attachSelectedPackageMarkets() {
-    if (!detail || selectedPackageMarketIds.length === 0) return
-    const selectedIds = [...selectedPackageMarketIds]
-    const success = await mutate(() => attachPackageMarketsToOrganization(detail.id, selectedIds))
-    if (success) setSelectedPackageMarketIds([])
-  }
-
-  async function removeSelectedPackageMarkets() {
-    if (!detail || selectedAttachedPackageMarketIds.length === 0) return
-    const selectedIds = [...selectedAttachedPackageMarketIds]
-    const success = await mutate(() => removePackageMarketsFromOrganization(detail.id, selectedIds))
-    if (success) setSelectedAttachedPackageMarketIds([])
   }
 
   async function submitOrganization(event: FormEvent) {
@@ -476,12 +520,55 @@ export function OrganizationWorkbench({
           ? { ...organization, name: nextDetail.name }
           : organization
       )))
-      setSettingsOpen(false)
       onOrganizationsChanged?.()
+      setSettingsOpen(false)
     } catch (renameError) {
       setOrganizationSettingsError(errorMessage(renameError))
     } finally {
       setBusy(false)
+    }
+  }
+
+  function updatePackageMarketPolicyDraft(
+    updater: (current: OrganizationPackageMarketPolicy) => OrganizationPackageMarketPolicy,
+  ) {
+    setPackageMarketPolicyDraft((current) => current ? updater(current) : current)
+  }
+
+  function resetPackageMarketPolicyDraft() {
+    if (!detail) return
+    setPackageMarketPolicyDraft(clonePackageMarketPolicy(detail.packageMarketPolicy))
+    setOrganizationSettingsError('')
+  }
+
+  async function submitPackageMarketPolicy() {
+    if (!detail || !packageMarketPolicyDraft) return
+    setPackageMarketPolicySaving(true)
+    setOrganizationSettingsError('')
+    try {
+      const nextDetail = await updateOrganizationPackageMarketPolicy(detail.id, {
+        featureEnabled: packageMarketPolicyDraft.enabled,
+        revision: packageMarketPolicyDraft.revision,
+        channels: packageMarketPolicyDraft.channels,
+        selection: packageMarketPolicyDraft.selection,
+      })
+      setDetail(nextDetail)
+      setOrganizations((current) => current.map((organization) => (
+        organization.id === nextDetail.id
+          ? {
+              ...organization,
+              packageMarketEnabled: packageMarketPolicyHasVisibleChannel(nextDetail.packageMarketPolicy),
+            }
+          : organization
+      )))
+      onPackageMarketVisibilityChange?.(
+        nextDetail.id,
+        packageMarketPolicyHasVisibleChannel(nextDetail.packageMarketPolicy),
+      )
+    } catch (policyError) {
+      setOrganizationSettingsError(errorMessage(policyError))
+    } finally {
+      setPackageMarketPolicySaving(false)
     }
   }
 
@@ -745,7 +832,7 @@ export function OrganizationWorkbench({
               <DialogContent className="organization-settings-dialog">
                 <DialogHeader>
                   <DialogTitle>组织设置</DialogTitle>
-                  <DialogDescription>修改当前组织的名称，或处理不可逆的组织删除操作。</DialogDescription>
+                  <DialogDescription>修改组织名称，或处理不可逆的组织删除操作。</DialogDescription>
                 </DialogHeader>
                 {organizationSettingsError ? (
                   <div className="organization-error" role="alert">{organizationSettingsError}</div>
@@ -864,7 +951,7 @@ export function OrganizationWorkbench({
 
       <div className="organization-tabs-row">
         <div className="organization-tabs" role="tablist" aria-label="组织模块">
-          {organizationTabs.filter((item) => item.visible !== false).map((item) => {
+          {organizationTabs.map((item) => {
             const Icon = item.icon
             return (
               <button
@@ -1036,118 +1123,6 @@ export function OrganizationWorkbench({
                     <Plus size={15} /> {space.name}
                   </Button>
                 ))}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
-
-        {tab === 'packageMarkets' ? (
-          <section className="organization-section organization-resource-panel">
-            <header><h3>组织安装包市场</h3><span>{detail.packageMarkets.length}</span></header>
-            {detail.packageMarkets.length > 0 ? (
-              <div className="organization-package-market-selection-toolbar organization-package-market-remove-toolbar">
-                <label className="organization-package-market-select-all">
-                  <Checkbox
-                    aria-label="全选已绑定安装包市场"
-                    checked={selectedAttachedPackageMarketIds.length === detail.packageMarkets.length
-                      ? true
-                      : selectedAttachedPackageMarketIds.length > 0 ? 'indeterminate' : false}
-                    disabled={busy}
-                    onCheckedChange={(checked) => setSelectedAttachedPackageMarketIds(
-                      checked === true ? detail.packageMarkets.map((market) => market.id) : [],
-                    )}
-                  />
-                  <span>全选</span>
-                  <small>已选 {selectedAttachedPackageMarketIds.length}</small>
-                </label>
-                <Button
-                  className="organization-package-market-remove-button"
-                  disabled={busy || selectedAttachedPackageMarketIds.length === 0}
-                  type="button"
-                  variant="outline"
-                  onClick={() => void removeSelectedPackageMarkets()}
-                >
-                  <Trash size={15} /> {busy ? '移除中...' : '移除已选'}
-                </Button>
-              </div>
-            ) : null}
-            <div className="organization-list">
-              {detail.packageMarkets.map((market) => (
-                <div className="organization-resource-row organization-package-market-resource-row" key={market.id}>
-                  <Checkbox
-                    aria-label={`选择已绑定的${market.name}`}
-                    checked={selectedAttachedPackageMarketIds.includes(market.id)}
-                    disabled={busy}
-                    onCheckedChange={(checked) => setSelectedAttachedPackageMarketIds((current) => (
-                      checked === true
-                        ? [...current, market.id]
-                        : current.filter((id) => id !== market.id)
-                    ))}
-                  />
-                  <div className="organization-package-market-resource-content">
-                    <strong>{market.name}</strong><span>{market.id}</span>
-                  </div>
-                  <div className="organization-resource-counts organization-package-market-row-actions">
-                    <span>{packageMarketCategoryLabel[market.category]}</span>
-                    <Button
-                      aria-label={`移除${market.name}`}
-                      disabled={busy}
-                      size="icon-sm"
-                      type="button"
-                      variant="ghost"
-                      onClick={() => void mutate(() => removePackageMarketFromOrganization(detail.id, market.id))}
-                    >
-                      <Trash size={15} />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-              {detail.packageMarkets.length === 0 ? <EmptyRow text="暂无组织安装包市场" /> : null}
-            </div>
-            {detail.attachablePackageMarkets.length > 0 ? (
-              <div className="organization-attach-list organization-package-market-attach-list">
-                <div className="organization-package-market-selection-toolbar">
-                  <label className="organization-package-market-select-all">
-                    <Checkbox
-                      aria-label="全选安装包市场"
-                      checked={selectedPackageMarketIds.length === detail.attachablePackageMarkets.length
-                        ? true
-                        : selectedPackageMarketIds.length > 0 ? 'indeterminate' : false}
-                      onCheckedChange={(checked) => setSelectedPackageMarketIds(
-                        checked === true ? detail.attachablePackageMarkets.map((market) => market.id) : [],
-                      )}
-                    />
-                    <span>全选</span>
-                    <small>已选 {selectedPackageMarketIds.length}</small>
-                  </label>
-                  <Button
-                    disabled={busy || selectedPackageMarketIds.length === 0}
-                    type="button"
-                    onClick={() => void attachSelectedPackageMarkets()}
-                  >
-                    <Plus size={15} /> {busy ? '添加中...' : '添加已选'}
-                  </Button>
-                </div>
-                <div className="organization-package-market-options">
-                {detail.attachablePackageMarkets.map((market) => (
-                  <label
-                    className="organization-package-market-option"
-                    key={market.id}
-                  >
-                    <Checkbox
-                      aria-label={`选择${market.name}`}
-                      checked={selectedPackageMarketIds.includes(market.id)}
-                      disabled={busy}
-                      onCheckedChange={(checked) => setSelectedPackageMarketIds((current) => (
-                        checked === true
-                          ? [...current, market.id]
-                          : current.filter((id) => id !== market.id)
-                      ))}
-                    />
-                    <span>{market.name}</span>
-                  </label>
-                ))}
-                </div>
               </div>
             ) : null}
           </section>
@@ -1490,6 +1465,20 @@ export function OrganizationWorkbench({
               ) : <EmptyRow text="本周暂无组织周报汇总" />}
             </div>
           </section>
+        ) : null}
+
+        {tab === 'packageMarket' ? (
+          <OrganizationPackageMarketPanel
+            catalog={packageMarketCatalog}
+            catalogLoading={packageMarketCatalogLoading}
+            detail={detail}
+            error={organizationSettingsError}
+            onPolicyChange={updatePackageMarketPolicyDraft}
+            onReset={resetPackageMarketPolicyDraft}
+            onSave={() => void submitPackageMarketPolicy()}
+            policy={packageMarketPolicyDraft}
+            policySaving={packageMarketPolicySaving}
+          />
         ) : null}
       </div>
     </div>

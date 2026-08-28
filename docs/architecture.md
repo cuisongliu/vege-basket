@@ -87,12 +87,19 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   managing document todo links, their notes, and todo completion after publication.
 - `server/package-market.ts`: OSS configuration, package rules, object-key allowlisting,
   object access, and signed download URLs.
+- `server/organization-package-market.ts`, `shared/organization-package-market.ts`:
+  organization-scoped package-market feature/channel switches, one shared package
+  visibility range, canonical base-package IDs, and authorization helpers shared by
+  global and project package selectors. Generic organization feature rows leave room
+  for future display settings without coupling those settings to the package rule format.
 - `server/image-sync-workflows.ts`: fixed-repository GitHub workflow dispatch with a
   persisted `dispatch_key`, recovery of ambiguous dispatch responses by matching the
   workflow `run-name`, encrypted user-owned run records, bounded Run/Job/Step
   synchronization, per-user admission, successful artifact URI derivation, and
   owner-scoped failed-record cleanup.
-- `server/schema.ts`: idempotent PostgreSQL DDL and integrity indexes.
+- `server/schema.ts`: idempotent PostgreSQL DDL and integrity indexes. Versioned
+  incremental statements live in `server/migrations/` and must accompany every
+  table, constraint, or index change.
 - `server/crypto.ts`: AES-256-GCM envelopes and blind indexes.
 - `server/db.ts`: the shared PostgreSQL pool. Domain modules must use one checked-out
   `PoolClient` for every atomic multi-statement operation.
@@ -263,6 +270,16 @@ The schema is normalized around these groups:
 - Organizations: `organizations`, `organization_memberships`, organization invitations,
   expiring `organization_invite_links`, callback replay records, audit events, weekly reports,
   and weekly summaries. Organization
+  package-market visibility is stored separately in `organization_feature_settings`,
+  `organization_package_market_channel_policies`,
+  `organization_package_market_selection_policies`, and
+  `organization_package_market_selection_rules`; missing rows use the enabled/all
+  defaults. Release and CI each carry only an independent enabled switch. One
+  organization-wide `all`, `selected`, or `excluded` range applies to every enabled
+  channel, with rule rows acting as an allow-list in `selected` mode and a deny-list in
+  `excluded` mode. The older channel selection rows remain as compatibility mirrors;
+  dependency package visibility remains derived from its parent package in the
+  dependency's own channel.
   access does not replace general resource write permissions. Active organization owners and
   administrators with the `organization_admin` account role receive organization-scoped
   read access and may govern attached project status, health, and milestones without becoming
@@ -451,7 +468,10 @@ Owner、任意有效项目成员，以及同时拥有 `organization_admin` 账�
 条。原本拥有项目访问权的登录用户可从分享页打开内部待办详情。
 
 Server startup validates encryption keys and executes `schemaSql`; starting the API is a
-database mutation, not a read-only smoke test. There is no automatic down migration.
+database mutation, not a read-only smoke test. Versioned files under
+`server/migrations/` are the operator-facing incremental DDL record and must be
+applied before code that depends on a new structure. The application does not
+automatically execute those versioned files, and there is no automatic down migration.
 The image-sync surface additionally requires an instance-level `GITHUB_ACTIONS_TOKEN` scoped
 to `labring/sealos-pro` Actions write. It never accepts repository, workflow, ref, or token
 values from the browser. Each dispatch carries a server-generated UUID as the workflow

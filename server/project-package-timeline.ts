@@ -1,7 +1,10 @@
 import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
-import { createPackageItemDownloadUrl } from './package-market.ts'
+import {
+  createPackageItemDownloadUrl,
+  isPackageMarketObjectKeyAllowedForRule,
+} from './package-market.ts'
 import { getDepartedUserIds } from './user-lifecycle.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
@@ -959,9 +962,17 @@ function textValue(value: unknown, fallback = '-') {
   return normalized || fallback
 }
 
-function packageDownloadUrlValue(objectKey: string) {
+function packageDownloadUrlValue(item: Pick<ProjectPackageItem, 'channel' | 'objectKey' | 'sourcePackageId'>) {
   try {
-    return createPackageItemDownloadUrl(objectKey)
+    const channel = item.channel === 'ci' || item.channel === 'release' ? item.channel : null
+    if (!channel || !isPackageMarketObjectKeyAllowedForRule({
+      channel,
+      objectKey: item.objectKey,
+      packageId: item.sourcePackageId,
+    })) {
+      return '临时下载链接生成失败：安装包对象路径与安装包规则不匹配'
+    }
+    return createPackageItemDownloadUrl(item.objectKey)
   } catch (error) {
     return `临时下载链接生成失败：${String((error as Error).message ?? error)}`
   }
@@ -1111,7 +1122,7 @@ function buildPackageTimelineMarkdown(
       if (node.type !== 'package-operation') return
       const item = node.item
       const fileName = packageFileName(item.objectKey, item.packageName)
-      const downloadUrl = packageDownloadUrlValue(item.objectKey)
+      const downloadUrl = packageDownloadUrlValue(item)
       if (downloadUrl.startsWith('临时下载链接生成失败：')) {
         lines.push(`- ${textValue(fileName)}：${downloadUrl}`)
         return
@@ -1557,6 +1568,10 @@ export async function saveProjectPackageEvent(params: {
   projectId: number
   title: string
   type: ProjectPackageEventType
+  validatePackageItems?: (
+    client: PoolClient,
+    items: Array<Pick<ProjectPackageItemInput, 'channel' | 'objectKey' | 'sourcePackageId'>>,
+  ) => Promise<void>
 }) {
   const title = normalizeText(params.title, 120)
   if (!title) throw new ProjectPackageEventError('Event title is required', 400)
@@ -1584,6 +1599,7 @@ export async function saveProjectPackageEvent(params: {
       documents.flatMap((document) => document.relatedTodoIds),
       client,
     )
+    await params.validatePackageItems?.(client, items)
 
     let eventId = params.eventId
     if (eventId != null) {
@@ -1910,10 +1926,15 @@ export async function addProjectPackageItems(params: {
   eventId: number
   items: ProjectPackageItemInput[]
   projectId: number
+  validatePackageItems?: (
+    client: PoolClient,
+    items: Array<Pick<ProjectPackageItemInput, 'channel' | 'objectKey' | 'sourcePackageId'>>,
+  ) => Promise<void>
 }) {
   const items = normalizeProjectPackageItems(params.items)
 
   await withTransaction(async (client) => {
+    await params.validatePackageItems?.(client, items)
     const event = ensureUnpublishedEvent(
       await findEventMeta(params.eventId, params.projectId, client),
     )
@@ -2185,13 +2206,25 @@ export async function deleteProjectPackageOperation(params: {
   })
 }
 
-export async function getProjectPackageItemObjectKey(params: {
+export type ProjectPackageItemDownloadSource = {
+  channel: string
+  objectKey: string
+  sourcePackageId: string
+}
+
+export async function getProjectPackageItemDownloadSource(params: {
   itemId: number
   projectId: number
 }) {
-  const result = await query<{ object_key: string }>(
+  const result = await query<{
+    channel: string
+    object_key: string
+    source_package_id: string
+  }>(
     `
-    select i.object_key
+    select i.object_key,
+           i.channel,
+           i.source_package_id
     from project_package_items i
     join project_package_groups g on g.id = i.project_package_group_id
     join project_package_events e on e.id = g.project_package_event_id
@@ -2199,7 +2232,21 @@ export async function getProjectPackageItemObjectKey(params: {
     `,
     [params.itemId, params.projectId],
   )
-  return result.rows[0]?.object_key ?? ''
+  const row = result.rows[0]
+  return row
+    ? {
+        channel: row.channel,
+        objectKey: row.object_key,
+        sourcePackageId: row.source_package_id,
+      }
+    : null
+}
+
+export async function getProjectPackageItemObjectKey(params: {
+  itemId: number
+  projectId: number
+}) {
+  return (await getProjectPackageItemDownloadSource(params))?.objectKey ?? ''
 }
 
 export async function exportProjectPackageTimeline(projectId: number, eventId?: number) {

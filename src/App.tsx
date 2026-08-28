@@ -204,6 +204,8 @@ import {
   type AiTurnStreamPhase,
   verifyProjectInviteLink,
   type AuthUser,
+  type PackageMarketRequestContext,
+  type PackageMarketRulesResponse,
   type UserRole,
   type WorkspaceData,
 } from './api'
@@ -214,7 +216,6 @@ import type {
   PackageMarketChannel,
   PackageMarketCiBranch,
   PackageMarketDetail,
-  PackageMarketRule,
   PackageMarketVersion,
   NotificationCenterData,
   Priority,
@@ -663,7 +664,7 @@ function persistSelectedOrganizationId(userId: number, organizationId: number | 
       organizationId == null ? 'personal' : String(organizationId),
     )
   } catch {
-    // Keep the organization selection usable for the current session.
+    // The active selection remains available for this browser session.
   }
 }
 
@@ -1758,6 +1759,7 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const authUserId = authUser?.id
   const bugShareToken = getBugShareTokenFromPath()
   const todoShareToken = getTodoShareTokenFromPath(window.location.pathname)
   const [bugShareLoginRequested, setBugShareLoginRequested] = useState(false)
@@ -1943,7 +1945,7 @@ function App() {
   const canNavigateToDeveloperBugs = SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE && (
     isDeveloperRole || isOrganizationAdmin
   )
-  const canNavigateToTestWorkbench = authUser?.activeRole === 'tester' || isOrganizationAdmin
+  const canNavigateToTestWorkbench = authUser?.activeRole === 'tester'
 
   useEffect(() => {
     setAssignedBugCommentReadAtByBugId(loadAssignedBugCommentReadAt(authUser?.id))
@@ -2223,7 +2225,7 @@ function App() {
   }, [applyWorkspace, loggedIn, refreshNotifications])
 
   useEffect(() => {
-    if (!loggedIn || !authUser) {
+    if (!loggedIn || !authUserId) {
       organizationContextReadyRef.current = false
       setOrganizations([])
       setSelectedOrganizationId(null)
@@ -2237,7 +2239,7 @@ function App() {
     fetchOrganizations()
       .then(({ organizations: nextOrganizations }) => {
         if (!active) return
-        const storedOrganizationId = loadStoredSelectedOrganizationId(authUser.id)
+        const storedOrganizationId = loadStoredSelectedOrganizationId(authUserId)
         setOrganizations(nextOrganizations)
         setSelectedOrganizationId((current) => {
           if (
@@ -2266,7 +2268,7 @@ function App() {
     return () => {
       active = false
     }
-  }, [authUser?.id, loggedIn, organizationRefreshVersion])
+  }, [authUserId, loggedIn, organizationRefreshVersion, workspaceRefreshVersion])
 
   useEffect(() => {
     if (!loggedIn || !authUser) return
@@ -2468,6 +2470,19 @@ function App() {
       setInterval: (listener, delay) => window.setInterval(listener, delay),
     })
   }, [loggedIn, refreshWorkspace])
+
+  const activePackageMarketOrganization = selectedOrganizationId == null
+    ? null
+    : organizations.find(
+      (organization) => organization.id === selectedOrganizationId && organization.packageMarketEnabled,
+    ) ?? null
+  const packageMarketVisible = activePackageMarketOrganization !== null
+
+  useEffect(() => {
+    if (view === 'package_market' && !packageMarketVisible) {
+      setView('search')
+    }
+  }, [packageMarketVisible, view])
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded) return
@@ -2762,6 +2777,7 @@ function App() {
       !loggedIn ||
       !workspaceLoaded ||
       !authUser ||
+      !organizationContextReady ||
       shouldDeferTodoDeepLinkForInvite(inviteToken, settledInviteToken) ||
       pendingTodoDeepLinkId == null
     ) return
@@ -2801,6 +2817,7 @@ function App() {
     authUser,
     inviteToken,
     loggedIn,
+    organizationContextReady,
     organizations,
     pendingTodoDeepLinkId,
     projects,
@@ -3135,16 +3152,6 @@ function App() {
     }
   }
 
-  function selectProject(projectId: number) {
-    setDetailEntrySource('project')
-    setRequestedTodoDetailId(null)
-    setRequestedPackageEventId(null)
-    setSelectedProjectId(projectId)
-    setJournalDraft('')
-    setProjectDetailTab('journal')
-    setView('project')
-  }
-
   function setOrganizationContextForProject(projectId: number) {
     const project = projects.find((item) => item.id === projectId)
     if (!project) return
@@ -3174,6 +3181,17 @@ function App() {
     setDetailEntrySource('project')
     setProjectDetailTab('journal')
     if (view === 'project') setView('search')
+  }
+
+  function selectProject(projectId: number) {
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setOrganizationContextForProject(projectId)
+    setSelectedProjectId(projectId)
+    setJournalDraft('')
+    setProjectDetailTab('journal')
+    setView('project')
   }
 
   function selectMyWorkTodo(projectId: number, todoId: number) {
@@ -3794,11 +3812,10 @@ function App() {
     }
   }
 
-  async function loadPackageMarketRules(): Promise<{
-    expireMinutes: number
-    rules: PackageMarketRule[]
-  }> {
-    return fetchPackageMarketRules(selectedOrganizationId)
+  async function loadPackageMarketRules(
+    context?: PackageMarketRequestContext,
+  ): Promise<PackageMarketRulesResponse> {
+    return fetchPackageMarketRules(context)
   }
 
   async function loadPackageMarketDetail(payload: {
@@ -3811,6 +3828,7 @@ function App() {
     includeAll?: boolean
     packageId: string
     releaseVersion?: string
+    context?: PackageMarketRequestContext
   }): Promise<PackageMarketDetail> {
     if (payload.packageId === 'base-pro' || payload.packageId === 'base-oss') {
       return fetchPackageMarketBaseDetail({
@@ -3821,15 +3839,18 @@ function App() {
         deployType: payload.packageId === 'base-oss' ? 'oss' : 'pro',
         expireMinutes: payload.expireMinutes,
         includeAll: payload.includeAll,
-        organizationId: selectedOrganizationId,
         releaseVersion: payload.releaseVersion,
+        context: payload.context,
       })
     }
-    return fetchPackageMarketDetail({ ...payload, organizationId: selectedOrganizationId })
+    return fetchPackageMarketDetail(payload)
   }
 
-  async function loadPackageMarketCiBranches(packageId: string): Promise<PackageMarketCiBranch[]> {
-    return (await fetchPackageMarketCiBranches({ packageId, organizationId: selectedOrganizationId })).branches
+  async function loadPackageMarketCiBranches(
+    packageId: string,
+    context?: PackageMarketRequestContext,
+  ): Promise<PackageMarketCiBranch[]> {
+    return (await fetchPackageMarketCiBranches({ context, packageId })).branches
   }
 
   async function loadPackageMarketVersions(payload: {
@@ -3839,6 +3860,7 @@ function App() {
     deployType?: 'pro' | 'oss'
     includeAll?: boolean
     packageId: string
+    context?: PackageMarketRequestContext
   }): Promise<PackageMarketVersion[]> {
     if (payload.kind === 'ci') {
       return (await fetchPackageMarketCiVersions({
@@ -3846,7 +3868,7 @@ function App() {
         ciBranch: payload.ciBranch,
         includeAll: payload.includeAll,
         packageId: payload.packageId,
-        organizationId: selectedOrganizationId,
+        context: payload.context,
       })).versions
     }
 
@@ -3855,11 +3877,11 @@ function App() {
         arch: payload.arch,
         deployType: payload.packageId === 'base-oss' ? 'oss' : 'pro',
         includeAll: payload.includeAll,
-        organizationId: selectedOrganizationId,
+        context: payload.context,
       })).versions
     }
 
-    return (await fetchPackageMarketReleaseVersions({ ...payload, organizationId: selectedOrganizationId })).versions
+    return (await fetchPackageMarketReleaseVersions(payload)).versions
   }
 
   async function stopActiveAiTurn() {
@@ -4794,9 +4816,11 @@ ${packageTimelineText}`
                   <Flask size={18} weight="duotone" /> 测试工作台
                 </NavButton>
               ) : null}
-              <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
-                <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
-              </NavButton>
+              {packageMarketVisible ? (
+                <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
+                  <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
+                </NavButton>
+              ) : null}
               <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
                 <CloudArrowUp size={18} weight="duotone" /> 镜像同步
               </NavButton>
@@ -5309,6 +5333,13 @@ ${packageTimelineText}`
           <OrganizationWorkbench
             currentUser={authUser}
             onOrganizationsChanged={() => setOrganizationRefreshVersion((current) => current + 1)}
+            onPackageMarketVisibilityChange={(organizationId, enabled) => {
+              setOrganizations((current) => current.map((organization) => (
+                organization.id === organizationId
+                  ? { ...organization, packageMarketEnabled: enabled }
+                  : organization
+              )))
+            }}
             refreshToken={workspaceRefreshVersion}
           />
         ) : null}
@@ -5340,9 +5371,9 @@ ${packageTimelineText}`
           />
         ) : null}
 
-        {view === 'package_market' ? (
+        {view === 'package_market' && activePackageMarketOrganization ? (
           <PackageMarketBrowser
-            organizationId={selectedOrganizationId}
+            organizationId={activePackageMarketOrganization.id}
             onLoadPackageMarketCiBranches={loadPackageMarketCiBranches}
             onLoadPackageMarketDetail={loadPackageMarketDetail}
             onLoadPackageMarketRules={loadPackageMarketRules}
@@ -5418,6 +5449,46 @@ function WorkspaceBootScreen({ message }: { message?: string }) {
         </div>
       </div>
     </main>
+  )
+}
+
+function OrganizationSwitcher({
+  error,
+  organizations,
+  selectedOrganizationId,
+  onChange,
+}: {
+  error: string
+  organizations: OrganizationListItem[]
+  selectedOrganizationId: number | null
+  onChange: (value: string) => void
+}) {
+  const value = selectedOrganizationId == null ? 'personal' : String(selectedOrganizationId)
+  const selectedOrganization = organizations.find((organization) => organization.id === selectedOrganizationId)
+
+  return (
+    <div className="sidebar-organization-switcher">
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="sidebar-organization-select" aria-label="切换组织">
+          <span className="sidebar-organization-select-value">
+            <Buildings size={16} weight="duotone" aria-hidden />
+            <SelectValue placeholder="个人项目">
+              {selectedOrganization?.name || '个人项目'}
+            </SelectValue>
+          </span>
+        </SelectTrigger>
+        <SelectContent className="sidebar-organization-content">
+          <SelectItem value="personal">个人项目</SelectItem>
+          {organizations.length > 0 ? <SelectSeparator /> : null}
+          {organizations.map((organization) => (
+            <SelectItem key={organization.id} value={String(organization.id)}>
+              {organization.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error ? <p className="sidebar-organization-error" role="alert">{error}</p> : null}
+    </div>
   )
 }
 
@@ -5664,46 +5735,6 @@ function LoginScreen({
         </form>
       </section>
     </main>
-  )
-}
-
-function OrganizationSwitcher({
-  error,
-  organizations,
-  selectedOrganizationId,
-  onChange,
-}: {
-  error: string
-  organizations: OrganizationListItem[]
-  selectedOrganizationId: number | null
-  onChange: (value: string) => void
-}) {
-  const value = selectedOrganizationId == null ? 'personal' : String(selectedOrganizationId)
-  const selectedOrganization = organizations.find((organization) => organization.id === selectedOrganizationId)
-
-  return (
-    <div className="sidebar-organization-switcher">
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="sidebar-organization-select" aria-label="切换组织">
-          <span className="sidebar-organization-select-value">
-            <Buildings size={16} weight="duotone" aria-hidden />
-            <SelectValue placeholder="个人项目">
-              {selectedOrganization?.name || '个人项目'}
-            </SelectValue>
-          </span>
-        </SelectTrigger>
-        <SelectContent className="sidebar-organization-content">
-          <SelectItem value="personal">个人项目</SelectItem>
-          {organizations.length > 0 ? <SelectSeparator /> : null}
-          {organizations.map((organization) => (
-            <SelectItem key={organization.id} value={String(organization.id)}>
-              {organization.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {error ? <p className="sidebar-organization-error" role="alert">{error}</p> : null}
-    </div>
   )
 }
 
@@ -6099,13 +6130,11 @@ function ProjectDetail({
     includeAll?: boolean
     packageId: string
     releaseVersion?: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
-  onInstallLoadMarketCiBranches: (packageId: string) => Promise<PackageMarketCiBranch[]>
-  onInstallLoadMarketRules: () => Promise<{
-    expireMinutes: number
-    rules: PackageMarketRule[]
-  }>
+  onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
+  onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onInstallLoadMarketVersions: (payload: {
     arch: string
     ciBranch?: string
@@ -6113,6 +6142,7 @@ function ProjectDetail({
     deployType?: 'pro' | 'oss'
     includeAll?: boolean
     packageId: string
+    context?: PackageMarketRequestContext
   }) => Promise<PackageMarketVersion[]>
   onSaveInstallEvent: (
     eventId: number | null,

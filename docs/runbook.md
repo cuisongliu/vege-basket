@@ -69,6 +69,38 @@ it does not prove database, OSS, Feishu, or AI workflows.
 
 ## Database Operations
 
+Versioned incremental DDL is maintained in `server/migrations/`. Every table, constraint, and
+index change still requires a new forward-only SQL file; do not edit an already-applied file.
+Keep `server/schema.ts` synchronized as the idempotent bootstrap and compatibility definition.
+
+For the organization package-market policy release, updating the application image is sufficient:
+the existing API startup path applies `schemaSql` before serving requests, which creates the
+policy tables and updates the selection constraint idempotently. Do not run `psql` or
+`npm run db:init` as an extra release step for this change. The database role used by the API
+must already have permission to create the new tables and alter the policy constraint.
+
+No data is copied from or deleted from `organization_package_markets`. If that old table exists,
+it remains physically present but is no longer read or written. Organizations without rows in the
+new policy tables resolve to the new default: market enabled, Release and CI enabled, and all
+available packages visible. A normal Pod restart simply repeats the existing idempotent startup
+DDL; this release adds no separate migration runner or Pod coordination mechanism.
+
+The three package-market SQL files remain the structural change record and can be run manually
+only when an explicitly approved environment needs that audit trail applied independently:
+
+```bash
+psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+  --file=server/migrations/20260828_organization_package_market_policy.sql
+psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+  --file=server/migrations/20260828_organization_package_market_policy_excluded_mode.sql
+psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+  --file=server/migrations/20260828_organization_package_market_policy_shared_selection.sql
+```
+
+Future changes that need data transformation, destructive cleanup, or incompatible behavior
+still require an explicit migration and release plan; `schemaSql` is not a substitute for those
+operations.
+
 `npm run db:init` applies the current idempotent schema. `npm run db:encrypt-existing`
 applies the schema and encrypts supported legacy plaintext fields. Both are mutating
 operations and require explicit approval, a current backup or snapshot, the intended

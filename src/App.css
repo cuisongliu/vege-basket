@@ -8123,6 +8123,10 @@ textarea:focus {
   max-width: min(1040px, calc(100vw - 32px));
 }
 
+.package-market-dialog .package-market-sidebar {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .package-operation-dialog {
   width: min(1180px, calc(100vw - 32px));
   max-width: min(1180px, calc(100vw - 32px));
@@ -8939,6 +8943,7 @@ textarea:focus {
 }
 
 .package-market-workspace .package-market-sidebar {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   padding-right: 14px;
   border-right: 1px solid var(--line);
 }
@@ -9010,7 +9015,7 @@ textarea:focus {
 
 .package-market-sidebar {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
 }

@@ -4,7 +4,6 @@ import {
   formatPackageMarketTimestamp,
   isAllowedPackageMarketObjectKey,
   isSafePackageMarketObjectKey,
-  listPackageMarketCatalog,
   listPackageMarketRules,
   matchesPackageMarketCiFileName,
   matchesPackageMarketReleaseFileName,
@@ -220,29 +219,6 @@ test('returns bundled package market rules without OSS credentials', async () =>
     assert.equal(rules.find((rule) => rule.id === 'sealos-pro')?.category, 'apps')
     assert.equal(rules.find((rule) => rule.id === 'sealos-pro')?.fileNameFormats.includes('sealos-pro-%s-%s.tar'), true)
     assert.equal(rules.find((rule) => rule.id === 'sealos-oss')?.category, 'apps')
-  } finally {
-    for (const key of keys) {
-      if (previous[key] == null) {
-        delete process.env[key]
-      } else {
-        process.env[key] = previous[key]
-      }
-    }
-  }
-})
-
-test('builds an attachable catalog with stable base package aliases', async () => {
-  const keys = ['OSS_ENDPOINT', 'OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET', 'OSS_BUCKET']
-  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
-  try {
-    for (const key of keys) delete process.env[key]
-    const catalog = await listPackageMarketCatalog()
-    const ids = catalog.map((rule) => rule.id)
-    assert.ok(ids.includes('base-pro'))
-    assert.ok(ids.includes('base-oss'))
-    assert.equal(ids.includes('sealos-pro'), false)
-    assert.equal(ids.includes('sealos-oss'), false)
-    assert.equal(new Set(ids).size, ids.length)
   } finally {
     for (const key of keys) {
       if (previous[key] == null) {

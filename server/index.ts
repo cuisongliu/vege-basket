@@ -62,14 +62,25 @@ import {
   getOssObject,
   getPackageMarketDetail,
   getPackageMarketExpireMinutes,
+  isPackageMarketObjectKeyAllowedForRule,
   isSafePackageMarketObjectKey,
   listPackageMarketCiBranches,
   listPackageMarketCiVersions,
   listPackageMarketReleaseVersions,
-  listPackageMarketCatalog,
+  listPackageMarketRules,
   normalizePackageMarketExpireMinutes,
   putOssObject,
+  type PackageMarketRule,
 } from './package-market.ts'
+import {
+  ensurePackageMarketFeatureEnabled,
+  ensurePackageMarketRuleAllowed,
+  getOrganizationPackageMarketPolicy,
+  getPackageMarketRulesResponse,
+  organizationPackageMarketPolicyForPersonalWorkspace,
+  OrganizationPackageMarketPolicyError,
+} from './organization-package-market.ts'
+import type { OrganizationPackageMarketPolicy } from '../shared/organization-package-market.ts'
 import {
   addProjectPackageItems,
   completeProjectPackageEvent,
@@ -83,7 +94,7 @@ import {
   ensureProjectPackageOperationKind,
   ensureProjectPackageOperationStatus,
   exportProjectPackageTimeline,
-  getProjectPackageItemObjectKey,
+  getProjectPackageItemDownloadSource,
   getProjectPackageTimeline,
   ProjectPackageEventError,
   resolvePackageEventMentionUserIds,
@@ -3398,67 +3409,6 @@ function ensurePackageMarketIncludeAll(value: unknown) {
   return value === 'true'
 }
 
-function parsePackageMarketOrganizationScope(value: unknown): number | null | undefined {
-  const raw = String(value ?? '').trim()
-  if (raw === 'personal') return null
-  const organizationId = Number(raw)
-  return Number.isSafeInteger(organizationId) && organizationId > 0 ? organizationId : undefined
-}
-
-async function ensurePackageMarketScope(
-  request: express.Request,
-  response: express.Response,
-  userId: number,
-) {
-  const organizationId = parsePackageMarketOrganizationScope(request.query.organizationId)
-  if (organizationId === undefined) {
-    response.status(400).json({ error: 'Valid package market organization scope is required' })
-    return undefined
-  }
-  if (organizationId !== null) {
-    const membership = await query(
-      `select 1 from organization_memberships
-       where organization_id = $1 and user_id = $2 and status = 'active'`,
-      [organizationId, userId],
-    )
-    if (!membership.rows[0]) {
-      response.status(404).json({ error: 'Organization not found' })
-      return undefined
-    }
-  }
-  return organizationId
-}
-
-async function ensurePackageMarketRuleAccess(
-  response: express.Response,
-  organizationId: number | null,
-  packageMarketId: string,
-) {
-  const catalog = await listPackageMarketCatalog()
-  if (!catalog.some((rule) => rule.id === packageMarketId)) {
-    response.status(404).json({ error: 'Package market not found' })
-    return false
-  }
-  const result = organizationId === null
-    ? await query(
-        `select 1 where not exists (
-           select 1 from organization_package_markets
-           where package_market_id = $1
-         )`,
-        [packageMarketId],
-      )
-    : await query(
-        `select 1 from organization_package_markets
-         where organization_id = $1 and package_market_id = $2`,
-        [organizationId, packageMarketId],
-      )
-  if (!result.rows[0]) {
-    response.status(404).json({ error: 'Package market is not available in the current organization' })
-    return false
-  }
-  return true
-}
-
 type SqlExecutor = (text: string, params: unknown[]) => Promise<unknown>
 
 async function linkPendingMembershipsWithExecutor(
@@ -3794,6 +3744,214 @@ async function getProjectReadAccess(projectId: number, userId: number): Promise<
     ownerUserId: Number(row.owner_user_id),
     role: 'member',
   }
+}
+
+type PackageMarketRequestContext = {
+  organizationId: number | null
+  policy: OrganizationPackageMarketPolicy
+}
+
+function optionalPositiveId(value: unknown) {
+  if (value == null || String(value).trim() === '') return null
+  const id = Number(value)
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+async function resolvePackageMarketRequestContext(params: {
+  organizationId?: unknown
+  projectId?: unknown
+  requireOrganization?: boolean
+  userId: number
+}): Promise<PackageMarketRequestContext> {
+  const requestedOrganizationId = optionalPositiveId(params.organizationId)
+  const requestedProjectId = optionalPositiveId(params.projectId)
+  if (requestedOrganizationId && requestedProjectId) {
+    throw new OrganizationPackageMarketPolicyError(
+      'ORGANIZATION_CONTEXT_REQUIRED',
+      '组织上下文不能同时指定组织和项目',
+      400,
+    )
+  }
+
+  if (requestedProjectId) {
+    const access = await getProjectReadAccess(requestedProjectId, params.userId)
+    if (!access) {
+      throw new OrganizationPackageMarketPolicyError(
+        'ORGANIZATION_CONTEXT_REQUIRED',
+        '项目不存在或无权访问',
+        404,
+      )
+    }
+    const project = await query<{ organization_id: string | null }>(
+      'select organization_id from projects where id = $1',
+      [requestedProjectId],
+    )
+    const projectRow = project.rows[0]
+    if (!projectRow) {
+      throw new OrganizationPackageMarketPolicyError(
+        'ORGANIZATION_CONTEXT_REQUIRED',
+        '项目不存在或无权访问',
+        404,
+      )
+    }
+    const organizationId = projectRow.organization_id ? Number(projectRow.organization_id) : null
+    return {
+      organizationId,
+      policy: organizationId == null
+        ? organizationPackageMarketPolicyForPersonalWorkspace()
+        : await getOrganizationPackageMarketPolicy(organizationId),
+    }
+  }
+
+  if (!requestedOrganizationId) {
+    if (params.requireOrganization) {
+      throw new OrganizationPackageMarketPolicyError(
+        'ORGANIZATION_CONTEXT_REQUIRED',
+        '全局安装包市场必须先选择组织',
+        400,
+      )
+    }
+    return {
+      organizationId: null,
+      policy: organizationPackageMarketPolicyForPersonalWorkspace(),
+    }
+  }
+
+  const membership = await query<{ id: string }>(
+    `select organization_id as id
+     from organization_memberships
+     where organization_id = $1 and user_id = $2 and status = 'active'`,
+    [requestedOrganizationId, params.userId],
+  )
+  if (!membership.rows[0]) {
+    throw new OrganizationPackageMarketPolicyError(
+      'ORGANIZATION_CONTEXT_REQUIRED',
+      '组织不存在或无权访问',
+      404,
+    )
+  }
+  return {
+    organizationId: requestedOrganizationId,
+    policy: await getOrganizationPackageMarketPolicy(requestedOrganizationId),
+  }
+}
+
+async function authorizePackageMarketRequest(params: {
+  organizationId?: unknown
+  projectId?: unknown
+  requireOrganization?: boolean
+  userId: number
+}) {
+  const context = await resolvePackageMarketRequestContext(params)
+  ensurePackageMarketFeatureEnabled(context.policy)
+  const rules = await listPackageMarketRules()
+  return { ...context, rules }
+}
+
+async function resolveProjectPackageMarketTransactionContext(
+  client: PoolClient,
+  projectId: number,
+): Promise<PackageMarketRequestContext> {
+  const projectResult = await client.query<{ organization_id: string | null }>(
+    'select organization_id from projects where id = $1',
+    [projectId],
+  )
+  const initialProject = projectResult.rows[0]
+  if (!initialProject) {
+    throw new OrganizationPackageMarketPolicyError(
+      'ORGANIZATION_CONTEXT_REQUIRED',
+      '项目不存在或无权访问',
+      404,
+    )
+  }
+
+  const initialOrganizationId = initialProject.organization_id
+    ? Number(initialProject.organization_id)
+    : null
+  if (initialOrganizationId != null) {
+    const organizationResult = await client.query<{ id: string }>(
+      'select id from organizations where id = $1 for share',
+      [initialOrganizationId],
+    )
+    if (!organizationResult.rows[0]) {
+      throw new OrganizationPackageMarketPolicyError(
+        'ORGANIZATION_CONTEXT_REQUIRED',
+        '项目所属组织不存在或无权访问',
+        404,
+      )
+    }
+  }
+
+  const lockedProjectResult = await client.query<{ organization_id: string | null }>(
+    'select organization_id from projects where id = $1 for share',
+    [projectId],
+  )
+  const lockedProject = lockedProjectResult.rows[0]
+  if (!lockedProject) {
+    throw new OrganizationPackageMarketPolicyError(
+      'ORGANIZATION_CONTEXT_REQUIRED',
+      '项目不存在或无权访问',
+      404,
+    )
+  }
+  const organizationId = lockedProject.organization_id ? Number(lockedProject.organization_id) : null
+  if (organizationId !== initialOrganizationId) {
+    throw new OrganizationPackageMarketPolicyError(
+      'PACKAGE_MARKET_POLICY_CONFLICT',
+      '项目组织上下文已变化，请重试',
+      409,
+    )
+  }
+  return {
+    organizationId,
+    policy: organizationId == null
+      ? organizationPackageMarketPolicyForPersonalWorkspace()
+      : await getOrganizationPackageMarketPolicy(organizationId, client),
+  }
+}
+
+async function ensureProjectPackageMarketItemsAllowed(
+  projectId: number,
+  userId: number,
+  items: readonly Pick<ProjectPackageItemInput, 'channel' | 'objectKey' | 'sourcePackageId'>[],
+  options: {
+    client?: PoolClient
+    rules?: readonly PackageMarketRule[]
+  } = {},
+): Promise<readonly PackageMarketRule[]> {
+  if (items.length === 0) return options.rules ?? []
+  const state = options.client
+    ? await resolveProjectPackageMarketTransactionContext(options.client, projectId)
+    : await authorizePackageMarketRequest({ projectId, userId })
+  const rules = options.rules ?? await listPackageMarketRules()
+  for (const item of items) {
+    const channel: PackageMarketChannel | null = item.channel === 'ci'
+      ? 'ci'
+      : item.channel === 'release'
+        ? 'release'
+        : null
+    if (!channel) {
+      throw new OrganizationPackageMarketPolicyError(
+        'PACKAGE_MARKET_RULE_NOT_ALLOWED',
+        '安装包渠道无效',
+        400,
+      )
+    }
+    ensurePackageMarketRuleAllowed(rules, state.policy, item.sourcePackageId, channel)
+    if (!isPackageMarketObjectKeyAllowedForRule({
+      channel,
+      objectKey: item.objectKey,
+      packageId: item.sourcePackageId,
+      rules,
+    })) {
+      throw new OrganizationPackageMarketPolicyError(
+        'PACKAGE_MARKET_RULE_NOT_ALLOWED',
+        '安装包对象路径与安装包规则不匹配',
+        400,
+      )
+    }
+  }
+  return rules
 }
 
 async function getProjectInviteLinkAccess(projectId: number, userId: number) {
@@ -11130,35 +11288,37 @@ app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, respo
 app.get('/api/package-market/rules', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  const catalog = await listPackageMarketCatalog()
-  const linked = await query<{ package_market_id: string }>(
-    organizationId === null
-      ? `select package_market_id from organization_package_markets`
-      : `select package_market_id from organization_package_markets where organization_id = $1`,
-    organizationId === null ? [] : [organizationId],
-  )
-  const linkedIds = new Set(linked.rows.map((row) => row.package_market_id))
-  response.json({
-    expireMinutes: getPackageMarketExpireMinutes(),
-    rules: catalog.filter((rule) => organizationId === null
-      ? !linkedIds.has(rule.id)
-      : linkedIds.has(rule.id)),
+  const projectId = optionalPositiveId(request.query.projectId)
+  const state = await resolvePackageMarketRequestContext({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
   })
+  response.json(await getPackageMarketRulesResponse({
+    expireMinutes: getPackageMarketExpireMinutes(),
+    organizationId: state.organizationId,
+    policy: state.policy,
+  }))
 }))
 
 app.get('/api/package-market/packages/base', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const projectId = optionalPositiveId(request.query.projectId)
   const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, packageId)) return
+  const channel = ensurePackageMarketChannel(request.query.channel)
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, channel)
   response.json(await getPackageMarketDetail({
     packageId,
     arch: String(request.query.arch ?? 'amd64'),
-    channel: ensurePackageMarketChannel(request.query.channel),
+    channel,
     ciBranch: String(request.query.ciBranch ?? ''),
     ciVersion: String(request.query.ciVersion ?? ''),
     expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
@@ -11170,10 +11330,15 @@ app.get('/api/package-market/packages/base', asyncHandler(async (request, respon
 app.get('/api/package-market/packages/base/release-versions', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const projectId = optionalPositiveId(request.query.projectId)
   const packageId = String(request.query.deployType) === 'oss' ? 'base-oss' : 'base-pro'
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, packageId)) return
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, 'release')
   response.json({
     versions: await listPackageMarketReleaseVersions({
       packageId,
@@ -11186,13 +11351,20 @@ app.get('/api/package-market/packages/base/release-versions', asyncHandler(async
 app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
+  const projectId = optionalPositiveId(request.query.projectId)
+  const channel = ensurePackageMarketChannel(request.query.channel)
+  const packageId = String(request.params.packageId)
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, channel)
   response.json(await getPackageMarketDetail({
-    packageId: String(request.params.packageId),
+    packageId,
     arch: String(request.query.arch ?? 'amd64'),
-    channel: ensurePackageMarketChannel(request.query.channel),
+    channel,
     ciBranch: String(request.query.ciBranch ?? ''),
     ciVersion: String(request.query.ciVersion ?? ''),
     expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
@@ -11204,12 +11376,18 @@ app.get('/api/package-market/packages/:packageId', asyncHandler(async (request, 
 app.get('/api/package-market/packages/:packageId/ci-branches', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
+  const projectId = optionalPositiveId(request.query.projectId)
+  const packageId = String(request.params.packageId)
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, 'ci')
   response.json({
     branches: await listPackageMarketCiBranches({
-      packageId: String(request.params.packageId),
+      packageId,
     }),
   })
 }))
@@ -11217,12 +11395,18 @@ app.get('/api/package-market/packages/:packageId/ci-branches', asyncHandler(asyn
 app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
+  const projectId = optionalPositiveId(request.query.projectId)
+  const packageId = String(request.params.packageId)
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, 'ci')
   response.json({
     versions: await listPackageMarketCiVersions({
-      packageId: String(request.params.packageId),
+      packageId,
       arch: String(request.query.arch ?? 'amd64'),
       ciBranch: String(request.query.ciBranch ?? ''),
       includeAll: ensurePackageMarketIncludeAll(request.query.includeAll),
@@ -11233,12 +11417,18 @@ app.get('/api/package-market/packages/:packageId/ci-versions', asyncHandler(asyn
 app.get('/api/package-market/packages/:packageId/release-versions', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  const organizationId = await ensurePackageMarketScope(request, response, userId)
-  if (organizationId === undefined) return
-  if (!await ensurePackageMarketRuleAccess(response, organizationId, String(request.params.packageId))) return
+  const projectId = optionalPositiveId(request.query.projectId)
+  const packageId = String(request.params.packageId)
+  const state = await authorizePackageMarketRequest({
+    organizationId: request.query.organizationId,
+    projectId,
+    requireOrganization: projectId == null,
+    userId,
+  })
+  ensurePackageMarketRuleAllowed(state.rules, state.policy, packageId, 'release')
   response.json({
     versions: await listPackageMarketReleaseVersions({
-      packageId: String(request.params.packageId),
+      packageId,
       arch: String(request.query.arch ?? 'amd64'),
       includeAll: ensurePackageMarketIncludeAll(request.query.includeAll),
     }),
@@ -11253,7 +11443,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
           sourcePackageId: String(value.sourcePackageId ?? ''),
           sourcePackageName: String(value.sourcePackageName ?? ''),
           packageName: String(value.packageName ?? ''),
-          channel: String(value.channel ?? ''),
+          channel: String(value.channel ?? 'release'),
           channelLabel: String(value.channelLabel ?? ''),
           arch: String(value.arch ?? ''),
           version: String(value.version ?? ''),
@@ -11337,6 +11527,7 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     response.status(400).json({ error: '安装包对象路径不在允许范围内' })
     return
   }
+  const packageMarketRules = await ensureProjectPackageMarketItemsAllowed(projectId, userId, aggregate.items)
   const saved = await runProjectPackageEventMutation(response, () => saveProjectPackageEvent({
     action: aggregate.action,
     assigneeUserId,
@@ -11350,6 +11541,12 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
+    validatePackageItems: async (client, items) => {
+      await ensureProjectPackageMarketItemsAllowed(projectId, userId, items, {
+        client,
+        rules: packageMarketRules,
+      })
+    },
   }))
   if (!saved.ok) return
   const result = saved.value
@@ -11380,6 +11577,7 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     response.status(400).json({ error: '安装包对象路径不在允许范围内' })
     return
   }
+  const packageMarketRules = await ensureProjectPackageMarketItemsAllowed(projectId, userId, aggregate.items)
   const saved = await runProjectPackageEventMutation(response, () => saveProjectPackageEvent({
     action: aggregate.action,
     assignedByUserId: userId,
@@ -11394,6 +11592,12 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
+    validatePackageItems: async (client, items) => {
+      await ensureProjectPackageMarketItemsAllowed(projectId, userId, items, {
+        client,
+        rules: packageMarketRules,
+      })
+    },
   }))
   if (!saved.ok) return
   const result = saved.value
@@ -11572,7 +11776,7 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', a
           sourcePackageId: String(item?.sourcePackageId ?? ''),
           sourcePackageName: String(item?.sourcePackageName ?? ''),
           packageName: String(item?.packageName ?? ''),
-          channel: String(item?.channel ?? ''),
+          channel: String(item?.channel ?? 'release'),
           channelLabel: String(item?.channelLabel ?? ''),
           arch: String(item?.arch ?? ''),
           version: String(item?.version ?? ''),
@@ -11605,14 +11809,29 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/packages', a
     })
     return
   }
+  const packageMarketRules = await ensureProjectPackageMarketItemsAllowed(projectId, userId, items)
   try {
     await addProjectPackageItems({
       projectId,
       eventId,
       createdByUserId: userId,
       items,
+      validatePackageItems: async (client, normalizedItems) => {
+        await ensureProjectPackageMarketItemsAllowed(projectId, userId, normalizedItems, {
+          client,
+          rules: packageMarketRules,
+        })
+      },
     })
   } catch (error) {
+    if (error instanceof OrganizationPackageMarketPolicyError) {
+      response.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        requestId,
+      })
+      return
+    }
     const diagnostic = createPackageItemFailureDiagnostic(error, {
       projectId,
       eventId,
@@ -11791,20 +12010,35 @@ app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHand
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  const objectKey = await getProjectPackageItemObjectKey({
+  const source = await getProjectPackageItemDownloadSource({
     projectId,
     itemId: Number(request.params.itemId),
   })
-  if (!objectKey) {
+  if (!source) {
     response.status(404).json({ error: 'Package item not found' })
     return
   }
-  if (!isSafePackageMarketObjectKey(objectKey)) {
+  const channel: PackageMarketChannel | null = source.channel === 'ci'
+    ? 'ci'
+    : source.channel === 'release'
+      ? 'release'
+      : null
+  let objectBindingValid = false
+  try {
+    objectBindingValid = Boolean(channel && isPackageMarketObjectKeyAllowedForRule({
+      channel,
+      objectKey: source.objectKey,
+      packageId: source.sourcePackageId,
+    }))
+  } catch {
+    // Fail closed when the local rule catalog cannot be loaded.
+  }
+  if (!objectBindingValid) {
     response.status(404).json({ error: 'Package item not found' })
     return
   }
   response.json(createPackageItemDownloadLink(
-    objectKey,
+    source.objectKey,
     ensurePackageMarketExpireMinutes(request.query.expireMinutes),
   ))
 }))
@@ -13092,6 +13326,10 @@ app.get(/^(?!\/api).*/, (_request, response) => {
 
 app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
   void next
+  if (error instanceof OrganizationPackageMarketPolicyError) {
+    response.status(error.status).json({ error: error.message, code: error.code })
+    return
+  }
   console.error(error)
   const status = error && typeof error === 'object' && 'status' in error
     ? Number((error as { status?: unknown }).status)

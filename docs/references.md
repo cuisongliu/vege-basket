@@ -5,10 +5,10 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
-| HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts` |
-| Database schema | `server/schema.ts` |
+| HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts`, `server/organization-package-market.ts` |
+| Database schema and incremental migrations | `server/schema.ts`, `server/migrations/` |
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |
@@ -140,13 +140,13 @@ families are:
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
-| Package market | `/api/package-market/rules`, package details, release versions, CI versions |
+| Package market | Organization-context `GET /api/package-market/rules?organizationId=:id` (or `projectId=:id` for a project selector), package details, release versions, CI branches/versions; every market read is filtered by the resolved organization policy |
 | Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
-| Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, and weekly summaries |
+| Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, weekly summaries, and the dedicated package-market catalog/policy settings Tab |
 | Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, the shared four-section editor/AI template, cursor-position source insertion, draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, bugs, comments, and author-owned comment edits/deletions |
 | Test-space collaboration | `GET /api/test-spaces/settings`, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
@@ -214,6 +214,16 @@ must remain bound to the authorized project ID.
 - Package operation kind: `document`, `event`.
 - Package operation status: `pending`, `success`, `failed`.
 - Package market channel: `release`, `ci`.
+- Organization package-market policy: one feature switch plus independent `release` and `ci`
+  channel switches. A single organization-wide `all`, `selected`, or `excluded` visibility
+  range controls the stable rule IDs for every enabled channel: selected IDs form an allow-list,
+  excluded IDs form a deny-list, and either list may contain one package. A save may not leave
+  any enabled channel without a usable package; close that channel to prohibit every package.
+  Dependency rules inherit their parent's channel visibility. The OSS base package has no CI
+  surface. Global market requests must provide one organization context; project selectors
+  resolve the project's organization and personal projects use the default enabled/all policy.
+  The `includeAll` control only broadens object matching inside an allowed rule and never
+  bypasses organization visibility.
 - Supported todo images and test-workbench evidence attachments: PNG, JPEG, WebP, GIF images; MP4, WebM, and QuickTime videos.
 - Account roles: `developer`, `tester`, `organization_admin`. `developer` and `tester`
   are switchable session personas. `organization_admin` is additive, is not shown in the

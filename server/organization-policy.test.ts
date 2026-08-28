@@ -194,30 +194,13 @@ test('organization test-space attachment locks the space before validating membe
   assert.match(routeSource, /organization_id = \$1 and user_id = any\(\$2::bigint\[\]\) and status = 'active'/u)
 })
 
-test('organization package markets support atomic multi-attachment', () => {
-  const routeStart = organizationsSource.indexOf("router.post('/organizations/:organizationId/package-markets',")
-  const routeEnd = organizationsSource.indexOf("router.put('/organizations/:organizationId/weekly-reports", routeStart)
-  const routeSource = organizationsSource.slice(routeStart, routeEnd)
-
-  assert.notEqual(routeStart, -1)
-  assert.notEqual(routeEnd, -1)
-  assert.match(routeSource, /from unnest\(\$2::text\[\]\)/u)
-  assert.match(routeSource, /on conflict \(organization_id, package_market_id\) do nothing/u)
-  assert.match(routeSource, /attached\.rows\.length !== packageMarketIds\.length/u)
-  assert.match(routeSource, /await client\.query\('rollback'\)/u)
-  assert.match(organizationWorkbenchSource, /全选安装包市场/u)
-  assert.match(organizationWorkbenchSource, /attachPackageMarketsToOrganization/u)
-  assert.match(apiSource, /\/organizations\/\$\{organizationId\}\/package-markets/u)
-  assert.match(schemaSource, /primary key \(organization_id, package_market_id\)/u)
-  assert.match(schemaSource, /drop constraint if exists organization_package_markets_package_market_id_key/u)
-  assert.match(organizationsSource, /router\.delete\('\/organizations\/:organizationId\/package-markets'/u)
-  assert.match(organizationsSource, /any\(\$2::text\[\]\)/u)
-  assert.match(organizationsSource, /removed\.rows\.length !== packageMarketIds\.length/u)
-  assert.match(organizationsSource, /router\.delete\('\/organizations\/:organizationId\/package-markets\/:packageMarketId'/u)
-  assert.match(organizationsSource, /package_market\.detached/u)
-  assert.match(organizationWorkbenchSource, /全选已绑定安装包市场/u)
-  assert.match(organizationWorkbenchSource, /removePackageMarketsFromOrganization/u)
-  assert.match(apiSource, /method: 'DELETE'/u)
+test('organization package market policy replaces the legacy association model', () => {
+  assert.doesNotMatch(schemaSource, /organization_package_markets/u)
+  assert.doesNotMatch(organizationsSource, /\/package-markets/u)
+  assert.doesNotMatch(apiSource, /\/package-markets/u)
+  assert.match(organizationsSource, /package-market\/policy/u)
+  assert.match(apiSource, /package-market\/policy/u)
+  assert.match(organizationWorkbenchSource, /OrganizationPackageMarketPanel/u)
 })
 
 test('organization detail omits invitations after the recipient joins', () => {
