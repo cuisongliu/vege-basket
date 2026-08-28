@@ -8,7 +8,7 @@
 | Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
 | HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts`, `server/organization-package-market.ts` |
-| Database schema | `server/schema.ts` |
+| Database schema and incremental migrations | `server/schema.ts`, `server/migrations/` |
 | Encryption format | `server/crypto.ts` |
 | Shared AI provider and limits | `server/ai-provider.ts`, `server/ai-rate-limit.ts` |
 | AI summary/proposal contracts | `server/ai-period-summary.ts`, `server/ai-todo-proposals.ts` |

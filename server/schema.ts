@@ -133,6 +133,8 @@ alter table organizations
   add column if not exists weekly_report_close_day smallint not null default 1,
   add column if not exists weekly_report_close_time time not null default '23:59';
 
+-- Keep this idempotent definition synchronized with
+-- server/migrations/20260828_organization_package_market_policy.sql.
 create table if not exists organization_feature_settings (
   organization_id bigint not null references organizations(id) on delete cascade,
   feature_key text not null,

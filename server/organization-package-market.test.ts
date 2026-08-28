@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { isPackageMarketObjectKeyAllowedForRule, type PackageMarketRule } from './package-market.ts'
 import {
@@ -14,6 +15,11 @@ import {
   type OrganizationPackageMarketPolicy,
 } from '../shared/organization-package-market.ts'
 import { schemaSql } from './schema.ts'
+
+const organizationPackageMarketMigrationSql = readFileSync(
+  new URL('./migrations/20260828_organization_package_market_policy.sql', import.meta.url),
+  'utf8',
+)
 
 const rules = [
   { id: 'sealos-pro', category: 'apps' as const, parent: '' },
@@ -116,6 +122,43 @@ test('organization package-market schema keeps feature and channel policies sepa
   assert.match(schemaSql, /create table if not exists organization_package_market_selections/u)
   assert.match(schemaSql, /channel in \('release', 'ci'\)/u)
   assert.match(schemaSql, /mode in \('all', 'selected'\)/u)
+})
+
+test('organization package-market migration mirrors every new table and index', () => {
+  assert.match(organizationPackageMarketMigrationSql, /^begin;$/mu)
+  assert.match(organizationPackageMarketMigrationSql, /^commit;$/mu)
+  const tableNames = [
+    'organization_feature_settings',
+    'organization_package_market_channel_policies',
+    'organization_package_market_selections',
+  ]
+  for (const tableName of tableNames) {
+    const pattern = new RegExp(
+      `create table if not exists ${tableName} \\([\\s\\S]*?\\n\\);`,
+      'u',
+    )
+    const schemaStatement = schemaSql.match(pattern)?.[0]
+    const migrationStatement = organizationPackageMarketMigrationSql.match(pattern)?.[0]
+    assert.ok(schemaStatement, `schemaSql is missing the ${tableName} definition`)
+    assert.ok(migrationStatement, `migration is missing the ${tableName} definition`)
+    assert.equal(
+      migrationStatement?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+      schemaStatement?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+    )
+  }
+  const indexPattern =
+    /create index if not exists idx_organization_package_market_selections_lookup[\s\S]*?\);/u
+  const schemaIndex = schemaSql.match(indexPattern)?.[0]
+  const migrationIndex = organizationPackageMarketMigrationSql.match(indexPattern)?.[0]
+  assert.ok(schemaIndex, 'schemaSql is missing the package-market selection index')
+  assert.ok(migrationIndex, 'migration is missing the package-market selection index')
+  assert.equal(
+    migrationIndex?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+    schemaIndex?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+  )
+  assert.match(organizationPackageMarketMigrationSql, /channel in \('release', 'ci'\)/u)
+  assert.match(organizationPackageMarketMigrationSql, /mode in \('all', 'selected'\)/u)
+  assert.match(organizationPackageMarketMigrationSql, /jsonb_typeof\(config\) = 'object'/u)
 })
 
 test('missing policy fields resolve to enabled all-channel defaults', () => {

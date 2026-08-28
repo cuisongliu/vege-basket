@@ -97,7 +97,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   workflow `run-name`, encrypted user-owned run records, bounded Run/Job/Step
   synchronization, per-user admission, successful artifact URI derivation, and
   owner-scoped failed-record cleanup.
-- `server/schema.ts`: idempotent PostgreSQL DDL and integrity indexes.
+- `server/schema.ts`: idempotent PostgreSQL DDL and integrity indexes. Versioned
+  incremental statements live in `server/migrations/` and must accompany every
+  table, constraint, or index change.
 - `server/crypto.ts`: AES-256-GCM envelopes and blind indexes.
 - `server/db.ts`: the shared PostgreSQL pool. Domain modules must use one checked-out
   `PoolClient` for every atomic multi-statement operation.
@@ -454,7 +456,10 @@ Owner、任意有效项目成员，以及同时拥有 `organization_admin` 账�
 条。原本拥有项目访问权的登录用户可从分享页打开内部待办详情。
 
 Server startup validates encryption keys and executes `schemaSql`; starting the API is a
-database mutation, not a read-only smoke test. There is no automatic down migration.
+database mutation, not a read-only smoke test. Versioned files under
+`server/migrations/` are the operator-facing incremental DDL record and must be
+applied before code that depends on a new structure. The application does not
+automatically execute those versioned files, and there is no automatic down migration.
 The image-sync surface additionally requires an instance-level `GITHUB_ACTIONS_TOKEN` scoped
 to `labring/sealos-pro` Actions write. It never accepts repository, workflow, ref, or token
 values from the browser. Each dispatch carries a server-generated UUID as the workflow

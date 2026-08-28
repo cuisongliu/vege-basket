@@ -69,6 +69,20 @@ it does not prove database, OSS, Feishu, or AI workflows.
 
 ## Database Operations
 
+Versioned incremental DDL is maintained in `server/migrations/`. Apply pending SQL
+files in filename order before deploying code that references a new table, column,
+constraint, or index. Each file is forward-only and transaction-wrapped; do not edit
+an already-applied file. The current package-market migration can be applied with:
+
+```bash
+psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+  --file=server/migrations/20260828_organization_package_market_policy.sql
+```
+
+Select the target `DATABASE_URL`, take the required backup, and obtain explicit
+authorization before running it. The command above is a database write. Keep
+`server/schema.ts` in sync as the idempotent bootstrap/compatibility definition.
+
 `npm run db:init` applies the current idempotent schema. `npm run db:encrypt-existing`
 applies the schema and encrypts supported legacy plaintext fields. Both are mutating
 operations and require explicit approval, a current backup or snapshot, the intended
