@@ -3,11 +3,13 @@ import { decryptText } from './crypto.ts'
 import { query } from './db.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 import { workBucket, workItemKey } from './my-work-policy.ts'
+import type { OrganizationContext } from '../shared/organization-context.ts'
 
 type MyWorkRow = {
   kind: MyWorkItem['kind']
   source_id: string
   project_id: string | null
+  organization_id: string | null
   project_name: string | null
   context_name: string | null
   creator_name: string | null
@@ -46,11 +48,15 @@ function searchable(item: MyWorkItem, q?: string) {
     .some((value) => value?.toLocaleLowerCase().includes(needle))
 }
 
-export async function getMyWork(userId: number, filters: MyWorkFilters): Promise<MyWorkData> {
+export async function getMyWork(
+  userId: number,
+  organizationId: OrganizationContext,
+  filters: MyWorkFilters,
+): Promise<MyWorkData> {
   const result = await query<MyWorkRow>(
     `
     select * from (
-      select 'todo'::text as kind, t.id as source_id, t.project_id,
+      select 'todo'::text as kind, t.id as source_id, t.project_id, p.organization_id,
         p.name as project_name, null::text as context_name,
         coalesce(nullif(todo_creator.display_name, ''), todo_creator.email)::text as creator_name,
         (
@@ -90,7 +96,7 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
         and t.confirmation_status <> 'rejected'
       union all
-      select 'delivery'::text, e.id, e.project_id, p.name, null::text,
+      select 'delivery'::text, e.id, e.project_id, p.organization_id, p.name, null::text,
         coalesce(nullif(delivery_creator.display_name, ''), delivery_creator.email)::text,
         null::boolean,
         e.title,
@@ -104,7 +110,7 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
       where e.assignee_user_id = $1
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
       union all
-      select 'milestone'::text, m.id, m.project_id, p.name, null::text,
+      select 'milestone'::text, m.id, m.project_id, p.organization_id, p.name, null::text,
         coalesce(nullif(milestone_creator.display_name, ''), milestone_creator.email)::text,
         null::boolean,
         m.title,
@@ -118,7 +124,7 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
       where m.responsible_user_id = $1
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
       union all
-      select 'bug'::text, b.id, bug_project.id, bug_project.name, space.name,
+      select 'bug'::text, b.id, bug_project.id, space.organization_id, bug_project.name, space.name,
         coalesce(nullif(bug_creator.display_name, ''), bug_creator.email)::text,
         null::boolean,
         b.title,
@@ -134,7 +140,8 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
         on mine.test_space_id = b.test_space_id and mine.user_id = $1 and mine.status = 'active'
       where b.assignee_user_id = $1
     ) work
-    where ($3::bigint is null or work.project_id = $3)
+    where work.organization_id is not distinct from $6::bigint
+      and ($3::bigint is null or work.project_id = $3)
       and (
         $5::text is null
         or ($5::text = '__unrecorded__' and work.creator_name is null)
@@ -160,7 +167,14 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
       work.updated_at desc, work.source_id desc
     limit 500
     `,
-    [userId, filters.status ?? 'open', filters.projectId ?? null, filters.sort ?? 'due_desc', filters.creator ?? null],
+    [
+      userId,
+      filters.status ?? 'open',
+      filters.projectId ?? null,
+      filters.sort ?? 'due_desc',
+      filters.creator ?? null,
+      organizationId,
+    ],
   )
 
   const items = result.rows.map((row): MyWorkItem => ({
@@ -196,6 +210,7 @@ export async function getMyWork(userId: number, filters: MyWorkFilters): Promise
   const limit = filters.limit ?? 50
   const page = items.slice(offset, offset + limit)
   return {
+    organizationId,
     items: page,
     summary,
     nextCursor: offset + limit < items.length ? String(offset + limit) : undefined,

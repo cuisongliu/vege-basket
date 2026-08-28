@@ -58,7 +58,8 @@ npm run dev
 ```
 
 The API listens on `PORT` (default `8787`); Vite serves the client and proxies `/api` to
-`http://127.0.0.1:8787` during local development. A minimal runtime probe is:
+`http://127.0.0.1:8787` during local development. Set `VEGES_API_PORT` when running a
+second local workspace so Vite proxies to that API port instead. A minimal runtime probe is:
 
 ```bash
 curl --fail --silent http://127.0.0.1:8787/api/health

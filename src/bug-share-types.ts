@@ -24,6 +24,7 @@ export type BugShareView = {
   mentionableMembers: BugShareMentionableMember[]
   priority: string
   projectName: string | null
+  organizationId?: number | null
   reproductionSteps: string
   severity: string
   status: string

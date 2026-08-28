@@ -5,6 +5,8 @@ import { parseMyWorkFilters, workBucket, workItemKey } from './my-work-policy.ts
 
 const myWorkSource = readFileSync(new URL('./my-work.ts', import.meta.url), 'utf8')
 const myWorkWorkbenchSource = readFileSync(new URL('../src/components/my-work-workbench.tsx', import.meta.url), 'utf8')
+const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
+const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
 test('parses bounded my work filters', () => {
   assert.deepEqual(parseMyWorkFilters({ kind: 'bug', limit: '999', cursor: '-1' }), {
@@ -76,4 +78,15 @@ test('marks todos transferred through offboarding', () => {
   assert.match(myWorkWorkbenchSource, /item\.offboardingTransferredFromName/u)
   assert.match(myWorkWorkbenchSource, /-离职转移/u)
   assert.match(myWorkWorkbenchSource, /离职转移/u)
+})
+
+test('scopes my work to the requested organization context', () => {
+  assert.match(myWorkSource, /p\.organization_id/u)
+  assert.match(myWorkSource, /space\.organization_id/u)
+  assert.match(myWorkSource, /work\.organization_id is not distinct from \$6::bigint/u)
+  assert.match(myWorkSource, /organizationId,/u)
+  assert.match(apiSource, /fetchMyWork\(organizationId: OrganizationContext/u)
+  assert.match(apiSource, /params\.set\('organizationId', serializeOrganizationContext\(organizationId\)\)/u)
+  assert.match(serverSource, /app\.get\('\/api\/my-work'/u)
+  assert.match(serverSource, /parseOrganizationContext\(request\.query\.organizationId\)/u)
 })

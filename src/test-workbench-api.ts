@@ -15,6 +15,15 @@ import type {
   TestWorkbenchData,
 } from './test-workbench-types'
 import type { Priority } from './types'
+import {
+  serializeOrganizationContext,
+  type OrganizationContext,
+} from '../shared/organization-context'
+
+function withOrganizationContext(path: string, organizationId: OrganizationContext) {
+  const params = new URLSearchParams({ organizationId: serializeOrganizationContext(organizationId) })
+  return `${path}?${params}`
+}
 
 export function fetchTestWorkbench() {
   return request<TestWorkbenchData>('/api/test-workbench')
@@ -379,57 +388,67 @@ export function deleteTestBugComment(spaceId: number, bugId: number, commentId: 
   })
 }
 
-export function fetchAssignedTestBugs() {
+export function fetchAssignedTestBugs(organizationId: OrganizationContext) {
   return request<{
     bugs: TestWorkbenchData['bugs']
     departedUserIds: number[]
     members: Array<{ id: number; name: string }>
-  }>('/api/test-bugs/assigned')
+    organizationId: OrganizationContext
+  }>(withOrganizationContext('/api/test-bugs/assigned', organizationId))
 }
 
-export function updateAssignedTestBug(bugId: number, status: BugStatus) {
-  return request<{ bugs: TestWorkbenchData['bugs'] }>(`/api/test-bugs/${bugId}/assigned`, {
+export function updateAssignedTestBug(organizationId: OrganizationContext, bugId: number, status: BugStatus) {
+  return request<{ bugs: TestWorkbenchData['bugs'] }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned`, organizationId), {
     method: 'PATCH',
     body: JSON.stringify({ status }),
   })
 }
 
-export function transferAssignedTestBug(bugId: number, payload: { assigneeUserId: number; reason: string }) {
+export function transferAssignedTestBug(
+  organizationId: OrganizationContext,
+  bugId: number,
+  payload: { assigneeUserId: number; reason: string },
+) {
   return request<{
     bugs: TestWorkbenchData['bugs']
     members: Array<{ id: number; name: string }>
-  }>(`/api/test-bugs/${bugId}/assigned/transfer`, {
+  }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/transfer`, organizationId), {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function rejectAssignedTestBug(bugId: number, reason: string) {
+export function rejectAssignedTestBug(organizationId: OrganizationContext, bugId: number, reason: string) {
   return request<{
     bugs: TestWorkbenchData['bugs']
     members: Array<{ id: number; name: string }>
-  }>(`/api/test-bugs/${bugId}/assigned/reject`, {
+  }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/reject`, organizationId), {
     method: 'POST',
     body: JSON.stringify({ reason }),
   })
 }
 
-export function addAssignedTestBugComment(bugId: number, content: string) {
-  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments`, {
+export function addAssignedTestBugComment(organizationId: OrganizationContext, bugId: number, content: string) {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/comments`, organizationId), {
     method: 'POST',
     body: JSON.stringify({ content }),
   })
 }
 
-export function updateAssignedTestBugComment(bugId: number, commentId: number, content: string) {
-  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+export function updateAssignedTestBugComment(
+  organizationId: OrganizationContext,
+  bugId: number,
+  commentId: number,
+  content: string,
+) {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, organizationId), {
     method: 'PATCH',
     body: JSON.stringify({ content }),
   })
 }
 
-export function deleteAssignedTestBugComment(bugId: number, commentId: number) {
-  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, {
+export function deleteAssignedTestBugComment(organizationId: OrganizationContext, bugId: number, commentId: number) {
+  return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, organizationId), {
     method: 'DELETE',
   })
 }

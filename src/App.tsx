@@ -2041,13 +2041,13 @@ function App() {
   }, [authUser, view])
 
   useEffect(() => {
-    if (!loggedIn || !canShowDeveloperAssignedBugs) {
+    if (!loggedIn || !canShowDeveloperAssignedBugs || selectedOrganizationId === null) {
       setAssignedBugCount(0)
       return
     }
 
     let alive = true
-    fetchAssignedTestBugs()
+    fetchAssignedTestBugs(selectedOrganizationId)
       .then((result) => {
         if (alive) updateAssignedBugCount(result.bugs)
       })
@@ -2058,7 +2058,7 @@ function App() {
     return () => {
       alive = false
     }
-  }, [canShowDeveloperAssignedBugs, loggedIn, updateAssignedBugCount])
+  }, [canShowDeveloperAssignedBugs, loggedIn, selectedOrganizationId, updateAssignedBugCount])
 
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
@@ -2888,7 +2888,7 @@ function App() {
       return
     }
     let active = true
-    void fetchMyWork({ kind: 'todo', limit: 500, status: 'open' })
+    void fetchMyWork(selectedOrganizationId, { kind: 'todo', limit: 500, status: 'open' })
       .then((result) => {
         if (active) setOpenTodoCount(result.items.length)
       })
@@ -2898,7 +2898,7 @@ function App() {
     return () => {
       active = false
     }
-  }, [authUser?.id, loggedIn, todos, workspaceLoaded])
+  }, [authUser?.id, loggedIn, selectedOrganizationId, todos, workspaceLoaded])
   async function submitInvitePassword() {
     if (!inviteToken) return
     const password = invitePasswordDraft.trim()
@@ -3080,7 +3080,9 @@ function App() {
     }
   }
 
-  function openAssignedBugFromShare(bugId: number) {
+  function openAssignedBugFromShare(bugId: number, organizationId: number | null) {
+    setSelectedOrganizationId(organizationId)
+    if (authUser) persistSelectedOrganizationId(authUser.id, organizationId)
     setRequestedAssignedBugId(bugId)
     setBugShareLoginRequested(false)
     window.history.replaceState({}, '', `/?assignedBug=${bugId}`)
@@ -3180,7 +3182,15 @@ function App() {
     setIsProjectTodoDetailActive(false)
     setDetailEntrySource('project')
     setProjectDetailTab('journal')
-    if (view === 'project') setView('search')
+    if (
+      view === 'project' ||
+      (nextOrganizationId === null && (
+        view === 'weekly_report' ||
+        view === 'package_market' ||
+        view === 'image_sync' ||
+        view === 'organization'
+      ))
+    ) setView('search')
   }
 
   function selectProject(projectId: number) {
@@ -4783,9 +4793,11 @@ ${packageTimelineText}`
               <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
                 <Tray size={18} weight="duotone" /> 草稿箱
               </NavButton>
-              <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
-                <FileText size={18} weight="duotone" /> 周报管理
-              </NavButton>
+              {selectedOrganizationId !== null ? (
+                <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
+                  <FileText size={18} weight="duotone" /> 周报管理
+                </NavButton>
+              ) : null}
               <NavButton
                 active={view === 'ai'}
                 onClick={() => {
@@ -4796,36 +4808,38 @@ ${packageTimelineText}`
                 <Sparkle size={18} weight="duotone" /> Veges AI
               </NavButton>
             </NavGroup>
-            <NavGroup label="协作与交付" id="nav-group-delivery">
-              {canNavigateToDeveloperBugs ? (
-                <NavButton
-                  active={view === 'assigned_bugs'}
-                  onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
-                >
-                  <Bug size={18} weight="duotone" /> Bug 工作台
-                  {assignedBugCount > 0 && (
-                    <Badge className="nav-badge">{assignedBugCount}</Badge>
-                  )}
+            {selectedOrganizationId !== null ? (
+              <NavGroup label="协作与交付" id="nav-group-delivery">
+                {canNavigateToDeveloperBugs ? (
+                  <NavButton
+                    active={view === 'assigned_bugs'}
+                    onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
+                  >
+                    <Bug size={18} weight="duotone" /> Bug 工作台
+                    {assignedBugCount > 0 && (
+                      <Badge className="nav-badge">{assignedBugCount}</Badge>
+                    )}
+                  </NavButton>
+                ) : null}
+                {canNavigateToTestWorkbench ? (
+                  <NavButton
+                    active={view === 'testing'}
+                    onClick={() => void changeActiveUserRole('tester', 'testing')}
+                  >
+                    <Flask size={18} weight="duotone" /> 测试工作台
+                  </NavButton>
+                ) : null}
+                {packageMarketVisible ? (
+                  <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
+                    <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
+                  </NavButton>
+                ) : null}
+                <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
+                  <CloudArrowUp size={18} weight="duotone" /> 镜像同步
                 </NavButton>
-              ) : null}
-              {canNavigateToTestWorkbench ? (
-                <NavButton
-                  active={view === 'testing'}
-                  onClick={() => void changeActiveUserRole('tester', 'testing')}
-                >
-                  <Flask size={18} weight="duotone" /> 测试工作台
-                </NavButton>
-              ) : null}
-              {packageMarketVisible ? (
-                <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
-                  <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
-                </NavButton>
-              ) : null}
-              <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
-                <CloudArrowUp size={18} weight="duotone" /> 镜像同步
-              </NavButton>
-            </NavGroup>
-            {isOrganizationAdmin ? (
+              </NavGroup>
+            ) : null}
+            {selectedOrganizationId !== null && isOrganizationAdmin ? (
               <NavGroup label="组织与治理" id="nav-group-organization">
                 <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
                   <Buildings size={18} weight="duotone" /> 组织管理
@@ -5288,7 +5302,9 @@ ${packageTimelineText}`
 
         {view === 'my_work' && (
           <MyWorkWorkbench
-            projects={projects}
+            key={selectedOrganizationId ?? 'personal'}
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
             refreshToken={workspaceRefreshVersion}
             onTodoClick={selectMyWorkTodo}
             onDeliveryClick={selectMyWorkPackageEvent}
@@ -5363,8 +5379,10 @@ ${packageTimelineText}`
 
         {view === 'assigned_bugs' && canShowDeveloperAssignedBugs ? (
           <AssignedTestBugs
+            key={selectedOrganizationId ?? 'personal'}
             currentUserId={authUser?.id}
             initialBugId={requestedAssignedBugId}
+            organizationId={selectedOrganizationId}
             embedded
             onBugSeen={markAssignedBugCommentsRead}
             onBugsChange={updateAssignedBugCount}

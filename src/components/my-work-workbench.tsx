@@ -3,6 +3,7 @@ import { Bug, CalendarBlank, Check, CheckCircle, Clock, FolderSimple, FunnelSimp
 import { fetchMyWork } from '../api'
 import type { Project } from '../types'
 import type { MyWorkData, MyWorkItem, MyWorkKind } from '../my-work-types'
+import type { OrganizationContext } from '../../shared/organization-context'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -91,6 +92,7 @@ function TableFilterMenu({
 }
 
 export function MyWorkWorkbench({
+  organizationId,
   projects,
   onTodoClick,
   onDeliveryClick,
@@ -98,6 +100,7 @@ export function MyWorkWorkbench({
   onMilestoneClick,
   refreshToken,
 }: {
+  organizationId: OrganizationContext
   projects: Project[]
   onTodoClick: (projectId: number, todoId: number) => void
   onDeliveryClick: (projectId: number, eventId: number) => void
@@ -106,6 +109,7 @@ export function MyWorkWorkbench({
   refreshToken?: number
 }) {
   const [data, setData] = useState<MyWorkData>({
+    organizationId,
     items: [],
     summary: { all: 0, overdue: 0, today: 0, thisWeek: 0 },
   })
@@ -127,7 +131,7 @@ export function MyWorkWorkbench({
     // the initial loading state makes the document height collapse and resets scroll.
     if (!hasLoadedRef.current) setLoading(true)
     setError('')
-    void fetchMyWork({
+    void fetchMyWork(organizationId, {
       kind: kind === 'all' ? undefined : kind,
       cursor: cursor || undefined,
       projectId: projectId === 'all' ? undefined : Number(projectId),
@@ -151,7 +155,7 @@ export function MyWorkWorkbench({
       if (active && !hasLoadedRef.current) setLoading(false)
     })
     return () => { active = false }
-  }, [creator, cursor, kind, projectId, query, refreshToken, sort, status])
+  }, [creator, cursor, kind, organizationId, projectId, query, refreshToken, sort, status])
 
   useEffect(() => {
     setCursor('')
