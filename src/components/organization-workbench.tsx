@@ -24,7 +24,7 @@ import {
 } from '@phosphor-icons/react'
 import {
   attachProjectToOrganization,
-  attachPackageMarketToOrganization,
+  attachPackageMarketsToOrganization,
   attachTestSpaceToOrganization,
   createProject,
   createOrganizationInviteLink,
@@ -70,6 +70,7 @@ import {
 } from '../../shared/weekly-report-availability'
 import { userRoleLabel } from '../user-roles'
 import { Button } from './ui/button'
+import { Checkbox } from './ui/checkbox'
 import {
   Dialog,
   DialogClose,
@@ -108,7 +109,7 @@ const organizationTabs: Array<{
   { icon: Flask, id: 'testSpaces', label: '测试空间管理' },
   { icon: Users, id: 'members', label: '成员' },
   { icon: Sparkle, id: 'reports', label: '周报' },
-  { icon: Package, id: 'packageMarkets', label: '安装包市场管理', visible: false },
+  { icon: Package, id: 'packageMarkets', label: '安装包市场管理', visible: true },
 ]
 
 const organizationRoleLabel = {
@@ -289,6 +290,7 @@ export function OrganizationWorkbench({
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(0)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
+  const [selectedPackageMarketIds, setSelectedPackageMarketIds] = useState<string[]>([])
   const [canCreate, setCanCreate] = useState(false)
   const [tab, setTab] = useState<OrganizationTab>('overview')
   const [busy, setBusy] = useState(false)
@@ -391,6 +393,11 @@ export function OrganizationWorkbench({
   }, [detail?.id, detail?.name])
 
   useEffect(() => {
+    const attachableIds = new Set(detail?.attachablePackageMarkets.map((market) => market.id) ?? [])
+    setSelectedPackageMarketIds((current) => current.filter((id) => attachableIds.has(id)))
+  }, [detail?.attachablePackageMarkets])
+
+  useEffect(() => {
     if (detail) {
       setWeeklyRulesDraft(detail.weeklyReportRules)
       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
@@ -411,6 +418,13 @@ export function OrganizationWorkbench({
     } finally {
       setBusy(false)
     }
+  }
+
+  async function attachSelectedPackageMarkets() {
+    if (!detail || selectedPackageMarketIds.length === 0) return
+    const selectedIds = [...selectedPackageMarketIds]
+    const success = await mutate(() => attachPackageMarketsToOrganization(detail.id, selectedIds))
+    if (success) setSelectedPackageMarketIds([])
   }
 
   async function submitOrganization(event: FormEvent) {
@@ -1030,18 +1044,49 @@ export function OrganizationWorkbench({
               {detail.packageMarkets.length === 0 ? <EmptyRow text="暂无组织安装包市场" /> : null}
             </div>
             {detail.attachablePackageMarkets.length > 0 ? (
-              <div className="organization-attach-list">
-                {detail.attachablePackageMarkets.map((market) => (
+              <div className="organization-attach-list organization-package-market-attach-list">
+                <div className="organization-package-market-selection-toolbar">
+                  <label className="organization-package-market-select-all">
+                    <Checkbox
+                      aria-label="全选安装包市场"
+                      checked={selectedPackageMarketIds.length === detail.attachablePackageMarkets.length
+                        ? true
+                        : selectedPackageMarketIds.length > 0 ? 'indeterminate' : false}
+                      onCheckedChange={(checked) => setSelectedPackageMarketIds(
+                        checked === true ? detail.attachablePackageMarkets.map((market) => market.id) : [],
+                      )}
+                    />
+                    <span>全选</span>
+                    <small>已选 {selectedPackageMarketIds.length}</small>
+                  </label>
                   <Button
-                    disabled={busy}
-                    key={market.id}
+                    disabled={busy || selectedPackageMarketIds.length === 0}
                     type="button"
-                    variant="outline"
-                    onClick={() => void mutate(() => attachPackageMarketToOrganization(detail.id, market.id))}
+                    onClick={() => void attachSelectedPackageMarkets()}
                   >
-                    <Plus size={15} /> {market.name}
+                    <Plus size={15} /> {busy ? '添加中...' : '添加已选'}
                   </Button>
+                </div>
+                <div className="organization-package-market-options">
+                {detail.attachablePackageMarkets.map((market) => (
+                  <label
+                    className="organization-package-market-option"
+                    key={market.id}
+                  >
+                    <Checkbox
+                      aria-label={`选择${market.name}`}
+                      checked={selectedPackageMarketIds.includes(market.id)}
+                      disabled={busy}
+                      onCheckedChange={(checked) => setSelectedPackageMarketIds((current) => (
+                        checked === true
+                          ? [...current, market.id]
+                          : current.filter((id) => id !== market.id)
+                      ))}
+                    />
+                    <span>{market.name}</span>
+                  </label>
                 ))}
+                </div>
               </div>
             ) : null}
           </section>

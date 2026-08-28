@@ -2413,6 +2413,70 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
     response.json(await getOrganizationDetail(organizationId!, session.userId))
   }))
 
+  router.post('/organizations/:organizationId/package-markets', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    if (!(await requireOrganizationMember(response, organizationId, session.userId))) return
+    const rawPackageMarketIds = request.body && typeof request.body === 'object'
+      ? (request.body as { packageMarketIds?: unknown }).packageMarketIds
+      : undefined
+    if (
+      !Array.isArray(rawPackageMarketIds) ||
+      rawPackageMarketIds.length === 0 ||
+      rawPackageMarketIds.some((packageMarketId) => typeof packageMarketId !== 'string')
+    ) {
+      response.status(400).json({ error: 'At least one package market is required' })
+      return
+    }
+    const packageMarketIds = rawPackageMarketIds.map((packageMarketId) => packageMarketId.trim())
+    if (packageMarketIds.some((packageMarketId) => !packageMarketId) || new Set(packageMarketIds).size !== packageMarketIds.length) {
+      response.status(400).json({ error: 'Package market selection is invalid' })
+      return
+    }
+    const packageMarketCatalog = await listPackageMarketCatalog()
+    const packageMarketCatalogIds = new Set(packageMarketCatalog.map((rule) => rule.id))
+    if (packageMarketIds.some((packageMarketId) => !packageMarketCatalogIds.has(packageMarketId))) {
+      response.status(400).json({ error: 'Package market selection is invalid' })
+      return
+    }
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const attached = await client.query<{ package_market_id: string }>(
+        `insert into organization_package_markets
+          (organization_id, package_market_id, attached_by_user_id)
+         select $1::bigint, input.package_market_id, $3::bigint
+         from unnest($2::text[]) as input(package_market_id)
+         on conflict (package_market_id) do nothing
+         returning package_market_id`,
+        [organizationId, packageMarketIds, session.userId],
+      )
+      if (attached.rows.length !== packageMarketIds.length) {
+        await client.query('rollback')
+        response.status(409).json({ error: 'One or more package markets are already attached to an organization' })
+        return
+      }
+      for (const packageMarketId of packageMarketIds) {
+        await writeAudit(
+          client,
+          organizationId!,
+          session.userId,
+          'package_market.attached',
+          'package_market',
+          packageMarketId,
+        )
+      }
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+    response.json(await getOrganizationDetail(organizationId!, session.userId))
+  }))
+
   router.put('/organizations/:organizationId/weekly-reports/:weekStart', asyncRoute(async (request, response) => {
     const session = await requireSession(request, response)
     if (!session) return

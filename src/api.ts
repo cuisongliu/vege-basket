@@ -745,6 +745,13 @@ export function attachPackageMarketToOrganization(organizationId: number, packag
   )
 }
 
+export function attachPackageMarketsToOrganization(organizationId: number, packageMarketIds: string[]) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/package-markets`, {
+    method: 'POST',
+    body: JSON.stringify({ packageMarketIds }),
+  })
+}
+
 export function saveOrganizationWeeklyReport(
   organizationId: number,
   weekStart: string,
