@@ -297,7 +297,10 @@ import { OrganizationWorkbench } from './components/organization-workbench'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import { MarkdownPreview } from './components/markdown-preview'
-import { WeeklyReportWorkbench } from './components/weekly-report-workbench'
+import {
+  WeeklyReportWorkbench,
+  type WeeklyReportWorkbenchHandle,
+} from './components/weekly-report-workbench'
 import { MyWorkWorkbench } from './components/my-work-workbench'
 import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import {
@@ -1798,6 +1801,7 @@ function App() {
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<number | null>(null)
   const [organizationContextReady, setOrganizationContextReady] = useState(false)
   const [organizationContextError, setOrganizationContextError] = useState('')
+  const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
   const [todos, setTodos] = useState(initialTodos)
   const [memberships, setMemberships] = useState(initialMemberships)
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
@@ -2002,11 +2006,35 @@ function App() {
   }, [loggedIn, requestedAiTodoBatchId])
 
   useEffect(() => {
-    if (!loggedIn || requestedWeeklyReport.status !== 'valid') return
+    if (
+      !loggedIn ||
+      !authUser ||
+      !organizationContextReady ||
+      requestedWeeklyReport.status !== 'valid'
+    ) return
+
+    const targetOrganizationId = requestedWeeklyReport.organizationId
+    if (!organizations.some((organization) => organization.id === targetOrganizationId)) {
+      setWorkspaceError('周报链接已失效或你无权访问对应组织。')
+      setRequestedWeeklyReport({ organizationId: null, status: 'absent', weekStart: null })
+      setView('search')
+      const search = removeWeeklyReportDeepLink(window.location.search)
+      window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
+      return
+    }
+
+    setSelectedOrganizationId(targetOrganizationId)
+    persistSelectedOrganizationId(authUser.id, targetOrganizationId)
     setView('weekly_report')
     const search = removeWeeklyReportDeepLink(window.location.search)
     window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
-  }, [loggedIn, requestedWeeklyReport])
+  }, [
+    authUser,
+    loggedIn,
+    organizationContextReady,
+    organizations,
+    requestedWeeklyReport,
+  ])
 
   useEffect(() => {
     try {
@@ -2483,6 +2511,12 @@ function App() {
       setView('search')
     }
   }, [packageMarketVisible, view])
+
+  useEffect(() => {
+    if (view === 'weekly_report' && selectedOrganizationId === null) {
+      setView('search')
+    }
+  }, [selectedOrganizationId, view])
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded) return
@@ -3166,14 +3200,7 @@ function App() {
     if (authUser) persistSelectedOrganizationId(authUser.id, nextOrganizationId)
   }
 
-  function changeOrganization(value: string) {
-    const nextOrganizationId = value === 'personal' ? null : Number(value)
-    if (
-      nextOrganizationId !== null &&
-      (!Number.isSafeInteger(nextOrganizationId) ||
-        !organizations.some((organization) => organization.id === nextOrganizationId))
-    ) return
-
+  function applyOrganizationContext(nextOrganizationId: number | null) {
     setSelectedOrganizationId(nextOrganizationId)
     if (authUser) persistSelectedOrganizationId(authUser.id, nextOrganizationId)
     setSelectedProjectId(null)
@@ -3189,8 +3216,29 @@ function App() {
         view === 'package_market' ||
         view === 'image_sync' ||
         view === 'organization'
-      ))
+      )) ||
+      (nextOrganizationId !== null && (view === 'inbox' || view === 'ai'))
     ) setView('search')
+  }
+
+  async function changeOrganization(value: string) {
+    const nextOrganizationId = value === 'personal' ? null : Number(value)
+    if (
+      nextOrganizationId !== null &&
+      (!Number.isSafeInteger(nextOrganizationId) ||
+        !organizations.some((organization) => organization.id === nextOrganizationId))
+    ) return
+    if (nextOrganizationId === selectedOrganizationId) return
+    if (view === 'weekly_report') {
+      const prepared = await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true
+      if (!prepared) return
+    }
+    applyOrganizationContext(nextOrganizationId)
+  }
+
+  function changeWeeklyReportOrganization(nextOrganizationId: number) {
+    if (!organizations.some((organization) => organization.id === nextOrganizationId)) return
+    applyOrganizationContext(nextOrganizationId)
   }
 
   function selectProject(projectId: number) {
@@ -4790,23 +4838,27 @@ ${packageTimelineText}`
                   <Badge className="nav-badge">{openTodoCount}</Badge>
                 )}
               </NavButton>
-              <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-                <Tray size={18} weight="duotone" /> 草稿箱
-              </NavButton>
+              {selectedOrganizationId === null ? (
+                <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
+                  <Tray size={18} weight="duotone" /> 草稿箱
+                </NavButton>
+              ) : null}
               {selectedOrganizationId !== null ? (
                 <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
                   <FileText size={18} weight="duotone" /> 周报管理
                 </NavButton>
               ) : null}
-              <NavButton
-                active={view === 'ai'}
-                onClick={() => {
-                  setAiMobilePane(getDefaultAiPane())
-                  setView('ai')
-                }}
-              >
-                <Sparkle size={18} weight="duotone" /> Veges AI
-              </NavButton>
+              {selectedOrganizationId === null ? (
+                <NavButton
+                  active={view === 'ai'}
+                  onClick={() => {
+                    setAiMobilePane(getDefaultAiPane())
+                    setView('ai')
+                  }}
+                >
+                  <Sparkle size={18} weight="duotone" /> Veges AI
+                </NavButton>
+              ) : null}
             </NavGroup>
             {selectedOrganizationId !== null ? (
               <NavGroup label="协作与交付" id="nav-group-delivery">
@@ -5362,13 +5414,17 @@ ${packageTimelineText}`
 
         {view === 'weekly_report' ? (
           <WeeklyReportWorkbench
+            ref={weeklyReportWorkbenchRef}
             initialOrganizationId={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.organizationId
               : null}
             initialWeekStart={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.weekStart
               : null}
+            onOrganizationChange={changeWeeklyReportOrganization}
             refreshToken={workspaceRefreshVersion}
+            organizationId={selectedOrganizationId}
+            organizations={organizations}
             onInitialContextConsumed={() => setRequestedWeeklyReport({
               organizationId: null,
               status: 'absent',
@@ -5479,14 +5535,14 @@ function OrganizationSwitcher({
   error: string
   organizations: OrganizationListItem[]
   selectedOrganizationId: number | null
-  onChange: (value: string) => void
+  onChange: (value: string) => void | Promise<void>
 }) {
   const value = selectedOrganizationId == null ? 'personal' : String(selectedOrganizationId)
   const selectedOrganization = organizations.find((organization) => organization.id === selectedOrganizationId)
 
   return (
     <div className="sidebar-organization-switcher">
-      <Select value={value} onValueChange={onChange}>
+      <Select value={value} onValueChange={(nextValue) => void onChange(nextValue)}>
         <SelectTrigger className="sidebar-organization-select" aria-label="切换组织">
           <span className="sidebar-organization-select-value">
             <Buildings size={16} weight="duotone" aria-hidden />

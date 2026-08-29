@@ -1,9 +1,11 @@
 import {
   Component,
+  forwardRef,
   Suspense,
   lazy,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -117,7 +119,14 @@ type WeeklyReportWorkbenchProps = {
   initialOrganizationId?: number | null
   initialWeekStart?: string | null
   onInitialContextConsumed?: () => void
+  onOrganizationChange?: (organizationId: number) => void | Promise<void>
+  organizationId?: number | null
+  organizations?: OrganizationListItem[]
   refreshToken?: number
+}
+
+export type WeeklyReportWorkbenchHandle = {
+  prepareOrganizationChange: () => Promise<boolean>
 }
 
 const sourceKindMeta: Record<WeeklyReportSourceKind, {
@@ -255,22 +264,29 @@ function markdownForSources(sources: WeeklyReportSourceCandidate[]) {
   )).join('\n')
 }
 
-export function WeeklyReportWorkbench({
+export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, WeeklyReportWorkbenchProps>(function WeeklyReportWorkbench({
   embedded = false,
   initialOrganizationId = null,
   initialWeekStart = null,
   onInitialContextConsumed,
+  onOrganizationChange,
+  organizationId: controlledOrganizationId,
+  organizations: controlledOrganizations,
   refreshToken = 0,
-}: WeeklyReportWorkbenchProps) {
+}, ref) {
+  const isOrganizationControlled = controlledOrganizationId !== undefined
+  const resolvedInitialOrganizationId = initialOrganizationId ?? controlledOrganizationId ?? null
   const initialContext = useRef({
-    organizationId: initialOrganizationId,
+    organizationId: resolvedInitialOrganizationId,
     weekStart: initialWeekStart,
   })
   const [workspaceView, setWorkspaceView] = useState<WeeklyReportView>(() => (
-    initialOrganizationId && initialWeekStart ? 'editor' : 'list'
+    resolvedInitialOrganizationId && initialWeekStart ? 'editor' : 'list'
   ))
-  const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
-  const [organizationId, setOrganizationId] = useState(0)
+  const [loadedOrganizations, setLoadedOrganizations] = useState<OrganizationListItem[]>([])
+  const [uncontrolledOrganizationId, setUncontrolledOrganizationId] = useState(0)
+  const organizations = isOrganizationControlled ? (controlledOrganizations ?? []) : loadedOrganizations
+  const organizationId = isOrganizationControlled ? (controlledOrganizationId ?? 0) : uncontrolledOrganizationId
   const [weekStartsOn, setWeekStartsOn] = useState(1)
   const [weeklyReportRules, setWeeklyReportRules] = useState<WeeklyReportRules>(defaultWeeklyReportRules)
   const [weekStart, setWeekStart] = useState('')
@@ -412,18 +428,22 @@ export function WeeklyReportWorkbench({
   }, [])
 
   useEffect(() => {
+    if (isOrganizationControlled) {
+      setLoading(false)
+      return
+    }
     let active = true
     setLoading(true)
     fetchOrganizations()
       .then((result) => {
         if (!active) return
-        setOrganizations(result.organizations)
+        setLoadedOrganizations(result.organizations)
         const preferred = result.organizations.some((organization) => (
           organization.id === initialContext.current.organizationId
         ))
           ? initialContext.current.organizationId!
           : result.organizations[0]?.id ?? 0
-        setOrganizationId(preferred)
+        setUncontrolledOrganizationId(preferred)
         if (!preferred) setLoading(false)
       })
       .catch((loadError) => {
@@ -435,7 +455,29 @@ export function WeeklyReportWorkbench({
     return () => {
       active = false
     }
-  }, [])
+  }, [isOrganizationControlled])
+
+  const previousOrganizationId = useRef(organizationId)
+
+  useEffect(() => {
+    if (previousOrganizationId.current === organizationId) return
+    previousOrganizationId.current = organizationId
+    setReportList(null)
+    setReportListPage(0)
+    setCurrentWeekSubmitted(null)
+    if (workspaceView !== 'editor') return
+    setReport(null)
+    setContent('')
+    setSourceMode('manual')
+    setSelectedSources([])
+    setSourceCandidates([])
+    setSourceKind('all')
+    setSourceQuery('')
+    setSourcePage(0)
+    setSaveState('idle')
+    lastSavedSignature.current = ''
+    setWeekStart('')
+  }, [organizationId, workspaceView])
 
   useEffect(() => {
     if (!organizationId) return
@@ -563,6 +605,19 @@ export function WeeklyReportWorkbench({
     }
   }, [content, organizationId, report, selectedSources, sourceMode, weekStart])
 
+  const prepareOrganizationChange = useCallback(async () => {
+    if (busy || saveInFlight.current) return false
+    if (workspaceView !== 'editor') return true
+    try {
+      await persistDraft()
+      return true
+    } catch (saveError) {
+      return isWeeklyReportWriteWindowError(saveError)
+    }
+  }, [busy, persistDraft, workspaceView])
+
+  useImperativeHandle(ref, () => ({ prepareOrganizationChange }), [prepareOrganizationChange])
+
   useEffect(() => {
     if (workspaceView !== 'editor' || !report || loading || busy || currentSignature === lastSavedSignature.current) return
     setSaveState('idle')
@@ -623,12 +678,10 @@ export function WeeklyReportWorkbench({
   async function changeOrganization(value: string) {
     const nextOrganizationId = Number(value)
     if (nextOrganizationId === organizationId) return
-    if (workspaceView === 'editor') {
-      try {
-        await persistDraft()
-      } catch (saveError) {
-        if (!isWeeklyReportWriteWindowError(saveError)) return
-      }
+    if (!(await prepareOrganizationChange())) return
+    if (isOrganizationControlled) {
+      await onOrganizationChange?.(nextOrganizationId)
+      return
     }
     setReportList(null)
     setReportListPage(0)
@@ -637,7 +690,7 @@ export function WeeklyReportWorkbench({
       resetEditorState()
       setWeekStart('')
     }
-    setOrganizationId(nextOrganizationId)
+    setUncontrolledOrganizationId(nextOrganizationId)
   }
 
   function openEditor(targetWeekStart: string) {
@@ -737,7 +790,7 @@ export function WeeklyReportWorkbench({
     weekStart: activeWeekStart,
   })
 
-  const weeklyReportToolbar = topbarActionHost && organizations.length > 0
+  const weeklyReportToolbar = topbarActionHost && organizationId > 0 && organizations.length > 0
     ? createPortal(
       <div className="weekly-report-toolbar">
         <Select value={String(organizationId)} onValueChange={(value) => void changeOrganization(value)}>
@@ -1107,4 +1160,4 @@ export function WeeklyReportWorkbench({
 
     </section>
   )
-}
+})
