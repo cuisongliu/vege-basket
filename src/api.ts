@@ -67,6 +67,10 @@ import type {
   WeeklyReportSourceRef,
 } from './organization-types'
 import type { MyWorkData, MyWorkFilters } from './my-work-types'
+import {
+  serializeOrganizationContext,
+  type OrganizationContext,
+} from '../shared/organization-context'
 export { ApiError, formatApiErrorDiagnostic } from './api-error'
 export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 
@@ -435,8 +439,9 @@ export function markAllNotificationsRead() {
   })
 }
 
-export function fetchMyWork(filters: MyWorkFilters = {}) {
+export function fetchMyWork(organizationId: OrganizationContext, filters: MyWorkFilters = {}) {
   const params = new URLSearchParams()
+  params.set('organizationId', serializeOrganizationContext(organizationId))
   if (filters.cursor) params.set('cursor', filters.cursor)
   if (filters.kind) params.set('kind', filters.kind)
   if (filters.projectId) params.set('projectId', String(filters.projectId))

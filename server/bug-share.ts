@@ -36,6 +36,7 @@ export type BugShareView = {
   actualResult: string
   priority: string
   projectName: string | null
+  organizationId?: number | null
   reproductionSteps: string
   severity: string
   mentionableMembers: BugShareMentionableMember[]
@@ -166,6 +167,9 @@ async function readView(token: string, userId?: number | null) {
     `,
     [bug.bug_id],
   )
+  const viewer = userId && Number(bug.assignee_user_id) === userId
+    ? 'assignee'
+    : userId ? 'commenter' : 'anonymous'
   return {
     assigneeName: bug.assignee_display_name || null,
     assigneeUserId: bug.assignee_user_id ? Number(bug.assignee_user_id) : undefined,
@@ -188,6 +192,9 @@ async function readView(token: string, userId?: number | null) {
     })),
     priority: bug.priority,
     projectName: bug.project_name ? decryptText(bug.project_name) : null,
+    organizationId: viewer === 'assignee'
+      ? (bug.organization_id ? Number(bug.organization_id) : null)
+      : undefined,
     reproductionSteps: decryptText(bug.reproduction_steps),
     severity: bug.severity,
     status: bug.status,
@@ -196,7 +203,7 @@ async function readView(token: string, userId?: number | null) {
     testSubjectName: decryptText(bug.test_subject_name),
     title: decryptText(bug.title),
     updatedAt: bug.updated_at.toISOString(),
-    viewer: userId && Number(bug.assignee_user_id) === userId ? 'assignee' : userId ? 'commenter' : 'anonymous',
+    viewer,
   } satisfies BugShareView
 }
 

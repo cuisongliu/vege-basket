@@ -23,10 +23,6 @@
   min-height: 36px;
 }
 
-.weekly-report-organization-select {
-  width: 230px;
-}
-
 .weekly-report-period-select {
   width: 320px;
 }
@@ -632,10 +628,6 @@
     gap: 6px;
   }
 
-  .weekly-report-organization-select {
-    width: 190px;
-  }
-
   .weekly-report-period-select {
     width: 280px;
   }
@@ -670,7 +662,7 @@
 @media (max-width: 760px) {
   .weekly-report-toolbar {
     display: grid;
-    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    grid-template-columns: minmax(0, 1fr);
     width: 100%;
   }
 

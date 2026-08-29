@@ -56,7 +56,7 @@ export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenA
   onBack?: () => void
   onBackToVeges?: () => void
   onLogin: () => void
-  onOpenAssignedBug: (bugId: number) => void
+  onOpenAssignedBug: (bugId: number, organizationId: number | null) => void
   token: string
 }) {
   const [data, setData] = useState<BugShareData | null>(null)
@@ -84,9 +84,15 @@ export function BugShareView({ authUser, onBack, onBackToVeges, onLogin, onOpenA
   }, [token, authUser?.id])
 
   useEffect(() => {
-    if (!data || !authUser || data.viewer !== 'assignee' || redirected.current) return
+    if (
+      !data ||
+      !authUser ||
+      data.viewer !== 'assignee' ||
+      data.organizationId === undefined ||
+      redirected.current
+    ) return
     redirected.current = true
-    onOpenAssignedBug(data.bugId)
+    onOpenAssignedBug(data.bugId, data.organizationId)
   }, [authUser, data, onOpenAssignedBug])
 
   async function submitComment(event: React.FormEvent) {

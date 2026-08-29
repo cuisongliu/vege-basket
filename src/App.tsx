@@ -297,7 +297,10 @@ import { OrganizationWorkbench } from './components/organization-workbench'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import { MarkdownPreview } from './components/markdown-preview'
-import { WeeklyReportWorkbench } from './components/weekly-report-workbench'
+import {
+  WeeklyReportWorkbench,
+  type WeeklyReportWorkbenchHandle,
+} from './components/weekly-report-workbench'
 import { MyWorkWorkbench } from './components/my-work-workbench'
 import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import {
@@ -1798,6 +1801,7 @@ function App() {
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<number | null>(null)
   const [organizationContextReady, setOrganizationContextReady] = useState(false)
   const [organizationContextError, setOrganizationContextError] = useState('')
+  const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
   const [todos, setTodos] = useState(initialTodos)
   const [memberships, setMemberships] = useState(initialMemberships)
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
@@ -2002,11 +2006,35 @@ function App() {
   }, [loggedIn, requestedAiTodoBatchId])
 
   useEffect(() => {
-    if (!loggedIn || requestedWeeklyReport.status !== 'valid') return
+    if (
+      !loggedIn ||
+      !authUser ||
+      !organizationContextReady ||
+      requestedWeeklyReport.status !== 'valid'
+    ) return
+
+    const targetOrganizationId = requestedWeeklyReport.organizationId
+    if (!organizations.some((organization) => organization.id === targetOrganizationId)) {
+      setWorkspaceError('周报链接已失效或你无权访问对应组织。')
+      setRequestedWeeklyReport({ organizationId: null, status: 'absent', weekStart: null })
+      setView('search')
+      const search = removeWeeklyReportDeepLink(window.location.search)
+      window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
+      return
+    }
+
+    setSelectedOrganizationId(targetOrganizationId)
+    persistSelectedOrganizationId(authUser.id, targetOrganizationId)
     setView('weekly_report')
     const search = removeWeeklyReportDeepLink(window.location.search)
     window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
-  }, [loggedIn, requestedWeeklyReport])
+  }, [
+    authUser,
+    loggedIn,
+    organizationContextReady,
+    organizations,
+    requestedWeeklyReport,
+  ])
 
   useEffect(() => {
     try {
@@ -2041,13 +2069,13 @@ function App() {
   }, [authUser, view])
 
   useEffect(() => {
-    if (!loggedIn || !canShowDeveloperAssignedBugs) {
+    if (!loggedIn || !canShowDeveloperAssignedBugs || selectedOrganizationId === null) {
       setAssignedBugCount(0)
       return
     }
 
     let alive = true
-    fetchAssignedTestBugs()
+    fetchAssignedTestBugs(selectedOrganizationId)
       .then((result) => {
         if (alive) updateAssignedBugCount(result.bugs)
       })
@@ -2058,7 +2086,7 @@ function App() {
     return () => {
       alive = false
     }
-  }, [canShowDeveloperAssignedBugs, loggedIn, updateAssignedBugCount])
+  }, [canShowDeveloperAssignedBugs, loggedIn, selectedOrganizationId, updateAssignedBugCount])
 
   const applyWorkspace = useCallback((data: WorkspaceData) => {
     setProjects(data.projects)
@@ -2485,6 +2513,12 @@ function App() {
   }, [packageMarketVisible, view])
 
   useEffect(() => {
+    if (view === 'weekly_report' && selectedOrganizationId === null) {
+      setView('search')
+    }
+  }, [selectedOrganizationId, view])
+
+  useEffect(() => {
     if (!loggedIn || !workspaceLoaded) return
     if (!workspaceHydratedRef.current) {
       workspaceHydratedRef.current = true
@@ -2888,7 +2922,7 @@ function App() {
       return
     }
     let active = true
-    void fetchMyWork({ kind: 'todo', limit: 500, status: 'open' })
+    void fetchMyWork(selectedOrganizationId, { kind: 'todo', limit: 500, status: 'open' })
       .then((result) => {
         if (active) setOpenTodoCount(result.items.length)
       })
@@ -2898,7 +2932,7 @@ function App() {
     return () => {
       active = false
     }
-  }, [authUser?.id, loggedIn, todos, workspaceLoaded])
+  }, [authUser?.id, loggedIn, selectedOrganizationId, todos, workspaceLoaded])
   async function submitInvitePassword() {
     if (!inviteToken) return
     const password = invitePasswordDraft.trim()
@@ -3080,7 +3114,9 @@ function App() {
     }
   }
 
-  function openAssignedBugFromShare(bugId: number) {
+  function openAssignedBugFromShare(bugId: number, organizationId: number | null) {
+    setSelectedOrganizationId(organizationId)
+    if (authUser) persistSelectedOrganizationId(authUser.id, organizationId)
     setRequestedAssignedBugId(bugId)
     setBugShareLoginRequested(false)
     window.history.replaceState({}, '', `/?assignedBug=${bugId}`)
@@ -3164,14 +3200,7 @@ function App() {
     if (authUser) persistSelectedOrganizationId(authUser.id, nextOrganizationId)
   }
 
-  function changeOrganization(value: string) {
-    const nextOrganizationId = value === 'personal' ? null : Number(value)
-    if (
-      nextOrganizationId !== null &&
-      (!Number.isSafeInteger(nextOrganizationId) ||
-        !organizations.some((organization) => organization.id === nextOrganizationId))
-    ) return
-
+  function applyOrganizationContext(nextOrganizationId: number | null) {
     setSelectedOrganizationId(nextOrganizationId)
     if (authUser) persistSelectedOrganizationId(authUser.id, nextOrganizationId)
     setSelectedProjectId(null)
@@ -3180,7 +3209,31 @@ function App() {
     setIsProjectTodoDetailActive(false)
     setDetailEntrySource('project')
     setProjectDetailTab('journal')
-    if (view === 'project') setView('search')
+    if (
+      view === 'project' ||
+      (nextOrganizationId === null && (
+        view === 'weekly_report' ||
+        view === 'package_market' ||
+        view === 'image_sync' ||
+        view === 'organization'
+      )) ||
+      (nextOrganizationId !== null && (view === 'inbox' || view === 'ai'))
+    ) setView('search')
+  }
+
+  async function changeOrganization(value: string) {
+    const nextOrganizationId = value === 'personal' ? null : Number(value)
+    if (
+      nextOrganizationId !== null &&
+      (!Number.isSafeInteger(nextOrganizationId) ||
+        !organizations.some((organization) => organization.id === nextOrganizationId))
+    ) return
+    if (nextOrganizationId === selectedOrganizationId) return
+    if (view === 'weekly_report') {
+      const prepared = await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true
+      if (!prepared) return
+    }
+    applyOrganizationContext(nextOrganizationId)
   }
 
   function selectProject(projectId: number) {
@@ -4780,52 +4833,60 @@ ${packageTimelineText}`
                   <Badge className="nav-badge">{openTodoCount}</Badge>
                 )}
               </NavButton>
-              <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
-                <Tray size={18} weight="duotone" /> 草稿箱
-              </NavButton>
-              <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
-                <FileText size={18} weight="duotone" /> 周报管理
-              </NavButton>
-              <NavButton
-                active={view === 'ai'}
-                onClick={() => {
-                  setAiMobilePane(getDefaultAiPane())
-                  setView('ai')
-                }}
-              >
-                <Sparkle size={18} weight="duotone" /> Veges AI
-              </NavButton>
-            </NavGroup>
-            <NavGroup label="协作与交付" id="nav-group-delivery">
-              {canNavigateToDeveloperBugs ? (
+              {selectedOrganizationId === null ? (
+                <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
+                  <Tray size={18} weight="duotone" /> 草稿箱
+                </NavButton>
+              ) : null}
+              {selectedOrganizationId !== null ? (
+                <NavButton active={view === 'weekly_report'} onClick={() => setView('weekly_report')}>
+                  <FileText size={18} weight="duotone" /> 周报管理
+                </NavButton>
+              ) : null}
+              {selectedOrganizationId === null ? (
                 <NavButton
-                  active={view === 'assigned_bugs'}
-                  onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
+                  active={view === 'ai'}
+                  onClick={() => {
+                    setAiMobilePane(getDefaultAiPane())
+                    setView('ai')
+                  }}
                 >
-                  <Bug size={18} weight="duotone" /> Bug 工作台
-                  {assignedBugCount > 0 && (
-                    <Badge className="nav-badge">{assignedBugCount}</Badge>
-                  )}
+                  <Sparkle size={18} weight="duotone" /> Veges AI
                 </NavButton>
               ) : null}
-              {canNavigateToTestWorkbench ? (
-                <NavButton
-                  active={view === 'testing'}
-                  onClick={() => void changeActiveUserRole('tester', 'testing')}
-                >
-                  <Flask size={18} weight="duotone" /> 测试工作台
-                </NavButton>
-              ) : null}
-              {packageMarketVisible ? (
-                <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
-                  <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
-                </NavButton>
-              ) : null}
-              <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
-                <CloudArrowUp size={18} weight="duotone" /> 镜像同步
-              </NavButton>
             </NavGroup>
-            {isOrganizationAdmin ? (
+            {selectedOrganizationId !== null ? (
+              <NavGroup label="协作与交付" id="nav-group-delivery">
+                {canNavigateToDeveloperBugs ? (
+                  <NavButton
+                    active={view === 'assigned_bugs'}
+                    onClick={() => void changeActiveUserRole('developer', 'assigned_bugs')}
+                  >
+                    <Bug size={18} weight="duotone" /> Bug 工作台
+                    {assignedBugCount > 0 && (
+                      <Badge className="nav-badge">{assignedBugCount}</Badge>
+                    )}
+                  </NavButton>
+                ) : null}
+                {canNavigateToTestWorkbench ? (
+                  <NavButton
+                    active={view === 'testing'}
+                    onClick={() => void changeActiveUserRole('tester', 'testing')}
+                  >
+                    <Flask size={18} weight="duotone" /> 测试工作台
+                  </NavButton>
+                ) : null}
+                {packageMarketVisible ? (
+                  <NavButton active={view === 'package_market'} onClick={() => setView('package_market')}>
+                    <ShoppingCartSimple size={18} weight="duotone" /> 安装包市场
+                  </NavButton>
+                ) : null}
+                <NavButton active={view === 'image_sync'} onClick={() => setView('image_sync')}>
+                  <CloudArrowUp size={18} weight="duotone" /> 镜像同步
+                </NavButton>
+              </NavGroup>
+            ) : null}
+            {selectedOrganizationId !== null && isOrganizationAdmin ? (
               <NavGroup label="组织与治理" id="nav-group-organization">
                 <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
                   <Buildings size={18} weight="duotone" /> 组织管理
@@ -5288,7 +5349,9 @@ ${packageTimelineText}`
 
         {view === 'my_work' && (
           <MyWorkWorkbench
-            projects={projects}
+            key={selectedOrganizationId ?? 'personal'}
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
             refreshToken={workspaceRefreshVersion}
             onTodoClick={selectMyWorkTodo}
             onDeliveryClick={selectMyWorkPackageEvent}
@@ -5346,6 +5409,7 @@ ${packageTimelineText}`
 
         {view === 'weekly_report' ? (
           <WeeklyReportWorkbench
+            ref={weeklyReportWorkbenchRef}
             initialOrganizationId={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.organizationId
               : null}
@@ -5353,6 +5417,7 @@ ${packageTimelineText}`
               ? requestedWeeklyReport.weekStart
               : null}
             refreshToken={workspaceRefreshVersion}
+            organizationId={selectedOrganizationId}
             onInitialContextConsumed={() => setRequestedWeeklyReport({
               organizationId: null,
               status: 'absent',
@@ -5363,8 +5428,10 @@ ${packageTimelineText}`
 
         {view === 'assigned_bugs' && canShowDeveloperAssignedBugs ? (
           <AssignedTestBugs
+            key={selectedOrganizationId ?? 'personal'}
             currentUserId={authUser?.id}
             initialBugId={requestedAssignedBugId}
+            organizationId={selectedOrganizationId}
             embedded
             onBugSeen={markAssignedBugCommentsRead}
             onBugsChange={updateAssignedBugCount}
@@ -5461,14 +5528,14 @@ function OrganizationSwitcher({
   error: string
   organizations: OrganizationListItem[]
   selectedOrganizationId: number | null
-  onChange: (value: string) => void
+  onChange: (value: string) => void | Promise<void>
 }) {
   const value = selectedOrganizationId == null ? 'personal' : String(selectedOrganizationId)
   const selectedOrganization = organizations.find((organization) => organization.id === selectedOrganizationId)
 
   return (
     <div className="sidebar-organization-switcher">
-      <Select value={value} onValueChange={onChange}>
+      <Select value={value} onValueChange={(nextValue) => void onChange(nextValue)}>
         <SelectTrigger className="sidebar-organization-select" aria-label="切换组织">
           <span className="sidebar-organization-select-value">
             <Buildings size={16} weight="duotone" aria-hidden />

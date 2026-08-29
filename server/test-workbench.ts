@@ -37,6 +37,10 @@ import {
   type BugStatus,
   type TestResult,
 } from './test-workbench-policy.ts'
+import {
+  parseOrganizationContext,
+  type OrganizationContext,
+} from '../shared/organization-context.ts'
 
 type TestSpaceAccess = 'owner' | 'editor' | 'viewer'
 type TestSpaceMembershipStatus = 'pending' | 'active' | 'declined'
@@ -128,6 +132,30 @@ function text(value: unknown, maxLength: number) {
 function positiveId(value: unknown) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+async function requireAssignedBugOrganizationContext(
+  request: express.Request,
+  response: express.Response,
+  userId: number,
+): Promise<OrganizationContext | undefined> {
+  const organizationId = parseOrganizationContext(request.query.organizationId)
+  if (organizationId === undefined) {
+    response.status(400).json({ error: '有效的组织上下文是必填项' })
+    return undefined
+  }
+  if (organizationId === null) return organizationId
+
+  const membership = await query(
+    `select 1 from organization_memberships
+     where organization_id = $1 and user_id = $2 and status = 'active'`,
+    [organizationId, userId],
+  )
+  if (!membership.rows[0]) {
+    response.status(404).json({ error: '组织不存在或无权访问' })
+    return undefined
+  }
+  return organizationId
 }
 
 async function resolveOrganizationMentionUserIds(organizationId: number | null, content: string) {
@@ -3551,7 +3579,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
   response.json(await getTestWorkbench(session.userId))
 }))
 
-async function getAssignedBugs(userId: number) {
+async function getAssignedBugs(userId: number, organizationId: OrganizationContext) {
   const bugs = await query<{
     actual_result: string
     assignee_display_name: string | null
@@ -3599,12 +3627,14 @@ async function getAssignedBugs(userId: number) {
     left join test_plans plan on plan.id = b.test_plan_id
     left join users reporter on reporter.id = b.reporter_user_id
     left join users assignee on assignee.id = b.assignee_user_id
-    where (
-      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
-    ) or ${managedOrganizationReadScopeSql('space.organization_id')}
+    where space.organization_id is not distinct from $2::bigint
+      and (
+        (b.assignee_user_id = $1 and b.status not in ('closed', 'rejected'))
+        or ${managedOrganizationReadScopeSql('space.organization_id')}
+      )
     order by b.updated_at desc, b.id desc
     `,
-    [userId],
+    [userId, organizationId],
   )
   const comments = await query<{
     author_display_name: string | null
@@ -3627,12 +3657,14 @@ async function getAssignedBugs(userId: number) {
     join test_bugs b on b.id = c.test_bug_id
     join test_spaces space on space.id = b.test_space_id
     left join users u on u.id = c.author_user_id
-    where (
-      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
-    ) or ${managedOrganizationReadScopeSql('space.organization_id')}
+    where space.organization_id is not distinct from $2::bigint
+      and (
+        (b.assignee_user_id = $1 and b.status not in ('closed', 'rejected'))
+        or ${managedOrganizationReadScopeSql('space.organization_id')}
+      )
     order by c.created_at, c.id
     `,
-    [userId],
+    [userId, organizationId],
   )
   const commentsByBug = new Map<number, Array<Record<string, unknown>>>()
   for (const row of comments.rows) {
@@ -3684,12 +3716,14 @@ async function getAssignedBugs(userId: number) {
     left join users assignee on assignee.id = e.assignee_user_id
     left join test_spaces previous_space on previous_space.id = e.previous_test_space_id
     left join test_spaces next_space on next_space.id = e.next_test_space_id
-    where (
-      b.assignee_user_id = $1 and b.status not in ('closed', 'rejected')
-    ) or ${managedOrganizationReadScopeSql('space.organization_id')}
+    where space.organization_id is not distinct from $2::bigint
+      and (
+        (b.assignee_user_id = $1 and b.status not in ('closed', 'rejected'))
+        or ${managedOrganizationReadScopeSql('space.organization_id')}
+      )
     order by e.created_at, e.id
     `,
-    [userId],
+    [userId, organizationId],
   )
   const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
   const assigneeTransferSourceByBug = new Map<number, 'manual' | 'offboarding' | undefined>()
@@ -3782,6 +3816,7 @@ async function getAssignedBugs(userId: number) {
   return {
     departedUserIds: await getDepartedUserIds(),
     members: [],
+    organizationId,
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
       assigneeName: row.assignee_display_name || row.assignee_email || undefined,
@@ -3829,7 +3864,11 @@ async function getAssignedBugs(userId: number) {
   }
 }
 
-async function getAssignedBugCommentAccess(userId: number, bugId: number) {
+async function getAssignedBugCommentAccess(
+  userId: number,
+  bugId: number,
+  organizationId: OrganizationContext,
+) {
   const result = await query<{
     assignee_user_id: string | null
     organization_id: string | null
@@ -3841,10 +3880,11 @@ async function getAssignedBugCommentAccess(userId: number, bugId: number) {
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
     where b.id = $2
+      and space.organization_id is not distinct from $3::bigint
       and (b.assignee_user_id = $1 or ${managedOrganizationReadScopeSql('space.organization_id')})
     limit 1
     `,
-    [userId, bugId],
+    [userId, bugId, organizationId],
   )
   return result.rows[0] ?? null
 }
@@ -3852,7 +3892,9 @@ async function getAssignedBugCommentAccess(userId: number, bugId: number) {
 router.get('/test-bugs/assigned', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
-  response.json(await getAssignedBugs(session.userId))
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.get('/bug-shares/:token', asyncRoute(async (request, response) => {
@@ -3922,6 +3964,8 @@ router.delete('/test-bugs/:bugId/share-link', asyncRoute(async (request, respons
 router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   const assigneeUserId = positiveId(request.body.assigneeUserId)
   const reason = String(request.body.reason ?? '').trim()
@@ -3948,9 +3992,10 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
       join test_spaces space on space.id = b.test_space_id
       left join users assignee on assignee.id = b.assignee_user_id
       where b.id = $1
+        and space.organization_id is not distinct from $3::bigint
       for update of b
       `,
-      [bugId, session.userId],
+      [bugId, session.userId, organizationId],
     )
     const bug = lockedBug.rows[0]
     if (!bug) {
@@ -4039,12 +4084,14 @@ router.post('/test-bugs/:bugId/assigned/transfer', asyncRoute(async (request, re
     bugId,
     transferReason: transfer.assigningUnassignedBug ? undefined : reason,
   })
-  response.json(await getAssignedBugs(session.userId))
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.post('/test-bugs/:bugId/assigned/reject', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   const reason = String(request.body.reason ?? '').trim()
   if (!bugId || !reason || reason.length > 1000) {
@@ -4057,10 +4104,13 @@ router.post('/test-bugs/:bugId/assigned/reject', asyncRoute(async (request, resp
       `
       select b.status
       from test_bugs b
-      where b.id = $1 and b.assignee_user_id = $2
+      join test_spaces space on space.id = b.test_space_id
+      where b.id = $1
+        and b.assignee_user_id = $2
+        and space.organization_id is not distinct from $3::bigint
       for update of b
       `,
-      [bugId, session.userId],
+      [bugId, session.userId, organizationId],
     )
     const bug = lockedBug.rows[0]
     if (!bug) {
@@ -4094,20 +4144,27 @@ router.post('/test-bugs/:bugId/assigned/reject', asyncRoute(async (request, resp
     bugId,
     rejectReason: reason,
   })
-  response.json(await getAssignedBugs(session.userId))
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   if (!bugId || !isBugStatus(request.body.status)) {
     response.status(400).json({ error: 'Valid bug and status are required' })
     return
   }
   const current = await query<{ status: BugStatus }>(
-    'select status from test_bugs where id = $1 and assignee_user_id = $2',
-    [bugId, session.userId],
+    `select b.status
+     from test_bugs b
+     join test_spaces space on space.id = b.test_space_id
+     where b.id = $1
+       and b.assignee_user_id = $2
+       and space.organization_id is not distinct from $3::bigint`,
+    [bugId, session.userId, organizationId],
   )
   if (!current.rows[0]) {
     response.status(404).json({ error: 'Assigned bug not found' })
@@ -4117,11 +4174,21 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     response.status(409).json({ error: 'Developer cannot perform this bug transition' })
     return
   }
-  await query('update test_bugs set status = $1, updated_at = now() where id = $2 and assignee_user_id = $3', [
-    request.body.status,
-    bugId,
-    session.userId,
-  ])
+  const updated = await query(
+    `update test_bugs b
+     set status = $1, updated_at = now()
+     from test_spaces space
+     where b.id = $2
+       and b.assignee_user_id = $3
+       and space.id = b.test_space_id
+       and space.organization_id is not distinct from $4::bigint
+     returning b.id`,
+    [request.body.status, bugId, session.userId, organizationId],
+  )
+  if (!updated.rows[0]) {
+    response.status(404).json({ error: 'Assigned bug not found' })
+    return
+  }
   await recordTestBugEvent({
     actorUserId: session.userId,
     bugId,
@@ -4137,19 +4204,21 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
       previousStatus: current.rows[0].status,
     })
   }
-  response.json(await getAssignedBugs(session.userId))
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.post('/test-bugs/:bugId/assigned/comments', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   const content = text(request.body.content, 5000)
   if (!bugId || !content) {
     response.status(400).json({ error: 'Bug and comment are required' })
     return
   }
-  const bug = await getAssignedBugCommentAccess(session.userId, bugId)
+  const bug = await getAssignedBugCommentAccess(session.userId, bugId, organizationId)
   if (!bug) {
     response.status(404).json({ error: 'Assigned bug not found' })
     return
@@ -4172,12 +4241,14 @@ router.post('/test-bugs/:bugId/assigned/comments', asyncRoute(async (request, re
       mentionedUserIds,
     })
   }
-  response.status(201).json(await getAssignedBugs(session.userId))
+  response.status(201).json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.patch('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   const commentId = positiveId(request.params.commentId)
   const content = text(request.body.content, 5000)
@@ -4196,22 +4267,25 @@ router.patch('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async 
        and c.test_bug_id = b.id
        and b.id = $3
        and (b.assignee_user_id = $4 or ${managedOrganizationReadScopeSql('space.organization_id', '$4')})
+       and space.organization_id is not distinct from $5::bigint
        and c.author_user_id = $4
        and c.kind = 'comment'
      returning c.id
     `,
-    [encryptText(content), commentId, bugId, session.userId],
+    [encryptText(content), commentId, bugId, session.userId, organizationId],
   )
   if (!result.rows[0]) {
     response.status(404).json({ error: 'Editable assigned comment not found' })
     return
   }
-  response.json(await getAssignedBugs(session.userId))
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 router.delete('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'developer')
   if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
   const bugId = positiveId(request.params.bugId)
   const commentId = positiveId(request.params.commentId)
   if (!bugId || !commentId) {
@@ -4227,17 +4301,18 @@ router.delete('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async
        and c.test_bug_id = b.id
        and b.id = $2
        and (b.assignee_user_id = $3 or ${managedOrganizationReadScopeSql('space.organization_id', '$3')})
+       and space.organization_id is not distinct from $4::bigint
        and c.author_user_id = $3
        and c.kind = 'comment'
      returning c.id
     `,
-    [commentId, bugId, session.userId],
+    [commentId, bugId, session.userId, organizationId],
   )
   if (!result.rows[0]) {
     response.status(404).json({ error: 'Deletable assigned comment not found' })
     return
   }
-  response.json(await getAssignedBugs(session.userId))
+  response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
 export { router as testWorkbenchRouter }

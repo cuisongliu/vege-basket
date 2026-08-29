@@ -20,6 +20,7 @@ import {
 
 const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
 const testWorkbenchClientSource = readFileSync(new URL('../src/components/test-workbench.tsx', import.meta.url), 'utf8')
+const testWorkbenchApiSource = readFileSync(new URL('../src/test-workbench-api.ts', import.meta.url), 'utf8')
 const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.meta.url), 'utf8')
 
 test('test spaces persist and expose an optional version label', () => {
@@ -61,6 +62,19 @@ test('assigned Bug details include their test subject and space version label', 
   assert.match(testWorkbenchClientSource, /selected\.testSpaceVersionLabel \|\| '未指定'/u)
   assert.match(testWorkbenchClientSource, /<small>版本号 \{bug\.testSpaceVersionLabel \|\| '未指定'\}/u)
   assert.match(testWorkbenchClientSource, /label: `\$\{bug\.testSpaceName\}\$\{bug\.testSpaceVersionLabel \? ` · \$\{bug\.testSpaceVersionLabel\}` : ''\}`/u)
+})
+
+test('assigned Bugs use the selected organization for reads, mutations, and local space selection', () => {
+  assert.match(testWorkbenchSource, /requireAssignedBugOrganizationContext/u)
+  assert.match(testWorkbenchSource, /space\.organization_id is not distinct from \$2::bigint/u)
+  assert.match(testWorkbenchSource, /space\.organization_id is not distinct from \$3::bigint/u)
+  assert.match(testWorkbenchSource, /space\.organization_id is not distinct from \$4::bigint/u)
+  assert.match(testWorkbenchSource, /getAssignedBugs\(session\.userId, organizationId\)/u)
+  assert.match(testWorkbenchApiSource, /function withOrganizationContext/u)
+  assert.match(testWorkbenchApiSource, /serializeOrganizationContext\(organizationId\)/u)
+  assert.match(testWorkbenchApiSource, /fetchAssignedTestBugs\(organizationId: OrganizationContext\)/u)
+  assert.match(testWorkbenchClientSource, /fetchAssignedTestBugs\(organizationId\)/u)
+  assert.match(testWorkbenchClientSource, /getAssignedBugSpaceStorageKey\(currentUserId, organizationId\)/u)
 })
 
 test('developer bug transitions stop at pending verification', () => {
@@ -111,7 +125,7 @@ test('developer workbench offers start and reject for pending confirmation Bugs'
   assert.match(testWorkbenchClientSource, /pending_confirmation: '待确认'/u)
   assert.match(testWorkbenchClientSource, /selected\.status === 'pending_confirmation'/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>驳回 Bug<\/DialogTitle>/u)
-  assert.match(testWorkbenchClientSource, /rejectAssignedTestBug\(bug\.id, reason\)/u)
+  assert.match(testWorkbenchClientSource, /rejectAssignedTestBug\(organizationId, bug\.id, reason\)/u)
   assert.match(testWorkbenchClientSource, /驳回记录/u)
 })
 

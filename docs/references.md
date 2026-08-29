@@ -5,7 +5,7 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/organization-context.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
 | HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts`, `server/organization-package-market.ts` |
 | Database schema and incremental migrations | `server/schema.ts`, `server/migrations/` |
@@ -135,7 +135,8 @@ families are:
 | --- | --- |
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
-| Workspace | `GET /api/workspace`, `GET /api/my-work`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Workspace | `GET /api/workspace`, `GET /api/my-work?organizationId=:id|personal`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Assigned Bugs | `GET /api/test-bugs/assigned?organizationId=:id|personal` and all `/api/test-bugs/:bugId/assigned*` mutations require the same active organization context; the server validates active membership and binds the Bug test space to that context |
 | Changelog | `GET /api/changelog` for authenticated readers; `POST /api/admin/changelog` and `PATCH /api/admin/changelog/:id` require `VEGES_ADMIN_USERNAMES` system-admin access |
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |

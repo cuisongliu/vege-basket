@@ -27,6 +27,7 @@ export type MyWorkSummary = {
 }
 
 export type MyWorkData = {
+  organizationId: number | null
   items: MyWorkItem[]
   summary: MyWorkSummary
   nextCursor?: string

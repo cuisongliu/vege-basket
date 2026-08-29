@@ -206,6 +206,7 @@ import { createWeeklyReportRouter } from './weekly-reports.ts'
 import { changelogRouter } from './changelog.ts'
 import { getMyWork } from './my-work.ts'
 import { parseMyWorkFilters } from './my-work-policy.ts'
+import { parseOrganizationContext } from '../shared/organization-context.ts'
 import {
   hashTodoShareToken,
   hashProjectTransferToken,
@@ -9119,7 +9120,27 @@ app.patch('/api/notifications/read-all', asyncHandler(async (request, response) 
 app.get('/api/my-work', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  response.json(await getMyWork(userId, parseMyWorkFilters(request.query as Record<string, unknown>)))
+  const organizationId = parseOrganizationContext(request.query.organizationId)
+  if (organizationId === undefined) {
+    response.status(400).json({ error: '有效的组织上下文是必填项' })
+    return
+  }
+  if (organizationId !== null) {
+    const membership = await query(
+      `select 1 from organization_memberships
+       where organization_id = $1 and user_id = $2 and status = 'active'`,
+      [organizationId, userId],
+    )
+    if (!membership.rows[0]) {
+      response.status(404).json({ error: '组织不存在或无权访问' })
+      return
+    }
+  }
+  response.json(await getMyWork(
+    userId,
+    organizationId,
+    parseMyWorkFilters(request.query as Record<string, unknown>),
+  ))
 }))
 
 app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request, response) => {

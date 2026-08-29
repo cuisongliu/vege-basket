@@ -64,7 +64,10 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
-import { WeeklyReportWorkbench } from './weekly-report-workbench'
+import {
+  WeeklyReportWorkbench,
+  type WeeklyReportWorkbenchHandle,
+} from './weekly-report-workbench'
 import { BugShareDialog } from './bug-share-dialog'
 import { UserName } from './user-name'
 import {
@@ -148,6 +151,7 @@ import type {
   TestWorkbenchNotification,
   TestWorkbenchProjectOption,
 } from '@/test-workbench-types'
+import type { OrganizationContext } from '../../shared/organization-context'
 import type { Priority } from '@/types'
 import './test-workbench.css'
 
@@ -337,13 +341,19 @@ function writeReadNotificationKeys(currentUserId: number | undefined, keys: Set<
   window.localStorage.setItem(storageKey, JSON.stringify(Array.from(keys)))
 }
 
-function getAssignedBugSpaceStorageKey(currentUserId?: number) {
-  return currentUserId ? `${assignedBugSpaceStoragePrefix}.${currentUserId}` : assignedBugSpaceStoragePrefix
+function getAssignedBugSpaceStorageKey(
+  currentUserId: number | undefined,
+  organizationId: OrganizationContext,
+) {
+  const scope = organizationId == null ? 'personal' : String(organizationId)
+  return currentUserId
+    ? `${assignedBugSpaceStoragePrefix}.${currentUserId}.${scope}`
+    : `${assignedBugSpaceStoragePrefix}.${scope}`
 }
 
-function readAssignedBugSpaceId(currentUserId?: number) {
+function readAssignedBugSpaceId(currentUserId: number | undefined, organizationId: OrganizationContext) {
   if (typeof window === 'undefined') return undefined
-  const value = Number(window.localStorage.getItem(getAssignedBugSpaceStorageKey(currentUserId)))
+  const value = Number(window.localStorage.getItem(getAssignedBugSpaceStorageKey(currentUserId, organizationId)))
   return Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
@@ -506,6 +516,7 @@ export function TestWorkbench({
   const acceptingInviteTokenRef = useRef('')
   const refreshInFlightRef = useRef(false)
   const viewStateReadyRef = useRef(false)
+  const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
 
   useEffect(() => {
     setSeenBugCommentIds(readSeenBugCommentIds(currentUserId))
@@ -668,6 +679,7 @@ export function TestWorkbench({
 
   const activeSpace = data.spaces.find((space) => space.id === spaceId)
   const activeManagedSpace = spaceSettings.spaces.find((space) => space.id === spaceId)
+  const activeWeeklyReportOrganizationId = activeManagedSpace?.organizationId ?? null
   const testSpaceOrganizationGroups = useMemo<TestSpaceOrganizationGroup[]>(() => {
     const visibleSpaceIds = new Set(data.spaces.map((space) => space.id))
     const groups = new Map<string, TestSpaceOrganizationGroup>()
@@ -901,6 +913,18 @@ export function TestWorkbench({
     return result
   }
 
+  async function selectTestSpace(nextSpaceId: number) {
+    if (nextSpaceId === spaceId) return
+    const nextSpace = spaceSettings.spaces.find((space) => space.id === nextSpaceId)
+    if (!nextSpace) return
+    const nextOrganizationId = nextSpace.organizationId ?? null
+    if (tab === 'weekly_report' && activeWeeklyReportOrganizationId !== nextOrganizationId) {
+      const prepared = await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true
+      if (!prepared) return
+    }
+    setSpaceId(nextSpaceId)
+  }
+
   async function handleCreateSpace(name: string, versionLabel: string, organizationId?: number) {
     const normalizedName = name.trim()
     if (!normalizedName) return false
@@ -1021,7 +1045,7 @@ export function TestWorkbench({
                       <DropdownMenuItem
                         key={space.id}
                         className="test-space-cascade-space-item"
-                        onSelect={() => setSpaceId(space.id)}
+                        onSelect={() => void selectTestSpace(space.id)}
                       >
                         {space.id === spaceId ? <Check aria-hidden /> : <span className="test-space-select-check-placeholder" />}
                         <TestSpaceSelectLabel
@@ -1136,7 +1160,12 @@ export function TestWorkbench({
             <div className="test-workbench-loading">正在加载测试工作台...</div>
           ) : tab === 'weekly_report' ? (
             <div className="test-workbench-weekly-report">
-              <WeeklyReportWorkbench embedded refreshToken={refreshToken} />
+              <WeeklyReportWorkbench
+                ref={weeklyReportWorkbenchRef}
+                embedded
+                organizationId={activeWeeklyReportOrganizationId}
+                refreshToken={refreshToken}
+              />
             </div>
           ) : tab === 'notifications' ? (
             <>
@@ -4372,6 +4401,7 @@ function BugRejectDialog({ bug, busy, onOpenChange, onSubmit, open }: {
 export function AssignedTestBugs({
   currentUserId,
   initialBugId,
+  organizationId,
   embedded = false,
   onBugSeen,
   onBugsChange,
@@ -4379,6 +4409,7 @@ export function AssignedTestBugs({
 }: {
   currentUserId?: number
   initialBugId?: number | null
+  organizationId: OrganizationContext
   embedded?: boolean
   onBugSeen?: (bug: TestBug) => void
   onBugsChange?: (bugs: TestBug[]) => void
@@ -4419,31 +4450,45 @@ export function AssignedTestBugs({
     const nextId = Number(value)
     if (!Number.isSafeInteger(nextId) || nextId <= 0) return
     setSelectedSpaceId(nextId)
-    window.localStorage.setItem(getAssignedBugSpaceStorageKey(currentUserId), String(nextId))
+    window.localStorage.setItem(getAssignedBugSpaceStorageKey(currentUserId, organizationId), String(nextId))
   }
 
   useEffect(() => {
-    fetchAssignedTestBugs()
+    let active = true
+    setLoading(true)
+    setError('')
+    fetchAssignedTestBugs(organizationId)
       .then((result) => {
+        if (!active) return
         setBugs(result.bugs)
         setDepartedUserIds(result.departedUserIds)
         setMentionMembers(result.members ?? [])
         onBugsChangeRef.current?.(result.bugs)
-        const rememberedSpaceId = readAssignedBugSpaceId(currentUserId)
+        const rememberedSpaceId = readAssignedBugSpaceId(currentUserId, organizationId)
         const initialBug = initialBugId ? result.bugs.find((bug) => bug.id === initialBugId) : undefined
         const nextSpaceId = initialBug?.testSpaceId
           ?? (rememberedSpaceId && result.bugs.some((bug) => bug.testSpaceId === rememberedSpaceId)
             ? rememberedSpaceId
             : result.bugs[0]?.testSpaceId)
         setSelectedSpaceId(nextSpaceId)
-        if (nextSpaceId) window.localStorage.setItem(getAssignedBugSpaceStorageKey(currentUserId), String(nextSpaceId))
+        if (nextSpaceId) {
+          window.localStorage.setItem(
+            getAssignedBugSpaceStorageKey(currentUserId, organizationId),
+            String(nextSpaceId),
+          )
+        }
         setSelectedId(initialBugId && result.bugs.some((bug) => bug.id === initialBugId)
           ? initialBugId
           : result.bugs[0]?.id)
       })
-      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Bug 加载失败。'))
-      .finally(() => setLoading(false))
-  }, [currentUserId, initialBugId])
+      .catch((loadError) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : 'Bug 加载失败。')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => { active = false }
+  }, [currentUserId, initialBugId, organizationId])
 
   useEffect(() => {
     let active = true
@@ -4451,7 +4496,7 @@ export function AssignedTestBugs({
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       if (refreshInFlightRef.current) return
       refreshInFlightRef.current = true
-      fetchAssignedTestBugs()
+      fetchAssignedTestBugs(organizationId)
         .then((result) => {
           if (!active) return
           setBugs(result.bugs)
@@ -4460,7 +4505,7 @@ export function AssignedTestBugs({
           onBugsChangeRef.current?.(result.bugs)
           setSelectedSpaceId((current) => {
             if (current && result.bugs.some((bug) => bug.testSpaceId === current)) return current
-            const remembered = readAssignedBugSpaceId(currentUserId)
+            const remembered = readAssignedBugSpaceId(currentUserId, organizationId)
             return remembered && result.bugs.some((bug) => bug.testSpaceId === remembered)
               ? remembered
               : result.bugs[0]?.testSpaceId
@@ -4485,7 +4530,7 @@ export function AssignedTestBugs({
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [currentUserId])
+  }, [currentUserId, organizationId])
 
   const spaceBugs = useMemo(() => bugs.filter((bug) => bug.testSpaceId === selectedSpaceId), [bugs, selectedSpaceId])
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase('zh-CN')
@@ -4660,7 +4705,7 @@ export function AssignedTestBugs({
                     {selected.canManage && (
                       selected.status === 'pending_confirmation' || selected.status === 'assigned'
                     ) ? (
-                      <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'in_progress'))}>开始修复</Button>
+                      <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(organizationId, selected.id, 'in_progress'))}>开始修复</Button>
                     ) : null}
                     {selected.canManage && (
                       selected.status === 'pending_confirmation' || selected.status === 'assigned'
@@ -4680,7 +4725,7 @@ export function AssignedTestBugs({
                     {selected.canManage && selected.status === 'in_progress' ? (
                       <>
                         <Button className="test-bug-reject-button" variant="destructive" disabled>驳回</Button>
-                        <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(selected.id, 'pending_verification'))}>提交验证</Button>
+                        <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(organizationId, selected.id, 'pending_verification'))}>提交验证</Button>
                       </>
                     ) : null}
                   </div>
@@ -4702,13 +4747,13 @@ export function AssignedTestBugs({
                   mentionMembers={selected.organizationMembers ?? mentionMembers}
                   placeholder="说明修复内容或提交版本，支持粘贴、拖入或上传图片和视频。"
                   onComment={selected.canComment
-                    ? (bug, content) => mutate(() => addAssignedTestBugComment(bug.id, content))
+                    ? (bug, content) => mutate(() => addAssignedTestBugComment(organizationId, bug.id, content))
                     : undefined}
                   onDeleteComment={selected.canComment
-                    ? (bug, comment) => mutate(() => deleteAssignedTestBugComment(bug.id, comment.id))
+                    ? (bug, comment) => mutate(() => deleteAssignedTestBugComment(organizationId, bug.id, comment.id))
                     : undefined}
                   onUpdateComment={selected.canComment
-                    ? (bug, comment, content) => mutate(() => updateAssignedTestBugComment(bug.id, comment.id, content))
+                    ? (bug, comment, content) => mutate(() => updateAssignedTestBugComment(organizationId, bug.id, comment.id, content))
                     : undefined}
                 />
               </>
@@ -4721,7 +4766,7 @@ export function AssignedTestBugs({
         busy={busy}
         open={transferDialogOpen}
         onOpenChange={setTransferDialogOpen}
-        onSubmit={(bug, assigneeUserId, reason) => mutate(() => transferAssignedTestBug(bug.id, {
+        onSubmit={(bug, assigneeUserId, reason) => mutate(() => transferAssignedTestBug(organizationId, bug.id, {
           assigneeUserId,
           reason,
         }))}
@@ -4731,7 +4776,7 @@ export function AssignedTestBugs({
         busy={busy}
         open={rejectDialogOpen}
         onOpenChange={setRejectDialogOpen}
-        onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(bug.id, reason))}
+        onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(organizationId, bug.id, reason))}
       />
       {selected ? <BugShareDialog bugId={selected.id} open={shareOpen} onOpenChange={setShareOpen} /> : null}
       <BugFilterBuilderDialog

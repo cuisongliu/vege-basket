@@ -1,9 +1,11 @@
 import {
   Component,
+  forwardRef,
   Suspense,
   lazy,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -42,7 +44,6 @@ import {
 } from '@phosphor-icons/react'
 import {
   fetchOrganization,
-  fetchOrganizations,
   fetchPersonalWeeklyReport,
   fetchPersonalWeeklyReports,
   fetchWeeklyReportSources,
@@ -52,7 +53,6 @@ import {
 } from '../api'
 import { ApiError } from '../api-error'
 import type {
-  OrganizationListItem,
   PersonalWeeklyReport,
   PersonalWeeklyReportList,
   PersonalWeeklyReportListItem,
@@ -117,7 +117,12 @@ type WeeklyReportWorkbenchProps = {
   initialOrganizationId?: number | null
   initialWeekStart?: string | null
   onInitialContextConsumed?: () => void
+  organizationId: number | null
   refreshToken?: number
+}
+
+export type WeeklyReportWorkbenchHandle = {
+  prepareOrganizationChange: () => Promise<boolean>
 }
 
 const sourceKindMeta: Record<WeeklyReportSourceKind, {
@@ -255,22 +260,23 @@ function markdownForSources(sources: WeeklyReportSourceCandidate[]) {
   )).join('\n')
 }
 
-export function WeeklyReportWorkbench({
+export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, WeeklyReportWorkbenchProps>(function WeeklyReportWorkbench({
   embedded = false,
   initialOrganizationId = null,
   initialWeekStart = null,
   onInitialContextConsumed,
+  organizationId: providedOrganizationId,
   refreshToken = 0,
-}: WeeklyReportWorkbenchProps) {
+}, ref) {
+  const organizationId = providedOrganizationId ?? 0
+  const resolvedInitialOrganizationId = initialOrganizationId ?? (organizationId || null)
   const initialContext = useRef({
-    organizationId: initialOrganizationId,
+    organizationId: resolvedInitialOrganizationId,
     weekStart: initialWeekStart,
   })
   const [workspaceView, setWorkspaceView] = useState<WeeklyReportView>(() => (
-    initialOrganizationId && initialWeekStart ? 'editor' : 'list'
+    resolvedInitialOrganizationId && initialWeekStart ? 'editor' : 'list'
   ))
-  const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
-  const [organizationId, setOrganizationId] = useState(0)
   const [weekStartsOn, setWeekStartsOn] = useState(1)
   const [weeklyReportRules, setWeeklyReportRules] = useState<WeeklyReportRules>(defaultWeeklyReportRules)
   const [weekStart, setWeekStart] = useState('')
@@ -331,7 +337,7 @@ export function WeeklyReportWorkbench({
       embedded ? 'weekly-report-embedded-toolbar-actions' : 'weekly-report-topbar-actions',
     ))
     return () => setTopbarActionHost(null)
-  }, [embedded, organizations.length, workspaceView])
+  }, [embedded, organizationId, workspaceView])
 
   const weekOptions = useMemo(() => {
     const current = currentWeekStart(weekStartsOn, today)
@@ -411,34 +417,33 @@ export function WeeklyReportWorkbench({
     setSaveState('saved')
   }, [])
 
-  useEffect(() => {
-    let active = true
-    setLoading(true)
-    fetchOrganizations()
-      .then((result) => {
-        if (!active) return
-        setOrganizations(result.organizations)
-        const preferred = result.organizations.some((organization) => (
-          organization.id === initialContext.current.organizationId
-        ))
-          ? initialContext.current.organizationId!
-          : result.organizations[0]?.id ?? 0
-        setOrganizationId(preferred)
-        if (!preferred) setLoading(false)
-      })
-      .catch((loadError) => {
-        if (active) {
-          setError(errorMessage(loadError))
-          setLoading(false)
-        }
-      })
-    return () => {
-      active = false
-    }
-  }, [])
+  const previousOrganizationId = useRef(organizationId)
 
   useEffect(() => {
-    if (!organizationId) return
+    if (previousOrganizationId.current === organizationId) return
+    previousOrganizationId.current = organizationId
+    setReportList(null)
+    setReportListPage(0)
+    setCurrentWeekSubmitted(null)
+    if (workspaceView !== 'editor') return
+    setReport(null)
+    setContent('')
+    setSourceMode('manual')
+    setSelectedSources([])
+    setSourceCandidates([])
+    setSourceKind('all')
+    setSourceQuery('')
+    setSourcePage(0)
+    setSaveState('idle')
+    lastSavedSignature.current = ''
+    setWeekStart('')
+  }, [organizationId, workspaceView])
+
+  useEffect(() => {
+    if (!organizationId) {
+      setLoading(false)
+      return
+    }
     let active = true
     const organizationChanged = loadedOrganizationId.current !== organizationId
     if (organizationChanged) setLoading(true)
@@ -563,6 +568,19 @@ export function WeeklyReportWorkbench({
     }
   }, [content, organizationId, report, selectedSources, sourceMode, weekStart])
 
+  const prepareOrganizationChange = useCallback(async () => {
+    if (busy || saveInFlight.current) return false
+    if (workspaceView !== 'editor') return true
+    try {
+      await persistDraft()
+      return true
+    } catch (saveError) {
+      return isWeeklyReportWriteWindowError(saveError)
+    }
+  }, [busy, persistDraft, workspaceView])
+
+  useImperativeHandle(ref, () => ({ prepareOrganizationChange }), [prepareOrganizationChange])
+
   useEffect(() => {
     if (workspaceView !== 'editor' || !report || loading || busy || currentSignature === lastSavedSignature.current) return
     setSaveState('idle')
@@ -618,26 +636,6 @@ export function WeeklyReportWorkbench({
     setSourcePage(0)
     setSaveState('idle')
     lastSavedSignature.current = ''
-  }
-
-  async function changeOrganization(value: string) {
-    const nextOrganizationId = Number(value)
-    if (nextOrganizationId === organizationId) return
-    if (workspaceView === 'editor') {
-      try {
-        await persistDraft()
-      } catch (saveError) {
-        if (!isWeeklyReportWriteWindowError(saveError)) return
-      }
-    }
-    setReportList(null)
-    setReportListPage(0)
-    setCurrentWeekSubmitted(null)
-    if (workspaceView === 'editor') {
-      resetEditorState()
-      setWeekStart('')
-    }
-    setOrganizationId(nextOrganizationId)
   }
 
   function openEditor(targetWeekStart: string) {
@@ -737,23 +735,9 @@ export function WeeklyReportWorkbench({
     weekStart: activeWeekStart,
   })
 
-  const weeklyReportToolbar = topbarActionHost && organizations.length > 0
+  const weeklyReportToolbar = topbarActionHost && organizationId > 0
     ? createPortal(
       <div className="weekly-report-toolbar">
-        <Select value={String(organizationId)} onValueChange={(value) => void changeOrganization(value)}>
-          <SelectTrigger
-            aria-label="选择组织"
-            className="weekly-report-select weekly-report-organization-select"
-            disabled={workspaceView === 'editor' && (busy || saveState === 'saving')}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {organizations.map((organization) => (
-              <SelectItem key={organization.id} value={String(organization.id)}>{organization.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
         {workspaceView === 'editor' ? (
           <Select value={weekStart} onValueChange={(value) => void changeEditorWeek(value)}>
             <SelectTrigger
@@ -784,18 +768,18 @@ export function WeeklyReportWorkbench({
     )
     : null
 
-  if (loading && organizations.length === 0) {
-    return <div className="weekly-report-empty">正在加载周报管理...</div>
-  }
-
-  if (organizations.length === 0) {
+  if (!organizationId) {
     return (
       <div className="weekly-report-empty">
         <ClipboardText size={32} weight="duotone" />
-        <strong>当前账号还没有加入组织</strong>
-        <span>加入组织后，可以在这里整理并提交个人周报。</span>
+        <strong>{embedded ? '当前测试空间未关联组织' : '当前未选择组织'}</strong>
+        <span>{embedded ? '关联组织后，可以在这里整理并提交个人周报。' : '请从侧栏选择组织后再查看周报。'}</span>
       </div>
     )
+  }
+
+  if (loading) {
+    return <div className="weekly-report-empty">正在加载周报管理...</div>
   }
 
   const reportListTotalPages = Math.max(
@@ -1107,4 +1091,4 @@ export function WeeklyReportWorkbench({
 
     </section>
   )
-}
+})
