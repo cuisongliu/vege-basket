@@ -64,7 +64,10 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
-import { WeeklyReportWorkbench } from './weekly-report-workbench'
+import {
+  WeeklyReportWorkbench,
+  type WeeklyReportWorkbenchHandle,
+} from './weekly-report-workbench'
 import { BugShareDialog } from './bug-share-dialog'
 import { UserName } from './user-name'
 import {
@@ -513,6 +516,7 @@ export function TestWorkbench({
   const acceptingInviteTokenRef = useRef('')
   const refreshInFlightRef = useRef(false)
   const viewStateReadyRef = useRef(false)
+  const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
 
   useEffect(() => {
     setSeenBugCommentIds(readSeenBugCommentIds(currentUserId))
@@ -675,6 +679,7 @@ export function TestWorkbench({
 
   const activeSpace = data.spaces.find((space) => space.id === spaceId)
   const activeManagedSpace = spaceSettings.spaces.find((space) => space.id === spaceId)
+  const activeWeeklyReportOrganizationId = activeManagedSpace?.organizationId ?? null
   const testSpaceOrganizationGroups = useMemo<TestSpaceOrganizationGroup[]>(() => {
     const visibleSpaceIds = new Set(data.spaces.map((space) => space.id))
     const groups = new Map<string, TestSpaceOrganizationGroup>()
@@ -908,6 +913,18 @@ export function TestWorkbench({
     return result
   }
 
+  async function selectTestSpace(nextSpaceId: number) {
+    if (nextSpaceId === spaceId) return
+    const nextSpace = spaceSettings.spaces.find((space) => space.id === nextSpaceId)
+    if (!nextSpace) return
+    const nextOrganizationId = nextSpace.organizationId ?? null
+    if (tab === 'weekly_report' && activeWeeklyReportOrganizationId !== nextOrganizationId) {
+      const prepared = await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true
+      if (!prepared) return
+    }
+    setSpaceId(nextSpaceId)
+  }
+
   async function handleCreateSpace(name: string, versionLabel: string, organizationId?: number) {
     const normalizedName = name.trim()
     if (!normalizedName) return false
@@ -1028,7 +1045,7 @@ export function TestWorkbench({
                       <DropdownMenuItem
                         key={space.id}
                         className="test-space-cascade-space-item"
-                        onSelect={() => setSpaceId(space.id)}
+                        onSelect={() => void selectTestSpace(space.id)}
                       >
                         {space.id === spaceId ? <Check aria-hidden /> : <span className="test-space-select-check-placeholder" />}
                         <TestSpaceSelectLabel
@@ -1143,7 +1160,12 @@ export function TestWorkbench({
             <div className="test-workbench-loading">正在加载测试工作台...</div>
           ) : tab === 'weekly_report' ? (
             <div className="test-workbench-weekly-report">
-              <WeeklyReportWorkbench embedded refreshToken={refreshToken} />
+              <WeeklyReportWorkbench
+                ref={weeklyReportWorkbenchRef}
+                embedded
+                organizationId={activeWeeklyReportOrganizationId}
+                refreshToken={refreshToken}
+              />
             </div>
           ) : tab === 'notifications' ? (
             <>

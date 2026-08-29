@@ -3236,11 +3236,6 @@ function App() {
     applyOrganizationContext(nextOrganizationId)
   }
 
-  function changeWeeklyReportOrganization(nextOrganizationId: number) {
-    if (!organizations.some((organization) => organization.id === nextOrganizationId)) return
-    applyOrganizationContext(nextOrganizationId)
-  }
-
   function selectProject(projectId: number) {
     setDetailEntrySource('project')
     setRequestedTodoDetailId(null)
@@ -5421,10 +5416,8 @@ ${packageTimelineText}`
             initialWeekStart={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.weekStart
               : null}
-            onOrganizationChange={changeWeeklyReportOrganization}
             refreshToken={workspaceRefreshVersion}
             organizationId={selectedOrganizationId}
-            organizations={organizations}
             onInitialContextConsumed={() => setRequestedWeeklyReport({
               organizationId: null,
               status: 'absent',

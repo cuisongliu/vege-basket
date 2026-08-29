@@ -11,6 +11,10 @@ const weeklyReportSource = readFileSync(
   new URL('../src/components/weekly-report-workbench.tsx', import.meta.url),
   'utf8',
 )
+const testWorkbenchSource = readFileSync(
+  new URL('../src/components/test-workbench.tsx', import.meta.url),
+  'utf8',
+)
 
 test('parses only canonical organization contexts', () => {
   assert.equal(parseOrganizationContext('personal'), null)
@@ -37,13 +41,23 @@ test('personal and organization navigation keep their distinct daily work entrie
   assert.match(appSource, /nextOrganizationId !== null && \(view === 'inbox' \|\| view === 'ai'\)/u)
 })
 
-test('weekly reports share the app organization context and preserve drafts before sidebar changes', () => {
+test('weekly reports inherit their host organization context and preserve drafts before context changes', () => {
   assert.match(appSource, /ref=\{weeklyReportWorkbenchRef\}/u)
-  assert.match(appSource, /organizationId=\{selectedOrganizationId\}\s+organizations=\{organizations\}/u)
+  assert.match(appSource, /organizationId=\{selectedOrganizationId\}/u)
   assert.match(appSource, /weeklyReportWorkbenchRef\.current\?\.prepareOrganizationChange\(\)/u)
   assert.match(appSource, /setSelectedOrganizationId\(targetOrganizationId\)/u)
   assert.match(appSource, /organizations\.some\(\(organization\) => organization\.id === targetOrganizationId\)/u)
-  assert.match(weeklyReportSource, /const isOrganizationControlled = controlledOrganizationId !== undefined/u)
+  assert.match(weeklyReportSource, /organizationId: number \| null/u)
   assert.match(weeklyReportSource, /useImperativeHandle\(ref, \(\) => \(\{ prepareOrganizationChange \}\)/u)
-  assert.match(weeklyReportSource, /await onOrganizationChange\?\.\(nextOrganizationId\)/u)
+  assert.match(weeklyReportSource, /当前测试空间未关联组织/u)
+  assert.doesNotMatch(weeklyReportSource, /fetchOrganizations/u)
+  assert.doesNotMatch(weeklyReportSource, /aria-label="选择组织"/u)
+  assert.match(testWorkbenchSource, /activeWeeklyReportOrganizationId = activeManagedSpace\?\.organizationId \?\? null/u)
+  assert.match(testWorkbenchSource, /ref=\{weeklyReportWorkbenchRef\}/u)
+  assert.match(testWorkbenchSource, /organizationId=\{activeWeeklyReportOrganizationId\}/u)
+  assert.match(
+    testWorkbenchSource,
+    /tab === 'weekly_report' && activeWeeklyReportOrganizationId !== nextOrganizationId/u,
+  )
+  assert.match(testWorkbenchSource, /weeklyReportWorkbenchRef\.current\?\.prepareOrganizationChange\(\)/u)
 })
