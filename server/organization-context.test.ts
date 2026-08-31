@@ -66,6 +66,7 @@ test('organization management follows role selection in both account menus', () 
   assert.equal((appSource.match(/onOpenOrganization=\{\(\) => setView\('organization'\)\}/gu) ?? []).length, 2)
   assert.match(appCssSource, /:is\(\.account-menu-content, \.account-role-submenu\) \.account-menu-item\[data-active='true'\]/u)
   assert.match(appCssSource, /:is\(\.account-menu-content, \.account-role-submenu\) \.account-menu-item\[data-highlighted\]/u)
+  assert.match(appCssSource, /\.account-role-submenu \.account-menu-item:focus-visible/u)
   assert.match(appCssSource, /\.account-menu-sub-trigger\[data-state='open'\]/u)
 })
 
