@@ -36,9 +36,26 @@ test('personal and organization navigation keep their distinct daily work entrie
   assert.match(appSource, /selectedOrganizationId === null \? \(\s*<NavButton active=\{view === 'inbox'\}/u)
   assert.match(appSource, /selectedOrganizationId === null \? \(\s*<NavButton\s+active=\{view === 'ai'\}/u)
   assert.match(appSource, /selectedOrganizationId !== null \? \(\s*<NavGroup label="协作与交付"/u)
-  assert.match(appSource, /selectedOrganizationId !== null && isOrganizationAdmin/u)
+  assert.match(appSource, /function canAccessOrganizationManagement\(user: Pick<AuthUser, 'isSystemAdmin' \| 'roles'>\)/u)
+  assert.match(appSource, /return user\.isSystemAdmin \|\| hasOrganizationAdminRole\(user\.roles\)/u)
+  assert.match(appSource, /if \(view === 'organization'\) return canAccessOrganizationManagement\(user\)/u)
+  assert.doesNotMatch(appSource, /nav-group-organization/u)
   assert.match(appSource, /<MyWorkWorkbench\s+key=\{selectedOrganizationId \?\? 'personal'\}\s+organizationId=\{selectedOrganizationId\}\s+projects=\{scopedProjects\}/u)
   assert.match(appSource, /nextOrganizationId !== null && \(view === 'inbox' \|\| view === 'ai'\)/u)
+})
+
+test('organization management follows role selection in both account menus', () => {
+  const accountMenuStart = appSource.indexOf('function AccountMenu(')
+  assert.ok(accountMenuStart >= 0)
+  const accountMenuSource = appSource.slice(accountMenuStart)
+  const roleSelector = accountMenuSource.indexOf('<UserSwitch /> 选择角色')
+  const organizationEntry = accountMenuSource.indexOf('<Buildings /> 组织管理')
+  const roleManagementEntry = accountMenuSource.indexOf('<ManageRolesMenuLabel />')
+  assert.ok(roleSelector >= 0)
+  assert.ok(organizationEntry > roleSelector)
+  assert.ok(roleManagementEntry > organizationEntry)
+  assert.match(accountMenuSource, /const canOpenOrganization = user \? canAccessOrganizationManagement\(user\) : false/u)
+  assert.equal((appSource.match(/onOpenOrganization=\{\(\) => setView\('organization'\)\}/gu) ?? []).length, 2)
 })
 
 test('weekly reports inherit their host organization context and preserve drafts before context changes', () => {

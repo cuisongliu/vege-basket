@@ -685,12 +685,16 @@ function getRoleLandingView(role: UserRole): View {
   return 'search'
 }
 
+function canAccessOrganizationManagement(user: Pick<AuthUser, 'isSystemAdmin' | 'roles'>) {
+  return user.isSystemAdmin || hasOrganizationAdminRole(user.roles)
+}
+
 function canUseViewForUser(view: View, user: AuthUser) {
   if (view === 'testing') return user.activeRole === 'tester'
   if (view === 'assigned_bugs') {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
   }
-  if (view === 'organization') return hasOrganizationAdminRole(user.roles)
+  if (view === 'organization') return canAccessOrganizationManagement(user)
   return true
 }
 
@@ -4785,6 +4789,7 @@ ${packageTimelineText}`
               onDisconnectFeishu={disconnectFeishuBinding}
               onSaveAccountSettings={updateAccountSettings}
               onRoleChange={(role) => void changeActiveUserRole(role)}
+              onOpenOrganization={() => setView('organization')}
               onOpenChangelog={() => setView('changelog')}
               onSignOut={signOut}
               onToggleTheme={toggleThemeMode}
@@ -4886,13 +4891,6 @@ ${packageTimelineText}`
                 </NavButton>
               </NavGroup>
             ) : null}
-            {selectedOrganizationId !== null && isOrganizationAdmin ? (
-              <NavGroup label="组织与治理" id="nav-group-organization">
-                <NavButton active={view === 'organization'} onClick={() => setView('organization')}>
-                  <Buildings size={18} weight="duotone" /> 组织管理
-                </NavButton>
-              </NavGroup>
-            ) : null}
           </nav>
           <AccountMenu
             user={authUser}
@@ -4900,6 +4898,7 @@ ${packageTimelineText}`
             onDisconnectFeishu={disconnectFeishuBinding}
             onSaveAccountSettings={updateAccountSettings}
             onRoleChange={(role) => void changeActiveUserRole(role)}
+            onOpenOrganization={() => setView('organization')}
             onOpenChangelog={() => setView('changelog')}
             onSignOut={signOut}
             onToggleTheme={toggleThemeMode}
@@ -5873,6 +5872,7 @@ function AccountMenu({
   themeMode,
   onSaveAccountSettings,
   onRoleChange,
+  onOpenOrganization,
   onOpenChangelog,
   onSignOut,
   onToggleTheme,
@@ -5884,6 +5884,7 @@ function AccountMenu({
     displayName: string
   }) => Promise<void>
   onRoleChange: (role: SwitchableUserRole) => void
+  onOpenOrganization: () => void
   onOpenChangelog: () => void
   onSignOut: () => void
   onToggleTheme: () => void
@@ -5893,6 +5894,7 @@ function AccountMenu({
   const [roleManagementDialogOpen, setRoleManagementDialogOpen] = useState(false)
   const displayName = getUserDisplayName(user)
   const availableRoles = user ? getSwitchableUserRoles(user.roles) : []
+  const canOpenOrganization = user ? canAccessOrganizationManagement(user) : false
   const accountMeta = user
     ? userRoleLabel[user.activeRole]
     : '尚未登录'
@@ -5936,6 +5938,11 @@ function AccountMenu({
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </>
+          ) : null}
+          {canOpenOrganization ? (
+            <DropdownMenuItem onSelect={onOpenOrganization}>
+              <Buildings /> 组织管理
+            </DropdownMenuItem>
           ) : null}
           {user?.isSystemAdmin ? (
             <DropdownMenuItem

@@ -236,7 +236,8 @@ must remain bound to the authorized project ID.
   an expiring browser invite link; link acceptance activates ordinary member access without
   a Feishu callback. Deletion requires the exact organization name,
   detaches projects and test spaces, and removes organization-only records.
-  Accounts assigned `organization_admin` always see the organization management entry.
+  Accounts assigned `organization_admin` and recognized system administrators always see
+  the organization management entry; it is independent of the global organization selector.
   If they also have active `owner` or `admin` membership in an organization, they receive
   access to all attached projects and project records, test spaces and test records, and
   Bugs and comments. That dual authorization may update attached project lifecycle status,
