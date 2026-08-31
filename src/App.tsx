@@ -4784,6 +4784,7 @@ ${packageTimelineText}`
         <TestWorkbench
           accountMenu={(
             <AccountMenu
+              activeView={view}
               user={authUser}
               themeMode={themeMode}
               onDisconnectFeishu={disconnectFeishuBinding}
@@ -4893,6 +4894,7 @@ ${packageTimelineText}`
             ) : null}
           </nav>
           <AccountMenu
+            activeView={view}
             user={authUser}
             themeMode={themeMode}
             onDisconnectFeishu={disconnectFeishuBinding}
@@ -5867,6 +5869,7 @@ function getUserDisplayName(user: AuthUser | null) {
 }
 
 function AccountMenu({
+  activeView,
   onDisconnectFeishu,
   user,
   themeMode,
@@ -5877,6 +5880,7 @@ function AccountMenu({
   onSignOut,
   onToggleTheme,
 }: {
+  activeView: View
   onDisconnectFeishu: () => Promise<AuthUser>
   user: AuthUser | null
   themeMode: ThemeMode
@@ -5914,23 +5918,34 @@ function AccountMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="account-menu-content">
           <DropdownMenuItem
+            className="account-menu-item"
             onSelect={() => setAccountDialogOpen(true)}
           >
             <GearSix /> 账户设置
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={onOpenChangelog}>
+          <DropdownMenuItem
+            className="account-menu-item"
+            data-active={activeView === 'changelog' ? 'true' : undefined}
+            aria-current={activeView === 'changelog' ? 'page' : undefined}
+            onSelect={onOpenChangelog}
+          >
             <FileText /> 更新日志
           </DropdownMenuItem>
           {user && availableRoles.length > 1 ? (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger className="account-menu-sub-trigger">
                   <UserSwitch /> 选择角色
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="account-role-submenu">
                   {availableRoles.map((role) => (
-                    <DropdownMenuItem key={role} onSelect={() => onRoleChange(role)}>
+                    <DropdownMenuItem
+                      key={role}
+                      className="account-menu-item"
+                      data-active={user.activeRole === role ? 'true' : undefined}
+                      onSelect={() => onRoleChange(role)}
+                    >
                       {user.activeRole === role ? <Check /> : <span className="account-role-placeholder" />}
                       {userRoleLabel[role]}
                     </DropdownMenuItem>
@@ -5940,12 +5955,18 @@ function AccountMenu({
             </>
           ) : null}
           {canOpenOrganization ? (
-            <DropdownMenuItem onSelect={onOpenOrganization}>
+            <DropdownMenuItem
+              className="account-menu-item"
+              data-active={activeView === 'organization' ? 'true' : undefined}
+              aria-current={activeView === 'organization' ? 'page' : undefined}
+              onSelect={onOpenOrganization}
+            >
               <Buildings /> 组织管理
             </DropdownMenuItem>
           ) : null}
           {user?.isSystemAdmin ? (
             <DropdownMenuItem
+              className="account-menu-item"
               onSelect={(event) => {
                 event.preventDefault()
                 setRoleManagementDialogOpen(true)
@@ -5955,7 +5976,7 @@ function AccountMenu({
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem
-            className="theme-menu-item"
+            className="account-menu-item theme-menu-item"
             onSelect={(event) => {
               event.preventDefault()
               onToggleTheme()

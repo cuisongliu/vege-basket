@@ -709,6 +709,61 @@ textarea:focus {
   min-width: var(--radix-dropdown-menu-trigger-width);
 }
 
+:is(.account-menu-content, .account-role-submenu) .account-menu-item {
+  color: var(--strong);
+  background: transparent;
+}
+
+:is(.account-menu-content, .account-role-submenu) .account-menu-item svg {
+  color: var(--muted-text);
+}
+
+:is(.account-menu-content, .account-role-submenu) .account-menu-item:hover,
+:is(.account-menu-content, .account-role-submenu) .account-menu-item:focus,
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-highlighted],
+.account-menu-content .account-menu-sub-trigger:hover,
+.account-menu-content .account-menu-sub-trigger:focus,
+.account-menu-content .account-menu-sub-trigger[data-highlighted],
+.account-menu-content .account-menu-sub-trigger[data-state='open'] {
+  background: color-mix(in oklch, var(--brand) 6%, var(--popover));
+  color: var(--strong);
+}
+
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-active='true'] {
+  background: color-mix(in oklch, var(--brand) 12%, var(--popover));
+  color: var(--strong);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--brand) 28%, var(--line));
+}
+
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-active='true'] svg {
+  color: var(--brand);
+}
+
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-active='true']:hover,
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-active='true']:focus,
+:is(.account-menu-content, .account-role-submenu) .account-menu-item[data-active='true'][data-highlighted] {
+  background: color-mix(in oklch, var(--brand) 16%, var(--popover));
+}
+
+.account-menu-content .account-menu-item:focus-visible,
+.account-menu-content .account-menu-sub-trigger:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--brand) 52%, transparent);
+  outline-offset: -2px;
+}
+
+.account-menu-content .account-menu-sub-trigger {
+  color: var(--strong);
+}
+
+.account-menu-content .account-menu-sub-trigger > svg {
+  color: var(--muted-text);
+}
+
+.account-menu-content .account-menu-sub-trigger[data-state='open'] > svg {
+  color: var(--brand);
+}
+
 .account-role-submenu {
   min-width: 140px;
 }
@@ -717,6 +772,13 @@ textarea:focus {
   justify-content: space-between;
   gap: 10px;
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.account-menu-content, .account-role-submenu) .account-menu-item,
+  .account-menu-content .account-menu-sub-trigger {
+    transition: none;
+  }
 }
 
 .theme-menu-label {

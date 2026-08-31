@@ -7,6 +7,7 @@ import {
 } from '../shared/organization-context.ts'
 
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const weeklyReportSource = readFileSync(
   new URL('../src/components/weekly-report-workbench.tsx', import.meta.url),
   'utf8',
@@ -54,8 +55,18 @@ test('organization management follows role selection in both account menus', () 
   assert.ok(roleSelector >= 0)
   assert.ok(organizationEntry > roleSelector)
   assert.ok(roleManagementEntry > organizationEntry)
+  assert.match(accountMenuSource, /activeView: View/u)
+  assert.match(accountMenuSource, /data-active=\{activeView === 'changelog' \? 'true' : undefined\}/u)
+  assert.match(accountMenuSource, /aria-current=\{activeView === 'changelog' \? 'page' : undefined\}/u)
+  assert.match(accountMenuSource, /data-active=\{activeView === 'organization' \? 'true' : undefined\}/u)
+  assert.match(accountMenuSource, /aria-current=\{activeView === 'organization' \? 'page' : undefined\}/u)
+  assert.match(accountMenuSource, /data-active=\{user\.activeRole === role \? 'true' : undefined\}/u)
   assert.match(accountMenuSource, /const canOpenOrganization = user \? canAccessOrganizationManagement\(user\) : false/u)
+  assert.equal((appSource.match(/activeView=\{view\}/gu) ?? []).length, 2)
   assert.equal((appSource.match(/onOpenOrganization=\{\(\) => setView\('organization'\)\}/gu) ?? []).length, 2)
+  assert.match(appCssSource, /:is\(\.account-menu-content, \.account-role-submenu\) \.account-menu-item\[data-active='true'\]/u)
+  assert.match(appCssSource, /:is\(\.account-menu-content, \.account-role-submenu\) \.account-menu-item\[data-highlighted\]/u)
+  assert.match(appCssSource, /\.account-menu-sub-trigger\[data-state='open'\]/u)
 })
 
 test('weekly reports inherit their host organization context and preserve drafts before context changes', () => {
