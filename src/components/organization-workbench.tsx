@@ -346,6 +346,8 @@ export function OrganizationWorkbench({
   const [weeklyRulesDraft, setWeeklyRulesDraft] = useState<WeeklyReportRules>(defaultWeeklyReportRules)
   const [weeklyRulesWeekStartsOn, setWeeklyRulesWeekStartsOn] = useState(1)
   const packageMarketDraftOrganizationId = useRef(0)
+  const canAccessOrganizationManagement = currentUser.isSystemAdmin
+    || currentUser.roles.includes('organization_admin')
 
   useEffect(() => {
     setTopbarActionHost(document.getElementById('organization-topbar-actions'))
@@ -740,7 +742,7 @@ export function OrganizationWorkbench({
   }
   const organizationCreateAction = topbarActionHost
     && canCreate
-    && currentUser.roles.includes('organization_admin')
+    && canAccessOrganizationManagement
     ? createPortal(
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogTrigger asChild>
@@ -766,12 +768,12 @@ export function OrganizationWorkbench({
     )
     : null
 
-  if (!currentUser.roles.includes('organization_admin')) {
+  if (!canAccessOrganizationManagement) {
     return (
       <div className="organization-state organization-empty-state">
         <Buildings size={30} weight="duotone" />
-        <strong>当前账号没有组织管理员角色</strong>
-        <span>组织管理看板仅对由系统 admin 指定的组织管理员开放。</span>
+        <strong>当前账号没有组织管理权限</strong>
+        <span>组织管理看板仅对组织管理员或系统管理员开放。</span>
       </div>
     )
   }
