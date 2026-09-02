@@ -13,6 +13,7 @@ import {
   isPackageMarketRuleVisible,
   mergeOrganizationPackageMarketPolicy,
   normalizeOrganizationPackageMarketRuleIds,
+  normalizeOrganizationPackageMarketRuleOverrides,
   organizationPackageMarketPolicyHasVisibleChannel,
   packageMarketDependencyChannel,
   packageMarketRuleSupportsChannel,
@@ -32,6 +33,11 @@ const organizationPackageMarketExcludedModeMigrationSql = readFileSync(
 
 const organizationPackageMarketSharedSelectionMigrationSql = readFileSync(
   new URL('./migrations/20260828_organization_package_market_policy_shared_selection.sql', import.meta.url),
+  'utf8',
+)
+
+const organizationPackageMarketRuleOverridesMigrationSql = readFileSync(
+  new URL('./migrations/20260902_organization_package_market_rule_overrides.sql', import.meta.url),
   'utf8',
 )
 
@@ -147,6 +153,48 @@ test('dependency visibility follows its own channel and the parent selection', (
   assert.equal(isPackageMarketRuleVisible(ciDependency, ciSelected, 'ci'), true)
 })
 
+test('component channel overrides take priority over the shared member range', () => {
+  const next = policy({
+    channels: {
+      release: { enabled: true },
+      ci: { enabled: true },
+    },
+    ruleOverrides: [
+      { channel: 'release', enabled: true, ruleId: 'devbox' },
+      { channel: 'ci', enabled: false, ruleId: 'devbox' },
+    ],
+    selection: { mode: 'selected', ruleIds: [] },
+  })
+  assert.equal(isPackageMarketRuleVisible(rules[4], next, 'release'), true)
+  assert.equal(isPackageMarketRuleVisible(rules[4], next, 'ci'), false)
+  assert.equal(organizationPackageMarketPolicyHasVisibleChannel(next), true)
+})
+
+test('dependency switches cannot bypass the dependency setting or their parent channel', () => {
+  const ciDependency = { ...rules[3], dependencyRoots: ['offline/ci/'] }
+  const hiddenDependencies = policy({
+    ruleOverrides: [{ channel: 'ci', enabled: true, ruleId: 'devbox-runtime' }],
+    selection: { mode: 'selected', ruleIds: ['devbox'] },
+    showDependencies: false,
+  })
+  assert.equal(isPackageMarketRuleVisible(ciDependency, hiddenDependencies, 'ci'), false)
+
+  const hiddenParent = policy({
+    ruleOverrides: [
+      { channel: 'ci', enabled: false, ruleId: 'devbox' },
+      { channel: 'ci', enabled: true, ruleId: 'devbox-runtime' },
+    ],
+    selection: { mode: 'selected', ruleIds: ['devbox'] },
+  })
+  assert.equal(isPackageMarketRuleVisible(ciDependency, hiddenParent, 'ci'), false)
+
+  const childDisabled = policy({
+    ruleOverrides: [{ channel: 'ci', enabled: false, ruleId: 'devbox-runtime' }],
+    selection: { mode: 'selected', ruleIds: ['devbox'] },
+  })
+  assert.equal(isPackageMarketRuleVisible(ciDependency, childDisabled, 'ci'), false)
+})
+
 test('an empty selected policy has no visible channel', () => {
   const next = policy({
     channels: {
@@ -169,14 +217,42 @@ test('rule selection input is bounded and rejects unsafe identifiers', () => {
   assert.equal(normalizeOrganizationPackageMarketRuleIds(Array.from({ length: 501 }, () => 'devbox')), null)
 })
 
+test('component override input is bounded, canonicalized, and rejects duplicate channels', () => {
+  assert.deepEqual(normalizeOrganizationPackageMarketRuleOverrides([
+    { channel: 'release', enabled: true, ruleId: 'sealos-pro' },
+  ]), [{ channel: 'release', enabled: true, ruleId: 'base-pro' }])
+  assert.equal(normalizeOrganizationPackageMarketRuleOverrides([
+    { channel: 'release', enabled: true, ruleId: 'devbox' },
+    { channel: 'release', enabled: false, ruleId: 'devbox' },
+  ]), null)
+  assert.equal(normalizeOrganizationPackageMarketRuleOverrides([
+    { channel: 'preview', enabled: true, ruleId: 'devbox' },
+  ]), null)
+})
+
 test('organization package-market schema keeps channel switches and shared visibility separate', () => {
   assert.match(schemaSql, /create table if not exists organization_feature_settings/u)
   assert.match(schemaSql, /create table if not exists organization_package_market_channel_policies/u)
   assert.match(schemaSql, /create table if not exists organization_package_market_selections/u)
   assert.match(schemaSql, /create table if not exists organization_package_market_selection_policies/u)
   assert.match(schemaSql, /create table if not exists organization_package_market_selection_rules/u)
+  assert.match(schemaSql, /create table if not exists organization_package_market_rule_overrides/u)
   assert.match(schemaSql, /channel in \('release', 'ci'\)/u)
   assert.match(schemaSql, /mode in \('all', 'selected', 'excluded'\)/u)
+})
+
+test('organization package-market component override migration is transactionally scoped', () => {
+  assert.match(organizationPackageMarketRuleOverridesMigrationSql, /^begin;$/mu)
+  assert.match(organizationPackageMarketRuleOverridesMigrationSql, /^commit;$/mu)
+  const pattern = /create table if not exists organization_package_market_rule_overrides \([\s\S]*?\n\);/u
+  const schemaStatement = schemaSql.match(pattern)?.[0]
+  const migrationStatement = organizationPackageMarketRuleOverridesMigrationSql.match(pattern)?.[0]
+  assert.ok(schemaStatement, 'schemaSql is missing the component override definition')
+  assert.ok(migrationStatement, 'migration is missing the component override definition')
+  assert.equal(
+    migrationStatement?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+    schemaStatement?.replace(/\s+/gu, ' ').trim().toLowerCase(),
+  )
 })
 
 test('organization package-market baseline migration remains an immutable table and index definition', () => {
@@ -261,6 +337,8 @@ test('missing policy fields resolve to enabled all-channel defaults', () => {
   assert.equal(merged.channels.release.enabled, false)
   assert.equal(merged.channels.ci.enabled, true)
   assert.equal(merged.selection.mode, 'all')
+  assert.equal(merged.showDependencies, true)
+  assert.deepEqual(merged.ruleOverrides, [])
 })
 
 test('shared excluded mode rejects settings that leave an enabled channel with no package', () => {
@@ -295,6 +373,23 @@ test('shared selection rejects a Release-only package when only CI is enabled', 
   assert.throws(
     () => validatePackageMarketPolicyInput(input, [packageMarketPolicyRule('base-oss')]),
     /没有可用安装包/u,
+  )
+})
+
+test('component overrides validate against the catalog and supported channel', () => {
+  const input = normalizePackageMarketPolicyInput({
+    featureEnabled: true,
+    revision: 0,
+    channels: {
+      release: { enabled: true },
+      ci: { enabled: true },
+    },
+    ruleOverrides: [{ channel: 'ci', enabled: true, ruleId: 'base-oss' }],
+    selection: { mode: 'all', ruleIds: [] },
+  })
+  assert.throws(
+    () => validatePackageMarketPolicyInput(input, [packageMarketPolicyRule('base-oss')]),
+    /不支持该渠道配置/u,
   )
 })
 

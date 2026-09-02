@@ -273,13 +273,16 @@ The schema is normalized around these groups:
   package-market visibility is stored separately in `organization_feature_settings`,
   `organization_package_market_channel_policies`,
   `organization_package_market_selection_policies`, and
-  `organization_package_market_selection_rules`; missing rows use the enabled/all
+  `organization_package_market_selection_rules`, and
+  `organization_package_market_rule_overrides`; missing rows use the enabled/all
   defaults. Release and CI each carry only an independent enabled switch. One
   organization-wide `all`, `selected`, or `excluded` range applies to every enabled
   channel, with rule rows acting as an allow-list in `selected` mode and a deny-list in
-  `excluded` mode. The older channel selection rows remain as compatibility mirrors;
-  dependency package visibility remains derived from its parent package in the
-  dependency's own channel.
+  `excluded` mode. Sparse per-component Release or CI overrides take precedence over
+  that shared range but never over the market or channel switches. The older channel
+  selection rows remain as compatibility mirrors. Dependencies have an organization
+  display switch and optional per-dependency channel override, but remain visible only
+  when their parent is visible in the dependency's own channel.
   access does not replace general resource write permissions. Active organization owners and
   administrators with the `organization_admin` account role receive organization-scoped
   read access and may govern attached project status, health, and milestones without becoming

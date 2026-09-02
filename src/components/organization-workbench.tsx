@@ -146,7 +146,9 @@ function clonePackageMarketPolicy(policy: OrganizationPackageMarketPolicy): Orga
       release: { ...policy.channels.release },
       ci: { ...policy.channels.ci },
     },
+    ruleOverrides: policy.ruleOverrides.map((override) => ({ ...override })),
     selection: { ...policy.selection, ruleIds: [...policy.selection.ruleIds] },
+    showDependencies: policy.showDependencies,
   }
 }
 
@@ -552,7 +554,9 @@ export function OrganizationWorkbench({
         featureEnabled: packageMarketPolicyDraft.enabled,
         revision: packageMarketPolicyDraft.revision,
         channels: packageMarketPolicyDraft.channels,
+        ruleOverrides: packageMarketPolicyDraft.ruleOverrides,
         selection: packageMarketPolicyDraft.selection,
+        showDependencies: packageMarketPolicyDraft.showDependencies,
       })
       setDetail(nextDetail)
       setOrganizations((current) => current.map((organization) => (

@@ -1930,6 +1930,35 @@
   padding: 11px 0;
 }
 
+.organization-package-market-dependency-toggle {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 16px 0;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.organization-package-market-dependency-toggle > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.organization-package-market-dependency-toggle strong {
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.organization-package-market-dependency-toggle small {
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .organization-package-market-policy-note {
   align-self: end;
   display: flex;
@@ -2464,7 +2493,7 @@
 }
 
 .organization-package-market-all-mode {
-  min-height: 330px;
+  min-height: 120px;
   display: grid;
   align-content: center;
   justify-items: center;
@@ -2487,6 +2516,266 @@
   max-width: 390px;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.organization-package-market-component-settings {
+  min-width: 0;
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.organization-package-market-component-settings-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.organization-package-market-component-settings-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.organization-package-market-component-settings-heading h3 {
+  margin: 0;
+  color: var(--strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.organization-package-market-component-settings-heading p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.organization-package-market-component-filters {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 132px 32px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.organization-package-market-component-filters [data-slot='select-trigger'] {
+  min-height: 34px;
+  height: 34px;
+  font-size: 12px;
+}
+
+.organization-package-market-component-summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.organization-package-market-component-summary > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.organization-package-market-component-summary i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-text);
+}
+
+.organization-package-market-component-summary i.available,
+.organization-package-market-component-status.available {
+  color: #16845b;
+}
+
+.organization-package-market-component-summary i.available {
+  background: #16845b;
+}
+
+.organization-package-market-component-summary i.closed {
+  background: var(--muted-text);
+}
+
+.organization-package-market-component-summary i.dependency {
+  background: #b86b11;
+}
+
+.organization-package-market-component-table {
+  min-width: 0;
+  overflow-x: auto;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--field) 18%, var(--surface));
+}
+
+.organization-package-market-component-table-head,
+.organization-package-market-component-row {
+  min-width: 700px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(88px, 0.55fr) 132px 132px 90px;
+  align-items: center;
+  gap: 12px;
+}
+
+.organization-package-market-component-table-head {
+  min-height: 34px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklch, var(--muted) 76%, var(--surface));
+  padding: 0 14px;
+  color: var(--muted-text);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.organization-package-market-component-group + .organization-package-market-component-group {
+  border-top: 1px solid var(--line);
+}
+
+.organization-package-market-component-row {
+  min-height: 60px;
+  padding: 9px 14px;
+}
+
+.organization-package-market-component-row.dependency {
+  min-height: 52px;
+  background: color-mix(in oklch, #b86b11 3%, var(--surface));
+}
+
+.organization-package-market-component-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.organization-package-market-component-identity > svg {
+  flex: 0 0 auto;
+  color: var(--brand);
+}
+
+.organization-package-market-component-row.dependency .organization-package-market-component-identity > svg {
+  color: #b86b11;
+}
+
+.organization-package-market-component-identity > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.organization-package-market-component-identity strong {
+  overflow: hidden;
+  color: var(--strong);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.organization-package-market-component-identity small {
+  overflow: hidden;
+  color: var(--muted-text);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.organization-package-market-component-type,
+.organization-package-market-dependency-type {
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.organization-package-market-dependency-type {
+  color: #a45e0d;
+}
+
+.organization-package-market-component-channel {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--strong);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.organization-package-market-component-channel.unavailable {
+  color: var(--muted-text);
+}
+
+.organization-package-market-reset-override {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--brand);
+  cursor: pointer;
+}
+
+.organization-package-market-reset-override:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--brand) 9%, var(--surface));
+}
+
+.organization-package-market-reset-override:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--brand) 42%, transparent);
+  outline-offset: 1px;
+}
+
+.organization-package-market-reset-override:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.organization-package-market-component-status {
+  justify-self: start;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 6px;
+  color: var(--muted-text);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.organization-package-market-component-status.available {
+  border-color: color-mix(in oklch, #16845b 32%, var(--line));
+  background: color-mix(in oklch, #16845b 7%, var(--surface));
+}
+
+.organization-package-market-component-status.partial {
+  border-color: color-mix(in oklch, #b86b11 35%, var(--line));
+  background: color-mix(in oklch, #b86b11 7%, var(--surface));
+  color: #a45e0d;
+}
+
+.organization-package-market-dependency-group {
+  border-top: 1px dashed color-mix(in oklch, var(--muted-text) 25%, var(--line));
+}
+
+.organization-package-market-dependency-heading {
+  padding: 8px 14px 3px;
+  color: var(--muted-text);
+  font-size: 10px;
 }
 
 .organization-package-market-loading {
@@ -2524,6 +2813,11 @@
 
   .organization-package-market-rule {
     grid-template-columns: 18px minmax(0, 1fr) minmax(90px, 0.7fr);
+  }
+
+  .organization-package-market-component-table-head,
+  .organization-package-market-component-row {
+    grid-template-columns: minmax(190px, 1.45fr) minmax(80px, 0.5fr) 122px 122px 80px;
   }
 }
 
@@ -2639,6 +2933,35 @@
   .organization-package-market-page-controls {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .organization-package-market-component-settings-heading {
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .organization-package-market-component-filters {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .organization-package-market-component-filters [data-slot='select-trigger'] {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .organization-package-market-component-filters .organization-package-market-search {
+    grid-column: 1;
+  }
+
+  .organization-package-market-component-filters .organization-package-market-clear-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .organization-package-market-component-summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
   }
 
 }

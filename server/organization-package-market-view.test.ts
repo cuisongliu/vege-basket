@@ -158,3 +158,17 @@ test('package market policy equality ignores selection ordering', () => {
   }
   assert.equal(organizationPackageMarketPoliciesEqual(left, right), true)
 })
+
+test('package market policy equality compares dependency and component channel overrides', () => {
+  const left = {
+    ...defaultOrganizationPackageMarketPolicy,
+    ruleOverrides: [{ channel: 'release' as const, enabled: false, ruleId: 'devbox' }],
+  }
+  const changedDependencySetting = { ...left, showDependencies: false }
+  const changedOverride = {
+    ...left,
+    ruleOverrides: [{ channel: 'release' as const, enabled: true, ruleId: 'devbox' }],
+  }
+  assert.equal(organizationPackageMarketPoliciesEqual(left, changedDependencySetting), false)
+  assert.equal(organizationPackageMarketPoliciesEqual(left, changedOverride), false)
+})

@@ -49,6 +49,7 @@ import type { UserAccountStatus } from '../shared/user-lifecycle'
 import type {
   OrganizationPackageMarketChannelPolicy,
   OrganizationPackageMarketPolicy,
+  OrganizationPackageMarketRuleOverride,
   OrganizationPackageMarketSelectionPolicy,
 } from '../shared/organization-package-market'
 import type {
@@ -580,7 +581,9 @@ export function updateOrganizationPackageMarketPolicy(
     channels: Record<'release' | 'ci', OrganizationPackageMarketChannelPolicy>
     featureEnabled: boolean
     revision: number
+    ruleOverrides: OrganizationPackageMarketRuleOverride[]
     selection: OrganizationPackageMarketSelectionPolicy
+    showDependencies: boolean
   },
 ) {
   return request<OrganizationDetail>(`/api/organizations/${organizationId}/package-market/policy`, {

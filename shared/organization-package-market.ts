@@ -14,17 +14,27 @@ export type OrganizationPackageMarketSelectionPolicy = {
   ruleIds: string[]
 }
 
+export type OrganizationPackageMarketRuleOverride = {
+  channel: OrganizationPackageMarketChannel
+  enabled: boolean
+  ruleId: string
+}
+
 export type OrganizationPackageMarketPolicy = {
   enabled: boolean
   revision: number
   channels: Record<OrganizationPackageMarketChannel, OrganizationPackageMarketChannelPolicy>
+  ruleOverrides: OrganizationPackageMarketRuleOverride[]
   selection: OrganizationPackageMarketSelectionPolicy
+  showDependencies: boolean
 }
 
 export type OrganizationPackageMarketPolicyPatch = {
   enabled?: boolean
   revision?: number
+  ruleOverrides?: unknown
   selection?: Partial<OrganizationPackageMarketSelectionPolicy>
+  showDependencies?: boolean
   channels?: Partial<Record<
     OrganizationPackageMarketChannel,
     // mode and ruleIds are retained here only so older serialized policies can
@@ -55,6 +65,8 @@ export const defaultOrganizationPackageMarketPolicy: OrganizationPackageMarketPo
     mode: 'all',
     ruleIds: [],
   },
+  ruleOverrides: [],
+  showDependencies: true,
 }
 
 export function organizationPackageMarketPolicyHasVisibleChannel(
@@ -62,7 +74,11 @@ export function organizationPackageMarketPolicyHasVisibleChannel(
   visibleRuleIds?: Partial<Record<OrganizationPackageMarketChannel, readonly string[]>>,
 ) {
   if (!policy.enabled) return false
-  if (policy.selection.mode === 'selected' && policy.selection.ruleIds.length === 0) {
+  if (
+    policy.selection.mode === 'selected' &&
+    policy.selection.ruleIds.length === 0 &&
+    !policy.ruleOverrides.some((override) => override.enabled)
+  ) {
     return false
   }
   return organizationPackageMarketChannels.some((channel) => {
@@ -111,6 +127,26 @@ export function normalizeOrganizationPackageMarketRuleIds(value: unknown) {
   return ids
 }
 
+export function normalizeOrganizationPackageMarketRuleOverrides(value: unknown) {
+  if (!Array.isArray(value) || value.length > 1000) return null
+  const seen = new Set<string>()
+  const overrides: OrganizationPackageMarketRuleOverride[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const record = item as Record<string, unknown>
+    const ruleId = canonicalPackageMarketRuleId(record.ruleId)
+    const channel = normalizeOrganizationPackageMarketChannel(record.channel)
+    if (!/^[a-zA-Z0-9:_-]{1,160}$/u.test(ruleId) || !channel || typeof record.enabled !== 'boolean') {
+      return null
+    }
+    const key = `${ruleId}\u0000${channel}`
+    if (seen.has(key)) return null
+    seen.add(key)
+    overrides.push({ channel, enabled: record.enabled, ruleId })
+  }
+  return overrides
+}
+
 export function isSelectablePackageMarketRule(rule: PackageMarketRuleIdentity) {
   return rule.category !== 'dependency'
 }
@@ -130,19 +166,31 @@ export function packageMarketRuleSupportsChannel(
   return !(channel === 'ci' && canonicalPackageMarketRuleId(ruleId) === 'base-oss')
 }
 
-function topLevelRuleAllowed(
+function ruleOverride(
+  policy: OrganizationPackageMarketPolicy,
   ruleId: string,
-  selection: OrganizationPackageMarketSelectionPolicy,
-  channelPolicy: OrganizationPackageMarketChannelPolicy,
   channel: OrganizationPackageMarketChannel,
 ) {
   const canonicalId = canonicalPackageMarketRuleId(ruleId)
-  if (!channelPolicy.enabled || !packageMarketRuleSupportsChannel(canonicalId, channel)) return false
-  if (selection.mode === 'all') return true
-  const listed = selection.ruleIds.some((ruleId) => (
+  return policy.ruleOverrides.find((override) => (
+    override.channel === channel && canonicalPackageMarketRuleId(override.ruleId) === canonicalId
+  ))
+}
+
+function topLevelRuleAllowed(
+  ruleId: string,
+  policy: OrganizationPackageMarketPolicy,
+  channel: OrganizationPackageMarketChannel,
+) {
+  const canonicalId = canonicalPackageMarketRuleId(ruleId)
+  if (!policy.channels[channel].enabled || !packageMarketRuleSupportsChannel(canonicalId, channel)) return false
+  const override = ruleOverride(policy, canonicalId, channel)
+  if (override) return override.enabled
+  if (policy.selection.mode === 'all') return true
+  const listed = policy.selection.ruleIds.some((ruleId) => (
     canonicalPackageMarketRuleId(ruleId) === canonicalId
   ))
-  return selection.mode === 'selected' ? listed : !listed
+  return policy.selection.mode === 'selected' ? listed : !listed
 }
 
 export function isPackageMarketRuleVisible(
@@ -151,13 +199,13 @@ export function isPackageMarketRuleVisible(
   channel: OrganizationPackageMarketChannel,
 ) {
   if (!policy.enabled) return false
-  const channelPolicy = policy.channels[channel]
   if (rule.category === 'dependency') {
-    if (packageMarketDependencyChannel(rule) !== channel) return false
+    if (!policy.showDependencies || packageMarketDependencyChannel(rule) !== channel) return false
     const parent = canonicalPackageMarketRuleId(rule.parent)
-    return Boolean(parent) && topLevelRuleAllowed(parent, policy.selection, channelPolicy, channel)
+    if (!parent || !topLevelRuleAllowed(parent, policy, channel)) return false
+    return ruleOverride(policy, rule.id, channel)?.enabled ?? true
   }
-  return topLevelRuleAllowed(rule.id, policy.selection, channelPolicy, channel)
+  return topLevelRuleAllowed(rule.id, policy, channel)
 }
 
 export function filterPackageMarketRules<T extends PackageMarketRuleIdentity>(
@@ -211,7 +259,9 @@ export function mergeOrganizationPackageMarketPolicy(
       release: normalizeChannelPolicy(channels.release),
       ci: normalizeChannelPolicy(channels.ci),
     },
+    ruleOverrides: normalizeOrganizationPackageMarketRuleOverrides(source.ruleOverrides) ?? [],
     selection: normalizeSelectionPolicy(source.selection ?? legacySelection),
+    showDependencies: source.showDependencies !== false,
   }
 }
 
