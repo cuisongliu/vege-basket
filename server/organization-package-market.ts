@@ -9,6 +9,7 @@ import {
   mergeOrganizationPackageMarketPolicy,
   normalizeOrganizationPackageMarketChannel,
   normalizeOrganizationPackageMarketRuleIds,
+  normalizeOrganizationPackageMarketRuleOverrides,
   normalizeOrganizationPackageMarketSelectionMode,
   packageMarketDependencyChannel,
   packageMarketRuleSupportsChannel,
@@ -40,6 +41,8 @@ type PolicyRow = {
   selection_configured: boolean
   selection_mode: string
   selection_rule_ids: string[]
+  rule_overrides: unknown
+  show_dependencies: boolean
 }
 
 export type PackageMarketRulesResponse = {
@@ -94,6 +97,18 @@ export async function getOrganizationPackageMarketPolicy(
      )
      select coalesce(feature.enabled, true) as enabled,
             coalesce(feature.revision, 0) as revision,
+            case when feature.config ->> 'showDependencies' = 'false' then false else true end as show_dependencies,
+            coalesce((
+              select jsonb_agg(
+                jsonb_build_object(
+                  'channel', rule_override.channel,
+                  'enabled', rule_override.enabled,
+                  'ruleId', rule_override.rule_id
+                ) order by rule_override.rule_id, rule_override.channel
+              )
+                from organization_package_market_rule_overrides rule_override
+               where rule_override.organization_id = $1::bigint
+            ), '[]'::jsonb) as rule_overrides,
             channels.channel,
             coalesce(channel_policy.enabled, true) as channel_enabled,
             coalesce(channel_policy.mode, 'all') as legacy_channel_mode,
@@ -125,6 +140,7 @@ export async function getOrganizationPackageMarketPolicy(
       and legacy_selection.channel = channels.channel
      group by feature.enabled,
               feature.revision,
+              feature.config,
               channels.channel,
               channel_policy.enabled,
               channel_policy.mode,
@@ -159,6 +175,7 @@ export async function getOrganizationPackageMarketPolicy(
       }
     }
   }
+  const ruleOverrides = normalizeOrganizationPackageMarketRuleOverrides(result.rows[0]?.rule_overrides) ?? []
 
   return mergeOrganizationPackageMarketPolicy({
     enabled: result.rows[0]?.enabled !== false,
@@ -167,7 +184,9 @@ export async function getOrganizationPackageMarketPolicy(
     // A server bootstrapped against a pre-migration database can create the
     // new tables before the operator applies the migration. Derive a safe
     // intersection from legacy rows until the canonical policy row exists.
+    ruleOverrides,
     selection: selection ?? mergeLegacyChannelSelections(legacySelections),
+    showDependencies: result.rows[0]?.show_dependencies !== false,
   })
 }
 
@@ -230,16 +249,21 @@ export function normalizePackageMarketPolicyInput(value: unknown) {
   const mode = normalizeOrganizationPackageMarketSelectionMode(selectionRecord.mode)
   const ruleIds = normalizeOrganizationPackageMarketRuleIds(selectionRecord.ruleIds)
   if (!mode || !ruleIds) return null
+  const ruleOverrides = normalizeOrganizationPackageMarketRuleOverrides(body.ruleOverrides ?? [])
+  if (!ruleOverrides) return null
+  if (body.showDependencies != null && typeof body.showDependencies !== 'boolean') return null
   const revision = Number(body.revision)
   if (!Number.isSafeInteger(revision) || revision < 0) return null
   return {
     featureEnabled: body.featureEnabled,
     revision,
     channels: normalizedChannels,
+    ruleOverrides,
     selection: {
       mode,
       ruleIds: mode === 'all' ? [] : ruleIds,
     },
+    showDependencies: body.showDependencies !== false,
   }
 }
 
@@ -255,7 +279,9 @@ export function validatePackageMarketPolicyInput(
     )
   }
   const selectableRules = new Map<string, PackageMarketRule>()
+  const rulesById = new Map<string, PackageMarketRule>()
   for (const rule of rules) {
+    rulesById.set(canonicalPackageMarketRuleId(rule.id), rule)
     if (!rule.category || rule.category === 'dependency') continue
     selectableRules.set(canonicalPackageMarketRuleId(rule.id), rule)
   }
@@ -269,17 +295,35 @@ export function validatePackageMarketPolicyInput(
       )
     }
   }
+  for (const override of input.ruleOverrides) {
+    const canonicalId = canonicalPackageMarketRuleId(override.ruleId)
+    const rule = rulesById.get(canonicalId)
+    const dependencyChannel = rule ? packageMarketDependencyChannel(rule) : null
+    const supportsOverride = rule && (
+      rule.category === 'dependency'
+        ? dependencyChannel === override.channel
+        : packageMarketRuleSupportsChannel(canonicalId, override.channel)
+    )
+    if (!supportsOverride) {
+      throw new OrganizationPackageMarketPolicyError(
+        'PACKAGE_MARKET_POLICY_INVALID',
+        `安装包 ${canonicalId} 不支持该渠道配置`,
+        400,
+      )
+    }
+  }
   const enabledChannels = (['release', 'ci'] as const).filter((channel) => input.channels[channel].enabled)
   if (input.featureEnabled && enabledChannels.length > 0) {
-    const listedRuleIds = new Set(input.selection.ruleIds.map(canonicalPackageMarketRuleId))
-    const hasVisibleRule = [...selectableRules.keys()].some((ruleId) => {
-      if (!enabledChannels.some((channel) => packageMarketRuleSupportsChannel(ruleId, channel))) {
-        return false
-      }
-      if (input.selection.mode === 'all') return true
-      const listed = listedRuleIds.has(ruleId)
-      return input.selection.mode === 'selected' ? listed : !listed
+    const effectivePolicy = mergeOrganizationPackageMarketPolicy({
+      enabled: input.featureEnabled,
+      channels: input.channels,
+      ruleOverrides: input.ruleOverrides,
+      selection: input.selection,
+      showDependencies: input.showDependencies,
     })
+    const hasVisibleRule = [...selectableRules.values()].some((rule) => (
+      enabledChannels.some((channel) => isPackageMarketRuleVisible(rule, effectivePolicy, channel))
+    ))
     if (!hasVisibleRule) {
       throw new OrganizationPackageMarketPolicyError(
         'PACKAGE_MARKET_POLICY_INVALID',
@@ -303,13 +347,20 @@ export async function saveOrganizationPackageMarketPolicy(params: {
   await params.client.query(
     `insert into organization_feature_settings
       (organization_id, feature_key, enabled, config, revision, updated_by_user_id, updated_at)
-     values ($1, 'package_market', $2, '{}'::jsonb, $3, $4, now())
+     values ($1, 'package_market', $2, jsonb_build_object('showDependencies', $3::boolean), $4, $5, now())
      on conflict (organization_id, feature_key) do update
        set enabled = excluded.enabled,
+           config = organization_feature_settings.config || excluded.config,
            revision = excluded.revision,
            updated_by_user_id = excluded.updated_by_user_id,
            updated_at = now()`,
-    [params.organizationId, params.input.featureEnabled, revision, params.updatedByUserId],
+    [
+      params.organizationId,
+      params.input.featureEnabled,
+      params.input.showDependencies,
+      revision,
+      params.updatedByUserId,
+    ],
   )
   await params.client.query(
     `insert into organization_package_market_selection_policies
@@ -374,6 +425,27 @@ export async function saveOrganizationPackageMarketPolicy(params: {
         [params.organizationId, channel, canonicalId],
       )
     }
+  }
+  await params.client.query(
+    `delete from organization_package_market_rule_overrides
+     where organization_id = $1`,
+    [params.organizationId],
+  )
+  for (const override of params.input.ruleOverrides) {
+    await params.client.query(
+      `insert into organization_package_market_rule_overrides
+        (organization_id, rule_id, channel, enabled, created_at)
+       values ($1, $2, $3, $4, now())
+       on conflict (organization_id, rule_id, channel) do update
+         set enabled = excluded.enabled,
+             updated_at = now()`,
+      [
+        params.organizationId,
+        canonicalPackageMarketRuleId(override.ruleId),
+        override.channel,
+        override.enabled,
+      ],
+    )
   }
   return getOrganizationPackageMarketPolicy(params.organizationId, params.client)
 }

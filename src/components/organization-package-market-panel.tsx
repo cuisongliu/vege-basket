@@ -14,7 +14,15 @@ import {
 import type {
   OrganizationPackageMarketChannel,
   OrganizationPackageMarketPolicy,
+  OrganizationPackageMarketRuleOverride,
   OrganizationPackageMarketSelectionMode,
+} from '../../shared/organization-package-market'
+import {
+  canonicalPackageMarketRuleId,
+  defaultOrganizationPackageMarketPolicy,
+  isPackageMarketRuleVisible,
+  packageMarketDependencyChannel,
+  packageMarketRuleSupportsChannel,
 } from '../../shared/organization-package-market'
 import type {
   OrganizationDetail,
@@ -131,14 +139,18 @@ export function OrganizationPackageMarketPanel({
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<OrganizationPackageMarketCategory>('all')
   const [onlyConfigured, setOnlyConfigured] = useState(false)
+  const [onlyClosedComponents, setOnlyClosedComponents] = useState(false)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<OrganizationPackageMarketPageSize>(12)
+  const [pageSize, setPageSize] = useState<OrganizationPackageMarketPageSize>(organizationPackageMarketPageSizes[0])
+  const [componentPage, setComponentPage] = useState(1)
+  const [componentPageSize, setComponentPageSize] = useState<OrganizationPackageMarketPageSize>(organizationPackageMarketPageSizes[0])
 
   const selectableRules = useMemo(
     () => selectableOrganizationPackageMarketRules(catalog),
     [catalog],
   )
   const configuredRuleIds = policy?.selection.ruleIds ?? emptyRuleIds
+  const effectivePolicy = policy ?? defaultOrganizationPackageMarketPolicy
   const configuredRuleIdSet = useMemo(() => new Set(configuredRuleIds), [configuredRuleIds])
   const configuredCount = selectableRules.filter((rule) => configuredRuleIdSet.has(rule.canonicalId)).length
   const categoryRows = useMemo(() => {
@@ -191,6 +203,49 @@ export function OrganizationPackageMarketPanel({
   const marketEnabled = policy?.enabled ?? false
   const hasEnabledChannel = channels.some((channel) => policy?.channels[channel].enabled)
   const selectionDisabled = !canEdit || policySaving
+  const componentRules = useMemo(() => filterOrganizationPackageMarketRules(catalog, {
+    category,
+    query,
+  }), [catalog, category, query])
+  const dependencyRulesByParent = useMemo(() => {
+    const grouped = new Map<string, OrganizationPackageMarketCatalogRule[]>()
+    catalog.forEach((rule) => {
+      if (rule.category !== 'dependency' || !rule.parent) return
+      const parent = canonicalPackageMarketRuleId(rule.parent)
+      const current = grouped.get(parent) ?? []
+      current.push(rule)
+      grouped.set(parent, current)
+    })
+    return grouped
+  }, [catalog])
+
+  function ruleSupportsChannel(
+    rule: OrganizationPackageMarketCatalogRule,
+    channel: OrganizationPackageMarketChannel,
+  ) {
+    const dependencyChannel = packageMarketDependencyChannel(rule)
+    return rule.category === 'dependency'
+      ? dependencyChannel === channel
+      : packageMarketRuleSupportsChannel(rule.canonicalId, channel)
+  }
+
+  function ruleStatus(rule: OrganizationPackageMarketCatalogRule) {
+    const supportedChannels = channels.filter((channel) => ruleSupportsChannel(rule, channel))
+    const visibleCount = supportedChannels.filter((channel) => (
+      isPackageMarketRuleVisible(rule, effectivePolicy, channel)
+    )).length
+    if (visibleCount === 0) return 'closed' as const
+    return visibleCount === supportedChannels.length ? 'available' as const : 'partial' as const
+  }
+
+  const componentTableRules = componentRules.filter((rule) => (
+    !onlyClosedComponents || ruleStatus(rule) === 'closed'
+  ))
+  const pagedComponentRules = paginateOrganizationPackageMarketRules(
+    componentTableRules,
+    componentPage,
+    componentPageSize,
+  )
 
   useEffect(() => {
     setPage(1)
@@ -199,6 +254,14 @@ export function OrganizationPackageMarketPanel({
   useEffect(() => {
     if (page !== pagedRules.page) setPage(pagedRules.page)
   }, [page, pagedRules.page])
+
+  useEffect(() => {
+    setComponentPage(1)
+  }, [category, componentPageSize, onlyClosedComponents, query])
+
+  useEffect(() => {
+    if (componentPage !== pagedComponentRules.page) setComponentPage(pagedComponentRules.page)
+  }, [componentPage, pagedComponentRules.page])
 
   function updateSelection(
     patch: Partial<OrganizationPackageMarketPolicy['selection']>,
@@ -263,6 +326,36 @@ export function OrganizationPackageMarketPanel({
     setQuery('')
     setCategory('all')
     setOnlyConfigured(false)
+    setOnlyClosedComponents(false)
+  }
+
+  function updateRuleOverride(
+    ruleId: string,
+    channel: OrganizationPackageMarketChannel,
+    enabled: boolean,
+  ) {
+    onPolicyChange((current) => {
+      const canonicalRuleId = canonicalPackageMarketRuleId(ruleId)
+      const currentOverride = current.ruleOverrides.find((override) => (
+        override.ruleId === canonicalRuleId && override.channel === channel
+      ))
+      const ruleOverrides: OrganizationPackageMarketRuleOverride[] = currentOverride
+        ? current.ruleOverrides.map((override) => (
+          override === currentOverride ? { ...override, enabled } : override
+        ))
+        : [...current.ruleOverrides, { channel, enabled, ruleId: canonicalRuleId }]
+      return { ...current, ruleOverrides }
+    })
+  }
+
+  function resetRuleOverride(ruleId: string, channel: OrganizationPackageMarketChannel) {
+    onPolicyChange((current) => ({
+      ...current,
+      ruleOverrides: current.ruleOverrides.filter((override) => !(
+        canonicalPackageMarketRuleId(override.ruleId) === canonicalPackageMarketRuleId(ruleId)
+          && override.channel === channel
+      )),
+    }))
   }
 
   if (!policy) {
@@ -324,9 +417,21 @@ export function OrganizationPackageMarketPanel({
             </div>
           </div>
 
+          <div className="organization-package-market-dependency-toggle">
+            <div>
+              <strong>显示依赖组件</strong>
+              <small>在组件详情中展示关联的运行时与附属包。</small>
+            </div>
+            <Toggle
+              checked={policy.showDependencies}
+              disabled={!canEdit || policySaving}
+              label="显示依赖组件"
+              onChange={(showDependencies) => onPolicyChange((current) => ({ ...current, showDependencies }))}
+            />
+          </div>
           <div className="organization-package-market-policy-note">
             <Info aria-hidden="true" size={15} />
-            <p>可见范围同时作用于已开启渠道。CI 不支持的安装包不会在 CI 中出现，依赖包跟随其父安装包。</p>
+            <p>市场和渠道总开关优先于组件设置。未单独配置的顶级组件继续继承成员可见范围；依赖组件始终受父组件约束。</p>
           </div>
         </aside>
 
@@ -630,6 +735,212 @@ export function OrganizationPackageMarketPanel({
             </div>
             )}
           </>
+          <section className="organization-package-market-component-settings" aria-labelledby="organization-package-market-component-settings-heading">
+            <div className="organization-package-market-component-settings-heading">
+              <div>
+                <h3 id="organization-package-market-component-settings-heading">按组件配置可见渠道</h3>
+                <p>组件开关只覆盖该组件的对应渠道。恢复默认后，组件继续继承上方的成员可见范围。</p>
+              </div>
+              <Button
+                aria-pressed={onlyClosedComponents}
+                className={onlyClosedComponents ? 'organization-package-market-filter-button active' : 'organization-package-market-filter-button'}
+                type="button"
+                variant="outline"
+                onClick={() => setOnlyClosedComponents((current) => !current)}
+              >
+                <Funnel aria-hidden="true" size={15} /> 仅看已关闭
+              </Button>
+            </div>
+            <div className="organization-package-market-component-filters">
+              <div className="organization-package-market-search">
+                <MagnifyingGlass aria-hidden="true" size={16} />
+                <Input
+                  aria-label="筛选组件名称或 ID"
+                  placeholder="筛选组件名称或 ID"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
+              <Select value={category} onValueChange={(value) => setCategory(value as OrganizationPackageMarketCategory)}>
+                <SelectTrigger aria-label="筛选组件分类"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部分类</SelectItem>
+                  {categoryOptions.map((option) => (
+                    <SelectItem key={option.code} value={option.code}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                aria-label="清除组件筛选"
+                className="organization-package-market-clear-button"
+                disabled={!query.trim() && category === 'all' && !onlyClosedComponents}
+                size="icon"
+                title="清除筛选"
+                type="button"
+                variant="ghost"
+                onClick={clearFilters}
+              >
+                <X aria-hidden="true" size={16} />
+              </Button>
+            </div>
+            <div className="organization-package-market-component-summary">
+              <span>共 {pagedComponentRules.totalItems} 个顶级组件</span>
+              <span><i className="available" />可用 <i className="closed" />已关闭 <i className="dependency" />依赖</span>
+            </div>
+            <div className="organization-package-market-component-table" aria-busy={catalogLoading}>
+              <div className="organization-package-market-component-table-head">
+                <span>组件</span><span>类型</span><span>Release</span><span>CI</span><span>状态</span>
+              </div>
+              {catalogLoading ? (
+                <div className="organization-package-market-list-state">
+                  <CircleNotch className="organization-package-market-spinner" size={20} />
+                  <span>正在读取安装包目录...</span>
+                </div>
+              ) : pagedComponentRules.items.length > 0 ? pagedComponentRules.items.map((rule) => {
+                const dependencies = dependencyRulesByParent.get(rule.canonicalId) ?? []
+                const status = ruleStatus(rule)
+                const statusLabel = status === 'available' ? '可用' : status === 'partial' ? '部分可用' : '已关闭'
+                return (
+                  <div className="organization-package-market-component-group" key={rule.canonicalId}>
+                    <div className="organization-package-market-component-row">
+                      <div className="organization-package-market-component-identity">
+                        <PackageIcon aria-hidden="true" size={20} weight="duotone" />
+                        <span><strong>{rule.name}</strong><small>{rule.canonicalId}</small></span>
+                      </div>
+                      <span className="organization-package-market-component-type">{packageMarketCategoryLabel(rule)}</span>
+                      {channels.map((channel) => {
+                        const override = policy.ruleOverrides.find((item) => item.ruleId === rule.canonicalId && item.channel === channel)
+                        const supported = ruleSupportsChannel(rule, channel)
+                        const visible = isPackageMarketRuleVisible(rule, policy, channel)
+                        return supported ? (
+                          <div className="organization-package-market-component-channel" key={channel}>
+                            <Toggle
+                              checked={visible}
+                              disabled={selectionDisabled || !policy.enabled || !policy.channels[channel].enabled}
+                              label={`${rule.name} ${channelLabels[channel]} ${visible ? '开放' : '关闭'}`}
+                              onChange={(enabled) => updateRuleOverride(rule.canonicalId, channel, enabled)}
+                            />
+                            <span>{visible ? '开放' : '关闭'}</span>
+                            {override ? (
+                              <button
+                                aria-label={`恢复${rule.name} ${channelLabels[channel]}默认范围`}
+                                className="organization-package-market-reset-override"
+                                disabled={selectionDisabled}
+                                title="恢复默认范围"
+                                type="button"
+                                onClick={() => resetRuleOverride(rule.canonicalId, channel)}
+                              >
+                                <ArrowCounterClockwise aria-hidden="true" size={14} />
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : <div className="organization-package-market-component-channel unavailable" key={channel}>不适用</div>
+                      })}
+                      <span className={`organization-package-market-component-status ${status}`}>{statusLabel}</span>
+                    </div>
+                    {dependencies.length > 0 ? (
+                      <div className="organization-package-market-dependency-group">
+                        <div className="organization-package-market-dependency-heading">依赖组件 {dependencies.length} 个 · 由父组件控制</div>
+                        {dependencies.map((dependency) => {
+                          const dependencyChannel = packageMarketDependencyChannel(dependency)
+                          if (!dependencyChannel) return null
+                          const visible = isPackageMarketRuleVisible(dependency, policy, dependencyChannel)
+                          const override = policy.ruleOverrides.find((item) => (
+                            item.ruleId === dependency.canonicalId && item.channel === dependencyChannel
+                          ))
+                          const dependencyStatus = policy.showDependencies
+                            ? visible ? '可用' : '已关闭'
+                            : '依赖组件隐藏'
+                          return (
+                            <div className="organization-package-market-component-row dependency" key={dependency.canonicalId}>
+                              <div className="organization-package-market-component-identity">
+                                <PackageIcon aria-hidden="true" size={18} weight="duotone" />
+                                <span><strong>{dependency.name}</strong><small>由 {rule.name} 提供 · {dependency.canonicalId}</small></span>
+                              </div>
+                              <span className="organization-package-market-dependency-type">依赖 · {channelLabels[dependencyChannel]}</span>
+                              {channels.map((channel) => channel === dependencyChannel ? (
+                                <div className="organization-package-market-component-channel" key={channel}>
+                                  <Toggle
+                                    checked={visible}
+                                    disabled={selectionDisabled || !policy.enabled || !policy.channels[dependencyChannel].enabled || !policy.showDependencies}
+                                    label={`${dependency.name} ${channelLabels[channel]} ${visible ? '开放' : '关闭'}`}
+                                    onChange={(enabled) => updateRuleOverride(dependency.canonicalId, dependencyChannel, enabled)}
+                                  />
+                                  <span>{visible ? '开放' : '关闭'}</span>
+                                  {override ? (
+                                    <button
+                                      aria-label={`恢复${dependency.name} ${channelLabels[channel]}默认范围`}
+                                      className="organization-package-market-reset-override"
+                                      disabled={selectionDisabled}
+                                      title="恢复默认范围"
+                                      type="button"
+                                      onClick={() => resetRuleOverride(dependency.canonicalId, dependencyChannel)}
+                                    >
+                                      <ArrowCounterClockwise aria-hidden="true" size={14} />
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : <div className="organization-package-market-component-channel unavailable" key={channel}>不适用</div>)}
+                              <span className={`organization-package-market-component-status ${visible ? 'available' : 'closed'}`}>{dependencyStatus}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              }) : (
+                <div className="organization-package-market-list-state">
+                  <PackageIcon aria-hidden="true" size={22} weight="duotone" />
+                  <strong>没有匹配的组件</strong>
+                  <span>调整搜索、分类或“仅看已关闭”筛选后再试。</span>
+                </div>
+              )}
+            </div>
+            {!catalogLoading && pagedComponentRules.totalItems > 0 ? (
+              <div className="organization-package-market-pagination">
+                <div className="organization-package-market-page-size">
+                  <span>每页</span>
+                  <Select
+                    value={String(componentPageSize)}
+                    onValueChange={(value) => setComponentPageSize(Number(value) as OrganizationPackageMarketPageSize)}
+                  >
+                    <SelectTrigger aria-label="选择每页组件数量"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {organizationPackageMarketPageSizes.map((size) => (
+                        <SelectItem key={size} value={String(size)}>{size} 条</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="organization-package-market-page-controls">
+                  <span>第 {pagedComponentRules.page} / {pagedComponentRules.totalPages} 页</span>
+                  <Button
+                    aria-label="组件上一页"
+                    disabled={pagedComponentRules.page <= 1}
+                    size="icon"
+                    title="组件上一页"
+                    type="button"
+                    variant="outline"
+                    onClick={() => setComponentPage((current) => Math.max(1, current - 1))}
+                  >
+                    <CaretLeft aria-hidden="true" size={16} />
+                  </Button>
+                  <Button
+                    aria-label="组件下一页"
+                    disabled={pagedComponentRules.page >= pagedComponentRules.totalPages}
+                    size="icon"
+                    title="组件下一页"
+                    type="button"
+                    variant="outline"
+                    onClick={() => setComponentPage((current) => Math.min(pagedComponentRules.totalPages, current + 1))}
+                  >
+                    <CaretRight aria-hidden="true" size={16} />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </section>
         </section>
       </div>
     </section>

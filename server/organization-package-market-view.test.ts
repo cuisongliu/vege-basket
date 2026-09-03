@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   filterOrganizationPackageMarketRules,
   organizationPackageMarketCategoryState,
+  organizationPackageMarketPageSizes,
   organizationPackageMarketPoliciesEqual,
   paginateOrganizationPackageMarketRules,
   toggleOrganizationPackageMarketCategory,
@@ -10,6 +12,11 @@ import {
 } from '../src/organization-package-market-view.ts'
 import type { OrganizationPackageMarketCatalogRule } from '../src/organization-types.ts'
 import { defaultOrganizationPackageMarketPolicy } from '../shared/organization-package-market.ts'
+
+const panelSource = readFileSync(
+  new URL('../src/components/organization-package-market-panel.tsx', import.meta.url),
+  'utf8',
+)
 
 const rules: OrganizationPackageMarketCatalogRule[] = [
   {
@@ -101,6 +108,7 @@ test('package market catalog filters one shared range by category, query, and se
 })
 
 test('package market pagination clamps the requested page and keeps a stable page size', () => {
+  assert.deepEqual(organizationPackageMarketPageSizes, [5, 10, 15])
   const page = paginateOrganizationPackageMarketRules(['a', 'b', 'c'], 4, 2)
   assert.deepEqual(page, {
     items: ['c'],
@@ -109,7 +117,26 @@ test('package market pagination clamps the requested page and keeps a stable pag
     totalItems: 3,
     totalPages: 2,
   })
-  assert.equal(paginateOrganizationPackageMarketRules(['a'], 1, 0).pageSize, 12)
+  assert.equal(paginateOrganizationPackageMarketRules(['a'], 1, 0).pageSize, 5)
+})
+
+test('component channel settings use their own paged top-level component list', () => {
+  assert.match(
+    panelSource,
+    /const \[pageSize, setPageSize\] = useState<OrganizationPackageMarketPageSize>\(organizationPackageMarketPageSizes\[0\]\)/u,
+  )
+  assert.match(panelSource, /const \[componentPage, setComponentPage\] = useState\(1\)/u)
+  assert.match(
+    panelSource,
+    /const \[componentPageSize, setComponentPageSize\] = useState<OrganizationPackageMarketPageSize>\(organizationPackageMarketPageSizes\[0\]\)/u,
+  )
+  assert.match(
+    panelSource,
+    /paginateOrganizationPackageMarketRules\(\s*componentTableRules,\s*componentPage,\s*componentPageSize,?\s*\)/u,
+  )
+  assert.match(panelSource, /pagedComponentRules\.items\.map\(\(rule\)/u)
+  assert.match(panelSource, /aria-label="组件上一页"/u)
+  assert.match(panelSource, /aria-label="组件下一页"/u)
 })
 
 test('package market selection toggles one stable rule id at a time', () => {
@@ -157,4 +184,18 @@ test('package market policy equality ignores selection ordering', () => {
     selection: { ...left.selection, ruleIds: ['terminal', 'registry'] },
   }
   assert.equal(organizationPackageMarketPoliciesEqual(left, right), true)
+})
+
+test('package market policy equality compares dependency and component channel overrides', () => {
+  const left = {
+    ...defaultOrganizationPackageMarketPolicy,
+    ruleOverrides: [{ channel: 'release' as const, enabled: false, ruleId: 'devbox' }],
+  }
+  const changedDependencySetting = { ...left, showDependencies: false }
+  const changedOverride = {
+    ...left,
+    ruleOverrides: [{ channel: 'release' as const, enabled: true, ruleId: 'devbox' }],
+  }
+  assert.equal(organizationPackageMarketPoliciesEqual(left, changedDependencySetting), false)
+  assert.equal(organizationPackageMarketPoliciesEqual(left, changedOverride), false)
 })

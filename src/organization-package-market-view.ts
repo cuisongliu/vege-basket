@@ -4,7 +4,7 @@ import type {
 } from '../shared/organization-package-market'
 import type { OrganizationPackageMarketCatalogRule } from './organization-types'
 
-export const organizationPackageMarketPageSizes = [12, 24, 48] as const
+export const organizationPackageMarketPageSizes = [5, 10, 15] as const
 export type OrganizationPackageMarketPageSize = (typeof organizationPackageMarketPageSizes)[number]
 export type OrganizationPackageMarketCategory = 'all' | OrganizationPackageMarketCatalogRule['category']
 
@@ -108,6 +108,14 @@ export function organizationPackageMarketPoliciesEqual(
   if (
     [...left.selection.ruleIds].sort().join('\u0000') !==
     [...right.selection.ruleIds].sort().join('\u0000')
+  ) return false
+  if (left.showDependencies !== right.showDependencies) return false
+  const overrideKey = (override: (typeof left.ruleOverrides)[number]) => (
+    `${override.ruleId}\u0000${override.channel}\u0000${override.enabled}`
+  )
+  if (
+    left.ruleOverrides.map(overrideKey).sort().join('\u0000') !==
+    right.ruleOverrides.map(overrideKey).sort().join('\u0000')
   ) return false
   return (['release', 'ci'] as const).every((channel) => (
     left.channels[channel].enabled === right.channels[channel].enabled

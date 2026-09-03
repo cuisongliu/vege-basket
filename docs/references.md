@@ -124,6 +124,14 @@ is discovered automatically from the first-level directories under
 `page_kinds.middleware.discovery.roots`; the environment variable above remains
 only as a compatibility fallback.
 
+Organization package-market access is configured through the organization workbench.
+The existing `all`, `selected`, and `excluded` member range and category switches remain
+the default. A saved component-level Release or CI override can explicitly enable or
+disable one supported component channel; it never bypasses the market-wide or
+channel-wide switches. `显示依赖组件` controls whether dependency rows are returned.
+An individual dependency override can further hide its own channel but cannot make it
+visible when the global dependency switch or parent component channel is disabled.
+
 ## Deployment Inputs
 
 `main` 分支推送后，`.github/workflows/docker-push.yml` 会自动构建并推送
