@@ -7,7 +7,7 @@ import {
   organizationPackageMarketPageSizes,
   organizationPackageMarketPoliciesEqual,
   paginateOrganizationPackageMarketRules,
-  toggleOrganizationPackageMarketCategory,
+  setOrganizationPackageMarketCategoryEnabled,
   toggleOrganizationPackageMarketRule,
 } from '../src/organization-package-market-view.ts'
 import type { OrganizationPackageMarketCatalogRule } from '../src/organization-types.ts'
@@ -120,23 +120,20 @@ test('package market pagination clamps the requested page and keeps a stable pag
   assert.equal(paginateOrganizationPackageMarketRules(['a'], 1, 0).pageSize, 5)
 })
 
-test('component channel settings use their own paged top-level component list', () => {
+test('package market uses one component workbench for filtering, selection, and channels', () => {
   assert.match(
     panelSource,
     /const \[pageSize, setPageSize\] = useState<OrganizationPackageMarketPageSize>\(organizationPackageMarketPageSizes\[0\]\)/u,
   )
-  assert.match(panelSource, /const \[componentPage, setComponentPage\] = useState\(1\)/u)
   assert.match(
     panelSource,
-    /const \[componentPageSize, setComponentPageSize\] = useState<OrganizationPackageMarketPageSize>\(organizationPackageMarketPageSizes\[0\]\)/u,
-  )
-  assert.match(
-    panelSource,
-    /paginateOrganizationPackageMarketRules\(\s*componentTableRules,\s*componentPage,\s*componentPageSize,?\s*\)/u,
+    /paginateOrganizationPackageMarketRules\(componentTableRules, page, pageSize\)/u,
   )
   assert.match(panelSource, /pagedComponentRules\.items\.map\(\(rule\)/u)
-  assert.match(panelSource, /aria-label="组件上一页"/u)
-  assert.match(panelSource, /aria-label="组件下一页"/u)
+  assert.match(panelSource, /成员范围/u)
+  assert.match(panelSource, /加入当前范围/u)
+  assert.doesNotMatch(panelSource, /按类别快速设置/u)
+  assert.doesNotMatch(panelSource, /organization-package-market-rule-list/u)
 })
 
 test('package market selection toggles one stable rule id at a time', () => {
@@ -144,34 +141,31 @@ test('package market selection toggles one stable rule id at a time', () => {
   assert.deepEqual(toggleOrganizationPackageMarketRule(['terminal', 'registry'], 'terminal'), ['registry'])
 })
 
-test('package market category toggles expand selected mode across the whole category', () => {
-  assert.equal(
-    organizationPackageMarketCategoryState(['terminal'], ['terminal', 'base-oss'], 'selected'),
-    'mixed',
+test('category state and category switch preserve each selection mode semantics', () => {
+  assert.equal(organizationPackageMarketCategoryState([], ['terminal', 'base-oss'], 'all'), 'enabled')
+  assert.equal(organizationPackageMarketCategoryState(['terminal'], ['terminal', 'base-oss'], 'selected'), 'mixed')
+  assert.equal(organizationPackageMarketCategoryState(['terminal', 'base-oss'], ['terminal', 'base-oss'], 'excluded'), 'disabled')
+
+  assert.deepEqual(
+    setOrganizationPackageMarketCategoryEnabled({ mode: 'all', ruleIds: [] }, ['terminal', 'base-oss'], false),
+    { mode: 'excluded', ruleIds: ['terminal', 'base-oss'] },
   )
   assert.deepEqual(
-    toggleOrganizationPackageMarketCategory(['terminal', 'registry'], ['terminal', 'base-oss'], 'selected'),
-    ['terminal', 'registry', 'base-oss'],
+    setOrganizationPackageMarketCategoryEnabled({ mode: 'selected', ruleIds: ['registry'] }, ['terminal', 'base-oss'], true),
+    { mode: 'selected', ruleIds: ['registry', 'terminal', 'base-oss'] },
   )
   assert.deepEqual(
-    toggleOrganizationPackageMarketCategory(['terminal', 'base-oss', 'registry'], ['terminal', 'base-oss'], 'selected'),
-    ['registry'],
+    setOrganizationPackageMarketCategoryEnabled({ mode: 'excluded', ruleIds: ['registry', 'terminal'] }, ['terminal', 'base-oss'], true),
+    { mode: 'excluded', ruleIds: ['registry'] },
   )
 })
 
-test('package market category toggles invert excluded mode without touching other categories', () => {
-  assert.equal(
-    organizationPackageMarketCategoryState(['terminal'], ['terminal', 'base-oss'], 'excluded'),
-    'mixed',
-  )
-  assert.deepEqual(
-    toggleOrganizationPackageMarketCategory(['terminal', 'registry'], ['terminal', 'base-oss'], 'excluded'),
-    ['registry'],
-  )
-  assert.deepEqual(
-    toggleOrganizationPackageMarketCategory(['registry'], ['terminal', 'base-oss'], 'excluded'),
-    ['registry', 'terminal', 'base-oss'],
-  )
+test('component workbench exposes a category switch and hides member-range rows in all mode', () => {
+  assert.match(panelSource, /organization-package-market-category-toggle/u)
+  assert.match(panelSource, /setCurrentCategoryEnabled/u)
+  assert.match(panelSource, /const showMemberRangeColumn = policy\?\.selection\.mode !== 'all'/u)
+  assert.match(panelSource, /without-member-range/u)
+  assert.match(panelSource, /成员范围：全部组件可见/u)
 })
 
 test('package market policy equality ignores selection ordering', () => {

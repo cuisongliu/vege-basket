@@ -1,6 +1,6 @@
 import type {
   OrganizationPackageMarketPolicy,
-  OrganizationPackageMarketSelectionMode,
+  OrganizationPackageMarketSelectionPolicy,
 } from '../shared/organization-package-market'
 import type { OrganizationPackageMarketCatalogRule } from './organization-types'
 
@@ -73,30 +73,37 @@ export type OrganizationPackageMarketCategoryState = 'enabled' | 'disabled' | 'm
 export function organizationPackageMarketCategoryState(
   selectedIds: readonly string[],
   categoryRuleIds: readonly string[],
-  mode: OrganizationPackageMarketSelectionMode,
+  mode: OrganizationPackageMarketSelectionPolicy['mode'],
 ): OrganizationPackageMarketCategoryState {
   if (categoryRuleIds.length === 0) return 'disabled'
+  if (mode === 'all') return 'enabled'
   const selected = new Set(selectedIds)
   const selectedCount = categoryRuleIds.filter((id) => selected.has(id)).length
   if (selectedCount > 0 && selectedCount < categoryRuleIds.length) return 'mixed'
   const allSelected = selectedCount === categoryRuleIds.length
-  const enabled = mode === 'excluded' ? !allSelected : allSelected
-  return enabled ? 'enabled' : 'disabled'
+  return mode === 'excluded'
+    ? allSelected ? 'disabled' : 'enabled'
+    : allSelected ? 'enabled' : 'disabled'
 }
 
-export function toggleOrganizationPackageMarketCategory(
-  selectedIds: readonly string[],
+export function setOrganizationPackageMarketCategoryEnabled(
+  selection: OrganizationPackageMarketSelectionPolicy,
   categoryRuleIds: readonly string[],
-  mode: OrganizationPackageMarketSelectionMode,
-) {
-  const state = organizationPackageMarketCategoryState(selectedIds, categoryRuleIds, mode)
-  const shouldEnable = state !== 'enabled'
-  const nextIds = new Set(selectedIds)
-  categoryRuleIds.forEach((id) => {
-    if (mode === 'excluded' ? !shouldEnable : shouldEnable) nextIds.add(id)
-    else nextIds.delete(id)
+  enabled: boolean,
+): OrganizationPackageMarketSelectionPolicy {
+  if (selection.mode === 'all') {
+    return enabled
+      ? { mode: 'all', ruleIds: [] }
+      : { mode: 'excluded', ruleIds: [...new Set(categoryRuleIds)] }
+  }
+
+  const nextIds = new Set(selection.ruleIds)
+  const shouldListRule = selection.mode === 'excluded' ? !enabled : enabled
+  categoryRuleIds.forEach((ruleId) => {
+    if (shouldListRule) nextIds.add(ruleId)
+    else nextIds.delete(ruleId)
   })
-  return [...nextIds]
+  return { mode: selection.mode, ruleIds: [...nextIds] }
 }
 
 export function organizationPackageMarketPoliciesEqual(
