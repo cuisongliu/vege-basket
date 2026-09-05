@@ -29,10 +29,10 @@ export function fetchTestWorkbench() {
   return request<TestWorkbenchData>('/api/test-workbench')
 }
 
-export function createTestSpace(name: string, versionLabel?: string, organizationId?: number) {
+export function createTestSpace(name: string, versionLabel: string, organizationId: number) {
   return request<TestWorkbenchData>('/api/test-spaces', {
     method: 'POST',
-    body: JSON.stringify({ name, organizationId: organizationId ?? null, versionLabel: versionLabel ?? '' }),
+    body: JSON.stringify({ name, organizationId, versionLabel }),
   })
 }
 
@@ -48,6 +48,13 @@ export function updateTestSpace(spaceId: number, payload: { name: string; organi
       organizationId: payload.organizationId ?? null,
       versionLabel: payload.versionLabel ?? '',
     }),
+  })
+}
+
+export function updateTestSpaceVersion(spaceId: number, versionLabel: string) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/version`, {
+    method: 'PATCH',
+    body: JSON.stringify({ versionLabel }),
   })
 }
 
@@ -153,9 +160,7 @@ export function acceptTestSpaceInviteLink(token: string, password?: string) {
 
 export function createTestSubject(spaceId: number, payload: {
   description?: string
-  environment?: string
   name: string
-  versionLabel?: string
 }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects`, {
     method: 'POST',
@@ -165,9 +170,7 @@ export function createTestSubject(spaceId: number, payload: {
 
 export function updateTestSubject(spaceId: number, subjectId: number, payload: {
   description?: string
-  environment?: string
   name: string
-  versionLabel?: string
 }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/subjects/${subjectId}`, {
     method: 'PATCH',
@@ -339,6 +342,7 @@ export function createTestBug(spaceId: number, payload: {
   priority: Priority
   reproductionSteps: string
   severity: BugSeverity
+  testEnvironmentId?: number | null
   testPlanCaseId?: number
   testPlanId?: number
   testSubjectId: number
@@ -359,12 +363,19 @@ export function updateTestBug(spaceId: number, bugId: number, payload: {
   reproductionSteps?: string
   severity?: BugSeverity
   status?: BugStatus
+  testEnvironmentId?: number | null
   testSubjectId?: number
   title?: string
 }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTestBug(spaceId: number, bugId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {
+    method: 'DELETE',
   })
 }
 

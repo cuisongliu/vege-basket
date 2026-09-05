@@ -21,6 +21,7 @@ export type TestSpace = {
   createdAt: string
   id: number
   name: string
+  organizationId?: number
   ownerUserId: number
   versionLabel?: string
 }
@@ -67,6 +68,13 @@ export type TestSpaceSettings = {
   spaces: ManagedTestSpace[]
 }
 
+export type TestEnvironment = {
+  accessUrl: string
+  id: number
+  name: string
+  testSpaceIds: number[]
+}
+
 export type TestSpaceImportCategory = 'cases' | 'plans'
 
 export type TestSpaceImportSource = {
@@ -94,11 +102,9 @@ export type TestSubject = {
   canEdit: boolean
   createdAt: string
   description: string
-  environment: string
   id: number
   name: string
   testSpaceId: number
-  versionLabel: string
 }
 
 export type TestCaseFolder = {
@@ -196,7 +202,9 @@ export type TestBug = {
   assigneeUserId?: number
   assigneeTransferSource?: 'manual' | 'offboarding'
   canComment?: boolean
+  canDelete?: boolean
   canEdit?: boolean
+  canEditSpaceVersion?: boolean
   canManage?: boolean
   canShare?: boolean
   canTransferSpace?: boolean
@@ -217,6 +225,9 @@ export type TestBug = {
   testPlanCaseId?: number
   testPlanId?: number
   testPlanName?: string
+  testEnvironmentAccessUrl?: string
+  testEnvironmentId?: number
+  testEnvironmentName?: string
   testSpaceId: number
   testSpaceName?: string
   testSpaceVersionLabel?: string
@@ -261,6 +272,7 @@ export type TestWorkbenchData = {
   plans: TestPlan[]
   spaces: TestSpace[]
   subjects: TestSubject[]
+  testEnvironments: TestEnvironment[]
   users: TestWorkspaceUser[]
 }
 

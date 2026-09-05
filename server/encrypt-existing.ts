@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { pool, query } from './db.ts'
 import { schemaSql } from './schema.ts'
-import { blindIndex, encryptJson, encryptText, isEncryptedText } from './crypto.ts'
+import { blindIndex, decryptText, encryptJson, encryptText, isEncryptedText } from './crypto.ts'
 
 function maybeEncrypt(value: string) {
   return isEncryptedText(value) ? value : encryptText(value)
@@ -45,6 +45,76 @@ async function encryptProjectPackageOperationTodoNotes() {
         Number(row.project_package_operation_id),
         Number(row.todo_id),
       ],
+    )
+  }
+}
+
+async function encryptTestEnvironmentFields() {
+  const result = await query<{
+    id: string
+    name: string
+    name_lookup: string
+    access_url: string
+  }>(
+    `select id, name, name_lookup, access_url from test_environments`,
+  )
+
+  for (const row of result.rows) {
+    // Recompute the blind index from the decrypted value so legacy rows with a
+    // missing or stale lookup converge to the active encryption key as well.
+    const plainName = row.name ? decryptText(row.name) : ''
+    await query(
+      `
+      update test_environments
+      set name = $1,
+          name_lookup = $2,
+          access_url = $3
+      where id = $4
+      `,
+      [
+        maybeEncrypt(row.name),
+        blindIndex(plainName),
+        maybeEncrypt(row.access_url),
+        Number(row.id),
+      ],
+    )
+  }
+}
+
+async function encryptTestSpaceVersionFields() {
+  const result = await query<{
+    id: string
+    organization_id: string | null
+    version_label: string | null
+  }>(
+    `select id, organization_id, version_label from test_spaces`,
+  )
+
+  const seen = new Set<string>()
+  const updates: Array<{ id: number; lookup: string | null; version: string | null }> = []
+  for (const row of result.rows) {
+    const version = row.version_label ? decryptText(row.version_label).trim() : ''
+    const lookup = row.organization_id && version ? blindIndex(version) : null
+    if (lookup) {
+      const key = `${row.organization_id}:${lookup}`
+      if (seen.has(key)) {
+        throw new Error('Duplicate test-space versions found in one organization; resolve them before backfill')
+      }
+      seen.add(key)
+    }
+    updates.push({
+      id: Number(row.id),
+      lookup,
+      version: row.version_label ? maybeEncrypt(version) : null,
+    })
+  }
+
+  for (const update of updates) {
+    await query(
+      `update test_spaces
+       set version_label = $1, version_label_lookup = $2
+       where id = $3`,
+      [update.version, update.lookup, update.id],
     )
   }
 }
@@ -94,6 +164,8 @@ async function main() {
   await encryptColumn('project_package_operations', 'content')
   await encryptProjectPackageOperationTodoNotes()
   await encryptColumn('test_cases', 'remarks')
+  await encryptTestEnvironmentFields()
+  await encryptTestSpaceVersionFields()
 
   const collaborators = await query<{ id: string; name: string; role: string }>(
     'select id, name, role from collaborators',

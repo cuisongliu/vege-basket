@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   canDeleteTestCase,
+  canDeleteTestBug,
   canDeleteTestSubject,
   canEditTestBug,
+  canEditTestSpaceVersion,
   canEditTestSubject,
   canDeveloperRejectBug,
   canDeveloperSetBugStatus,
@@ -22,17 +24,33 @@ const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8
 const testWorkbenchClientSource = readFileSync(new URL('../src/components/test-workbench.tsx', import.meta.url), 'utf8')
 const testWorkbenchApiSource = readFileSync(new URL('../src/test-workbench-api.ts', import.meta.url), 'utf8')
 const testWorkbenchSource = readFileSync(new URL('./test-workbench.ts', import.meta.url), 'utf8')
+const encryptExistingSource = readFileSync(new URL('./encrypt-existing.ts', import.meta.url), 'utf8')
+const versionMigrationSource = readFileSync(new URL('./migrations/20260904_test_space_version_uniqueness.sql', import.meta.url), 'utf8')
 
-test('test spaces persist and expose an optional version label', () => {
+test('test spaces persist encrypted organization-scoped unique versions', () => {
   assert.match(schemaSource, /add column if not exists version_label text/u)
+  assert.match(schemaSource, /add column if not exists version_label_lookup text/u)
+  assert.match(schemaSource, /idx_test_spaces_organization_version_lookup/u)
+  assert.match(versionMigrationSource, /unique index if not exists idx_test_spaces_organization_version_lookup/u)
+  assert.match(encryptExistingSource, /encryptTestSpaceVersionFields/u)
+  assert.match(encryptExistingSource, /Duplicate test-space versions found in one organization/u)
   assert.match(testWorkbenchSource, /select s\.id, s\.owner_user_id, s\.name, s\.version_label/u)
   assert.match(testWorkbenchSource, /select ts\.id, ts\.owner_user_id, ts\.name, ts\.version_label/u)
-  assert.match(testWorkbenchSource, /insert into test_spaces \(owner_user_id, name, version_label, organization_id\)/u)
-  assert.match(testWorkbenchSource, /set name = \$1, version_label = \$2, organization_id = \$3/u)
+  assert.match(testWorkbenchSource, /insert into test_spaces \(owner_user_id, name, version_label, version_label_lookup, organization_id\)/u)
+  assert.match(testWorkbenchSource, /set name = \$1, version_label = \$2, version_label_lookup = \$3, organization_id = \$4/u)
   assert.match(testWorkbenchSource, /versionLabel: row\.version_label \? decryptText\(row\.version_label\) : undefined/u)
-  assert.match(testWorkbenchClientSource, /createTestSpace\(normalizedName, versionLabel\.trim\(\)/u)
+  assert.match(testWorkbenchClientSource, /createTestSpace\(normalizedName, normalizedVersion, organizationId\)/u)
+  assert.match(testWorkbenchSource, /!name \|\| !versionLabel \|\| !organization\.valid \|\| organization\.value === null/u)
+  assert.match(testWorkbenchClientSource, /!name\.trim\(\) \|\| !versionLabel\.trim\(\) \|\| !organizationValue/u)
   assert.match(testWorkbenchClientSource, /TestSpaceSelectLabel/u)
   assert.match(testWorkbenchClientSource, /<span>版本号<\/span><strong>\{selectedSpace\.versionLabel \|\| '未指定'\}<\/strong>/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /<DialogTitle>修改空间版本<\/DialogTitle>/u)
+  assert.match(testWorkbenchClientSource, /迁移到其他测试空间/u)
+  const createDialog = testWorkbenchClientSource.slice(
+    testWorkbenchClientSource.indexOf('function TestSpaceCreateDialog'),
+    testWorkbenchClientSource.indexOf('function TestSpaceDataImportDialog'),
+  )
+  assert.match(createDialog, /<Input maxLength=\{80\} value=\{versionLabel\}/u)
 })
 
 test('test-space member settings do not show unrelated departed accounts', () => {
@@ -52,6 +70,8 @@ test('Bug scope stays within the current space while its subject is returned as 
   assert.match(testWorkbenchClientSource, /tab === 'cases' && !activeSubject \?/u)
   assert.match(testWorkbenchClientSource, /test-bug-detail-meta/u)
   assert.match(testWorkbenchClientSource, /测试对象\s*<strong>\{bug\.testSubjectName/u)
+  assert.match(testWorkbenchClientSource, /测试空间\s*<strong>\{bug\.testSpaceName \|\| '未记录'\}/u)
+  assert.match(testWorkbenchClientSource, /当前测试空间还没有测试对象，请先创建测试对象/u)
   assert.match(testWorkbenchClientSource, /<Label>\s*测试对象[\s\S]*subjects\.map/u)
 })
 
@@ -60,7 +80,7 @@ test('assigned Bug details include their test subject and space version label', 
   assert.match(testWorkbenchSource, /testSpaceVersionLabel: row\.test_space_version_label\s*\? decryptText\(row\.test_space_version_label\)\s*:\s*undefined/u)
   assert.match(testWorkbenchClientSource, /selected\.testSubjectName/u)
   assert.match(testWorkbenchClientSource, /selected\.testSpaceVersionLabel \|\| '未指定'/u)
-  assert.match(testWorkbenchClientSource, /<small>版本号 \{bug\.testSpaceVersionLabel \|\| '未指定'\}/u)
+  assert.match(testWorkbenchClientSource, /<small>\{bug\.testSpaceName \|\| '未知测试空间'\} · 版本号 \{bug\.testSpaceVersionLabel \|\| '未指定'\}/u)
   assert.match(testWorkbenchClientSource, /label: `\$\{bug\.testSpaceName\}\$\{bug\.testSpaceVersionLabel \? ` · \$\{bug\.testSpaceVersionLabel\}` : ''\}`/u)
 })
 
@@ -103,13 +123,13 @@ test('bug status and comment kind checks include pending confirmation and reject
 })
 
 test('returning a Bug to pending confirmation keeps the status change notification', () => {
-  assert.match(testWorkbenchSource, /status === 'pending_verification' \|\| \(status === 'pending_confirmation' && currentBug\.status !== 'new'\)/u)
+  assert.match(testWorkbenchSource, /(status|lockedStatus) === 'pending_verification'\s*\|\|\s*\((?:status|lockedStatus) === 'pending_confirmation'\s*&&\s*(?:currentBug|lockedBug)\.status\s*!==\s*'new'\)/u)
   assert.match(testWorkbenchSource, /b\.status not in \('closed', 'rejected'\)/u)
   assert.match(testWorkbenchSource, /!\[['"]closed['"], ['"]rejected['"]\]\.includes\(row\.status\)/u)
 })
 
 test('assigned Bugs start in pending confirmation and reject writes a system comment', () => {
-  assert.match(testWorkbenchSource, /const status = assigneeUserId \? 'pending_confirmation' : 'new'/u)
+  assert.match(testWorkbenchSource, /const status(?:: BugStatus)? = assigneeUserId \? 'pending_confirmation' : 'new'/u)
   assert.match(testWorkbenchSource, /status = 'pending_confirmation', updated_at = now\(\)/u)
   const rejectRouteStart = testWorkbenchSource.indexOf("router.post('/test-bugs/:bugId/assigned/reject'")
   assert.ok(rejectRouteStart >= 0)
@@ -210,11 +230,14 @@ test('case workbench exports the current test-object cases and labels import as 
   assert.match(testWorkbenchClientSource, /testCaseCsvTemplateHeaders, \.\.\.rows/u)
 })
 
-test('Bug details offer owner-only single-space transfer with the existing transfer transaction', () => {
+test('Bug details offer same-organization space transfer with the existing transfer transaction', () => {
   assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/bugs\/:bugId\/transfer-space'/u)
   assert.match(testWorkbenchSource, /bugIds: \[bugId\], categories: \['bugs'\], spaceId/u)
-  assert.match(testWorkbenchSource, /canTransferSpace: ownedSpaces\.some/u)
+  assert.match(testWorkbenchSource, /canTransferSpace: canEditTestSpaceVersion/u)
   assert.match(testWorkbenchSource, /transferSpaceCandidates: ownedSpaces/u)
+  assert.match(testWorkbenchSource, /space\.organization_id === row\.organization_id/u)
+  assert.match(testWorkbenchSource, /allowBugCreatorTransfer: true/u)
+  assert.match(testWorkbenchSource, /目标测试空间还没有测试对象，请先创建测试对象/u)
   assert.match(testWorkbenchClientSource, /bug\.canTransferSpace/u)
   assert.match(testWorkbenchClientSource, /<BugSpaceTransferDialog/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>转移 Bug 到其他空间<\/DialogTitle>/u)
@@ -254,6 +277,54 @@ test('only the Bug creator can edit Bug details', () => {
   assert.equal(canEditTestBug(42, 42), true)
   assert.equal(canEditTestBug(42, 7), false)
   assert.equal(canEditTestBug(null, 7), false)
+})
+
+test('Bug deletion and test-space version editing stay creator/owner scoped', () => {
+  assert.equal(canDeleteTestBug(42, 42), true)
+  assert.equal(canDeleteTestBug(42, 7), false)
+  assert.equal(canDeleteTestBug(null, 42), false)
+  assert.equal(canEditTestSpaceVersion(7, null, 7), true)
+  assert.equal(canEditTestSpaceVersion(7, 42, 42), true)
+  assert.equal(canEditTestSpaceVersion(7, 42, 8), false)
+  assert.equal(canEditTestSpaceVersion(null, 42, 42), true)
+})
+
+test('Bug deletion and version routes recheck direct membership and keep mutations scoped', () => {
+  const versionStart = testWorkbenchSource.indexOf("router.patch('/test-spaces/:spaceId/version'")
+  const spaceDeleteStart = testWorkbenchSource.indexOf("router.delete('/test-spaces/:spaceId'", versionStart)
+  const bugDeleteStart = testWorkbenchSource.indexOf("router.delete('/test-spaces/:spaceId/bugs/:bugId'")
+  const commentsStart = testWorkbenchSource.indexOf("router.post('/test-spaces/:spaceId/bugs/:bugId/comments'", bugDeleteStart)
+  assert.ok(versionStart >= 0)
+  assert.ok(spaceDeleteStart > versionStart)
+  assert.ok(bugDeleteStart >= 0)
+  assert.ok(commentsStart > bugDeleteStart)
+  const versionRoute = testWorkbenchSource.slice(versionStart, spaceDeleteStart)
+  const bugDeleteRoute = testWorkbenchSource.slice(bugDeleteStart, commentsStart)
+  assert.match(versionRoute, /requireActiveRole\(request, response, 'tester'\)/u)
+  assert.match(versionRoute, /getDirectSpaceAccess\(spaceId, session\.userId, client\)/u)
+  assert.match(versionRoute, /where space\.id = \$1[\s\S]*\[spaceId\]/u)
+  assert.match(versionRoute, /from test_bugs[\s\S]*reporter_user_id = \$2[\s\S]*for share/u)
+  assert.match(versionRoute, /canEditTestSpaceVersion/u)
+  assert.match(versionRoute, /set version_label = \$1, version_label_lookup = \$2, updated_at = now\(\)/u)
+  assert.match(versionRoute, /hasTestSpaceVersionConflict\(client, Number\(space\.organization_id\), versionLabel, spaceId\)/u)
+  assert.match(versionRoute, /!spaceId \|\| !hasVersionLabel \|\| !versionLabel/u)
+  assert.match(bugDeleteRoute, /getDirectSpaceAccess\(spaceId, session\.userId, client\)/u)
+  assert.match(bugDeleteRoute, /canDeleteTestBug/u)
+  assert.match(bugDeleteRoute, /delete from notification_deliveries/u)
+  assert.match(bugDeleteRoute, /delete from notification_states/u)
+  assert.match(bugDeleteRoute, /delete from test_bugs where id = \$1 and test_space_id = \$2/u)
+})
+
+test('configured test environments are restricted to assigned spaces and preserve Bug snapshots', () => {
+  assert.match(schemaSource, /create table if not exists test_environments/u)
+  assert.match(schemaSource, /create table if not exists test_environment_spaces/u)
+  assert.match(schemaSource, /test_environment_id bigint references test_environments\(id\)/u)
+  assert.match(schemaSource, /foreign key \(test_environment_id, test_space_id\)\s+references test_environment_spaces/u)
+  assert.match(testWorkbenchSource, /getAssignedTestEnvironment\(/u)
+  assert.match(testWorkbenchSource, /Test environment is not configured for this test space/u)
+  assert.match(testWorkbenchSource, /environmentSnapshot\(/u)
+  assert.match(testWorkbenchClientSource, /environments\.map\(\(item\) => <SelectItem/u)
+  assert.match(testWorkbenchClientSource, /手工填写环境/u)
 })
 
 test('only the test subject creator can edit or delete it', () => {
@@ -300,7 +371,7 @@ test('test case deletion is exposed only when allowed and requires confirmation'
   assert.match(testWorkbenchClientSource, /<Button variant="outline" onClick=\{\(\) => onArchive\(selected\)\}>归档为基线<\/Button>/u)
 })
 
-test('test subject editing uses a dedicated patch route and updates all metadata fields', () => {
+test('test subject editing uses a dedicated patch route without version or environment fields', () => {
   const patchRouteStart = testWorkbenchSource.indexOf("router.patch('/test-spaces/:spaceId/subjects/:subjectId'")
   const deleteRouteStart = testWorkbenchSource.indexOf("router.delete('/test-spaces/:spaceId/subjects/:subjectId'")
 
@@ -309,7 +380,8 @@ test('test subject editing uses a dedicated patch route and updates all metadata
 
   const patchRoute = testWorkbenchSource.slice(patchRouteStart, deleteRouteStart)
   assert.match(patchRoute, /Only the test subject creator can edit it/u)
-  assert.match(patchRoute, /set name = \$1,\s+name_lookup = \$2,\s+description = \$3,\s+version_label = \$4,\s+environment = \$5/u)
+  assert.match(patchRoute, /set name = \$1,\s+name_lookup = \$2,\s+description = \$3,\s+updated_at = now\(\)/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /当前版本|默认环境/u)
 })
 
 test('test space invitation policy accepts only supported states and expiries', () => {
@@ -335,7 +407,7 @@ test('test space organization selection accepts an active id or no organization'
 test('test space organization changes validate membership before updating', () => {
   const membershipLock = testWorkbenchSource.indexOf('lockActiveOrganizationMembership(client, nextOrganizationId')
   const memberValidation = testWorkbenchSource.indexOf('everyCurrentTestSpaceMemberBelongsToOrganization(client, spaceId, nextOrganizationId)')
-  const update = testWorkbenchSource.indexOf('set name = $1, version_label = $2, organization_id = $3, updated_at = now()')
+  const update = testWorkbenchSource.indexOf('set name = $1, version_label = $2, version_label_lookup = $3, organization_id = $4, updated_at = now()')
 
   assert.notEqual(membershipLock, -1)
   assert.notEqual(memberValidation, -1)
@@ -345,6 +417,7 @@ test('test space organization changes validate membership before updating', () =
   assert.match(testWorkbenchSource, /status in \('pending', 'active'\)[\s\S]*for share of membership/u)
   assert.match(testWorkbenchSource, /update test_space_invite_links set revoked_at = now\(\)/u)
   assert.match(testWorkbenchSource, /hasOwnProperty\.call\(request\.body \?\? \{\}, 'organizationId'\)/u)
+  assert.match(testWorkbenchSource, /hasTestSpaceVersionConflict\(client, nextOrganizationId, versionLabel, spaceId\)/u)
 })
 
 test('organization test-space invite links can be created and require member access on acceptance', () => {
