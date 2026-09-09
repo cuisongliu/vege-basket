@@ -25,6 +25,8 @@ The current migrations are:
 | `20260828_organization_package_market_policy_shared_selection.sql` | Adds one canonical organization-wide visibility range and safely derives it from legacy channel policies without broadening package access. |
 | `20260904_test_environments.sql` | Adds reusable encrypted organization test environments, space assignments, and nullable Bug environment references with assignment integrity. |
 | `20260904_test_space_version_uniqueness.sql` | Adds the encrypted test-space version lookup and organization-scoped uniqueness index. |
+| `20260908_test_bug_verification_packages.sql` | Adds immutable Bug verification submissions and selected package snapshots. |
+| `20260909_test_bug_verification_deliveries.sql` | Adds encrypted container-image delivery snapshots and one immutable acceptance comment per verification submission. |
 | `20260908_weekly_report_assignees.sql` | Adds the organization membership flag used by the long-lived weekly report assignee list and excludes the reserved admin account. |
 
 For the organization package-market policy release, update the image only. API startup applies

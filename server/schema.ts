@@ -1996,6 +1996,65 @@ create table if not exists test_bug_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists test_bug_verification_submissions (
+  id bigserial primary key,
+  test_bug_id bigint not null references test_bugs(id) on delete cascade,
+  submitted_by_user_id bigint references users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists test_bug_verification_packages (
+  id bigserial primary key,
+  test_bug_verification_submission_id bigint not null
+    references test_bug_verification_submissions(id) on delete cascade,
+  position integer not null check (position >= 0),
+  source_package_id text not null,
+  source_package_name text not null,
+  package_name text not null,
+  channel text not null check (channel in ('release', 'ci')),
+  channel_label text not null,
+  arch text not null,
+  version text not null,
+  object_key text not null,
+  object_last_modified timestamptz,
+  size_bytes bigint check (size_bytes is null or size_bytes >= 0),
+  unique (test_bug_verification_submission_id, position),
+  unique (test_bug_verification_submission_id, object_key)
+);
+
+create table if not exists test_bug_verification_container_images (
+  id bigserial primary key,
+  test_bug_verification_submission_id bigint not null
+    references test_bug_verification_submissions(id) on delete cascade,
+  position integer not null check (position >= 0),
+  image_ref text not null,
+  unique (test_bug_verification_submission_id, position)
+);
+
+alter table test_bug_comments
+  add column if not exists verification_submission_id bigint
+    references test_bug_verification_submissions(id) on delete cascade;
+
+alter table test_bug_comments
+  drop constraint if exists test_bug_comments_acceptance_submission_check;
+
+alter table test_bug_comments
+  add constraint test_bug_comments_acceptance_submission_check
+  check (
+    (kind = 'acceptance' and verification_submission_id is not null)
+    or (kind <> 'acceptance' and verification_submission_id is null)
+  );
+
+create index if not exists idx_test_bug_verification_submissions_bug
+  on test_bug_verification_submissions(test_bug_id, created_at desc, id desc);
+
+create index if not exists idx_test_bug_verification_container_images_submission
+  on test_bug_verification_container_images(test_bug_verification_submission_id, position);
+
+create unique index if not exists idx_test_bug_comments_verification_submission
+  on test_bug_comments(verification_submission_id)
+  where verification_submission_id is not null;
+
 alter table test_bug_events
   add column if not exists transfer_source text,
   add column if not exists previous_test_space_id bigint references test_spaces(id) on delete set null,

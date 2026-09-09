@@ -81,7 +81,13 @@ import {
   type BugFilterCondition,
   type BugFilterJoin,
 } from './bug-filter'
-import { uploadWorkbenchAttachment } from '@/api'
+import {
+  fetchPackageMarketDetail,
+  fetchPackageMarketCiVersions,
+  fetchPackageMarketReleaseVersions,
+  fetchPackageMarketRules,
+  uploadWorkbenchAttachment,
+} from '@/api'
 import {
   clearBugCommentDraftIfMatches,
   loadBugCommentDraft,
@@ -110,6 +116,7 @@ import {
   deleteTestBug,
   deleteTestBugComment,
   fetchAssignedTestBugs,
+  fetchTestBugVerificationScript,
   fetchTestSpaceInviteLinkInfo,
   fetchTestSpaceSettings,
   fetchTestWorkbench,
@@ -120,6 +127,7 @@ import {
   removeTestPlanCase,
   removeTestSpaceMember,
   rejectAssignedTestBug,
+  submitAssignedBugVerification,
   transferAssignedTestBug,
   transferTestBugToSpace,
   updateTestSpace,
@@ -160,10 +168,40 @@ import type {
   TestWorkbenchProjectOption,
 } from '@/test-workbench-types'
 import type { OrganizationContext } from '../../shared/organization-context'
-import type { Priority } from '@/types'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../../shared/container-image-reference'
+import type { PackageMarketRule, PackageMarketVersion, Priority } from '@/types'
 import './test-workbench.css'
 
 type WorkbenchTab = 'cases' | 'plans' | 'bugs' | 'weekly_report' | 'notifications'
+type VerificationPackageSelection = {
+  arch: string
+  channel: 'release' | 'ci'
+  objectKey: string
+  objectLastModified?: string
+  packageName: string
+  sizeBytes?: number
+  sourcePackageId: string
+  sourcePackageName: string
+  version: string
+}
+
+type SelectedVerificationPackage = VerificationPackageSelection & {
+  selectionKey: string
+}
+
+function verificationPackageSnapshot(item: SelectedVerificationPackage): VerificationPackageSelection {
+  return {
+    arch: item.arch,
+    channel: item.channel,
+    objectKey: item.objectKey,
+    objectLastModified: item.objectLastModified,
+    packageName: item.packageName,
+    sizeBytes: item.sizeBytes,
+    sourcePackageId: item.sourcePackageId,
+    sourcePackageName: item.sourcePackageName,
+    version: item.version,
+  }
+}
 
 const emptyWorkbench: TestWorkbenchData = {
   bugs: [],
@@ -2340,6 +2378,7 @@ function BugDetail({ bug, busy, departedUserIds, draftOwnerUserId, onAssignee, o
       <span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span>
     </div>
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
+    <BugVerificationSubmissions bugId={bug.id} submissions={bug.verificationSubmissions} />
     <BugCommentsSection
       bug={bug}
       busy={busy}
@@ -2660,7 +2699,7 @@ function BugCommentsSection({ bug, busy, currentUserId, departedUserIds = [], dr
   return (
     <section className="test-comments">
       <h3>协作记录</h3>
-      {bug.comments.map((item) => (
+      {bug.comments.filter((item) => item.kind !== 'acceptance').map((item) => (
         <BugCommentArticle
           key={item.id}
           bug={bug}
@@ -2705,7 +2744,7 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, departedUserIds 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(comment.content)
   const [uploading, setUploading] = useState(false)
-  const canManage = comment.kind !== 'transfer' && comment.kind !== 'reject' && Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
+  const canManage = comment.kind === 'comment' && Boolean((onUpdateComment || onDeleteComment) && (comment.canEdit || (
     currentUserId != null && comment.authorUserId === currentUserId
   )))
   const canEdit = Boolean(onUpdateComment && canManage)
@@ -2786,6 +2825,8 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, departedUserIds 
             <Button disabled={busy || uploading || !draft.trim()}>{uploading ? '附件上传中...' : '保存'}</Button>
           </div>
         </form>
+      ) : comment.kind === 'acceptance' ? (
+        <pre className="test-acceptance-command"><code>{comment.content}</code></pre>
       ) : (
         <BugEvidenceContent content={comment.content} emptyText="未填写" />
       )}
@@ -3181,6 +3222,111 @@ function DetailBlock({ content, title }: { content: string; title: string }) {
       <h3>{title}</h3>
       <BugEvidenceContent content={content} title={title} />
     </section>
+  )
+}
+
+function BugVerificationSubmissions({ bugId, submissions = [] }: {
+  bugId: number
+  submissions?: TestBug['verificationSubmissions']
+}) {
+  return (
+    <section className="test-verification-history">
+      <div className="test-acceptance-records-heading">
+        <h3>验收记录</h3>
+        <span>交付物摘要与验证脚本</span>
+      </div>
+      {submissions.length === 0 ? <p className="test-verification-empty">暂无验收记录</p> : submissions.map((submission) => (
+        <BugAcceptanceRecord bugId={bugId} key={submission.id} submission={submission} />
+      ))}
+    </section>
+  )
+}
+
+function BugAcceptanceRecord({ bugId, submission }: {
+  bugId: number
+  submission: NonNullable<TestBug['verificationSubmissions']>[number]
+}) {
+  const [expireMinutes, setExpireMinutes] = useState<30 | 60 | 120>(30)
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
+  const hasPackages = submission.packages.length > 0
+  const packageSelections = useMemo(() => Array.from(new Map(
+    submission.packages.map((item) => [item.sourcePackageId, item]),
+  ).values()), [submission.packages])
+
+  useEffect(() => {
+    setCopyState('idle')
+    setExpireMinutes(30)
+  }, [submission.id])
+
+  async function copyVerificationScript() {
+    setCopyState('copying')
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard is not available')
+      const result = await fetchTestBugVerificationScript(
+        bugId,
+        submission.id,
+        hasPackages ? expireMinutes : undefined,
+      )
+      await navigator.clipboard.writeText(result.script)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
+
+  return (
+    <article className="test-verification-history-item">
+      <div className="test-verification-history-head">
+        <div>
+          <Badge variant="outline">{hasPackages ? '安装包' : '集群镜像'}</Badge>
+          <strong>{submission.submittedByName || '未知用户'}</strong>
+        </div>
+        <time>{formatTimestamp(submission.submittedAt)}</time>
+      </div>
+      {submission.containerImages.length > 0 ? (
+        <ul className="test-verification-history-images">
+          {submission.containerImages.map((item) => <li key={item.id}><code>{item.image}</code></li>)}
+        </ul>
+      ) : packageSelections.length === 0 ? (
+        <p className="test-verification-empty">历史记录未关联交付物</p>
+      ) : (
+        <ul>
+          {packageSelections.map((item) => (
+            <li key={item.id}>
+              <strong>{item.sourcePackageName || item.packageName}</strong>
+              <span>{item.channelLabel} · {item.arch} · {item.version}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {hasPackages || submission.containerImages.length > 0 ? (
+        <div className="test-acceptance-record-actions">
+          {hasPackages ? (
+            <Label className="test-acceptance-expiry">下载链接有效期
+              <Select value={String(expireMinutes)} onValueChange={(value) => setExpireMinutes(Number(value) as 30 | 60 | 120)}>
+                <SelectTrigger aria-label="下载链接有效期"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="30">30 分钟（推荐）</SelectItem>
+                  <SelectItem value="60">1 小时</SelectItem>
+                  <SelectItem value="120">2 小时</SelectItem>
+                </SelectContent>
+              </Select>
+            </Label>
+          ) : <span className="test-acceptance-direct-run">直接使用集群镜像运行</span>}
+          <Button
+            aria-label={copyState === 'copied' ? '已复制验证脚本' : '复制验证脚本'}
+            disabled={copyState === 'copying'}
+            title={copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败，请重试' : '复制验证脚本'}
+            type="button"
+            onClick={() => void copyVerificationScript()}
+          >
+            {copyState === 'copied' ? <CheckCircle weight="bold" /> : <CopySimple />}
+            {copyState === 'copying' ? '生成中...' : copyState === 'copied' ? '已复制验证脚本' : '复制验证脚本'}
+          </Button>
+        </div>
+      ) : null}
+      {copyState === 'failed' ? <p className="test-form-error" role="status">验证脚本生成或复制失败，请重试。</p> : null}
+    </article>
   )
 }
 
@@ -4661,6 +4807,525 @@ function BugRejectDialog({ bug, busy, onOpenChange, onSubmit, open }: {
   )
 }
 
+function BugVerificationDialog({
+  bug,
+  busy,
+  onOpenChange,
+  onSubmit,
+  open,
+  organizationId,
+}: {
+  bug?: TestBug
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (bug: TestBug, packages: VerificationPackageSelection[], containerImages: string[]) => Promise<boolean>
+  open: boolean
+  organizationId: OrganizationContext
+}) {
+  const [rules, setRules] = useState<PackageMarketRule[]>([])
+  const [visibleRuleIds, setVisibleRuleIds] = useState<Record<'release' | 'ci', string[]>>({ release: [], ci: [] })
+  const [ruleId, setRuleId] = useState('')
+  const [channel, setChannel] = useState<'release' | 'ci'>('release')
+  const [arch, setArch] = useState('amd64')
+  const [category, setCategory] = useState('all')
+  const [query, setQuery] = useState('')
+  const [rulePage, setRulePage] = useState(0)
+  const [versions, setVersions] = useState<PackageMarketVersion[]>([])
+  const [visibleVersionCount, setVisibleVersionCount] = useState(10)
+  const [selected, setSelected] = useState<SelectedVerificationPackage[]>([])
+  const [containerImages, setContainerImages] = useState([''])
+  const [containerImagesTouched, setContainerImagesTouched] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadingVersions, setLoadingVersions] = useState(false)
+  const [loadingVersionKey, setLoadingVersionKey] = useState('')
+  const [error, setError] = useState('')
+  const versionSelectionRequestRef = useRef(0)
+
+  useEffect(() => {
+    if (!open || organizationId == null) return
+    let active = true
+    setLoading(true)
+    setError('')
+    fetchPackageMarketRules({ organizationId })
+      .then((result) => {
+        if (!active) return
+        setVisibleRuleIds(result.visibleRuleIds)
+        setRules(result.rules)
+        setRuleId((current) => current && result.rules.some((rule) => rule.id === current) ? current : result.rules[0]?.id ?? '')
+      })
+      .catch((loadError) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : '安装包市场加载失败')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+    })
+    return () => { active = false }
+  }, [open, organizationId])
+
+  useEffect(() => {
+    if (open) {
+      setSelected([])
+      setContainerImages([''])
+      setContainerImagesTouched(false)
+      setCategory('all')
+      setQuery('')
+      setRulePage(0)
+      setVersions([])
+      setVisibleVersionCount(10)
+      setError('')
+    }
+  }, [bug?.id, open])
+
+  const visibleRules = useMemo(() => {
+    const search = query.trim().toLowerCase()
+    return rules
+      .filter((rule) => rule.id && rule.name)
+      .filter((rule) => visibleRuleIds[channel]?.includes(rule.id))
+      .filter((rule) => category === 'all' || (rule.pageKind?.code || rule.category) === category)
+      .filter((rule) => !search || rule.name.toLowerCase().includes(search) || rule.id.toLowerCase().includes(search))
+  }, [category, channel, query, rules, visibleRuleIds])
+  const rulePageSize = 8
+  const rulePageCount = Math.max(1, Math.ceil(visibleRules.length / rulePageSize))
+  const pageRules = useMemo(
+    () => visibleRules.slice(rulePage * rulePageSize, (rulePage + 1) * rulePageSize),
+    [rulePage, visibleRules],
+  )
+  const selectedRule = rules.find((rule) => rule.id === ruleId)
+  const categories = useMemo(() => {
+    const result = new Map<string, string>([
+      ['all', '全部'],
+      ['apps', '应用'],
+      ['middleware', '中间件'],
+      ['dependency', '依赖'],
+    ])
+    rules.forEach((rule) => {
+      const key = rule.pageKind?.code || rule.category
+      if (key && !result.has(key)) result.set(key, rule.pageKind?.labelZh || rule.category || key)
+    })
+    return Array.from(result.entries())
+  }, [rules])
+
+  useEffect(() => {
+    setRulePage((current) => Math.min(current, rulePageCount - 1))
+  }, [rulePageCount])
+
+  useEffect(() => {
+    if (pageRules.length === 0) {
+      if (ruleId) setRuleId('')
+      return
+    }
+    if (!pageRules.some((rule) => rule.id === ruleId)) setRuleId(pageRules[0].id)
+  }, [pageRules, ruleId])
+
+  useEffect(() => {
+    versionSelectionRequestRef.current += 1
+    setLoadingVersionKey('')
+  }, [arch, bug?.id, channel, open, selectedRule?.id])
+
+  useEffect(() => {
+    const selectedRuleId = selectedRule?.id
+    if (!selectedRuleId || organizationId == null || !open) {
+      setVersions([])
+      return
+    }
+    let active = true
+    setLoadingVersions(true)
+    setVersions([])
+    setVisibleVersionCount(10)
+    setError('')
+    const request = channel === 'release'
+      ? fetchPackageMarketReleaseVersions({ arch, context: { organizationId }, includeAll: true, packageId: selectedRuleId })
+      : fetchPackageMarketCiVersions({ arch, context: { organizationId }, includeAll: true, packageId: selectedRuleId })
+    request
+      .then((result) => {
+        if (active) setVersions(result.versions)
+      })
+      .catch((loadError) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : '版本列表加载失败')
+      })
+      .finally(() => {
+        if (active) setLoadingVersions(false)
+      })
+    return () => { active = false }
+  }, [arch, channel, open, organizationId, selectedRule?.id])
+
+  function versionValue(version: PackageMarketVersion) {
+    return channel === 'ci' ? (version.hash || version.version || version.label) : (version.version || version.label)
+  }
+
+  function versionSelectionKey(version: PackageMarketVersion) {
+    if (!selectedRule) return ''
+    return `${selectedRule.id}:${channel}:${arch}:${versionValue(version)}`
+  }
+
+  function selectedVersionItems(version: PackageMarketVersion) {
+    const selectionKey = versionSelectionKey(version)
+    if (!selectionKey) return []
+    return selected.filter((item) => item.selectionKey === selectionKey)
+  }
+
+  async function toggleVersion(version: PackageMarketVersion) {
+    if (!selectedRule || organizationId == null) return
+    const value = versionValue(version)
+    const existing = selectedVersionItems(version)
+    if (existing.length > 0) {
+      setSelected((current) => current.filter((item) => !existing.some((entry) => entry.objectKey === item.objectKey)))
+      return
+    }
+    const conflictingSelection = selected.find((item) => item.sourcePackageId === selectedRule.id)
+    if (conflictingSelection) {
+      setError(`已选择 ${conflictingSelection.sourcePackageName} ${conflictingSelection.version}，请先移除后再选择其他版本。`)
+      return
+    }
+    const loadingKey = `${selectedRule.id}:${channel}:${arch}:${value}`
+    const selectionKey = `${selectedRule.id}:${channel}:${arch}:${value}`
+    const requestId = ++versionSelectionRequestRef.current
+    setLoadingVersionKey(loadingKey)
+    setError('')
+    try {
+      const detail = await fetchPackageMarketDetail({
+        arch,
+        channel,
+        ciVersion: channel === 'ci' ? value : undefined,
+        context: { organizationId },
+        includeAll: true,
+        packageId: selectedRule.id,
+        releaseVersion: channel === 'release' ? value : undefined,
+      })
+      if (requestId !== versionSelectionRequestRef.current) return
+      if (detail.links.length === 0) {
+        setError('该版本暂未找到可交付的安装包')
+        return
+      }
+      if (detail.links.some((link) => !link.lastModified || Number.isNaN(new Date(link.lastModified).getTime()))) {
+        setError('该版本缺少有效更新时间，无法作为可追溯的验证交付物提交。')
+        return
+      }
+      setSelected((current) => {
+        if (current.some((item) => item.sourcePackageId === selectedRule.id)) return current
+        const next = [...current]
+        detail.links.forEach((link) => {
+          if (next.some((item) => item.objectKey === link.objectKey)) return
+          next.push({
+            arch,
+            channel,
+            objectKey: link.objectKey,
+            objectLastModified: link.lastModified,
+            packageName: link.name,
+            sizeBytes: link.size,
+            sourcePackageId: selectedRule.id,
+            sourcePackageName: selectedRule.name,
+            selectionKey,
+            version: value,
+          })
+        })
+        return next
+      })
+    } catch (loadError) {
+      if (requestId !== versionSelectionRequestRef.current) return
+      setError(loadError instanceof Error ? loadError.message : '安装包链接加载失败')
+    } finally {
+      if (requestId === versionSelectionRequestRef.current) setLoadingVersionKey('')
+    }
+  }
+
+  function removeSelected(selectionKey: string) {
+    setSelected((current) => current.filter((item) => item.selectionKey !== selectionKey))
+  }
+
+  const selectedGroups = useMemo(() => {
+    const groups = new Map<string, { item: SelectedVerificationPackage; selectionKey: string }>()
+    selected.forEach((item) => {
+      if (!groups.has(item.sourcePackageId)) groups.set(item.sourcePackageId, { item, selectionKey: item.selectionKey })
+    })
+    return Array.from(groups.values())
+  }, [selected])
+
+  const containerImageValidation = useMemo(() => {
+    const seen = new Set<string>()
+    return containerImages.map((value) => {
+      const parsed = normalizeContainerImageReference(value, { requireTagOrDigest: true })
+      if (!parsed.valid) return { error: parsed.error, value }
+      const imageKey = containerImageReferenceKey(parsed.value)
+      if (seen.has(imageKey)) return { error: '镜像名称重复，请保留其中一项。', value }
+      seen.add(imageKey)
+      return { value: parsed.value }
+    })
+  }, [containerImages])
+  const normalizedContainerImages = containerImageValidation.flatMap((item) => 'error' in item ? [] : [item.value])
+  const canSubmitContainerImages = containerImages.length > 0 && normalizedContainerImages.length === containerImages.length
+
+  function formatVerificationDate(value?: string) {
+    if (!value) return '更新时间未知'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '更新时间未知'
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(date)
+  }
+
+  async function submit(packages = selected) {
+    if (!bug) return
+    const needsContainerImages = packages.length === 0
+    if (needsContainerImages && !canSubmitContainerImages) {
+      setContainerImagesTouched(true)
+      setError('请逐项填写符合规则的集群镜像名称。')
+      return
+    }
+    const payload = packages.map(verificationPackageSnapshot)
+    if (await onSubmit(bug, payload, needsContainerImages ? normalizedContainerImages : [])) onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="test-workbench-dialog test-verification-dialog">
+        <DialogHeader className="test-verification-header">
+          <div>
+            <div className="test-verification-kicker"><span><Check size={12} weight="bold" /></span>验证交付物</div>
+            <DialogTitle>提交验证</DialogTitle>
+            <DialogDescription>可选择一个或多个安装包，也可以不关联安装包。提交后会保存本次验证使用的版本快照。</DialogDescription>
+          </div>
+        </DialogHeader>
+        <div className="test-verification-body">
+          <div className="test-verification-picker">
+            <div className="test-verification-section-heading">
+              <strong>选择验证包</strong>
+              <span>可跨安装包和架构累积选择</span>
+            </div>
+            <div className="test-verification-toolbar">
+              <div className="test-verification-field">
+                <span>渠道</span>
+                <div className="test-verification-segmented" role="tablist" aria-label="安装包渠道">
+                  {([
+                    ['release', '正式包'],
+                    ['ci', '测试包'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      aria-selected={channel === value}
+                      className={`${channel === value ? 'is-active ' : ''}test-verification-channel-${value}`}
+                      key={value}
+                      role="tab"
+                      type="button"
+                      onClick={() => {
+                        setChannel(value)
+                        setRulePage(0)
+                        setRuleId('')
+                      }}
+                    >
+                      <span className="test-verification-channel-dot" aria-hidden />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Label className="test-verification-arch">架构
+                <Select value={arch} onValueChange={setArch}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="amd64">amd64</SelectItem><SelectItem value="arm64">arm64</SelectItem></SelectContent>
+                </Select>
+              </Label>
+            </div>
+            {error ? <p className="test-form-error">{error}</p> : null}
+            <div className="test-verification-browser">
+              <section className="test-verification-package-panel">
+                <div className="test-verification-panel-heading">
+                  <div>
+                    <strong>安装包目录</strong>
+                    <span>{visibleRules.length} 个可用包</span>
+                  </div>
+                  <span className="test-verification-page-count">{rulePage + 1} / {rulePageCount}</span>
+                </div>
+                <div className="test-verification-category-list" role="tablist" aria-label="安装包类别">
+                  {categories.map(([value, label]) => (
+                    <button
+                      aria-selected={category === value}
+                      className={category === value ? 'is-active' : undefined}
+                      key={value}
+                      role="tab"
+                      type="button"
+                      onClick={() => { setCategory(value); setRulePage(0) }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <label className="test-verification-search">
+                  <MagnifyingGlass size={15} aria-hidden />
+                  <Input
+                    type="search"
+                    aria-label="搜索安装包"
+                    value={query}
+                    onChange={(event) => { setQuery(event.target.value); setRulePage(0) }}
+                    placeholder="搜索名称或 ID"
+                  />
+                </label>
+                <div className="test-verification-rule-list">
+                  {loading ? <p className="test-verification-empty-state">正在加载安装包目录...</p> : null}
+                  {!loading && pageRules.length === 0 ? <p className="test-verification-empty-state">没有符合条件的安装包。</p> : null}
+                  {pageRules.map((rule) => {
+                    const ruleCategory = rule.pageKind?.labelZh || rule.category
+                    return (
+                      <button
+                        className={rule.id === ruleId ? 'test-verification-rule is-selected' : 'test-verification-rule'}
+                        key={rule.id}
+                        type="button"
+                        onClick={() => setRuleId(rule.id)}
+                      >
+                        <span>
+                          <strong>{rule.name}</strong>
+                          <small>{rule.id}</small>
+                        </span>
+                        <em>{ruleCategory}</em>
+                      </button>
+                    )
+                  })}
+                </div>
+                <nav className="test-verification-pagination" aria-label="安装包分页">
+                  <span>{visibleRules.length ? `${rulePage * rulePageSize + 1}-${Math.min((rulePage + 1) * rulePageSize, visibleRules.length)} / ${visibleRules.length}` : '0 个'}</span>
+                  <div>
+                    <Button aria-label="上一页" title="上一页" size="icon" variant="ghost" disabled={rulePage === 0} onClick={() => setRulePage((current) => Math.max(0, current - 1))}><CaretLeft /></Button>
+                    <Button aria-label="下一页" title="下一页" size="icon" variant="ghost" disabled={rulePage >= rulePageCount - 1} onClick={() => setRulePage((current) => Math.min(rulePageCount - 1, current + 1))}><CaretRight /></Button>
+                  </div>
+                </nav>
+              </section>
+              <section className="test-verification-version-panel">
+                <div className="test-verification-panel-heading">
+                  <div>
+                    <strong>{selectedRule?.name || '选择安装包'}</strong>
+                    <span>{selectedRule ? `${versions.length} 个版本 · ${arch}` : '从左侧目录选择安装包'}</span>
+                  </div>
+                  {selectedRule && versions.length > 0 ? <span className="test-verification-version-count">显示 {Math.min(visibleVersionCount, versions.length)} / {versions.length}</span> : null}
+                </div>
+                {loadingVersions ? <p className="test-verification-empty-state">正在加载版本目录...</p> : null}
+                {!loadingVersions && selectedRule && versions.length === 0 ? <p className="test-verification-empty-state">该安装包暂无可交付版本。</p> : null}
+                {!loadingVersions && !selectedRule ? <p className="test-verification-empty-state">选择安装包后查看所有可用版本。</p> : null}
+                {versions.length > 0 ? <div className="test-verification-version-list">
+                  {versions.slice(0, visibleVersionCount).map((version, index) => {
+                    const value = versionValue(version)
+                    const versionKey = `${selectedRule?.id}:${channel}:${arch}:${value}`
+                    const chosen = selectedVersionItems(version).length > 0
+                    const versionLabel = version.label || version.version || version.hash || `版本 ${index + 1}`
+                    return (
+                      <button
+                        aria-pressed={chosen}
+                        className={`test-verification-version-row${chosen ? ' is-selected' : ''}`}
+                        key={`${value}-${version.lastModified || index}`}
+                        type="button"
+                        onClick={() => void toggleVersion(version)}
+                        disabled={Boolean(loadingVersionKey)}
+                      >
+                        <span className="test-verification-version-marker" aria-hidden>{chosen ? <Check size={13} weight="bold" /> : null}</span>
+                        <span className="test-verification-version-main">
+                          <strong>{versionLabel}</strong>
+                          <small>{version.hash && version.hash !== versionLabel ? version.hash : '点击选择此版本的安装包'}</small>
+                        </span>
+                        <span className="test-verification-version-meta">{formatVerificationDate(version.lastModified)}</span>
+                        {loadingVersionKey === versionKey ? <span className="test-verification-version-state">加载中...</span> : chosen ? <span className="test-verification-version-state">已选</span> : null}
+                      </button>
+                    )
+                  })}
+                </div> : null}
+                {versions.length > visibleVersionCount ? <Button className="test-verification-more" type="button" variant="outline" onClick={() => setVisibleVersionCount((current) => Math.min(current + 10, versions.length))}>加载更多版本（剩余 {versions.length - visibleVersionCount}）</Button> : null}
+              </section>
+            </div>
+            {selectedGroups.length > 0 ? (
+              <div className="test-verification-selected">
+                <div className="test-verification-selected-heading">
+                  <strong>已选安装包</strong>
+                  <span>{selectedGroups.length} 个</span>
+                </div>
+                <div className="test-verification-chips">
+                  {selectedGroups.map(({ item, selectionKey }) => (
+                    <span className="test-verification-chip" key={selectionKey}>
+                      <span>
+                        <strong>{item.sourcePackageName}</strong>
+                        <small>{item.version || '版本未知'} · {item.arch}</small>
+                      </span>
+                      <button aria-label={`移除 ${item.sourcePackageName} ${item.version}`} type="button" onClick={() => removeSelected(selectionKey)}>
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <section className="test-verification-container-images" aria-labelledby="test-verification-container-images-title">
+                <div className="test-verification-section-heading">
+                  <div>
+                    <strong id="test-verification-container-images-title">关联集群镜像</strong>
+                    <span>未关联安装包时，至少填写一个带版本标识的镜像名称</span>
+                  </div>
+                  <span>{containerImages.length} / 20</span>
+                </div>
+                <div className="test-verification-container-image-list">
+                  {containerImages.map((image, index) => {
+                    const validation = containerImageValidation[index]
+                    const imageError = validation && 'error' in validation ? validation.error : ''
+                    const showError = Boolean(imageError && (containerImagesTouched || image.trim()))
+                    return (
+                      <div className="test-verification-container-image" key={`container-image-${index}`}>
+                        <div className="test-verification-container-image-input">
+                          <span aria-hidden className="test-verification-container-image-index">{index + 1}</span>
+                          <Input
+                            aria-describedby={showError ? `container-image-error-${index}` : undefined}
+                            aria-invalid={showError}
+                            aria-label={`集群镜像名称 ${index + 1}`}
+                            autoCapitalize="none"
+                            autoComplete="off"
+                            maxLength={512}
+                            placeholder="例如：ghcr.io/example/admin:v2.1.0"
+                            spellCheck={false}
+                            value={image}
+                            onChange={(event) => {
+                              setContainerImagesTouched(true)
+                              setContainerImages((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))
+                            }}
+                          />
+                          <Button
+                            aria-label={`移除集群镜像 ${index + 1}`}
+                            disabled={containerImages.length === 1}
+                            size="icon"
+                            title="移除集群镜像"
+                            type="button"
+                            variant="ghost"
+                            onClick={() => setContainerImages((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                          ><Trash /></Button>
+                        </div>
+                        {showError ? <p className="test-form-error" id={`container-image-error-${index}`} role="alert">{imageError}</p> : null}
+                      </div>
+                    )
+                  })}
+                </div>
+                <Button
+                  className="test-verification-add-container-image"
+                  disabled={containerImages.length >= 20}
+                  type="button"
+                  variant="outline"
+                  onClick={() => setContainerImages((current) => [...current, ''])}
+                ><Plus /> 添加镜像</Button>
+              </section>
+            )}
+          </div>
+        </div>
+        <DialogFooter className="test-verification-footer">
+          <div className="test-verification-footer-status">
+            <strong>{selectedGroups.length > 0 ? `已选择 ${selectedGroups.length} 个安装包` : `已填写 ${normalizedContainerImages.length} 个集群镜像`}</strong>
+            <span>{selectedGroups.length > 0 ? '提交后将记录版本快照，便于后续追溯。' : '每个镜像名称都会在提交前再次校验。'}</span>
+          </div>
+          <div className="test-verification-actions">
+            <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
+            <Button type="button" disabled={busy || (selectedGroups.length === 0 && !canSubmitContainerImages)} onClick={() => void submit()}>{busy ? '提交中...' : selectedGroups.length ? `提交验证（${selectedGroups.length}）` : `提交验证（集群镜像 ${normalizedContainerImages.length}）`}</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function AssignedTestBugs({
   currentUserId,
   initialBugId,
@@ -4690,6 +5355,8 @@ export function AssignedTestBugs({
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [rejectBug, setRejectBug] = useState<TestBug>()
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
+  const [verificationBug, setVerificationBug] = useState<TestBug>()
+  const [verificationDialogOpen, setVerificationDialogOpen] = useState(false)
   const [filterDialogOpen, setFilterDialogOpen] = useState(false)
   const [filterJoin, setFilterJoin] = useState<BugFilterJoin>('and')
   const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>(createDefaultBugFilterConditions)
@@ -4988,7 +5655,7 @@ export function AssignedTestBugs({
                     {selected.canManage && selected.status === 'in_progress' ? (
                       <>
                         <Button className="test-bug-reject-button" variant="destructive" disabled>驳回</Button>
-                        <Button disabled={busy} onClick={() => void mutate(() => updateAssignedTestBug(organizationId, selected.id, 'pending_verification'))}>提交验证</Button>
+                        <Button disabled={busy} onClick={() => { setVerificationBug(selected); setVerificationDialogOpen(true) }}>提交验证</Button>
                       </>
                     ) : null}
                   </div>
@@ -5003,6 +5670,7 @@ export function AssignedTestBugs({
                 <DetailBlock title="复现步骤" content={selected.reproductionSteps} />
                 <DetailBlock title="预期结果" content={selected.expectedResult} />
                 <DetailBlock title="实际结果" content={selected.actualResult} />
+                <BugVerificationSubmissions bugId={selected.id} submissions={selected.verificationSubmissions} />
                 <BugCommentsSection
                   bug={selected}
                   busy={busy}
@@ -5042,6 +5710,17 @@ export function AssignedTestBugs({
         open={rejectDialogOpen}
         onOpenChange={setRejectDialogOpen}
         onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(organizationId, bug.id, reason))}
+      />
+      <BugVerificationDialog
+        bug={verificationBug}
+        busy={busy}
+        onOpenChange={(open) => {
+          setVerificationDialogOpen(open)
+          if (!open) window.setTimeout(() => setVerificationBug(undefined), 180)
+        }}
+        onSubmit={(bug, packages, containerImages) => mutate(() => submitAssignedBugVerification(organizationId, bug.id, packages, containerImages))}
+        open={verificationDialogOpen}
+        organizationId={organizationId}
       />
       {selected ? <BugShareDialog bugId={selected.id} open={shareOpen} onOpenChange={setShareOpen} /> : null}
       <BugFilterBuilderDialog

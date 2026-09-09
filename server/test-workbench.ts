@@ -19,6 +19,15 @@ import {
 } from './bug-share.ts'
 import { parseTestCaseCsv } from './test-case-import.ts'
 import {
+  ensurePackageMarketRuleAllowed,
+  getOrganizationPackageMarketPolicy,
+} from './organization-package-market.ts'
+import {
+  createPackageItemDownloadLink,
+  isPackageMarketObjectKeyAllowedForRule,
+  listPackageMarketRules,
+} from './package-market.ts'
+import {
   canDeleteTestCase,
   canDeleteTestBug,
   canDeleteTestSubject,
@@ -43,6 +52,11 @@ import {
   parseOrganizationContext,
   type OrganizationContext,
 } from '../shared/organization-context.ts'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../shared/container-image-reference.ts'
+import {
+  createClusterImageVerificationScript,
+  createPackageVerificationScript,
+} from './verification-deployment-script.ts'
 
 type TestSpaceAccess = 'owner' | 'editor' | 'viewer'
 type TestSpaceMembershipStatus = 'pending' | 'active' | 'declined'
@@ -134,6 +148,167 @@ function text(value: unknown, maxLength: number) {
 function positiveId(value: unknown) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+type VerificationPackageInput = {
+  arch: string
+  channel: 'release' | 'ci'
+  objectKey: string
+  objectLastModified: string
+  packageName: string
+  sizeBytes?: number
+  sourcePackageId: string
+  sourcePackageName: string
+  version: string
+}
+
+function verificationPackageText(value: unknown, maxLength: number) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
+}
+
+function verificationPackageTimestamp(value: unknown) {
+  const raw = verificationPackageText(value, 80)
+  if (!raw) return null
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function parseVerificationPackages(value: unknown): VerificationPackageInput[] | null {
+  if (!Array.isArray(value)) return null
+  const objectKeys = new Set<string>()
+  const packageVersions = new Map<string, string>()
+  const packages: VerificationPackageInput[] = []
+  if (value.length > 20) return null
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const candidate = item as Record<string, unknown>
+    const channel = candidate.channel === 'ci' ? 'ci' : candidate.channel === 'release' ? 'release' : null
+    const sourcePackageId = verificationPackageText(candidate.sourcePackageId, 160)
+    const sourcePackageName = verificationPackageText(candidate.sourcePackageName, 160)
+    const packageName = verificationPackageText(candidate.packageName, 240)
+    const arch = verificationPackageText(candidate.arch, 40).toLowerCase()
+    const version = verificationPackageText(candidate.version, 200)
+    const objectKey = verificationPackageText(candidate.objectKey, 1000)
+    const objectLastModified = verificationPackageTimestamp(candidate.objectLastModified)
+    const rawSize = candidate.sizeBytes
+    const sizeBytes = rawSize == null || rawSize === ''
+      ? undefined
+      : Number.isSafeInteger(Number(rawSize)) && Number(rawSize) >= 0
+        ? Number(rawSize)
+        : null
+    if (
+      !channel || !sourcePackageId || !sourcePackageName || !packageName ||
+      !arch || !version || !objectKey || !objectLastModified || sizeBytes === null || objectKeys.has(objectKey)
+    ) {
+      return null
+    }
+    const versionKey = `${channel}:${arch}:${version}`
+    const previousVersionKey = packageVersions.get(sourcePackageId)
+    if (previousVersionKey && previousVersionKey !== versionKey) return null
+    packageVersions.set(sourcePackageId, versionKey)
+    objectKeys.add(objectKey)
+    packages.push({
+      arch,
+      channel,
+      objectKey,
+      objectLastModified,
+      packageName,
+      sizeBytes,
+      sourcePackageId,
+      sourcePackageName,
+      version,
+    })
+    if (packages.length > 20) return null
+  }
+  return packages
+}
+
+function parseVerificationContainerImages(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 20) return null
+  const images: string[] = []
+  const seen = new Set<string>()
+  for (const candidate of value) {
+    const image = normalizeContainerImageReference(candidate, { requireTagOrDigest: true })
+    const imageKey = image.valid ? containerImageReferenceKey(image.value) : ''
+    if (!image.valid || seen.has(imageKey)) return null
+    seen.add(imageKey)
+    images.push(image.value)
+  }
+  return images
+}
+
+function formatVerificationAcceptanceComment(
+  packages: readonly VerificationPackageInput[],
+  containerImages: readonly string[],
+) {
+  if (containerImages.length > 0) {
+    return `已提交 ${containerImages.length} 个集群镜像交付物。`
+  }
+  const selections = new Map<string, VerificationPackageInput>()
+  for (const item of packages) {
+    if (!selections.has(item.sourcePackageId)) selections.set(item.sourcePackageId, item)
+  }
+  return `已提交 ${selections.size} 个安装包交付物。`
+}
+
+const verificationScriptExpireMinutes = [30, 60, 120] as const
+
+function parseVerificationScriptExpireMinutes(value: unknown) {
+  const minutes = Number(value)
+  return verificationScriptExpireMinutes.includes(minutes as (typeof verificationScriptExpireMinutes)[number])
+    ? minutes
+    : null
+}
+
+async function requireVerificationScriptAccess(
+  request: express.Request,
+  response: express.Response,
+  bugId: number,
+) {
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return null
+  }
+  if (session.activeRole !== 'developer' && session.activeRole !== 'tester') {
+    response.status(403).json({ error: 'Active tester or developer role is required' })
+    return null
+  }
+  const role = await query<{ assigned: boolean }>(
+    `select exists(
+      select 1 from user_roles
+      where user_id = $1 and role in ($2::text, 'organization_admin')
+    ) as assigned`,
+    [session.userId, session.activeRole],
+  )
+  if (!role.rows[0]?.assigned) {
+    response.status(403).json({ error: 'Active tester or developer role is required' })
+    return null
+  }
+  const access = await query<{ allowed: boolean }>(
+    `
+    select exists(
+      select 1
+      from test_bugs b
+      join test_spaces space on space.id = b.test_space_id
+      left join test_space_memberships membership
+        on membership.test_space_id = space.id
+       and membership.user_id = $2
+       and membership.status = 'active'
+      where b.id = $1
+        and (
+          ($3::text = 'tester' and (${testSpaceMembershipPresentSql('membership')} or ${managedOrganizationReadScopeSql('space.organization_id', '$2')}))
+          or ($3::text = 'developer' and (b.assignee_user_id = $2 or ${managedOrganizationReadScopeSql('space.organization_id', '$2')}))
+        )
+    ) as allowed
+    `,
+    [bugId, session.userId, session.activeRole],
+  )
+  if (!access.rows[0]?.allowed) {
+    response.status(404).json({ error: 'Verification submission not found' })
+    return null
+  }
+  return session
 }
 
 function parseOptionalTestEnvironmentId(value: unknown):
@@ -1267,6 +1442,71 @@ async function recordTestBugEvent(
   )
 }
 
+type VerificationSubmissionRow = {
+  created_at: Date
+  container_image_id: string | null
+  container_image_ref: string | null
+  package_arch: string | null
+  package_channel: 'release' | 'ci' | null
+  package_channel_label: string | null
+  package_id: string | null
+  package_name: string | null
+  package_object_key: string | null
+  package_object_last_modified: Date | null
+  package_size_bytes: string | null
+  package_source_package_id: string | null
+  package_source_package_name: string | null
+  package_version: string | null
+  submission_id: string
+  submitter_display_name: string | null
+  submitter_email: string | null
+  submitted_by_user_id: string | null
+  test_bug_id: string
+}
+
+function mapVerificationSubmissions(rows: readonly VerificationSubmissionRow[]) {
+  const submissionsByBug = new Map<number, Array<Record<string, unknown>>>()
+  const submissionsById = new Map<number, Record<string, unknown>>()
+  for (const row of rows) {
+    const submissionId = Number(row.submission_id)
+    let submission = submissionsById.get(submissionId)
+    if (!submission) {
+      submission = {
+        containerImages: [],
+        id: submissionId,
+        packages: [],
+        submittedAt: row.created_at.toISOString(),
+        submittedByName: row.submitter_display_name || row.submitter_email || undefined,
+        submittedByUserId: row.submitted_by_user_id ? Number(row.submitted_by_user_id) : undefined,
+      }
+      submissionsById.set(submissionId, submission)
+      const bugId = Number(row.test_bug_id)
+      submissionsByBug.set(bugId, [...(submissionsByBug.get(bugId) ?? []), submission])
+    }
+    if (row.package_id) {
+      const packages = submission.packages as Array<Record<string, unknown>>
+      packages.push({
+        arch: row.package_arch ?? '',
+        channel: row.package_channel,
+        channelLabel: row.package_channel_label ?? '',
+        id: Number(row.package_id),
+        objectKey: row.package_object_key ?? '',
+        objectLastModified: row.package_object_last_modified?.toISOString(),
+        packageName: row.package_name ?? '',
+        sizeBytes: row.package_size_bytes == null ? undefined : Number(row.package_size_bytes),
+        sourcePackageId: row.package_source_package_id ?? '',
+        sourcePackageName: row.package_source_package_name ?? '',
+        version: row.package_version ?? '',
+      })
+    }
+    if (row.container_image_id) {
+      const containerImages = submission.containerImages as Array<Record<string, unknown>>
+      containerImages.push({ id: Number(row.container_image_id), image: decryptText(row.container_image_ref ?? '') })
+    }
+  }
+  return submissionsByBug
+}
+
 async function getTestWorkbench(userId: number) {
   const [
     spaces,
@@ -1280,6 +1520,7 @@ async function getTestWorkbench(userId: number) {
     bugs,
     comments,
     events,
+    verificationSubmissions,
     users,
     notifications,
   ] = await Promise.all([
@@ -1570,6 +1811,34 @@ async function getTestWorkbench(userId: number) {
       `,
       [userId],
     ),
+    query<VerificationSubmissionRow>(
+      `
+      select submission.id as submission_id, submission.test_bug_id, submission.submitted_by_user_id,
+             submission.created_at,
+             submitter.display_name as submitter_display_name, submitter.email as submitter_email,
+             package.id as package_id, package.source_package_id as package_source_package_id,
+             package.source_package_name as package_source_package_name, package.package_name,
+             package.channel as package_channel, package.channel_label as package_channel_label,
+             package.arch as package_arch, package.version as package_version,
+             package.object_key as package_object_key,
+             package.object_last_modified as package_object_last_modified,
+             package.size_bytes as package_size_bytes,
+             image.id as container_image_id, image.image_ref as container_image_ref
+      from test_bug_verification_submissions submission
+      join test_bugs b on b.id = submission.test_bug_id
+      join test_spaces space on space.id = b.test_space_id
+      left join test_space_memberships m
+        on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
+      left join users submitter on submitter.id = submission.submitted_by_user_id
+      left join test_bug_verification_packages package
+        on package.test_bug_verification_submission_id = submission.id
+      left join test_bug_verification_container_images image
+        on image.test_bug_verification_submission_id = submission.id
+      where ${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')}
+      order by submission.created_at desc, submission.id desc, package.position, image.position
+      `,
+      [userId],
+    ),
     query<{ display_name: string; email: string; id: string; roles: string[] }>(
       `
       select u.id, u.email, u.display_name, array_agg(distinct ur.role order by ur.role) as roles
@@ -1681,13 +1950,15 @@ async function getTestWorkbench(userId: number) {
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.kind !== 'transfer' && row.kind !== 'reject' && row.author_user_id
+        canEdit: row.kind === 'comment' && row.author_user_id
           ? Number(row.author_user_id) === userId
           : false,
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
-        kind: row.kind === 'transfer' ? 'transfer' : (row.kind === 'reject' ? 'reject' : 'comment'),
+        kind: row.kind === 'transfer'
+          ? 'transfer'
+          : (row.kind === 'reject' ? 'reject' : (row.kind === 'acceptance' ? 'acceptance' : 'comment')),
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
@@ -1719,6 +1990,7 @@ async function getTestWorkbench(userId: number) {
       },
     ])
   }
+  const verificationSubmissionsByBug = mapVerificationSubmissions(verificationSubmissions.rows)
   const subjectIdsByPlan = new Map<number, number[]>()
   for (const row of planSubjects.rows) {
     const planId = Number(row.test_plan_id)
@@ -1797,6 +2069,7 @@ async function getTestWorkbench(userId: number) {
       testSubjectId: Number(row.test_subject_id),
       testSubjectName: decryptText(row.test_subject_name),
       title: decryptText(row.title),
+      verificationSubmissions: verificationSubmissionsByBug.get(Number(row.id)) ?? [],
       transferSpaceCandidates: ownedSpaces
         .filter((space) => Number(space.id) !== Number(row.test_space_id)
           && space.organization_id === row.organization_id)
@@ -4143,7 +4416,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
       {
         authorName: row.author_display_name || row.author_email || '未知用户',
         authorUserId: row.author_user_id ? Number(row.author_user_id) : undefined,
-        canEdit: row.kind !== 'transfer' && row.kind !== 'reject' && row.author_user_id
+        canEdit: row.kind === 'comment' && row.author_user_id
           ? Number(row.author_user_id) === userId && (
             Number(row.assignee_user_id) === userId || row.organization_admin_access
           )
@@ -4151,7 +4424,9 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
         content: decryptText(row.content),
         createdAt: row.created_at.toISOString(),
         id: Number(row.id),
-        kind: row.kind === 'transfer' ? 'transfer' : (row.kind === 'reject' ? 'reject' : 'comment'),
+        kind: row.kind === 'transfer'
+          ? 'transfer'
+          : (row.kind === 'reject' ? 'reject' : (row.kind === 'acceptance' ? 'acceptance' : 'comment')),
         updatedAt: (row.updated_at ?? row.created_at).toISOString(),
       },
     ])
@@ -4194,6 +4469,36 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
     `,
     [userId, organizationId],
   )
+  const verificationSubmissions = await query<VerificationSubmissionRow>(
+    `
+    select submission.id as submission_id, submission.test_bug_id, submission.submitted_by_user_id,
+           submission.created_at,
+           submitter.display_name as submitter_display_name, submitter.email as submitter_email,
+           package.id as package_id, package.source_package_id as package_source_package_id,
+           package.source_package_name as package_source_package_name, package.package_name,
+           package.channel as package_channel, package.channel_label as package_channel_label,
+           package.arch as package_arch, package.version as package_version,
+           package.object_key as package_object_key,
+           package.object_last_modified as package_object_last_modified,
+           package.size_bytes as package_size_bytes,
+           image.id as container_image_id, image.image_ref as container_image_ref
+    from test_bug_verification_submissions submission
+    join test_bugs b on b.id = submission.test_bug_id
+    join test_spaces space on space.id = b.test_space_id
+    left join users submitter on submitter.id = submission.submitted_by_user_id
+    left join test_bug_verification_packages package
+      on package.test_bug_verification_submission_id = submission.id
+    left join test_bug_verification_container_images image
+      on image.test_bug_verification_submission_id = submission.id
+    where space.organization_id is not distinct from $2::bigint
+      and (
+        (b.assignee_user_id = $1 and b.status not in ('closed', 'rejected'))
+        or ${managedOrganizationReadScopeSql('space.organization_id')}
+      )
+    order by submission.created_at desc, submission.id desc, package.position, image.position
+    `,
+    [userId, organizationId],
+  )
   const eventsByBug = new Map<number, Array<Record<string, unknown>>>()
   const assigneeTransferSourceByBug = new Map<number, 'manual' | 'offboarding' | undefined>()
   for (const row of events.rows) {
@@ -4221,6 +4526,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
       },
     ])
   }
+  const verificationSubmissionsByBug = mapVerificationSubmissions(verificationSubmissions.rows)
   const organizationIds = Array.from(new Set(
     bugs.rows
       .map((row) => row.organization_id ? Number(row.organization_id) : null)
@@ -4329,6 +4635,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
           .filter((member) => !row.assignee_user_id || member.id !== Number(row.assignee_user_id))
         : [],
       updatedAt: row.updated_at.toISOString(),
+      verificationSubmissions: verificationSubmissionsByBug.get(Number(row.id)) ?? [],
     })),
   }
 }
@@ -4626,6 +4933,10 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     response.status(400).json({ error: 'Valid bug and status are required' })
     return
   }
+  if (request.body.status === 'pending_verification') {
+    response.status(400).json({ error: '请通过提交验证流程选择安装包后再提交' })
+    return
+  }
   const current = await query<{ status: BugStatus }>(
     `select b.status
      from test_bugs b
@@ -4674,6 +4985,223 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     })
   }
   response.json(await getAssignedBugs(session.userId, organizationId))
+}))
+
+router.post('/test-bugs/:bugId/assigned/verification-submissions', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'developer')
+  if (!session) return
+  const organizationId = await requireAssignedBugOrganizationContext(request, response, session.userId)
+  if (organizationId === undefined) return
+  const bugId = positiveId(request.params.bugId)
+  const packages = parseVerificationPackages(request.body?.packages)
+  const containerImages = parseVerificationContainerImages(request.body?.containerImages)
+  if (!bugId || !packages || !containerImages) {
+    response.status(400).json({ error: '验证交付物无效，请选择安装包或填写符合规则的集群镜像。' })
+    return
+  }
+  if ((packages.length === 0 && containerImages.length === 0) || (packages.length > 0 && containerImages.length > 0)) {
+    response.status(400).json({ error: '安装包与集群镜像必须二选一，且至少关联一项交付物。' })
+    return
+  }
+
+  // Package rule discovery may contact OSS, so complete it before taking the Bug row lock.
+  const rules = packages.length > 0 ? await listPackageMarketRules() : []
+  let statusEvent: TestBugStatusChangedEvent | null = null
+  await transaction(async (client) => {
+    const current = await client.query<{ organization_id: string | null; status: BugStatus }>(
+      `
+      select b.status, space.organization_id
+      from test_bugs b
+      join test_spaces space on space.id = b.test_space_id
+      where b.id = $1
+        and b.assignee_user_id = $2
+        and space.organization_id is not distinct from $3::bigint
+      for update of b
+      `,
+      [bugId, session.userId, organizationId],
+    )
+    const bug = current.rows[0]
+    if (!bug) throw importFailure('Assigned bug not found', 404)
+    if (!canDeveloperSetBugStatus(bug.status, 'pending_verification')) {
+      throw importFailure('Developer cannot perform this bug transition', 409)
+    }
+
+    if (packages.length > 0) {
+      if (!bug.organization_id) {
+        throw importFailure('验证安装包需要组织上下文', 400)
+      }
+      const policy = await getOrganizationPackageMarketPolicy(Number(bug.organization_id), client)
+      for (const item of packages) {
+        ensurePackageMarketRuleAllowed(rules, policy, item.sourcePackageId, item.channel)
+        if (!isPackageMarketObjectKeyAllowedForRule({
+          channel: item.channel,
+          objectKey: item.objectKey,
+          packageId: item.sourcePackageId,
+          rules,
+        })) {
+          throw importFailure('安装包对象路径与安装包规则不匹配', 400)
+        }
+      }
+    }
+
+    const submission = await client.query<{ id: string }>(
+      `
+      insert into test_bug_verification_submissions (test_bug_id, submitted_by_user_id)
+      values ($1, $2)
+      returning id
+      `,
+      [bugId, session.userId],
+    )
+    const submissionId = Number(submission.rows[0]?.id)
+    for (const [position, item] of packages.entries()) {
+      await client.query(
+        `
+        insert into test_bug_verification_packages (
+          test_bug_verification_submission_id, position, source_package_id, source_package_name,
+          package_name, channel, channel_label, arch, version, object_key, object_last_modified, size_bytes
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz, $12::bigint)
+        `,
+        [
+          submissionId,
+          position,
+          item.sourcePackageId,
+          item.sourcePackageName,
+          item.packageName,
+          item.channel,
+          item.channel === 'ci' ? '测试包' : '正式包',
+          item.arch,
+          item.version,
+          item.objectKey,
+          item.objectLastModified,
+          item.sizeBytes ?? null,
+        ],
+      )
+    }
+    for (const [position, image] of containerImages.entries()) {
+      await client.query(
+        `
+        insert into test_bug_verification_container_images (
+          test_bug_verification_submission_id, position, image_ref
+        ) values ($1, $2, $3)
+        `,
+        [submissionId, position, encryptText(image)],
+      )
+    }
+    await client.query(
+      `
+      insert into test_bug_comments (
+        test_bug_id, author_user_id, content, kind, verification_submission_id
+      ) values ($1, $2, $3, 'acceptance', $4)
+      `,
+      [
+        bugId,
+        session.userId,
+        encryptText(formatVerificationAcceptanceComment(packages, containerImages)),
+        submissionId,
+      ],
+    )
+    await client.query(
+      `
+      update test_bugs
+      set status = 'pending_verification', updated_at = now()
+      where id = $1 and assignee_user_id = $2
+      `,
+      [bugId, session.userId],
+    )
+    await recordTestBugEvent({
+      actorUserId: session.userId,
+      bugId,
+      eventType: 'status_changed',
+      nextStatus: 'pending_verification',
+      previousStatus: bug.status,
+    }, client)
+    statusEvent = {
+      actorUserId: session.userId,
+      bugId,
+      nextStatus: 'pending_verification',
+      previousStatus: bug.status,
+    }
+  })
+  if (statusEvent) onTestBugStatusChanged(statusEvent)
+  response.json(await getAssignedBugs(session.userId, organizationId))
+}))
+
+router.get('/test-bugs/:bugId/verification-submissions/:submissionId/script', asyncRoute(async (request, response) => {
+  const bugId = positiveId(request.params.bugId)
+  const submissionId = positiveId(request.params.submissionId)
+  if (!bugId || !submissionId) {
+    response.status(400).json({ error: '有效的 Bug 和验收记录是必填项' })
+    return
+  }
+  if (!await requireVerificationScriptAccess(request, response, bugId)) return
+
+  const [packages, containerImages] = await Promise.all([
+    query<{
+      channel: 'release' | 'ci'
+      object_key: string
+      source_package_id: string
+    }>(
+      `
+      select package.source_package_id, package.channel, package.object_key
+      from test_bug_verification_packages package
+      join test_bug_verification_submissions submission
+        on submission.id = package.test_bug_verification_submission_id
+      where submission.id = $1 and submission.test_bug_id = $2
+      order by package.position, package.id
+      `,
+      [submissionId, bugId],
+    ),
+    query<{ image_ref: string }>(
+      `
+      select image.image_ref
+      from test_bug_verification_container_images image
+      join test_bug_verification_submissions submission
+        on submission.id = image.test_bug_verification_submission_id
+      where submission.id = $1 and submission.test_bug_id = $2
+      order by image.position, image.id
+      `,
+      [submissionId, bugId],
+    ),
+  ])
+  if ((packages.rows.length === 0 && containerImages.rows.length === 0) || (packages.rows.length > 0 && containerImages.rows.length > 0)) {
+    response.status(404).json({ error: '验收记录未关联可用交付物' })
+    return
+  }
+  if (containerImages.rows.length > 0) {
+    const images = containerImages.rows.map((item) => decryptText(item.image_ref))
+    if (images.some((image) => !normalizeContainerImageReference(image, { requireTagOrDigest: true }).valid)) {
+      response.status(409).json({ error: '验收记录中的集群镜像无效，无法生成验证脚本' })
+      return
+    }
+    response.json({ script: createClusterImageVerificationScript(images) })
+    return
+  }
+
+  const expireMinutes = parseVerificationScriptExpireMinutes(request.query.expireMinutes)
+  if (!expireMinutes) {
+    response.status(400).json({ error: '下载链接有效期仅支持 30 分钟、1 小时或 2 小时' })
+    return
+  }
+  const rules = await listPackageMarketRules()
+  for (const item of packages.rows) {
+    if (!isPackageMarketObjectKeyAllowedForRule({
+      channel: item.channel,
+      objectKey: item.object_key,
+      packageId: item.source_package_id,
+      rules,
+    })) {
+      response.status(409).json({ error: '验证安装包已不符合当前对象规则，无法生成下载脚本' })
+      return
+    }
+  }
+  const links = packages.rows.map((item) => ({
+    ...createPackageItemDownloadLink(item.object_key, expireMinutes),
+    objectKey: item.object_key,
+  }))
+  response.json({
+    expiresAt: links.reduce((earliest, item) => item.expiresAt < earliest ? item.expiresAt : earliest, links[0]?.expiresAt ?? ''),
+    script: createPackageVerificationScript(links),
+  })
 }))
 
 router.post('/test-bugs/:bugId/assigned/comments', asyncRoute(async (request, response) => {
