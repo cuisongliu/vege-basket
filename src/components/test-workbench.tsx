@@ -1,3 +1,6 @@
+import { ConfirmActionDialog } from './confirm-action-dialog'
+import { useConfirmAction } from '../hooks/use-confirm-action'
+import { reconcileAction } from '../confirmed-action'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowCounterClockwise,
@@ -526,6 +529,10 @@ export function TestWorkbench({
   const [tab, setTab] = useState<WorkbenchTab>('cases')
   const [spaceId, setSpaceId] = useState<number>()
   const [subjectId, setSubjectId] = useState<number>()
+  const actionScope = `${currentUserId}:${spaceId}:${subjectId}:${tab}`
+  const actionScopeRef = useRef(actionScope)
+  useEffect(() => { actionScopeRef.current = actionScope }, [actionScope])
+  const { confirmAction, confirmationDialog } = useConfirmAction(actionScope)
   const [selectedCaseId, setSelectedCaseId] = useState<number>()
   const [selectedPlanId, setSelectedPlanId] = useState<number>()
   const [selectedBugId, setSelectedBugId] = useState<number>()
@@ -931,14 +938,16 @@ export function TestWorkbench({
     return () => window.clearTimeout(cleanup)
   }, [planDeleteDialogOpen, planPendingDelete])
 
-  async function mutate(operation: () => Promise<TestWorkbenchData>) {
+  async function mutate(operation: () => Promise<TestWorkbenchData>, confirmed = false, matches: (data: TestWorkbenchData) => boolean = () => false) {
     setBusy(true)
     setError('')
     try {
-      const result = await operation()
+      const result = confirmed ? await reconcileAction(operation, fetchTestWorkbench, matches) : await operation()
+      if (actionScopeRef.current !== actionScope) return false
       setData(result)
       return true
     } catch (mutationError) {
+      if (confirmed) throw mutationError
       setError(mutationError instanceof Error ? mutationError.message : '保存失败，请稍后重试。')
       return false
     } finally {
@@ -1021,18 +1030,17 @@ export function TestWorkbench({
   }
 
   async function handleDeclineInvitation(invitationSpaceId: number) {
-    setBusy(true)
-    setError('')
-    try {
-      const result = await declineTestSpaceInvitation(invitationSpaceId)
+    const invitation = spaceSettings.invitations.find((item) => item.spaceId === invitationSpaceId)
+    return confirmAction({ title: '确认拒绝测试空间邀请？',
+      actionKey: `decline-space:${currentUserId}:${invitationSpaceId}`, description: `“${invitation?.spaceName ?? `测试空间 #${invitationSpaceId}`}”的邀请将退出待处理列表，你不会加入该空间。`, confirmLabel: '拒绝邀请',
+    }, async () => {
+      setError('')
+      const result = await reconcileAction(() => declineTestSpaceInvitation(invitationSpaceId), fetchTestSpaceSettings,
+        (data) => !data.invitations.some((item) => item.spaceId === invitationSpaceId))
+      if (actionScopeRef.current !== actionScope) return false
       setSpaceSettings(result)
       return true
-    } catch (invitationError) {
-      setError(invitationError instanceof Error ? invitationError.message : '邀请处理失败。')
-      return false
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   async function verifyInvitePassword() {
@@ -1052,6 +1060,7 @@ export function TestWorkbench({
 
   return (
     <main className="test-workbench-shell">
+      {confirmationDialog}
       <aside className="test-workbench-nav">
         <div className="test-workbench-space-header">
           <div className="brand-block">
@@ -1292,7 +1301,10 @@ export function TestWorkbench({
                 onEdit={(testCase) => { setEditingCase(testCase); setCaseDialogOpen(true) }}
                 onExport={() => downloadTestCaseCsv(cases, data.folders)}
                 onImport={() => setCaseImportDialogOpen(true)}
-                onArchive={(testCase) => void mutate(() => updateTestCase(testCase.testSpaceId, testCase.id, { caseKind: 'baseline', status: 'active' }))}
+                onArchive={(testCase) => void confirmAction({
+                  title: '确认归档为基线？', description: `「${testCase.title}」将变为基线用例，可在原测试对象的基线用例中查看。已有计划快照保留。`, confirmLabel: '确认归档', variant: 'default',
+                }, () => mutate(() => updateTestCase(testCase.testSpaceId, testCase.id, { caseKind: 'baseline', status: 'active' }), true,
+                  (next) => next.cases.some((item) => item.id === testCase.id && item.caseKind === 'baseline')))}
               />
             </>
           ) : tab === 'plans' ? (
@@ -1312,8 +1324,20 @@ export function TestWorkbench({
                   setPlanDeleteDialogOpen(true)
                 }}
                 onEdit={(plan) => { setEditingPlan(plan); setPlanDialogOpen(true) }}
-                onRemoveCase={(plan, planCaseId) => void mutate(() => removeTestPlanCase(plan.testSpaceId, plan.id, planCaseId))}
-                onStatus={(plan, status) => void mutate(() => updateTestPlanStatus(plan.testSpaceId, plan.id, status))}
+                onRemoveCase={(plan, planCaseId) => void confirmAction({
+                  title: '确认从计划移除用例？', description: `「${plan.name}」中的「${data.planCases.find((item) => item.id === planCaseId)?.snapshotTitle ?? planCaseId}」快照将移除，源用例保留。`, confirmLabel: '移除用例',
+                }, () => mutate(() => removeTestPlanCase(plan.testSpaceId, plan.id, planCaseId), true,
+                  (next) => !next.planCases.some((item) => item.id === planCaseId)))}
+                onStatus={(plan, status) => {
+                  if (plan.status === status) return
+                  if (status === 'completed' || status === 'aborted') {
+                    void confirmAction({ title: `确认${status === 'completed' ? '完成' : '终止'}测试计划？`,
+                      description: `「${plan.name}」将变为${planStatusLabel[status]}，并退出相关待处理提醒。执行记录保留，可在原测试空间的计划中查看。`,
+                      confirmLabel: status === 'completed' ? '确认完成' : '确认终止', variant: 'default',
+                    }, () => mutate(() => updateTestPlanStatus(plan.testSpaceId, plan.id, status), true,
+                      (next) => next.plans.some((item) => item.id === plan.id && item.status === status)))
+                  } else void mutate(() => updateTestPlanStatus(plan.testSpaceId, plan.id, status))
+                }}
                 onResult={(planCaseId, result) => void mutate(() => updateTestPlanCase(spaceId!, planCaseId, { result }))}
                 onCreateBug={(plan, planCase) => {
                   setEditingBug(undefined)
@@ -1353,12 +1377,23 @@ export function TestWorkbench({
                   setBugPendingDelete(bug)
                   setBugDeleteDialogOpen(true)
                 }}
-                onStatus={(bug, status) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))}
+                onStatus={(bug, status) => {
+                  if (bug.status === status) return
+                  const run = () => mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }), true,
+                    (next) => next.bugs.some((item) => item.id === bug.id && item.status === status))
+                  if (status === 'closed' || status === 'rejected') {
+                    void confirmAction({ title: status === 'closed' ? '确认关闭 Bug？' : '确认驳回 Bug？',
+                      description: `「${bug.title}」将变为${bugStatusLabel[status]}并退出待处理事项，可在原测试空间按对应状态查看。`,
+                      confirmLabel: status === 'closed' ? '确认关闭' : '确认驳回', variant: status === 'closed' ? 'default' : 'destructive',
+                    }, run)
+                  } else void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))
+                }}
                 onTransferSpace={(bug, targetSpaceId) => mutate(() => transferTestBugToSpace(bug.testSpaceId, bug.id, targetSpaceId))}
                 onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'pending_confirmation' : 'new' }))}
                 onComment={(bug, content) => mutate(() => addTestBugComment(bug.testSpaceId, bug.id, content))}
                 onUpdateComment={(bug, comment, content) => mutate(() => updateTestBugComment(bug.testSpaceId, bug.id, comment.id, content))}
-                onDeleteComment={(bug, comment) => mutate(() => deleteTestBugComment(bug.testSpaceId, bug.id, comment.id))}
+                onDeleteComment={(bug, comment) => mutate(() => deleteTestBugComment(bug.testSpaceId, bug.id, comment.id), true,
+                  (next) => next.bugs.some((item) => item.id === bug.id && !item.comments.some((entry) => entry.id === comment.id)))}
               />
             </>
           ))}
@@ -1428,34 +1463,18 @@ export function TestWorkbench({
           return saved
         }}
       />
-      <Dialog
+      <ConfirmActionDialog
+        key={`subject-delete-${subjectPendingDelete?.id}`}
+        actionKey={`delete-subject:${subjectPendingDelete?.id}`}
         open={subjectDeleteDialogOpen}
-        onOpenChange={(nextOpen) => {
-          setSubjectDeleteDialogOpen(nextOpen)
-        }}
-      >
-        <DialogContent fixedHeader className="test-workbench-dialog">
-          <DialogHeader>
-            <DialogTitle>删除测试对象</DialogTitle>
-            <DialogDescription>
-              删除“{subjectPendingDelete?.name}”后，其用例、测试计划、Bug 和评论也会永久删除。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setSubjectDeleteDialogOpen(false)}>取消</Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={busy || !subjectPendingDelete}
-              onClick={async () => {
-                if (!subjectPendingDelete) return
-                const saved = await mutate(() => deleteTestSubject(subjectPendingDelete.testSpaceId, subjectPendingDelete.id))
-                if (saved) setSubjectDeleteDialogOpen(false)
-              }}
-            ><Trash /> 删除测试对象</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={setSubjectDeleteDialogOpen}
+        title="删除测试对象"
+        description={`删除“${subjectPendingDelete?.name}”后，其用例、测试计划、Bug 和评论也会永久删除。`}
+        confirmLabel="删除测试对象"
+        confirmDisabled={!subjectPendingDelete}
+        onConfirm={() => subjectPendingDelete ? mutate(() => deleteTestSubject(subjectPendingDelete.testSpaceId, subjectPendingDelete.id), true,
+          (next) => !next.subjects.some((item) => item.id === subjectPendingDelete.id)) : Promise.resolve(false)}
+      />
       <FolderDialog
         busy={busy}
         cases={data.cases.filter((item) => item.testSpaceId === spaceId && item.testSubjectId === subjectId)}
@@ -1463,7 +1482,8 @@ export function TestWorkbench({
         open={folderDialogOpen}
         subject={data.subjects.find((candidate) => candidate.id === subjectId)}
         onCreate={async (name) => mutate(() => createTestCaseFolder(spaceId!, { name, testSubjectId: subjectId! }))}
-        onDelete={async (folder) => mutate(() => deleteTestCaseFolder(spaceId!, folder.id))}
+        onDelete={async (folder) => mutate(() => deleteTestCaseFolder(spaceId!, folder.id), true,
+          (next) => !next.folders.some((item) => item.id === folder.id))}
         onOpenChange={setFolderDialogOpen}
         onRename={async (folder, name) => mutate(() => updateTestCaseFolder(spaceId!, folder.id, { name }))}
       />
@@ -1476,35 +1496,31 @@ export function TestWorkbench({
         spaceId={spaceId}
         onOpenChange={setCaseDialogOpen}
         onSubmit={async (payload) => {
-          const saved = editingCase
-            ? await mutate(() => updateTestCase(editingCase.testSpaceId, editingCase.id, payload))
-            : await mutate(() => createTestCase(spaceId!, payload))
+          const save = () => editingCase
+            ? mutate(() => updateTestCase(editingCase.testSpaceId, editingCase.id, payload), editingCase.caseKind !== 'baseline' && payload.caseKind === 'baseline',
+              (next) => next.cases.some((item) => item.id === editingCase.id && Object.entries(payload).every(([field, value]) => {
+                const current = field === 'modulePath' ? next.folders.find((folder) => folder.id === item.folderId)?.name ?? '' : item[field as keyof typeof item]
+                return typeof value === 'string' ? current === value.trim() : JSON.stringify(current) === JSON.stringify(value)
+              })))
+            : mutate(() => createTestCase(spaceId!, payload))
+          const saved = editingCase && editingCase.caseKind !== 'baseline' && payload.caseKind === 'baseline'
+            ? await confirmAction({ title: `将“${editingCase.title}”归档为基线？`, description: '用例将从功能用例分类移到基线用例分类，本次表单修改将一并保存。已有测试计划快照保留。', confirmLabel: '保存并归档', variant: 'default' }, save)
+            : await save()
           if (saved) setCaseDialogOpen(false)
         }}
       />
-      <Dialog open={caseDeleteDialogOpen} onOpenChange={setCaseDeleteDialogOpen}>
-        <DialogContent fixedHeader className="test-workbench-dialog">
-          <DialogHeader>
-            <DialogTitle>删除测试用例</DialogTitle>
-            <DialogDescription>
-              删除“{casePendingDelete?.title}”后，源用例将永久移除；已加入测试计划的执行快照继续保留。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setCaseDeleteDialogOpen(false)}>取消</Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={busy || !casePendingDelete}
-              onClick={async () => {
-                if (!casePendingDelete) return
-                const saved = await mutate(() => deleteTestCase(casePendingDelete.testSpaceId, casePendingDelete.id))
-                if (saved) setCaseDeleteDialogOpen(false)
-              }}
-            ><Trash /> 删除测试用例</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmActionDialog
+        key={`case-delete-${casePendingDelete?.id}`}
+        actionKey={`delete-case:${casePendingDelete?.id}`}
+        open={caseDeleteDialogOpen}
+        onOpenChange={setCaseDeleteDialogOpen}
+        title="删除测试用例"
+        description={`删除“${casePendingDelete?.title}”后，源用例将永久移除；已加入计划的执行快照继续保留。`}
+        confirmLabel="删除测试用例"
+        confirmDisabled={!casePendingDelete}
+        onConfirm={() => casePendingDelete ? mutate(() => deleteTestCase(casePendingDelete.testSpaceId, casePendingDelete.id), true,
+          (next) => !next.cases.some((item) => item.id === casePendingDelete.id)) : Promise.resolve(false)}
+      />
       <ImportCasesDialog
         busy={busy}
         open={caseImportDialogOpen}
@@ -1532,29 +1548,18 @@ export function TestWorkbench({
           if (saved) setPlanDialogOpen(false)
         }}
       />
-      <Dialog open={planDeleteDialogOpen} onOpenChange={setPlanDeleteDialogOpen}>
-        <DialogContent fixedHeader className="test-workbench-dialog">
-          <DialogHeader>
-            <DialogTitle>删除测试计划</DialogTitle>
-            <DialogDescription>
-              删除“{planPendingDelete?.name}”后，执行快照将永久删除；已经创建的 Bug 会保留，但不再关联该计划。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPlanDeleteDialogOpen(false)}>取消</Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={busy || !planPendingDelete}
-              onClick={async () => {
-                if (!planPendingDelete) return
-                const saved = await mutate(() => deleteTestPlan(planPendingDelete.testSpaceId, planPendingDelete.id))
-                if (saved) setPlanDeleteDialogOpen(false)
-              }}
-            ><Trash /> 删除测试计划</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmActionDialog
+        key={`plan-delete-${planPendingDelete?.id}`}
+        actionKey={`delete-plan:${planPendingDelete?.id}`}
+        open={planDeleteDialogOpen}
+        onOpenChange={setPlanDeleteDialogOpen}
+        title="删除测试计划"
+        description={`删除“${planPendingDelete?.name}”后，执行快照将永久删除；已创建的 Bug 保留并解除计划关联。`}
+        confirmLabel="删除测试计划"
+        confirmDisabled={!planPendingDelete}
+        onConfirm={() => planPendingDelete ? mutate(() => deleteTestPlan(planPendingDelete.testSpaceId, planPendingDelete.id), true,
+          (next) => !next.plans.some((item) => item.id === planPendingDelete.id)) : Promise.resolve(false)}
+      />
       <BugDialog
         busy={busy}
         editing={Boolean(editingBug)}
@@ -1578,32 +1583,18 @@ export function TestWorkbench({
           }
         }}
       />
-      <Dialog open={bugDeleteDialogOpen} onOpenChange={setBugDeleteDialogOpen}>
-        <DialogContent fixedHeader className="test-workbench-dialog">
-          <DialogHeader>
-            <DialogTitle>删除 Bug</DialogTitle>
-            <DialogDescription>
-              删除“{bugPendingDelete?.title}”后，Bug 的评论、分享链接和时间线都会永久删除，无法恢复。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setBugDeleteDialogOpen(false)}>取消</Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={busy || !bugPendingDelete}
-              onClick={async () => {
-                if (!bugPendingDelete) return
-                const saved = await mutate(() => deleteTestBug(bugPendingDelete.testSpaceId, bugPendingDelete.id))
-                if (saved) {
-                  setBugDeleteDialogOpen(false)
-                  setBugPendingDelete(undefined)
-                }
-              }}
-            ><Trash /> 删除 Bug</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmActionDialog
+        key={`bug-delete-${bugPendingDelete?.id}`}
+        actionKey={`delete-bug:${bugPendingDelete?.id}`}
+        open={bugDeleteDialogOpen}
+        onOpenChange={setBugDeleteDialogOpen}
+        title="删除 Bug"
+        description={`删除“${bugPendingDelete?.title}”后，评论、分享链接和时间线也会永久删除。`}
+        confirmLabel="删除 Bug"
+        confirmDisabled={!bugPendingDelete}
+        onConfirm={() => bugPendingDelete ? mutate(() => deleteTestBug(bugPendingDelete.testSpaceId, bugPendingDelete.id), true,
+          (next) => !next.bugs.some((item) => item.id === bugPendingDelete.id)) : Promise.resolve(false)}
+      />
     </main>
   )
 }
@@ -2782,23 +2773,13 @@ function BugCommentArticle({ bug, busy, comment, currentUserId, departedUserIds 
               </Button>
             ) : null}
             {canDelete ? (
-              <Button
-                aria-label="删除协作记录"
-                className="test-comment-delete-button"
-                disabled={busy}
-                size="icon"
-                title="删除协作记录"
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!onDeleteComment) return
-                  if (window.confirm('确定删除这条协作记录吗？')) {
-                    void onDeleteComment(bug, comment)
-                  }
-                }}
-              >
-                <Trash />
-              </Button>
+              <ConfirmActionDialog
+                title="确认删除协作记录？"
+                description={`Bug「${bug.title}」的评论「${comment.content.slice(0, 100)}」将被删除。`}
+                confirmLabel="删除评论"
+                onConfirm={() => onDeleteComment ? onDeleteComment(bug, comment) : Promise.resolve(false)}
+                trigger={<Button aria-label="删除协作记录" className="test-comment-delete-button" disabled={busy} size="icon" title="删除协作记录" type="button" variant="outline"><Trash /></Button>}
+              />
             ) : null}
           </div>
         ) : null}
@@ -3508,7 +3489,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   const [organizationValue, setOrganizationValue] = useState('none')
   const [inviteUsername, setInviteUsername] = useState('')
   const [memberAccess, setMemberAccess] = useState<'editor' | 'viewer'>('editor')
-  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false)
   const [inviteLinkAccess, setInviteLinkAccess] = useState<'editor' | 'viewer'>('editor')
   const [inviteExpiresInMinutes, setInviteExpiresInMinutes] = useState(10)
   const [encryptedInviteShare, setEncryptedInviteShare] = useState(false)
@@ -3518,6 +3499,10 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   const [dataImportError, setDataImportError] = useState('')
   const selectedSpace = settings.spaces.find((space) => space.id === selectedSpaceId)
   const isOwner = selectedSpace?.accessLevel === 'owner'
+  const actionScope = `${open}:${selectedSpaceId}`
+  const actionScopeRef = useRef(actionScope)
+  useEffect(() => { actionScopeRef.current = actionScope }, [actionScope])
+  const { confirmAction, confirmationDialog } = useConfirmAction(actionScope)
 
   useEffect(() => {
     if (!open) return
@@ -3540,7 +3525,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
     setRenameValue(selectedSpace?.name ?? '')
     setVersionLabel(selectedSpace?.versionLabel ?? '')
     setOrganizationValue(selectedSpace?.organizationId ? String(selectedSpace.organizationId) : 'none')
-    setDeleteConfirmation('')
+    setDeleteSpaceOpen(false)
     setInviteUsername('')
     setInviteLinkStatus('')
   }, [selectedSpace?.id, selectedSpace?.name, selectedSpace?.organizationId, selectedSpace?.versionLabel])
@@ -3548,16 +3533,20 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   async function mutateSettings(
     operation: () => Promise<TestSpaceSettings>,
     onSuccess?: (result: TestSpaceSettings) => void,
+    confirmed = false,
+    matches: (data: TestSpaceSettings) => boolean = () => false,
   ) {
     setBusy(true)
     setError('')
     try {
-      const result = await operation()
+      const result = confirmed ? await reconcileAction(operation, fetchTestSpaceSettings, matches) : await operation()
+      if (actionScopeRef.current !== actionScope) return false
       setSettings(result)
       onSuccess?.(result)
-      await onWorkbenchChange()
+      try { await onWorkbenchChange() } catch { /* The settings write already succeeded. */ }
       return true
     } catch (mutationError) {
+      if (confirmed) throw mutationError
       setError(mutationError instanceof Error ? mutationError.message : '测试空间保存失败。')
       return false
     } finally {
@@ -3615,6 +3604,23 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
           <DialogTitle>管理测试空间</DialogTitle>
           <DialogDescription>维护测试空间信息、组织归属、成员与协作权限。</DialogDescription>
         </DialogHeader>
+        {confirmationDialog}
+        <ConfirmActionDialog
+          key={`space-delete-${selectedSpace?.id}`}
+          actionKey={`delete-space:${selectedSpace?.id}`}
+          open={deleteSpaceOpen && open}
+          onOpenChange={setDeleteSpaceOpen}
+          title="确认删除测试空间？"
+          description={`「${selectedSpace?.name}」及其全部测试对象、用例、计划、Bug 和评论将永久删除。`}
+          confirmationName={selectedSpace?.name ?? ''}
+          confirmDisabled={!selectedSpace}
+          confirmLabel="删除测试空间"
+          onConfirm={() => selectedSpace ? mutateSettings(
+            () => deleteTestSpace(selectedSpace.id, selectedSpace.name),
+            (result) => setSelectedSpaceId(result.spaces[0]?.id), true,
+            (next) => !next.spaces.some((space) => space.id === selectedSpace.id),
+          ) : Promise.resolve(false)}
+        />
         <WorkspaceError message={error} />
         {loading ? <p className="test-list-empty">正在加载测试空间...</p> : (
           <div className="test-space-admin-layout">
@@ -3713,7 +3719,10 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                             </Select> : <Badge variant="outline">{member.accessLevel === 'editor' ? '可编辑' : '只读'}</Badge>
                           )}
                           {member.accessLevel === 'owner' || !isOwner ? <span /> : (
-                            <Button size="icon" variant="ghost" aria-label={`移除成员${member.displayName}`} title="移除成员" disabled={busy} onClick={() => void mutateSettings(() => removeTestSpaceMember(selectedSpace.id, member.userId))}><Trash /></Button>
+                            <Button size="icon" variant="ghost" aria-label={`移除成员${member.displayName}`} title="移除成员" disabled={busy} onClick={() => void confirmAction({ title: '确认移除测试空间成员？',
+                              description: `「${member.displayName}」将失去「${selectedSpace.name}」的成员权限，其创建的测试数据保留。`, confirmLabel: '移除成员',
+                            }, () => mutateSettings(() => removeTestSpaceMember(selectedSpace.id, member.userId), undefined, true,
+                              (next) => next.spaces.some((space) => space.id === selectedSpace.id && !space.members.some((item) => item.userId === member.userId))))}><Trash /></Button>
                           )}
                         </article>
                       ))}
@@ -3738,20 +3747,10 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                     {inviteLinkStatus ? <small>{inviteLinkStatus}</small> : null}
                   </section> : null}
 
-                  {isOwner ? <form
-                    className="test-space-danger-zone"
-                    onSubmit={async (event) => {
-                      event.preventDefault()
-                      await mutateSettings(
-                        () => deleteTestSpace(selectedSpace.id, deleteConfirmation),
-                        (result) => setSelectedSpaceId(result.spaces[0]?.id),
-                      )
-                    }}
-                  >
+                  {isOwner ? <div className="test-space-danger-zone">
                     <div><strong>删除测试空间</strong><small>将永久删除空间内全部测试对象、用例、计划、Bug 和评论。</small></div>
-                    <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder={`输入“${selectedSpace.name}”确认`} />
-                    <Button variant="destructive" disabled={busy || deleteConfirmation !== selectedSpace.name}><Trash /> 删除</Button>
-                  </form> : null}
+                    <Button type="button" variant="destructive" disabled={busy} onClick={() => setDeleteSpaceOpen(true)}><Trash /> 删除空间</Button>
+                  </div> : null}
                 </>
               ) : <div className="test-detail-empty"><GearSix size={28} /><p>创建测试空间后即可维护成员和权限。</p></div>}
             </section>
@@ -3862,6 +3861,7 @@ function FolderDialog({
   open: boolean
   subject?: TestSubject
 }) {
+  const { confirmAction, confirmationDialog } = useConfirmAction(`${open}:${subject?.id}`)
   const [newName, setNewName] = useState('')
   const [drafts, setDrafts] = useState<Record<number, string>>({})
 
@@ -3895,8 +3895,7 @@ function FolderDialog({
     const suffix = count > 0
       ? `该模块下 ${count} 条用例会变为“未分类”，用例本身不会删除。`
       : '该模块下没有用例。'
-    if (!window.confirm(`确定删除模块“${folder.name}”吗？${suffix}`)) return
-    await onDelete(folder)
+    await confirmAction({ title: '确认删除模块？', description: `「${folder.name}」将被删除。${suffix}`, confirmLabel: '删除模块' }, () => onDelete(folder))
   }
 
   return (
@@ -3908,6 +3907,7 @@ function FolderDialog({
             管理“{subject?.name || '当前测试对象'}”下的模块路径。删除模块不会删除用例，只会清空这些用例的模块归属。
           </DialogDescription>
         </DialogHeader>
+        {confirmationDialog}
         <div className="test-folder-create-row">
           <Input
             autoFocus
@@ -4771,39 +4771,21 @@ function BugRejectDialog({ bug, busy, onOpenChange, onSubmit, open }: {
 
   const normalizedReason = reason.trim()
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent fixedHeader>
-        <DialogHeader>
-          <DialogTitle>驳回 Bug</DialogTitle>
-          <DialogDescription>{bug ? `BUG-${bug.id} · ${bug.title}` : ''}</DialogDescription>
-        </DialogHeader>
-        <form
-          className="test-dialog-form"
-          onSubmit={async (event) => {
-            event.preventDefault()
-            if (!bug || !normalizedReason) return
-            if (await onSubmit(bug, normalizedReason)) onOpenChange(false)
-          }}
-        >
-          <Label>
-            驳回理由
-            <Textarea
-              autoFocus
-              maxLength={1000}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="填写驳回理由，将记录到 Bug 评论区并通知提出该 Bug 的测试工程师。"
-            />
-          </Label>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button variant="destructive" disabled={busy || !normalizedReason}>
-              {busy ? '驳回中...' : '确认驳回'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <ConfirmActionDialog
+      key={bug?.id}
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`驳回 Bug“${bug?.title ?? ''}”？`}
+      description="驳回后 Bug 将退出待处理列表，可按已驳回查看。理由会记录到评论区并通知提出者。"
+      confirmLabel="确认驳回"
+      busy={busy}
+      confirmDisabled={!bug || !normalizedReason}
+      onConfirm={() => bug ? onSubmit(bug, normalizedReason) : Promise.resolve(false)}
+    >
+      <Label>驳回理由
+        <Textarea maxLength={1000} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="填写驳回理由" />
+      </Label>
+    </ConfirmActionDialog>
   )
 }
 
@@ -5343,6 +5325,9 @@ export function AssignedTestBugs({
   onBugsChange?: (bugs: TestBug[]) => void
   onExit?: () => void
 }) {
+  const actionScope = `${currentUserId}:${organizationId}`
+  const actionScopeRef = useRef(actionScope)
+  useEffect(() => { actionScopeRef.current = actionScope }, [actionScope])
   const [bugs, setBugs] = useState<TestBug[]>([])
   const [mentionMembers, setMentionMembers] = useState<MentionMember[]>([])
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
@@ -5517,11 +5502,12 @@ export function AssignedTestBugs({
     return () => window.clearTimeout(cleanup)
   }, [transferBug, transferDialogOpen])
 
-  async function mutate(operation: () => Promise<{ bugs: TestBug[] }>) {
+  async function mutate(operation: () => Promise<{ bugs: TestBug[] }>, confirmed = false, matches: (result: { bugs: TestBug[] }) => boolean = () => false) {
     setBusy(true)
     setError('')
     try {
-      const result = await operation()
+      const result = confirmed ? await reconcileAction(operation, () => fetchAssignedTestBugs(organizationId), matches) : await operation()
+      if (actionScopeRef.current !== actionScope) return false
       setBugs(result.bugs)
       setSelectedId((current) => (
         current && result.bugs.some((bug) => bug.id === current)
@@ -5531,6 +5517,7 @@ export function AssignedTestBugs({
       onBugsChangeRef.current?.(result.bugs)
       return true
     } catch (mutationError) {
+      if (confirmed) throw mutationError
       setError(mutationError instanceof Error ? mutationError.message : '操作失败。')
       return false
     } finally {
@@ -5683,7 +5670,7 @@ export function AssignedTestBugs({
                     ? (bug, content) => mutate(() => addAssignedTestBugComment(organizationId, bug.id, content))
                     : undefined}
                   onDeleteComment={selected.canComment
-                    ? (bug, comment) => mutate(() => deleteAssignedTestBugComment(organizationId, bug.id, comment.id))
+                    ? (bug, comment) => mutate(() => deleteAssignedTestBugComment(organizationId, bug.id, comment.id), true, (result) => result.bugs.some((item) => item.id === bug.id && !item.comments.some((entry) => entry.id === comment.id)))
                     : undefined}
                   onUpdateComment={selected.canComment
                     ? (bug, comment, content) => mutate(() => updateAssignedTestBugComment(organizationId, bug.id, comment.id, content))
@@ -5709,7 +5696,7 @@ export function AssignedTestBugs({
         busy={busy}
         open={rejectDialogOpen}
         onOpenChange={setRejectDialogOpen}
-        onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(organizationId, bug.id, reason))}
+        onSubmit={(bug, reason) => mutate(() => rejectAssignedTestBug(organizationId, bug.id, reason), true, (result) => result.bugs.some((item) => item.id === bug.id && item.status === 'rejected'))}
       />
       <BugVerificationDialog
         bug={verificationBug}
