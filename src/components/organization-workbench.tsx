@@ -77,6 +77,7 @@ import { organizationPackageMarketPolicyHasVisibleChannel } from '../../shared/o
 import {
   defaultWeeklyReportRules,
   getShanghaiDateTime,
+  getWeeklyReportRulesExample,
   getWeeklyReportTargetWeekStart,
   normalizeWeeklyReportRules,
 } from '../../shared/weekly-report-availability'
@@ -146,6 +147,12 @@ const weeklyReportDayOptions = Array.from({ length: 7 }, (_, index) => ({
   value: String(index + 1),
 }))
 
+function formatWeeklyRuleBoundary(value: string) {
+  const date = value.slice(0, 10)
+  const day = new Date(`${date}T00:00:00Z`).getUTCDay()
+  const weekday = organizationWeekdayOptions.find((option) => Number(option.value) === (day || 7))!.label
+  return `${date.replaceAll('-', '/')}（${weekday}）${value.slice(11, 16)}`
+}
 
 function clonePackageMarketPolicy(policy: OrganizationPackageMarketPolicy): OrganizationPackageMarketPolicy {
   return {
@@ -723,6 +730,11 @@ export function OrganizationWorkbench({
   const selectedWeeklyReportAssignees = weeklyReportAssigneeUserIds.flatMap((id) => {
     const member = weeklyReportAssigneeCandidates.find((candidate) => candidate.id === id)
     return member ? [member] : []
+  })
+  const weeklyRulesExample = getWeeklyReportRulesExample({
+    today: getShanghaiDateTime().slice(0, 10),
+    weekStartsOn: weeklyRulesWeekStartsOn,
+    rules: weeklyRulesDraft,
   })
   const normalizedWeeklyReportAssigneeQuery = weeklyReportAssigneeQuery.trim().toLocaleLowerCase('zh-CN')
   const visibleWeeklyReportAssigneeCandidates = weeklyReportAssigneeCandidates.filter((member) => (
@@ -1435,8 +1447,24 @@ export function OrganizationWorkbench({
                           </Label>
                         </div>
                         <p className="organization-weekly-rules-hint">
+                          T 周为报告所属周期，T+1 周为下一周期；第几天从组织周起始日算起。
                           截止时间必须早于下一轮周报的开放时间，避免两个填写时段重叠。
                         </p>
+                        <div className="organization-weekly-rules-example" aria-live="polite">
+                          {weeklyRulesExample ? (
+                            <>
+                              <strong>填写时段样例 · 北京时间</strong>
+                              <dl>
+                                <div><dt>报告周期</dt><dd>{weeklyRulesExample.weekStart.replaceAll('-', '/')}—{weeklyRulesExample.weekEnd.replaceAll('-', '/')}</dd></div>
+                                <div><dt>开放时间</dt><dd>{formatWeeklyRuleBoundary(weeklyRulesExample.opensAt)}</dd></div>
+                                <div><dt>截止时间</dt><dd>{formatWeeklyRuleBoundary(weeklyRulesExample.closesAt)}，包含该分钟</dd></div>
+                                <div><dt>下一轮开放</dt><dd>{formatWeeklyRuleBoundary(weeklyRulesExample.nextOpensAt)}</dd></div>
+                              </dl>
+                            </>
+                          ) : (
+                            <p>暂无法生成样例：请填写完整日期和时间，并确保截止时间早于下一轮开放时间。</p>
+                          )}
+                        </div>
                         <fieldset className="organization-weekly-assignees">
                           <legend>
                             <span>填写成员</span>

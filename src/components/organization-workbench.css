@@ -1320,6 +1320,36 @@
   line-height: 1.6;
 }
 
+.organization-weekly-rules-example {
+  border-left: 3px solid var(--line);
+  padding: 10px 14px;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.organization-weekly-rules-example strong {
+  color: var(--strong);
+  font-size: 13px;
+}
+
+.organization-weekly-rules-example dl {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.organization-weekly-rules-example dl > div {
+  display: grid;
+  grid-template-columns: 6em minmax(0, 1fr);
+  gap: 8px;
+}
+
+.organization-weekly-rules-example dd,
+.organization-weekly-rules-example p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 
 .organization-weekly-assignee-order {
   display: grid;
