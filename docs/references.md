@@ -199,6 +199,13 @@ must remain bound to the authorized project ID.
   report, while an empty set is valid. Changes take effect immediately across personal write and
   AI-generation permission, collection counts, reminder targets, and organization AI summaries;
   removed assignees retain read-only access to their own historical reports.
+- Organization detail returns `weeklyReportAssigneeUserIds` in weekly-report display order.
+  `PATCH /api/organizations/:organizationId/weekly-report-rules` interprets the same array as
+  ordered IDs, deduplicating by first occurrence. Saving atomically replaces the assignee set
+  and zero-based positions; deselected members lose their position. Existing unranked members
+  follow ranked members in name/username order with user ID as a stable tie breaker. New and
+  restored memberships remain unranked until the next rule save. Search only filters the
+  candidate list; selected member order remains fully visible for up/down movement.
 - Todo responses expose an optional single watcher through `watcherUserId` and
   `watcherName`. `POST /api/todos` and `PATCH /api/todos/:todoId` accept
   `watcherUserId`; a non-null watcher must be the project owner or an active project

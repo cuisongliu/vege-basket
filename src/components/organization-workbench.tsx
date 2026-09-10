@@ -146,6 +146,7 @@ const weeklyReportDayOptions = Array.from({ length: 7 }, (_, index) => ({
   value: String(index + 1),
 }))
 
+
 function clonePackageMarketPolicy(policy: OrganizationPackageMarketPolicy): OrganizationPackageMarketPolicy {
   return {
     enabled: policy.enabled,
@@ -479,9 +480,7 @@ export function OrganizationWorkbench({
     if (detail) {
       setWeeklyRulesDraft(detail.weeklyReportRules)
       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
-      setWeeklyReportAssigneeUserIds(detail.members
-        .filter((member) => member.weeklyReportRequired && member.username.toLowerCase() !== 'admin')
-        .map((member) => member.id))
+      setWeeklyReportAssigneeUserIds(detail.weeklyReportAssigneeUserIds)
     }
   }, [detail])
 
@@ -721,6 +720,10 @@ export function OrganizationWorkbench({
   const weeklyReportAssigneeCandidates = detail?.members.filter((member) => (
     member.username.toLowerCase() !== 'admin'
   )) ?? []
+  const selectedWeeklyReportAssignees = weeklyReportAssigneeUserIds.flatMap((id) => {
+    const member = weeklyReportAssigneeCandidates.find((candidate) => candidate.id === id)
+    return member ? [member] : []
+  })
   const normalizedWeeklyReportAssigneeQuery = weeklyReportAssigneeQuery.trim().toLocaleLowerCase('zh-CN')
   const visibleWeeklyReportAssigneeCandidates = weeklyReportAssigneeCandidates.filter((member) => (
     !normalizedWeeklyReportAssigneeQuery
@@ -732,6 +735,18 @@ export function OrganizationWorkbench({
     setWeeklyReportAssigneeUserIds((current) => checked
       ? [...new Set([...current, userId])]
       : current.filter((id) => id !== userId))
+  }
+
+  function moveWeeklyReportAssignee(userId: number, direction: -1 | 1) {
+    setWeeklyReportAssigneeUserIds((current) => {
+      const index = current.indexOf(userId)
+      const target = index + direction
+      if (index < 0 || target < 0 || target >= current.length) return current
+      const next = [...current]
+      next[index] = current[target]
+      next[target] = userId
+      return next
+    })
   }
 
   const weeklyOrganizationId = detail?.id ?? 0
@@ -1339,9 +1354,7 @@ export function OrganizationWorkbench({
                     if (open) {
                       setWeeklyRulesDraft(detail.weeklyReportRules)
                       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
-                      setWeeklyReportAssigneeUserIds(detail.members
-                        .filter((member) => member.weeklyReportRequired && member.username.toLowerCase() !== 'admin')
-                        .map((member) => member.id))
+                      setWeeklyReportAssigneeUserIds(detail.weeklyReportAssigneeUserIds)
                       setWeeklyReportAssigneeQuery('')
                     }
                   }}>
@@ -1429,6 +1442,21 @@ export function OrganizationWorkbench({
                             <span>填写成员</span>
                             <small>已选 {weeklyReportAssigneeUserIds.length} / {weeklyReportAssigneeCandidates.length}</small>
                           </legend>
+                          <p id="weekly-assignee-order-hint">已选成员按以下顺序展示在组织周报中，新增选择追加到末尾。</p>
+                          <ol className="organization-weekly-assignee-order" aria-label="已选填写成员显示顺序" aria-describedby="weekly-assignee-order-hint">
+                            {selectedWeeklyReportAssignees.map((member, index) => (
+                              <li key={member.id}>
+                                <span className="organization-weekly-assignee-number">{index + 1}</span>
+                                <span className="organization-weekly-assignee-name"><strong>{member.displayName}</strong><small>{member.username}</small></span>
+                                <div>
+                                  <Button type="button" size="sm" variant="ghost" aria-label={`上移 ${member.displayName}`} disabled={busy || index === 0} onClick={() => moveWeeklyReportAssignee(member.id, -1)}>上移</Button>
+                                  <Button type="button" size="sm" variant="ghost" aria-label={`下移 ${member.displayName}`} disabled={busy || index === selectedWeeklyReportAssignees.length - 1} onClick={() => moveWeeklyReportAssignee(member.id, 1)}>下移</Button>
+                                  <Button type="button" size="sm" variant="ghost" aria-label={`移除 ${member.displayName}`} disabled={busy} onClick={() => toggleWeeklyReportAssignee(member.id, false)}>移除</Button>
+                                </div>
+                              </li>
+                            ))}
+                          </ol>
+                          {selectedWeeklyReportAssignees.length === 0 ? <p>尚未选择填写成员，请在下方勾选。</p> : null}
                           <div className="organization-weekly-assignee-tools">
                             <span className="organization-weekly-assignee-search">
                               <MagnifyingGlass aria-hidden="true" size={15} />

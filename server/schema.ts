@@ -277,6 +277,10 @@ create table if not exists organization_memberships (
 alter table organization_memberships
   add column if not exists weekly_report_required boolean not null default true;
 
+alter table organization_memberships
+  add column if not exists weekly_report_sort_order integer
+    check (weekly_report_sort_order >= 0);
+
 update organization_memberships membership
 set weekly_report_required = false
 from users

@@ -129,6 +129,17 @@ requiring a report, while the reserved `admin` account is excluded. The applicat
 applies the compatible addition idempotently; the matching forward-only migration remains the
 independent structural record and must only be run against an explicitly authorized database.
 
+Weekly-report assignee ordering adds the nullable nonnegative integer
+`organization_memberships.weekly_report_sort_order`; the forward-only record is
+`server/migrations/20260910_weekly_report_assignee_order.sql`. Startup applies the same
+idempotent addition. No backfill or encryption migration is needed: null preserves the
+existing name ordering. Take a database snapshot and retain the full encryption key ring
+before an approved deployment. An application rollback may leave the additive column in
+place; the old application ignores custom positions and uses its previous ordering.
+In an authorized disposable database, apply the DDL twice and verify ordered save/read,
+empty selections, invalid or departed member rejection without partial updates, simultaneous
+rule saves, and rejoining members appearing after explicitly ranked members.
+
 `npm run db:init` applies the current idempotent schema. `npm run db:encrypt-existing`
 applies the schema and encrypts supported legacy plaintext fields. Both are mutating
 operations and require explicit approval, a current backup or snapshot, the intended
