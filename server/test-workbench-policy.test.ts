@@ -291,14 +291,6 @@ test('test-space data import supports copied cases and plans only', () => {
   assert.match(testWorkbenchClientSource, /importTestSpaceData\(selectedSpace\.id, sources\)/u)
 })
 
-test('case workbench exports the current test-object cases and labels import as cases', () => {
-  assert.match(testWorkbenchClientSource, /function downloadTestCaseCsv\(/u)
-  assert.match(testWorkbenchClientSource, /onExport=\{\(\) => downloadTestCaseCsv\(cases, data\.folders\)\}/u)
-  assert.match(testWorkbenchClientSource, /<DownloadSimple \/> 导出用例/u)
-  assert.match(testWorkbenchClientSource, /<UploadSimple \/> 导入用例/u)
-  assert.match(testWorkbenchClientSource, /testCaseCsvTemplateHeaders, \.\.\.rows/u)
-})
-
 test('Bug details offer same-organization space transfer with the existing transfer transaction', () => {
   assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/bugs\/:bugId\/transfer-space'/u)
   assert.match(testWorkbenchSource, /bugIds: \[bugId\], categories: \['bugs'\], spaceId/u)

@@ -108,6 +108,7 @@ export type TestSubject = {
 }
 
 export type TestCaseFolder = {
+  parentId: number | null
   createdAt: string
   id: number
   name: string
@@ -308,6 +309,10 @@ export type TestWorkbenchData = {
 export type TestWorkbenchProjectOption = Pick<Project, 'id' | 'name'>
 
 export type TestCaseImportPreview = {
+  targetPath?: string
+  newDirectoryCount?: number
+  reusedDirectoryCount?: number
+  samplePaths?: string[]
   levelCounts: Record<'P0' | 'P1' | 'P2', number>
   moduleCount: number
   rowCount: number

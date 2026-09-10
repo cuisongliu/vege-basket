@@ -540,3 +540,30 @@ Package-item batch failures additionally return `code`, `requestId`, and `detail
 `read_package_timeline`; database failures may include safe `databaseCode`, `constraint`,
 `table`, `column`, and redacted `databaseDetail` fields. Responses never include a stack,
 raw SQL, credentials, encryption material, or unknown exception messages.
+
+### Test-case directory and CSV contracts
+
+Folder DTOs include `parentId: number | null`. Under `/api/test-spaces/:spaceId`:
+
+- `POST /folders`: `{ testSubjectId, name, parentId? }`; omitted parent creates a root.
+- `PATCH /folders/:folderId`: `{ name?, parentId? }`; explicit null moves to the root.
+  Moving a subtree to itself/descendants, sibling duplicates, or exceeding 32 levels
+  is rejected. Names are trimmed, 1–240 characters, with no control characters.
+- `DELETE /folders/:folderId`: only an empty directory; nonempty returns 409.
+- Case create/update accepts `folderId` (null means uncategorized). The legacy
+  `modulePath` string is accepted separately as one root name; sending both is invalid.
+- `POST /cases/move`: `{ testSubjectId, caseIds, targetFolderId }`, with 1–1000 distinct
+  positive numeric IDs and a folder ID or null. The entire batch succeeds or fails.
+  Response is `{ movedCount, workbench }`; unchanged assignments produce no notification.
+- `POST /cases/import?testSubjectId=…&directoryMode=current|tree&targetFolderId=…`:
+  UTF-8 CSV, at most 2 MiB / 1000 cases. `preview=true` validates without writes and
+  returns `preview` with `targetPath`, `newDirectoryCount`, `reusedDirectoryCount`,
+  `samplePaths` and the existing row/priority summaries. Submission revalidates.
+
+`current` ignores directory columns and places all cases directly in the target.
+`tree` uses relative `目录路径`: `/` separates segments, `~1` escapes a literal slash,
+`~0` escapes a tilde, and an empty value means the selected target. If the path column
+is absent, `所属模块` is treated as one literal child name. Omitting `directoryMode`
+retains legacy root-module import behavior. Other required Chinese CSV fields and
+priority mappings remain unchanged. Exports include both a readable `所属模块` and the
+reversible relative `目录路径`; uncategorized exports use an empty path.

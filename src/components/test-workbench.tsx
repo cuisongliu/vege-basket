@@ -1,3 +1,7 @@
+import { useDirectoryTreeState } from '../use-case-directory-tree'
+import { buildTestCaseCsv, testCaseCsvHeaders } from '../test-case-csv'
+import { DirectoryPicker, DirectoryTree } from './test-case-directory-tree'
+import { createDirectoryIndex } from '../../shared/test-case-directories'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type FormEvent, type ReactNode } from 'react'
 import {
   ArrowCounterClockwise,
@@ -102,6 +106,7 @@ import {
   createTestBug,
   createTestCase,
   createTestCaseFolder,
+  moveTestCases,
   createTestPlan,
   createTestSpace,
   createTestSpaceInviteLink,
@@ -230,16 +235,6 @@ const caseKindLabel: Record<TestCase['caseKind'], string> = {
   baseline: '基线用例',
   functional: '功能用例',
 }
-const testCaseCsvTemplateHeaders = [
-  '用例名称',
-  '所属模块',
-  '前置条件',
-  '步骤描述',
-  '预期结果',
-  '备注',
-  '用例等级',
-  '自定义标签',
-]
 const resultLabel: Record<TestResult, string> = {
   blocked: '阻塞',
   failed: '失败',
@@ -541,12 +536,20 @@ export function TestWorkbench({
   const [editingSubject, setEditingSubject] = useState<TestSubject>()
   const [subjectPendingDelete, setSubjectPendingDelete] = useState<TestSubject>()
   const [subjectDeleteDialogOpen, setSubjectDeleteDialogOpen] = useState(false)
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false)
+  const [caseTargetFolderId, setCaseTargetFolderId] = useState<number | null>(null)
   const [caseDialogOpen, setCaseDialogOpen] = useState(false)
   const [caseImportDialogOpen, setCaseImportDialogOpen] = useState(false)
   const [editingCase, setEditingCase] = useState<TestCase>()
   const [casePendingDelete, setCasePendingDelete] = useState<TestCase>()
   const [caseDeleteDialogOpen, setCaseDeleteDialogOpen] = useState(false)
+  useEffect(() => {
+    setCaseDialogOpen(false)
+    setCaseImportDialogOpen(false)
+    setCaseDeleteDialogOpen(false)
+    setCaseTargetFolderId(null)
+    setEditingCase(undefined)
+    setCasePendingDelete(undefined)
+  }, [spaceId, subjectId])
   const [planDialogOpen, setPlanDialogOpen] = useState(false)
   const [editingPlan, setEditingPlan] = useState<TestPlan>()
   const [planPendingDelete, setPlanPendingDelete] = useState<TestPlan>()
@@ -1277,21 +1280,26 @@ export function TestWorkbench({
             <>
               <WorkspaceError message={error} />
               <CasesView
-                key={subjectId}
+                key={`${spaceId}-${subjectId}`}
+                busy={busy}
+                subjectId={subjectId}
+                onCreateFolder={(name, parentId) => mutate(() => createTestCaseFolder(spaceId!, { name, parentId, testSubjectId: subjectId! }))}
+                onUpdateFolder={(folder, name, parentId) => mutate(() => updateTestCaseFolder(spaceId!, folder.id, { name, parentId }))}
+                onDeleteFolder={(folder) => mutate(() => deleteTestCaseFolder(spaceId!, folder.id))}
+                onMove={(ids, target) => mutate(() => moveTestCases(spaceId!, subjectId!, ids, target))}
                 cases={cases}
                 data={data}
                 readOnly={activeSpaceReadOnly}
                 selectedId={selectedCaseId}
                 onSelect={setSelectedCaseId}
-                onCreate={() => { setEditingCase(undefined); setCaseDialogOpen(true) }}
-                onCreateFolder={() => setFolderDialogOpen(true)}
+                onCreate={(folderId) => { setCaseTargetFolderId(folderId); setEditingCase(undefined); setCaseDialogOpen(true) }}
                 onDelete={(testCase) => {
                   setCasePendingDelete(testCase)
                   setCaseDeleteDialogOpen(true)
                 }}
                 onEdit={(testCase) => { setEditingCase(testCase); setCaseDialogOpen(true) }}
-                onExport={() => downloadTestCaseCsv(cases, data.folders)}
-                onImport={() => setCaseImportDialogOpen(true)}
+                onExport={(items, folderId) => downloadTestCaseCsv(items, data.folders, folderId)}
+                onImport={(folderId) => { setCaseTargetFolderId(folderId); setCaseImportDialogOpen(true) }}
                 onArchive={(testCase) => void mutate(() => updateTestCase(testCase.testSpaceId, testCase.id, { caseKind: 'baseline', status: 'active' }))}
               />
             </>
@@ -1456,18 +1464,8 @@ export function TestWorkbench({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <FolderDialog
-        busy={busy}
-        cases={data.cases.filter((item) => item.testSpaceId === spaceId && item.testSubjectId === subjectId)}
-        folders={data.folders.filter((folder) => folder.testSpaceId === spaceId && folder.testSubjectId === subjectId)}
-        open={folderDialogOpen}
-        subject={data.subjects.find((candidate) => candidate.id === subjectId)}
-        onCreate={async (name) => mutate(() => createTestCaseFolder(spaceId!, { name, testSubjectId: subjectId! }))}
-        onDelete={async (folder) => mutate(() => deleteTestCaseFolder(spaceId!, folder.id))}
-        onOpenChange={setFolderDialogOpen}
-        onRename={async (folder, name) => mutate(() => updateTestCaseFolder(spaceId!, folder.id, { name }))}
-      />
       <CaseDialog
+        defaultFolderId={caseTargetFolderId}
         busy={busy}
         data={data}
         open={caseDialogOpen}
@@ -1506,12 +1504,15 @@ export function TestWorkbench({
         </DialogContent>
       </Dialog>
       <ImportCasesDialog
+        key={`${caseImportDialogOpen}-${spaceId}-${subjectId}-${caseTargetFolderId}`}
+        targetFolderId={caseTargetFolderId}
+        folders={data.folders.filter(f => f.testSubjectId === subjectId)}
         busy={busy}
         open={caseImportDialogOpen}
         spaceId={spaceId}
         subject={activeSubject}
         onOpenChange={setCaseImportDialogOpen}
-        onSubmit={(csvText) => mutate(() => importTestCases(spaceId!, subjectId!, csvText))}
+        onSubmit={(csvText, directoryMode) => mutate(() => importTestCases(spaceId!, subjectId!, csvText, { directoryMode, targetFolderId: caseTargetFolderId }))}
       />
       <PlanDialog
         key={`${planDialogOpen}-${editingPlan?.id ?? 'new'}`}
@@ -1868,18 +1869,23 @@ function NotificationsView({
   )
 }
 
-function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onDelete, onEdit, onExport, onImport, onSelect }: {
+export function CasesView({ busy, subjectId, cases, data, readOnly, selectedId, onArchive, onCreate, onCreateFolder, onUpdateFolder, onDeleteFolder, onMove, onDelete, onEdit, onExport, onImport, onSelect }: {
+  busy: boolean
+  subjectId?: number
+  onUpdateFolder: (folder: TestCaseFolder, name: string, parentId: number | null) => Promise<boolean>
+  onDeleteFolder: (folder: TestCaseFolder) => Promise<boolean>
+  onMove: (ids: number[], target: number | null) => Promise<boolean>
   cases: TestCase[]
   data: TestWorkbenchData
   readOnly: boolean
   selectedId?: number
   onArchive: (testCase: TestCase) => void
-  onCreate: () => void
-  onCreateFolder: () => void
+  onCreate: (folderId: number | null) => void
+  onCreateFolder: (name: string, parentId: number | null) => Promise<boolean>
   onDelete: (testCase: TestCase) => void
   onEdit: (testCase: TestCase) => void
-  onExport: () => void
-  onImport: () => void
+  onExport: (items: TestCase[], root: number | null) => void
+  onImport: (folderId: number | null) => void
   onSelect: (id: number) => void
 }) {
   const listPanelRef = useRef<HTMLDivElement>(null)
@@ -1890,32 +1896,50 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
   const [typeFilter, setTypeFilter] = useState('all')
   const [priorityFilter, setPriorityFilter] = useState('all')
   const [kindFilter, setKindFilter] = useState('all')
-  const availableFolders = useMemo(() => data.folders.filter((folder) => (
-    cases.some((testCase) => testCase.folderId === folder.id)
-  )), [cases, data.folders])
+  const folders = useMemo(() => data.folders.filter(f => f.testSubjectId === subjectId), [data.folders, subjectId])
+  const directoryIndex = useMemo(() => createDirectoryIndex(folders), [folders])
+  const treeState = useDirectoryTreeState(folders)
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 760px)').matches)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  useEffect(() => { const media = window.matchMedia('(max-width: 760px)'); const change = () => { setNarrow(media.matches); setDrawerOpen(false) }; media.addEventListener('change', change); return () => media.removeEventListener('change', change) }, [])
+  const [includeChildren, setIncludeChildren] = useState(true)
+  const [panelHidden, setPanelHidden] = useState(() => { try { return localStorage.getItem('veges.case-directories.hidden') === 'true' } catch { return false } })
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
+  const [moveIds, setMoveIds] = useState<number[]>()
+  const [moveTarget, setMoveTarget] = useState<number | null>(null)
+  const [moveError, setMoveError] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
+  const effectiveFolderFilter = folderFilter === 'all' || folderFilter === 'uncategorized' || directoryIndex.byId.has(Number(folderFilter)) ? folderFilter : 'all'
+  const activeFolderId = effectiveFolderFilter === 'all' || effectiveFolderFilter === 'uncategorized' ? null : Number(effectiveFolderFilter)
+  const scopeIds = useMemo(() => activeFolderId === null ? new Set<number>() : includeChildren ? directoryIndex.descendants(activeFolderId) : new Set([activeFolderId]), [activeFolderId, directoryIndex, includeChildren])
+  const scopeLabel = activeFolderId === null ? effectiveFolderFilter === 'all' ? '全部用例' : '未分类' : directoryIndex.byId.has(activeFolderId) ? directoryIndex.path(activeFolderId).map(f => f.name).join(' / ') : '目录已删除'
+  const selectedCaseIds = cases.filter(c => checkedIds.has(c.id)).map(c => c.id)
+  function togglePanel() { if (narrow) { setDrawerOpen(prev => !prev); return } setPanelHidden(prev => { try { localStorage.setItem('veges.case-directories.hidden', String(!prev)) } catch { /* Storage may be disabled. */ } return !prev }) }
+  function selectDirectory(id: string) { setFolderFilter(id); setCheckedIds(new Set()); setIncludeChildren(true); setDrawerOpen(false) }
+  function startMove(ids: number[]) { setMoveTarget(activeFolderId); setMoveError(''); setMoveIds(ids) }
   const filteredCases = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLocaleLowerCase('zh-CN')
     return cases.filter((item) => {
-      const folder = data.folders.find((candidate) => candidate.id === item.folderId)
+      const folderPath = directoryIndex.path(item.folderId ?? null).map(f => f.name).join(' / ')
       const matchesSearch = !normalizedQuery || [
         `CASE-${item.id}`,
         item.title,
-        folder?.name ?? '未分类',
+        folderPath || '未分类',
         item.preconditions,
         item.steps,
         item.expectedResult,
         item.remarks,
         item.customTags.join(' '),
       ].some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedQuery))
-      const matchesFolder = folderFilter === 'all'
-        || (folderFilter === 'uncategorized' ? !item.folderId : String(item.folderId) === folderFilter)
+      const matchesFolder = effectiveFolderFilter === 'all'
+        || (effectiveFolderFilter === 'uncategorized' ? !item.folderId : scopeIds.has(item.folderId ?? -1))
       return matchesSearch
         && matchesFolder
         && (typeFilter === 'all' || item.caseType === typeFilter)
         && (priorityFilter === 'all' || item.priority === priorityFilter)
         && (kindFilter === 'all' || item.caseKind === kindFilter)
     })
-  }, [cases, data.folders, folderFilter, kindFilter, priorityFilter, searchQuery, typeFilter])
+  }, [cases, directoryIndex, effectiveFolderFilter, kindFilter, priorityFilter, searchQuery, typeFilter, scopeIds])
   const selected = filteredCases.find((item) => item.id === selectedId)
   const selectedIndex = filteredCases.findIndex((item) => item.id === selectedId)
   const totalPages = Math.max(1, Math.ceil(filteredCases.length / pageSize))
@@ -1966,8 +1990,13 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
     <div className="test-module-view test-cases-module-view">
       <div className="test-module-toolbar">
         <div><span>用例库</span><h1>用例管理</h1></div>
-        {!readOnly ? <div><Button variant="outline" disabled={!cases.length} onClick={onExport}><DownloadSimple /> 导出用例</Button><Button variant="outline" onClick={onImport}><UploadSimple /> 导入用例</Button><Button variant="outline" onClick={onCreateFolder}><FolderPlus /> 模块</Button><Button onClick={onCreate}><Plus /> 新建用例</Button></div> : null}
+        <div><Button variant="outline" disabled={!filteredCases.length} onClick={() => setExportOpen(true)}><DownloadSimple /> 导出用例 ({filteredCases.length})</Button>{!readOnly && <><Button variant="outline" disabled={!subjectId} onClick={() => onImport(activeFolderId)}><UploadSimple /> 导入用例</Button><Button disabled={!subjectId} onClick={() => onCreate(activeFolderId)}><Plus /> 新建用例</Button></>}</div>
       </div>
+      <div className="test-directory-workspace" data-panel-hidden={panelHidden || narrow}>
+      <div className="test-directory-desktop" style={{ display: panelHidden || narrow ? 'none' : undefined }}><DirectoryTree viewState={treeState} folders={folders} cases={cases} selected={effectiveFolderFilter} onSelect={selectDirectory} onCollapse={togglePanel} busy={busy} readOnly={readOnly || !subjectId} onCreate={onCreateFolder} onUpdate={onUpdateFolder} onDelete={onDeleteFolder} /></div>
+      <Dialog open={narrow && drawerOpen} onOpenChange={setDrawerOpen}><DialogContent className="test-directory-drawer"><DialogHeader><DialogTitle>用例目录</DialogTitle><DialogDescription>选择目录查看对应范围的用例。</DialogDescription></DialogHeader><DirectoryTree viewState={treeState} folders={folders} cases={cases} selected={effectiveFolderFilter} onSelect={selectDirectory} onCollapse={() => setDrawerOpen(false)} busy={busy} readOnly={readOnly || !subjectId} onCreate={onCreateFolder} onUpdate={onUpdateFolder} onDelete={onDeleteFolder} /></DialogContent></Dialog>
+      <div className="test-directory-content">
+      <div className="test-directory-scope"><Button size="sm" variant="outline" aria-label={(panelHidden || narrow) ? "展开用例目录" : "收缩用例目录"} onClick={togglePanel}><FolderPlus /> {(panelHidden || narrow) ? "展开目录" : "收缩目录"}</Button><strong title={scopeLabel}>{scopeLabel}</strong><span>{filteredCases.length} 条用例</span>{activeFolderId !== null && <Label><Checkbox checked={includeChildren} onCheckedChange={value => setIncludeChildren(value === true)} /> 包含下级目录</Label>}</div>
       <div className="test-case-filters" aria-label="用例搜索与筛选">
         <label className="test-case-search">
           <MagnifyingGlass />
@@ -1979,14 +2008,6 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
             placeholder="搜索编号、标题、模块或用例内容"
           />
         </label>
-        <Select value={folderFilter} onValueChange={setFolderFilter}>
-          <SelectTrigger aria-label="所属模块筛选"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部模块</SelectItem>
-            <SelectItem value="uncategorized">未分类</SelectItem>
-            {availableFolders.map((folder) => <SelectItem key={folder.id} value={String(folder.id)}>{folder.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
         <Select value={typeFilter} onValueChange={setTypeFilter}>
           <SelectTrigger aria-label="用例类型筛选"><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(caseTypeLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
@@ -2006,13 +2027,14 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
           disabled={!hasFilters}
           onClick={() => {
             setSearchQuery('')
-            setFolderFilter('all')
+            selectDirectory('all')
             setTypeFilter('all')
             setPriorityFilter('all')
             setKindFilter('all')
           }}
         ><XCircle /> 清除</Button>
       </div>
+      {!readOnly && <div className="test-directory-batch"><Label><Checkbox aria-label="选择本页用例" checked={visibleCases.length > 0 && visibleCases.every(c => checkedIds.has(c.id))} onCheckedChange={checked => setCheckedIds(prev => { const next = new Set(prev); visibleCases.forEach(c => { if (checked) next.add(c.id); else next.delete(c.id) }); return next })} /> 本页</Label><span>已选 {selectedCaseIds.length} 条</span><Button size="sm" variant="outline" disabled={busy || !selectedCaseIds.length || selectedCaseIds.length > 1000} onClick={() => startMove(selectedCaseIds)}>迁移用例</Button><Button size="sm" variant="ghost" disabled={!selectedCaseIds.length} onClick={() => setCheckedIds(new Set())}>清空选择</Button><small>单次最多 1000 条</small></div>}
       <div className="test-split-view test-cases-split-view">
         <div ref={listPanelRef} className="test-record-list-panel">
           <div
@@ -2020,11 +2042,11 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
             style={{ gridTemplateRows: `repeat(${Math.max(visibleCases.length, 1)}, minmax(0, 1fr))` }}
           >
             {filteredCases.length ? visibleCases.map((item) => (
-              <button key={item.id} className={item.id === selectedId ? 'active' : ''} onClick={() => onSelect(item.id)}>
+              <div key={item.id} className="test-directory-case-row">{!readOnly && <Checkbox aria-label={`选择 CASE-${item.id}`} checked={checkedIds.has(item.id)} onCheckedChange={value => setCheckedIds(prev => { const next = new Set(prev); if (value) next.add(item.id); else next.delete(item.id); return next })} />}<button className={item.id === selectedId ? 'active' : ''} onClick={() => onSelect(item.id)}>
                 <div><code>CASE-{item.id}</code><Badge variant="outline">{caseTypeLabel[item.caseType]}</Badge></div>
                 <strong>{item.title}</strong>
-                <small>{caseLevelLabel[item.priority]} · {data.folders.find((folder) => folder.id === item.folderId)?.name || '未分类'} · {caseKindLabel[item.caseKind]}{item.customTags.length ? ` · ${item.customTags.join('、')}` : ''}</small>
-              </button>
+                <small>{caseLevelLabel[item.priority]} · {directoryIndex.path(item.folderId ?? null).map(f => f.name).join(' / ') || '未分类'} · {caseKindLabel[item.caseKind]}{item.customTags.length ? ` · ${item.customTags.join('、')}` : ''}</small>
+              </button></div>
             )) : <p className="test-list-empty">{cases.length ? '没有符合条件的用例。' : '当前测试对象还没有用例。'}</p>}
           </div>
           <nav className="test-case-pagination" aria-label="用例分页">
@@ -2049,11 +2071,11 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
                   <code>CASE-{selected.id}</code>
                   <h2>{selected.title}</h2>
                   <p className="test-case-folder">
-                    <span>所属模块</span>
-                    <strong>{data.folders.find((folder) => folder.id === selected.folderId)?.name || '未分类'}</strong>
+                    <span>所属目录</span>
+                    <strong>{directoryIndex.path(selected.folderId ?? null).map(f => f.name).join(' / ') || '未分类'}</strong>
                   </p>
                 </div>
-                {!readOnly ? <div><Button variant="outline" onClick={() => onEdit(selected)}>编辑</Button>{selected.caseKind !== 'baseline' ? <Button variant="outline" onClick={() => onArchive(selected)}>归档为基线</Button> : null}{selected.canDelete ? <Button variant="destructive" onClick={() => onDelete(selected)}><Trash /> 删除</Button> : null}</div> : null}
+                {!readOnly ? <div><Button variant="outline" onClick={() => onEdit(selected)}>编辑</Button><Button variant="outline" disabled={busy} onClick={() => startMove([selected.id])}>迁移</Button>{selected.caseKind !== 'baseline' ? <Button variant="outline" onClick={() => onArchive(selected)}>归档为基线</Button> : null}{selected.canDelete ? <Button variant="destructive" onClick={() => onDelete(selected)}><Trash /> 删除</Button> : null}</div> : null}
               </div>
               <div className="test-detail-meta test-case-detail-meta"><span>分类 <strong>{caseKindLabel[selected.caseKind]}</strong></span><span>类型 <strong>{caseTypeLabel[selected.caseType]}</strong></span><span>等级 <strong>{caseLevelLabel[selected.priority]}</strong></span></div>
               {selected.customTags.length ? <div className="test-case-tags">{selected.customTags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div> : null}
@@ -2065,6 +2087,9 @@ function CasesView({ cases, data, readOnly, selectedId, onArchive, onCreate, onC
           ) : <div className="test-detail-empty"><ClipboardText size={28} /><p>选择一个用例查看完整内容。</p></div>}
         </div>
       </div>
+      </div></div>
+      <Dialog open={Boolean(moveIds)} onOpenChange={open => { if (!open && !busy) setMoveIds(undefined) }}><DialogContent><DialogHeader><DialogTitle>迁移 {moveIds?.length ?? 0} 条用例</DialogTitle><DialogDescription>用例编号、内容与已有执行快照保持不变。所有选中用例将一起迁移。</DialogDescription></DialogHeader><DirectoryPicker folders={folders} value={moveTarget} onChange={setMoveTarget} disabled={busy} />{moveError && <p role="alert">{moveError}</p>}<DialogFooter><Button variant="outline" disabled={busy} onClick={() => setMoveIds(undefined)}>取消</Button><Button disabled={busy} onClick={async () => { if (!moveIds) return; if (await onMove(moveIds, moveTarget)) { setMoveIds(undefined); setCheckedIds(new Set()) } else setMoveError('迁移失败，请检查权限或刷新后重试。') }}>确认迁移</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={exportOpen} onOpenChange={setExportOpen}><DialogContent><DialogHeader><DialogTitle>导出用例</DialogTitle><DialogDescription>导出“{scopeLabel}”中符合当前筛选的全部 {filteredCases.length} 条用例（包含所有分页）。{activeFolderId !== null ? includeChildren ? '包含下级目录。' : '仅直属用例。' : ''}</DialogDescription></DialogHeader><p>筛选：{searchQuery.trim() ? `搜索“${searchQuery.trim()}”` : "不限关键词"} · {typeFilter === "all" ? "全部类型" : caseTypeLabel[typeFilter as TestCaseType]} · {priorityFilter === "all" ? "全部等级" : caseLevelLabel[priorityFilter as Priority]} · {kindFilter === "all" ? "全部分类" : caseKindLabel[kindFilter as TestCase["caseKind"]]}</p><p>CSV 保留相对于当前目录的目录路径。</p><DialogFooter><Button variant="outline" onClick={() => setExportOpen(false)}>取消</Button><Button disabled={!filteredCases.length} onClick={() => { onExport(filteredCases, activeFolderId); setExportOpen(false) }}>导出 {filteredCases.length} 条</Button></DialogFooter></DialogContent></Dialog>
     </div>
   )
 }
@@ -3841,127 +3866,12 @@ function SubjectDialog({
   )
 }
 
-function FolderDialog({
-  busy,
-  cases,
-  folders,
-  onCreate,
-  onDelete,
-  onOpenChange,
-  onRename,
-  open,
-  subject,
-}: {
-  busy: boolean
-  cases: TestCase[]
-  folders: TestWorkbenchData['folders']
-  onCreate: (name: string) => Promise<boolean>
-  onDelete: (folder: TestWorkbenchData['folders'][number]) => Promise<boolean>
-  onOpenChange: (open: boolean) => void
-  onRename: (folder: TestWorkbenchData['folders'][number], name: string) => Promise<boolean>
-  open: boolean
-  subject?: TestSubject
-}) {
-  const [newName, setNewName] = useState('')
-  const [drafts, setDrafts] = useState<Record<number, string>>({})
-
-  useEffect(() => {
-    if (!open) return
-    setDrafts(Object.fromEntries(folders.map((folder) => [folder.id, folder.name])))
-    setNewName('')
-  }, [folders, open])
-
-  const caseCountByFolder = useMemo(() => {
-    const counts = new Map<number, number>()
-    for (const item of cases) {
-      if (item.folderId) counts.set(item.folderId, (counts.get(item.folderId) ?? 0) + 1)
-    }
-    return counts
-  }, [cases])
-
-  async function createFolder() {
-    const saved = await onCreate(newName)
-    if (saved) setNewName('')
-  }
-
-  async function renameFolder(folder: TestWorkbenchData['folders'][number]) {
-    const nextName = (drafts[folder.id] ?? '').trim()
-    if (!nextName || nextName === folder.name) return
-    await onRename(folder, nextName)
-  }
-
-  async function deleteFolder(folder: TestWorkbenchData['folders'][number]) {
-    const count = caseCountByFolder.get(folder.id) ?? 0
-    const suffix = count > 0
-      ? `该模块下 ${count} 条用例会变为“未分类”，用例本身不会删除。`
-      : '该模块下没有用例。'
-    if (!window.confirm(`确定删除模块“${folder.name}”吗？${suffix}`)) return
-    await onDelete(folder)
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent fixedHeader className="test-wide-dialog test-folder-dialog">
-        <DialogHeader>
-          <DialogTitle>管理用例模块</DialogTitle>
-          <DialogDescription>
-            管理“{subject?.name || '当前测试对象'}”下的模块路径。删除模块不会删除用例，只会清空这些用例的模块归属。
-          </DialogDescription>
-        </DialogHeader>
-        <div className="test-folder-create-row">
-          <Input
-            autoFocus
-            maxLength={240}
-            value={newName}
-            onChange={(event) => setNewName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                if (!busy && newName.trim()) void createFolder()
-              }
-            }}
-            placeholder="例如：/DevBox/业务/创建"
-          />
-          <Button type="button" disabled={busy || !newName.trim()} onClick={() => void createFolder()}><Plus /> 新增模块</Button>
-        </div>
-        <div className="test-folder-list">
-          {folders.length ? folders.map((folder) => {
-            const draft = drafts[folder.id] ?? folder.name
-            const unchanged = draft.trim() === folder.name
-            return (
-              <article key={folder.id} className="test-folder-row">
-                <div className="test-folder-row-meta">
-                  <Input
-                    maxLength={240}
-                    value={draft}
-                    onChange={(event) => setDrafts((current) => ({ ...current, [folder.id]: event.target.value }))}
-                  />
-                  <small>{caseCountByFolder.get(folder.id) ?? 0} 条用例</small>
-                </div>
-                <div className="test-folder-row-actions">
-                  <Button type="button" variant="outline" disabled={busy || !draft.trim() || unchanged} onClick={() => void renameFolder(folder)}><PencilSimple /> 保存</Button>
-                  <Button type="button" variant="destructive" disabled={busy} onClick={() => void deleteFolder(folder)}><Trash /> 删除</Button>
-                </div>
-              </article>
-            )
-          }) : (
-            <div className="test-folder-empty">当前测试对象还没有模块，创建用例或导入用例时也会自动生成模块。</div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 type TestCaseFormPayload = {
   caseKind?: TestCase['caseKind']
   caseType: TestCaseType
   customTags?: string[]
   expectedResult: string
-  modulePath?: string
+  folderId?: number | null
   preconditions: string
   priority: Priority
   remarks: string
@@ -3970,16 +3880,15 @@ type TestCaseFormPayload = {
   title: string
 }
 
-function CaseDialog({ busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }: { busy: boolean; data: TestWorkbenchData; onOpenChange: (open: boolean) => void; onSubmit: (payload: TestCaseFormPayload) => void; open: boolean; spaceId?: number; subjectId?: number; testCase?: TestCase }) {
-  const key = `${open}-${testCase?.id ?? 'new'}`
-  return <CaseDialogForm key={key} {...{ busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }} />
+export function CaseDialog({ defaultFolderId = null, busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }: { defaultFolderId?: number | null; busy: boolean; data: TestWorkbenchData; onOpenChange: (open: boolean) => void; onSubmit: (payload: TestCaseFormPayload) => void; open: boolean; spaceId?: number; subjectId?: number; testCase?: TestCase }) {
+  const key = `${open}-${spaceId}-${subjectId}-${testCase?.id ?? 'new'}`
+  return <CaseDialogForm key={key} {...{ defaultFolderId, busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }} />
 }
 
-function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }: Parameters<typeof CaseDialog>[0]) {
+function CaseDialogForm({ defaultFolderId = null, busy, data, onOpenChange, onSubmit, open, spaceId, subjectId, testCase }: Parameters<typeof CaseDialog>[0]) {
   const folders = data.folders.filter((folder) => folder.testSpaceId === spaceId && folder.testSubjectId === subjectId)
-  const initialModule = folders.find((folder) => folder.id === testCase?.folderId)?.name ?? ''
   const [title, setTitle] = useState(testCase?.title ?? '')
-  const [modulePath, setModulePath] = useState(initialModule)
+  const [folderId, setFolderId] = useState<number | null>(testCase ? testCase.folderId ?? null : defaultFolderId)
   const [preconditions, setPreconditions] = useState(testCase?.preconditions ?? '')
   const [steps, setSteps] = useState(testCase?.steps ?? '')
   const [expectedResult, setExpectedResult] = useState(testCase?.expectedResult ?? '')
@@ -3988,14 +3897,6 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
   const [caseKind, setCaseKind] = useState<TestCase['caseKind']>(testCase?.caseKind ?? 'functional')
   const [caseType, setCaseType] = useState<TestCaseType>(testCase?.caseType ?? 'functional')
   const [customTagsInput, setCustomTagsInput] = useState(testCase?.customTags.join('、') ?? '')
-  const [modulePickerOpen, setModulePickerOpen] = useState(false)
-  const moduleSuggestions = useMemo(() => {
-    const keyword = modulePath.trim().toLowerCase()
-    const matched = keyword
-      ? folders.filter((folder) => folder.name.toLowerCase().includes(keyword))
-      : folders
-    return matched.slice(0, 12)
-  }, [folders, modulePath])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -4013,7 +3914,7 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
               caseType,
               customTags: Array.from(new Set(customTagsInput.split(/[,，;；、\s]+/).map((tag) => tag.trim()).filter(Boolean))).slice(0, 12),
               expectedResult,
-              modulePath: modulePath.trim(),
+              folderId,
               preconditions,
               priority,
               remarks,
@@ -4026,53 +3927,7 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
           <fieldset className="test-dialog-section">
             <legend>基础信息</legend>
             <Label>用例名称<Input autoFocus maxLength={160} value={title} onChange={(event) => setTitle(event.target.value)} /></Label>
-            <Label>
-              所属模块
-              <div className="test-module-combobox">
-                <Input
-                  maxLength={240}
-                  value={modulePath}
-                  onBlur={() => window.setTimeout(() => setModulePickerOpen(false), 120)}
-                  onChange={(event) => {
-                    setModulePath(event.target.value)
-                    setModulePickerOpen(true)
-                  }}
-                  onFocus={() => setModulePickerOpen(true)}
-                  placeholder="例如：/DevBox/业务/创建"
-                />
-                <button
-                  type="button"
-                  className="test-module-combobox-toggle"
-                  aria-label={modulePickerOpen ? '收起模块列表' : '展开模块列表'}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setModulePickerOpen((current) => !current)}
-                >
-                  <CaretDown size={18} weight="bold" />
-                </button>
-                {modulePickerOpen && folders.length ? (
-                  <div className="test-module-suggestions" role="listbox">
-                    {moduleSuggestions.length ? moduleSuggestions.map((folder) => (
-                      <button
-                        key={folder.id}
-                        type="button"
-                        className="test-module-suggestion"
-                        role="option"
-                        aria-selected={folder.name === modulePath}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          setModulePath(folder.name)
-                          setModulePickerOpen(false)
-                        }}
-                      >
-                        {folder.name}
-                      </button>
-                    )) : (
-                      <div className="test-module-suggestion-empty">没有匹配的模块，可直接输入新模块。</div>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            </Label>
+            <Label>所属目录<DirectoryPicker folders={folders} value={folderId} onChange={setFolderId} /></Label>
             <div className="test-form-grid test-case-classification-grid">
               <Label>用例分类<Select value={caseKind} onValueChange={(value) => setCaseKind(value as TestCase['caseKind'])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="functional">功能用例</SelectItem><SelectItem value="baseline">基线用例</SelectItem></SelectContent></Select></Label>
               <Label>用例等级<Select value={priority} onValueChange={(value) => setPriority(value as Priority)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="high">P0</SelectItem><SelectItem value="medium">P1</SelectItem><SelectItem value="low">P2</SelectItem></SelectContent></Select></Label>
@@ -4089,7 +3944,7 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
           </fieldset>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button type="submit" disabled={busy || !title.trim() || !modulePath.trim()}>{testCase ? '保存修改' : '创建用例'}</Button>
+            <Button type="submit" disabled={busy || !title.trim()}>{testCase ? '保存修改' : '创建用例'}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -4097,22 +3952,8 @@ function CaseDialogForm({ busy, data, onOpenChange, onSubmit, open, spaceId, sub
   )
 }
 
-function escapeCsvCell(value: unknown) {
-  return `"${String(value ?? '').replace(/"/gu, '""')}"`
-}
-
-function downloadTestCaseCsv(cases: TestCase[], folders: TestCaseFolder[]) {
-  const rows = cases.map((testCase) => [
-    testCase.title,
-    folders.find((folder) => folder.id === testCase.folderId)?.name || '未分类',
-    testCase.preconditions,
-    testCase.steps,
-    testCase.expectedResult,
-    testCase.remarks,
-    caseLevelLabel[testCase.priority],
-    testCase.customTags.join('、'),
-  ])
-  const csvContent = `\uFEFF${[testCaseCsvTemplateHeaders, ...rows].map((row) => row.map(escapeCsvCell).join(',')).join('\r\n')}\r\n`
+function downloadTestCaseCsv(cases: TestCase[], folders: TestCaseFolder[], rootId: number | null = null) {
+  const csvContent = buildTestCaseCsv(cases, folders, rootId)
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -4125,7 +3966,7 @@ function downloadTestCaseCsv(cases: TestCase[], folders: TestCaseFolder[]) {
 }
 
 function downloadTestCaseCsvTemplate() {
-  const csvContent = `\uFEFF${testCaseCsvTemplateHeaders.join(',')}\r\n`
+  const csvContent = `\uFEFF${testCaseCsvHeaders.join(',')}\r\n`
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -4137,10 +3978,12 @@ function downloadTestCaseCsvTemplate() {
   URL.revokeObjectURL(url)
 }
 
-function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subject }: {
+export function ImportCasesDialog({ targetFolderId, folders, busy, onOpenChange, onSubmit, open, spaceId, subject }: {
+  targetFolderId: number | null
+  folders: TestCaseFolder[]
   busy: boolean
   onOpenChange: (open: boolean) => void
-  onSubmit: (csvText: string) => Promise<boolean>
+  onSubmit: (csvText: string, directoryMode: 'current' | 'tree') => Promise<boolean>
   open: boolean
   spaceId?: number
   subject?: TestWorkbenchData['subjects'][number]
@@ -4151,8 +3994,15 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
   const [preview, setPreview] = useState<TestCaseImportPreview>()
   const [previewing, setPreviewing] = useState(false)
   const [error, setError] = useState('')
+  const [directoryMode, setDirectoryMode] = useState<'current' | 'tree'>('current')
+  const generation = useRef(0)
+  useEffect(() => () => { generation.current += 1 }, [])
+  const targetIndex = createDirectoryIndex(folders)
+  const targetExists = targetFolderId === null || targetIndex.byId.has(targetFolderId)
+  const targetPath = targetExists ? targetIndex.path(targetFolderId).map(f => f.name).join(' / ') || '根目录 / 未分类' : '目录已删除，请重新选择'
 
   function reset() {
+    generation.current += 1
     setFileName('')
     setCsvText('')
     setPreview(undefined)
@@ -4169,6 +4019,8 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || !spaceId || !subject) return
+    const requestGeneration = ++generation.current
+    setCsvText('')
     setError('')
     setPreview(undefined)
     if (!file.name.toLowerCase().endsWith('.csv')) {
@@ -4183,20 +4035,23 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
     setPreviewing(true)
     try {
       const content = await file.text()
-      const result = await previewTestCaseImport(spaceId, subject.id, content)
+      if (requestGeneration !== generation.current) return
+      const result = await previewTestCaseImport(spaceId, subject.id, content, { directoryMode, targetFolderId })
+      if (requestGeneration !== generation.current) return
       setCsvText(content)
       setPreview(result.preview)
     } catch (previewError) {
+      if (requestGeneration !== generation.current) return
       setCsvText('')
       setError(previewError instanceof Error ? previewError.message : 'CSV 校验失败。')
     } finally {
-      setPreviewing(false)
+      if (requestGeneration === generation.current) setPreviewing(false)
     }
   }
 
   async function confirmImport() {
     if (!csvText || !preview) return
-    const imported = await onSubmit(csvText)
+    const imported = await onSubmit(csvText, directoryMode)
     if (imported) changeOpen(false)
     else setError('导入失败，请根据工作台中的错误提示检查文件。')
   }
@@ -4206,8 +4061,10 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
       <DialogContent fixedHeader className="test-wide-dialog test-import-dialog">
         <DialogHeader>
           <DialogTitle>导入用例</DialogTitle>
-          <DialogDescription>CSV 中的用例将导入到“{subject?.name || '当前测试对象'}”，新模块会自动创建。</DialogDescription>
+          <DialogDescription>目标：{subject?.name} / {targetPath}。提交时会重新校验目录与权限。</DialogDescription>
         </DialogHeader>
+        <Label>导入方式<Select disabled={busy} value={directoryMode} onValueChange={value => { reset(); setDirectoryMode(value as 'current' | 'tree') }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">全部导入当前目录</SelectItem><SelectItem value="tree">按相对目录路径导入</SelectItem></SelectContent></Select></Label>
+        <p>{directoryMode === 'current' ? '忽略文件中的目录列，全部用例放入当前目录。' : '目录路径以 / 分隔；名称中的 / 写为 ~1，~ 写为 ~0。空路径表示当前目录。旧所属模块列作为单个子目录名称。'}</p>
         <div className="test-import-picker">
           <input ref={fileInputRef} hidden accept=".csv,text/csv" type="file" onChange={(event) => void selectFile(event)} />
           <FileCsv size={28} weight="duotone" />
@@ -4223,20 +4080,20 @@ function ImportCasesDialog({ busy, onOpenChange, onSubmit, open, spaceId, subjec
           <div className="test-import-preview">
             <div className="test-import-metrics">
               <span><strong>{preview.rowCount}</strong> 条用例</span>
-              <span><strong>{preview.moduleCount}</strong> 个模块</span>
+              <span><strong>{preview.newDirectoryCount ?? 0}</strong> 个新目录</span><span><strong>{preview.reusedDirectoryCount ?? 0}</strong> 个复用目录</span>
               <span><strong>{preview.levelCounts.P0}</strong> P0</span>
               <span><strong>{preview.levelCounts.P1}</strong> P1</span>
               <span><strong>{preview.levelCounts.P2}</strong> P2</span>
             </div>
             <div className="test-import-samples">
-              <span>内容预览</span>
+              <span>内容预览</span>{preview.samplePaths?.map((path, i) => <small key={`${path}-${i}`}>{path}</small>)}
               {preview.sampleTitles.map((title, index) => <p key={`${title}-${index}`}><code>{index + 1}</code>{title}</p>)}
             </div>
           </div>
         ) : null}
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => changeOpen(false)}>取消</Button>
-          <Button type="button" disabled={busy || previewing || !preview} onClick={() => void confirmImport()}>{busy ? '导入中...' : preview ? `导入 ${preview.rowCount} 条用例` : '确认导入'}</Button>
+          <Button type="button" disabled={busy || previewing || !preview || !targetExists} onClick={() => void confirmImport()}>{busy ? '导入中...' : preview ? `导入 ${preview.rowCount} 条用例` : '确认导入'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -4288,7 +4145,10 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
     .filter((item) => item.testPlanId === plan?.id && item.testCaseId)
     .map((item) => item.testCaseId as number))
   const available = cases.filter((item) => subjectIds.includes(item.testSubjectId) && item.status === 'active' && !existingCaseIds.has(item.id))
-  const availableFolders = folders.filter((folder) => available.some((item) => item.folderId === folder.id))
+  const planDirectoryIndex = createDirectoryIndex(folders)
+  const availableFolderIds = new Set(available.flatMap(item => planDirectoryIndex.path(item.folderId ?? null).map(f => f.id)))
+  const availableFolders = folders.filter(folder => availableFolderIds.has(folder.id))
+  const planScopeIds = caseFolderFilter === 'all' || caseFolderFilter === 'uncategorized' ? new Set<number>() : planDirectoryIndex.descendants(Number(caseFolderFilter))
   const normalizedCaseQuery = caseSearchQuery.trim().toLocaleLowerCase('zh-CN')
   const filteredAvailable = available.filter((item) => {
     const folder = folders.find((candidate) => candidate.id === item.folderId)
@@ -4303,7 +4163,7 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
       item.customTags.join(' '),
     ].some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedCaseQuery))
     const matchesFolder = caseFolderFilter === 'all'
-      || (caseFolderFilter === 'uncategorized' ? !item.folderId : String(item.folderId) === caseFolderFilter)
+      || (caseFolderFilter === 'uncategorized' ? !item.folderId : planScopeIds.has(item.folderId ?? -1))
     return matchesSearch
       && matchesFolder
       && (caseTypeFilter === 'all' || item.caseType === caseTypeFilter)
@@ -4459,7 +4319,7 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
                       <SelectContent>
                         <SelectItem value="all">全部模块</SelectItem>
                         <SelectItem value="uncategorized">未分类</SelectItem>
-                        {availableFolders.map((folder) => <SelectItem key={folder.id} value={String(folder.id)}>{folder.name}</SelectItem>)}
+                        {availableFolders.map((folder) => <SelectItem key={folder.id} value={String(folder.id)}>{planDirectoryIndex.path(folder.id).map(f => f.name).join(' / ')}</SelectItem>)}
                       </SelectContent>
                     </Select>
                     <Select value={caseTypeFilter} onValueChange={setCaseTypeFilter}>

@@ -184,14 +184,14 @@ export function deleteTestSubject(spaceId: number, subjectId: number) {
   })
 }
 
-export function createTestCaseFolder(spaceId: number, payload: { name: string; testSubjectId: number }) {
+export function createTestCaseFolder(spaceId: number, payload: { name: string; testSubjectId: number; parentId?: number | null }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/folders`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateTestCaseFolder(spaceId: number, folderId: number, payload: { name: string }) {
+export function updateTestCaseFolder(spaceId: number, folderId: number, payload: { name?: string; parentId?: number | null }) {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/folders/${folderId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -209,6 +209,7 @@ export function createTestCase(spaceId: number, payload: {
   caseType: TestCaseType
   customTags?: string[]
   expectedResult: string
+  folderId?: number | null
   modulePath?: string
   preconditions: string
   priority: Priority
@@ -228,6 +229,7 @@ export function updateTestCase(spaceId: number, caseId: number, payload: Partial
   caseType: TestCaseType
   customTags: string[]
   expectedResult: string
+  folderId?: number | null
   modulePath?: string
   preconditions: string
   priority: Priority
@@ -248,9 +250,9 @@ export function deleteTestCase(spaceId: number, caseId: number) {
   })
 }
 
-export function previewTestCaseImport(spaceId: number, testSubjectId: number, csvText: string) {
+export function previewTestCaseImport(spaceId: number, testSubjectId: number, csvText: string, options?: { directoryMode: 'current' | 'tree'; targetFolderId: number | null }) {
   return request<{ preview: TestCaseImportPreview }>(
-    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}&preview=true`,
+    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}&preview=true${importDirectoryQuery(options)}`,
     {
       method: 'POST',
       body: csvText,
@@ -259,9 +261,9 @@ export function previewTestCaseImport(spaceId: number, testSubjectId: number, cs
   )
 }
 
-export async function importTestCases(spaceId: number, testSubjectId: number, csvText: string) {
+export async function importTestCases(spaceId: number, testSubjectId: number, csvText: string, options?: { directoryMode: 'current' | 'tree'; targetFolderId: number | null }) {
   const result = await request<{ importedCount: number; workbench: TestWorkbenchData }>(
-    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}`,
+    `/api/test-spaces/${spaceId}/cases/import?testSubjectId=${testSubjectId}${importDirectoryQuery(options)}`,
     {
       method: 'POST',
       body: csvText,
@@ -500,4 +502,15 @@ export function deleteAssignedTestBugComment(organizationId: OrganizationContext
   return request<{ bugs: TestWorkbenchData['bugs']; members: Array<{ id: number; name: string }> }>(withOrganizationContext(`/api/test-bugs/${bugId}/assigned/comments/${commentId}`, organizationId), {
     method: 'DELETE',
   })
+}
+
+function importDirectoryQuery(options?: { directoryMode: 'current' | 'tree'; targetFolderId: number | null }) {
+  return options ? `&directoryMode=${options.directoryMode}${options.targetFolderId === null ? '' : `&targetFolderId=${options.targetFolderId}`}` : ''
+}
+
+export async function moveTestCases(spaceId: number, testSubjectId: number, caseIds: number[], targetFolderId: number | null) {
+  const result = await request<{ movedCount: number; workbench: TestWorkbenchData }>(`/api/test-spaces/${spaceId}/cases/move`, {
+    method: 'POST', body: JSON.stringify({ testSubjectId, caseIds, targetFolderId }),
+  })
+  return result.workbench
 }
