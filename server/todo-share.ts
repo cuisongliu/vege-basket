@@ -258,7 +258,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
       ? todo.due_date.toISOString().slice(0, 10)
       : String(todo.due_date).slice(0, 10),
     mentionableMembers,
-    moduleName: todo.module_name || null,
+    moduleName: todo.module_name ? decryptText(todo.module_name) : null,
     notes: notes.rows.map((note) => ({
       authorName: publicDisplayName(note.author_display_name),
       authorUserId: note.author_user_id ? Number(note.author_user_id) : undefined,

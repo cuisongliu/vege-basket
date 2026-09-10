@@ -97,6 +97,8 @@ export type ProjectModule = {
   projectId: number
   name: string
   createdAt: string
+  selectable: boolean
+  unavailableReason?: 'disabled' | 'legacy'
 }
 
 export type TodoNote = {
@@ -494,6 +496,7 @@ export type Project = {
   ownerName: string
   ownerUserId: number
   organizationId?: number | null
+  moduleManagement: 'organization' | 'project'
   canManageOrganizationTodos?: boolean
   canUpdateOrganizationTodoFields?: boolean
   readOnly?: boolean

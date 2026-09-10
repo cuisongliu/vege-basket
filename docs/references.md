@@ -163,6 +163,7 @@ families are:
 | Feishu webhooks | `/api/integrations/feishu/conversation-analysis`, `/api/integrations/feishu/events` |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
 | Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, test-environment `POST/PATCH/DELETE /api/organizations/:organizationId/test-environments(/:environmentId)`, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, weekly summaries, and the dedicated package-market catalog/policy settings Tab |
+| Organization project modules | `POST /api/organizations/:organizationId/project-modules` with `{ name }`; `PATCH .../project-modules/:moduleId` with nonempty `{ name?, enabled? }`; returns `OrganizationDetail` (201/200). Requires `organization_admin` and active organization owner/admin. Names trim to 1–40 characters, exact case-sensitive uniqueness including disabled names. Invalid input 400; permission change 403; missing nested resource 404; duplicate/legacy rename collision 409. |
 | Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, the shared four-section editor/AI template, cursor-position source insertion, draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Test workbench | `GET /api/test-workbench`, owner-managed `/api/test-spaces/*` including optional organization assignment on create/update, direct-member owner-or-Bug-creator `PATCH /api/test-spaces/:spaceId/version`, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, creator-only `DELETE /api/test-spaces/:spaceId/bugs/:bugId`, environment-bound Bugs, comments, and author-owned comment edits/deletions |
 | Test-space collaboration | `GET /api/test-spaces/settings`, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
@@ -171,6 +172,14 @@ families are:
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
 must remain bound to the authorized project ID.
+
+Organization detail includes `projectModules: { id, name, enabled, createdAt, updatedAt }[]`
+and `canManageProjectModules`. Workspace projects expose `moduleManagement: 'organization' | 'project'`;
+each project module has `selectable` and optional `unavailableReason: 'disabled' | 'legacy'`.
+Todo `moduleId` remains the project-local mapping ID, never the organization catalog ID.
+New selections and AI confirmation reject unavailable modules with 409 `PROJECT_MODULE_UNAVAILABLE`;
+updates may retain the locked todo's unchanged historical module or clear it. Personal module
+create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANAGED_BY_ORGANIZATION`.
 
 ## Data And Status Contracts
 

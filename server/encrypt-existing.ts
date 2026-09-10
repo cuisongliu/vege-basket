@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { pool, query } from './db.ts'
 import { schemaSql } from './schema.ts'
+import { initializeProjectModules } from './project-modules.ts'
 import { blindIndex, decryptText, encryptJson, encryptText, isEncryptedText } from './crypto.ts'
 
 function maybeEncrypt(value: string) {
@@ -121,6 +122,7 @@ async function encryptTestSpaceVersionFields() {
 
 async function main() {
   await query(schemaSql)
+  await initializeProjectModules(pool, true)
 
   const projects = await query<{ id: string; name: string; tags: string[]; tags_encrypted: string | null }>(
     'select id, name, tags, tags_encrypted from projects',

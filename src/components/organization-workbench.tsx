@@ -107,6 +107,7 @@ import {
 import { Textarea } from './ui/textarea'
 import { UserName } from './user-name'
 import { OrganizationPackageMarketPanel } from './organization-package-market-panel'
+import { OrganizationProjectModulesPanel } from './organization-project-modules-panel'
 import './organization-workbench.css'
 
 type OrganizationTab = 'overview' | 'projects' | 'testSpaces' | 'testEnvironments' | 'members' | 'reports' | 'packageMarket'
@@ -306,11 +307,13 @@ function buildOrganizationInviteUrl(token: string) {
 export function OrganizationWorkbench({
   currentUser,
   onOrganizationsChanged,
+  onProjectModulesChanged,
   onPackageMarketVisibilityChange,
   refreshToken = 0,
 }: {
   currentUser: AuthUser
   onOrganizationsChanged?: () => void
+  onProjectModulesChanged?: () => void
   onPackageMarketVisibilityChange?: (organizationId: number, enabled: boolean) => void
   refreshToken?: number
 }) {
@@ -866,10 +869,10 @@ export function OrganizationWorkbench({
                   <GearSix size={17} />
                 </Button>
               </DialogTrigger>
-              <DialogContent className="organization-settings-dialog">
+              <DialogContent className="organization-settings-dialog" fixedHeader>
                 <DialogHeader>
                   <DialogTitle>组织设置</DialogTitle>
-                  <DialogDescription>修改组织名称，或处理不可逆的组织删除操作。</DialogDescription>
+                  <DialogDescription>管理组织名称、项目模块与组织删除。</DialogDescription>
                 </DialogHeader>
                 {organizationSettingsError ? (
                   <div className="organization-error" role="alert">{organizationSettingsError}</div>
@@ -893,6 +896,18 @@ export function OrganizationWorkbench({
                     </Button>
                   </div>
                 </form>
+                {detail.canManageProjectModules ? (
+                  <OrganizationProjectModulesPanel
+                    key={detail.id}
+                    organizationId={detail.id}
+                    modules={detail.projectModules}
+                    disabled={busy}
+                    onSaved={(nextDetail) => {
+                      setDetail(current => current?.id === nextDetail.id ? nextDetail : current)
+                      onProjectModulesChanged?.()
+                    }}
+                  />
+                ) : null}
                 <section className="organization-danger-zone" aria-labelledby="organization-danger-title">
                   <div>
                     <strong id="organization-danger-title">删除组织</strong>

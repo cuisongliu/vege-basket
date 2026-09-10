@@ -610,6 +610,24 @@ export function updateOrganization(organizationId: number, name: string) {
   })
 }
 
+export function createOrganizationProjectModule(organizationId: number, name: string) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/project-modules`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function updateOrganizationProjectModule(
+  organizationId: number,
+  moduleId: number,
+  payload: { name?: string; enabled?: boolean },
+) {
+  return request<OrganizationDetail>(`/api/organizations/${organizationId}/project-modules/${moduleId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function updateOrganizationWeekStart(organizationId: number, weekStartsOn: number) {
   return request<OrganizationDetail>(`/api/organizations/${organizationId}/week-start`, {
     method: 'PATCH',

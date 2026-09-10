@@ -294,6 +294,7 @@ import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
+import { ProjectModulePicker } from './components/project-module-picker'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import { MarkdownPreview } from './components/markdown-preview'
@@ -1538,6 +1539,7 @@ const initialProjects: Project[] = [
   {
     id: 1,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: 'AIGC 内容工作台',
     description: '',
     ownerName: 'Felix',
@@ -1573,6 +1575,7 @@ const initialProjects: Project[] = [
   {
     id: 2,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '数据看板重构',
     description: '',
     ownerName: 'Felix',
@@ -1599,6 +1602,7 @@ const initialProjects: Project[] = [
   {
     id: 3,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '内部知识库迁移',
     description: '',
     ownerName: 'Felix',
@@ -1625,6 +1629,7 @@ const initialProjects: Project[] = [
   {
     id: 4,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '支付链路稳定性',
     description: '',
     ownerName: 'Felix',
@@ -5133,7 +5138,7 @@ ${packageTimelineText}`
                       交付工作台
                     </Button>
                   )}
-                  {view === 'project' && selectedProject?.accessRole === 'owner' && (
+                  {view === 'project' && selectedProject?.accessRole === 'owner' && selectedProject.moduleManagement === 'project' && (
                     <Dialog
                       open={isProjectModulesDialogOpen}
                       onOpenChange={setIsProjectModulesDialogOpen}
@@ -5401,6 +5406,11 @@ ${packageTimelineText}`
           <OrganizationWorkbench
             currentUser={authUser}
             onOrganizationsChanged={() => setOrganizationRefreshVersion((current) => current + 1)}
+            onProjectModulesChanged={() => {
+              workspaceMutationEpochRef.current += 1
+              // Discard any workspace fetch begun before this catalog mutation.
+              void Promise.resolve(workspaceRefreshPromiseRef.current).then(() => refreshWorkspace())
+            }}
             onPackageMarketVisibilityChange={(organizationId, enabled) => {
               setOrganizations((current) => current.map((organization) => (
                 organization.id === organizationId
@@ -6747,7 +6757,7 @@ function ProjectDetail({
                   mode="create"
                   moduleId={todoModuleId}
                   modules={projectModules}
-                  canCreateModule={isOwner}
+                  canCreateModule={isOwner && project.moduleManagement === 'project'}
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
@@ -8489,171 +8499,6 @@ function ProjectMemberMultiPicker({
           })}
         </DropdownMenuContent>
       </DropdownMenu>
-    </span>
-  )
-}
-
-function ProjectModulePicker({
-  canCreate = false,
-  compact = false,
-  disabled = false,
-  modules,
-  onChange,
-  onCreate,
-  value,
-}: {
-  canCreate?: boolean
-  compact?: boolean
-  disabled?: boolean
-  modules: ProjectModule[]
-  onChange: (id: number | null) => void
-  onCreate?: (name: string) => Promise<ProjectModule | null>
-  value: number | null
-}) {
-  const [selectOpen, setSelectOpen] = useState(false)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [moduleName, setModuleName] = useState('')
-  const [createError, setCreateError] = useState('')
-  const [creating, setCreating] = useState(false)
-  const selectedModule = modules.find((module) => module.id === value)
-  const createModuleValue = '__create_module__'
-
-  async function createInlineModule() {
-    const nextName = moduleName.trim()
-    if (!nextName || !onCreate || creating) return
-    const existingModule = modules.find((module) => module.name === nextName)
-    if (existingModule) {
-      onChange(existingModule.id)
-      setModuleName('')
-      setCreateError('')
-      setCreateOpen(false)
-      return
-    }
-
-    setCreating(true)
-    setCreateError('')
-    try {
-      const createdModule = await onCreate(nextName)
-      if (!createdModule) {
-        setCreateError('模块创建失败，请重试。')
-        return
-      }
-      onChange(createdModule.id)
-      setModuleName('')
-      setCreateOpen(false)
-    } catch {
-      setCreateError('模块创建失败，请重试。')
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  function selectModule(nextValue: string) {
-    if (nextValue === createModuleValue) {
-      setSelectOpen(false)
-      setCreateOpen(true)
-      setCreateError('')
-      return
-    }
-    onChange(nextValue === 'none' ? null : Number(nextValue))
-    setCreateOpen(false)
-    setModuleName('')
-    setCreateError('')
-  }
-
-  return (
-    <span className={compact ? 'member-picker compact' : 'member-picker project-module-picker'}>
-      <Select
-        disabled={disabled}
-        open={selectOpen}
-        value={value ? String(value) : 'none'}
-        onOpenChange={(open) => {
-          setSelectOpen(open)
-          if (open) {
-            setCreateOpen(false)
-            setModuleName('')
-            setCreateError('')
-          }
-        }}
-        onValueChange={selectModule}
-      >
-        <SelectTrigger aria-label="待办所属模块">
-          <SelectValue placeholder="选择模块">
-            {compact && selectedModule ? selectedModule.name : compact ? '无模块' : undefined}
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {canCreate && onCreate ? (
-            <>
-              <SelectItem className="project-module-create-option" value={createModuleValue}>
-                <span><Plus size={15} /> 新增模块</span>
-              </SelectItem>
-              <SelectSeparator />
-            </>
-          ) : null}
-          <SelectItem value="none">无模块</SelectItem>
-          {modules.map((module) => (
-            <SelectItem key={module.id} value={String(module.id)}>
-              {module.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {canCreate && onCreate && createOpen ? (
-        <span className="project-module-inline-create">
-          <Input
-            autoFocus
-            aria-invalid={Boolean(createError)}
-            aria-label="新模块名称"
-            disabled={creating}
-            maxLength={40}
-            placeholder="输入模块名称"
-            value={moduleName}
-            onChange={(event) => {
-              setModuleName(event.target.value)
-              if (createError) setCreateError('')
-            }}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                void createInlineModule()
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setCreateOpen(false)
-                setModuleName('')
-                setCreateError('')
-              }
-            }}
-          />
-          <Button
-            className="project-module-inline-submit"
-            type="button"
-            disabled={!moduleName.trim() || creating}
-            onClick={() => void createInlineModule()}
-          >
-            <Plus size={14} />
-            {creating ? '新增中' : '新增'}
-          </Button>
-          <Button
-            className="project-module-inline-cancel"
-            type="button"
-            variant="outline"
-            aria-label="取消新增模块"
-            title="取消新增模块"
-            disabled={creating}
-            onClick={() => {
-              setCreateOpen(false)
-              setModuleName('')
-              setCreateError('')
-            }}
-          >
-            <X size={14} />
-          </Button>
-          {createError ? <small role="alert">{createError}</small> : null}
-        </span>
-      ) : null}
     </span>
   )
 }
@@ -11323,6 +11168,7 @@ function TodoPropertiesPanel({
         <div className="todo-property-row">
           <span>所属模块</span>
           <ProjectModulePicker
+            organizationManaged={project.moduleManagement === 'organization'}
             disabled={!canEdit}
             modules={modules}
             value={moduleId}
@@ -11632,6 +11478,7 @@ function TodoEditorDialog({
               <div className="todo-editor-field todo-inline-field-half">
                 <span>所属模块</span>
                 <ProjectModulePicker
+                  organizationManaged={project.moduleManagement === 'organization'}
                   canCreate={isCreateMode && canCreateModule}
                   modules={modules}
                   value={moduleId}

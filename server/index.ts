@@ -111,6 +111,12 @@ import type {
 } from './project-package-timeline.ts'
 import { schemaSql } from './schema.ts'
 import {
+  createPersonalProjectModule, initializeProjectModules, lockOrganizationModuleCatalog,
+  lockProjectModules, parseProjectModuleId, ProjectModuleError, requirePersonalProjectModuleManagement,
+  requireProjectModuleName, resolveProjectModuleId, syncOrganizationProjectModules,
+} from './project-modules.ts'
+import { projectModuleAvailability, type ProjectModuleAvailability } from '../shared/project-modules.ts'
+import {
   buildAiClassificationContent,
   deriveAiIntentTargetContext,
 } from '../shared/ai-input-intent.ts'
@@ -329,6 +335,9 @@ type AccountOffboardingNotificationSummary = {
 type ProjectModuleRow = {
   id: string
   project_id: string
+  organization_id: string | null
+  module_organization_id: string | null
+  module_enabled: boolean | null
   name: string
   created_at: Date
 }
@@ -2001,6 +2010,7 @@ async function createAiAgentResponse(
 async function buildAiTodoProposalCatalog(
   userId: number,
   projectId?: number,
+  purpose: 'generation' | 'confirmation' = 'generation',
 ): Promise<AiTodoProposalCatalog> {
   const workspace = await getWorkspace(userId)
   return {
@@ -2020,7 +2030,7 @@ async function buildAiTodoProposalCatalog(
         return {
           assignees: Array.from(assignees, ([id, name]) => ({ id, name })),
           id: project.id,
-          modules: project.modules.map((module) => ({
+          modules: project.modules.filter((module) => purpose === 'confirmation' || module.selectable).map((module) => ({
             id: Number(module.id),
             name: module.name,
           })),
@@ -2061,15 +2071,7 @@ async function lockAiTodoProposalTarget(
       throw new AiConversationStoreError('AI_PROJECT_NOT_FOUND', 'Project not found', 404)
     }
   }
-  if (proposal.moduleId) {
-    const module = await client.query<{ id: string }>(
-      `select id from project_modules where id = $1 and project_id = $2 for share`,
-      [proposal.moduleId, projectId],
-    )
-    if (!module.rows[0]) {
-      throw new AiTodoProposalValidationError('Todo module does not belong to the selected project')
-    }
-  }
+  await resolveProjectModuleId(client, projectId, proposal.moduleId)
   if (proposal.assigneeUserId && proposal.assigneeUserId !== ownerUserId) {
     const assignee = await client.query<{ id: string }>(
       `
@@ -2610,6 +2612,7 @@ async function streamAiConversationTurn(
 
 function sendAiConversationError(response: express.Response, error: unknown) {
   if (
+    error instanceof ProjectModuleError ||
     error instanceof AiConversationValidationError ||
     error instanceof AiConversationStoreError ||
     error instanceof AiIntentRoutingStoreError ||
@@ -4028,26 +4031,6 @@ async function ensureProjectMemberUserIds(
   return userIds
 }
 
-async function ensureProjectModuleId(
-  moduleId: unknown,
-  projectId: number,
-) {
-  if (moduleId == null || moduleId === '') return null
-  const normalizedModuleId = Number(moduleId)
-  if (!Number.isFinite(normalizedModuleId) || normalizedModuleId <= 0) return null
-  const result = await query<{ id: string }>(
-    `
-    select id
-    from project_modules
-    where id = $1
-      and project_id = $2
-    limit 1
-    `,
-    [normalizedModuleId, projectId],
-  )
-  return result.rows[0] ? normalizedModuleId : null
-}
-
 async function listProjectMentionableUsers(projectId: number) {
   const result = await query<{
     user_id: string
@@ -4235,10 +4218,14 @@ async function getWorkspace(userId: number) {
       `
       select pm.id,
              pm.project_id,
+             p.organization_id,
+             module.organization_id as module_organization_id,
+             module.enabled as module_enabled,
              pm.name,
              pm.created_at
       from project_modules pm
       join projects p on p.id = pm.project_id
+      left join organization_project_modules module on module.id = pm.organization_module_id
       left join project_memberships membership
         on membership.project_id = p.id
        and membership.status = 'active'
@@ -4617,7 +4604,7 @@ async function getWorkspace(userId: number) {
 
   const modulesByProject = new Map<
     number,
-    Array<{
+    Array<ProjectModuleAvailability & {
       id: number
       projectId: number
       name: string
@@ -4630,8 +4617,13 @@ async function getWorkspace(userId: number) {
     modules.push({
       id: Number(row.id),
       projectId,
-      name: row.name,
+      name: decryptText(row.name),
       createdAt: formatDateTime(row.created_at),
+      ...projectModuleAvailability(
+        row.organization_id ? Number(row.organization_id) : null,
+        row.module_organization_id ? Number(row.module_organization_id) : null,
+        row.module_enabled ?? false,
+      ),
     })
     modulesByProject.set(projectId, modules)
   }
@@ -4678,6 +4670,7 @@ async function getWorkspace(userId: number) {
       id: Number(project.id),
       accessRole: project.access_role,
       organizationId: project.organization_id ? Number(project.organization_id) : null,
+      moduleManagement: project.organization_id ? 'organization' as const : 'project' as const,
       readOnly: project.organization_admin_read_only,
       canManageOrganizationTodos: project.can_manage_organization_todos,
       canUpdateOrganizationTodoFields: project.can_update_organization_todo_fields,
@@ -4768,7 +4761,7 @@ async function getWorkspace(userId: number) {
       confirmationStatus: todo.confirmation_status,
       linkedToDeliveryEvent: todo.linked_to_delivery_event,
       moduleId: todo.project_module_id ? Number(todo.project_module_id) : undefined,
-      moduleName: todo.module_name ?? undefined,
+      moduleName: todo.module_name ? decryptText(todo.module_name) : undefined,
       notes: todoNotesByTodo.get(Number(todo.id)) ?? [],
       })
     }),
@@ -5694,7 +5687,7 @@ async function getNotifications(userId: number) {
       done: todo.done,
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
-      moduleName: todo.module_name ?? undefined,
+      moduleName: todo.module_name ? decryptText(todo.module_name) : undefined,
       priority: todo.priority,
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
@@ -5740,7 +5733,7 @@ async function getNotifications(userId: number) {
       done: todo.done,
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
-      moduleName: todo.module_name ?? undefined,
+      moduleName: todo.module_name ? decryptText(todo.module_name) : undefined,
       priority: todo.priority,
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
@@ -5765,7 +5758,7 @@ async function getNotifications(userId: number) {
       ...stateFor('todo_due_tomorrow', todo.id),
       dueDate: formatDate(todo.due_date),
       id: Number(todo.id),
-      moduleName: todo.module_name ?? undefined,
+      moduleName: todo.module_name ? decryptText(todo.module_name) : undefined,
       priority: todo.priority,
       projectId: Number(todo.project_id),
       projectName: decryptText(todo.project_name),
@@ -5785,7 +5778,7 @@ async function getNotifications(userId: number) {
         : '未知用户',
       noteId: Number(note.note_id),
       notePreview: decryptText(note.content).slice(0, 120),
-      moduleName: note.module_name ?? undefined,
+      moduleName: note.module_name ? decryptText(note.module_name) : undefined,
       priority: note.priority,
       projectId: Number(note.project_id),
       projectName: decryptText(note.project_name),
@@ -9392,33 +9385,44 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
   const organizationId = Number.isSafeInteger(requestedOrganizationId) && requestedOrganizationId > 0
     ? requestedOrganizationId
     : null
-  if (organizationId) {
-    const membership = await query<{ id: string }>(
-      `select organization_id as id from organization_memberships
-       where organization_id = $1 and user_id = $2 and status = 'active'`,
-      [organizationId, userId],
-    )
-    if (!membership.rows[0]) {
-      response.status(404).json({ error: 'Organization not found' })
-      return
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    if (organizationId) {
+      await lockOrganizationModuleCatalog(client, organizationId)
+      const membership = await client.query(
+        `select organization_id from organization_memberships
+         where organization_id = $1 and user_id = $2 and status = 'active' for share`,
+        [organizationId, userId],
+      )
+      if (!membership.rows[0]) {
+        await client.query('rollback')
+        response.status(404).json({ error: 'Organization not found' })
+        return
+      }
     }
+    const result = await client.query<{ id: string }>(
+      `insert into projects (user_id, organization_id, name, status, tags, tags_encrypted)
+       values ($1, $2, $3, 'active', '{}', $4) returning id`,
+      [userId, organizationId, encryptText(name), encryptTags(tags.length ? tags : ['新项目'])],
+    )
+    const projectId = Number(result.rows[0].id)
+    if (organizationId) {
+      await lockProjectModules(client, projectId)
+      await syncOrganizationProjectModules(client, organizationId, projectId)
+    }
+    await client.query(
+      `insert into journal_entries (project_id, content, author_user_id, visibility)
+       values ($1, $2, $3, 'private')`,
+      [projectId, encryptText('项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'), userId],
+    )
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
   }
-  const result = await query<{ id: string }>(
-    `
-    insert into projects (user_id, organization_id, name, status, tags, tags_encrypted)
-    values ($1, $2, $3, 'active', '{}', $4)
-    returning id
-    `,
-    [userId, organizationId, encryptText(name), encryptTags(tags.length ? tags : ['新项目'])],
-  )
-  const projectId = Number(result.rows[0].id)
-  await query(
-    `
-    insert into journal_entries (project_id, content, author_user_id, visibility)
-    values ($1, $2, $3, 'private')
-    `,
-    [projectId, encryptText('项目已创建。可以从这里开始记录今天的进展、重点内容和最新方案。'), userId],
-  )
 
   response.status(201).json(await getWorkspace(userId))
 }))
@@ -10389,23 +10393,20 @@ app.post('/api/projects/:projectId/modules', asyncHandler(async (request, respon
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can manage modules' })
-    return
+  const name = requireProjectModuleName(request.body.name)
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await lockProjectModules(client, projectId)
+    await requirePersonalProjectModuleManagement(client, projectId, userId)
+    await createPersonalProjectModule(client, projectId, name)
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
   }
-  const name = String(request.body.name ?? '').trim().slice(0, 40)
-  if (!name) {
-    response.status(400).json({ error: 'Module name is required' })
-    return
-  }
-  await query(
-    `
-    insert into project_modules (project_id, name)
-    values ($1, $2)
-    on conflict (project_id, name) do nothing
-    `,
-    [projectId, name],
-  )
   response.status(201).json(await getWorkspace(userId))
 }))
 
@@ -10413,24 +10414,25 @@ app.delete('/api/projects/:projectId/modules/:moduleId', asyncHandler(async (req
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
-  const moduleId = Number(request.params.moduleId)
+  const moduleId = parseProjectModuleId(request.params.moduleId)
   const access = await getProjectAccess(projectId, userId)
   if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can manage modules' })
-    return
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await lockProjectModules(client, projectId)
+    await requirePersonalProjectModuleManagement(client, projectId, userId)
+    await client.query('delete from project_modules where id = $1 and project_id = $2', [moduleId, projectId])
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
   }
-  await query(
-    `
-    delete from project_modules
-    where id = $1
-      and project_id = $2
-    `,
-    [moduleId, projectId],
-  )
   response.json(await getWorkspace(userId))
 }))
 
@@ -10549,7 +10551,7 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     response.status(400).json({ error: 'Todo reviewer must be an active project member' })
     return
   }
-  const moduleId = await ensureProjectModuleId(request.body.moduleId, projectId)
+  const requestedModuleId = parseProjectModuleId(request.body.moduleId)
   let createdAt: string | null
   try {
     createdAt = parseTodoCreatedDate(request.body.createdAt)
@@ -10567,6 +10569,8 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
   let createdTodoMentionIds: number[]
   try {
     await client.query('begin')
+    await lockProjectModules(client, projectId)
+    const moduleId = await resolveProjectModuleId(client, projectId, requestedModuleId)
     const createdTodo = await client.query<{ id: string }>(
       `
       insert into todos (
@@ -10822,10 +10826,8 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     'assigneeUserId' in request.body
       ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
       : undefined
-  const nextModuleId =
-    canManageTodoFields && 'moduleId' in request.body
-      ? await ensureProjectModuleId(request.body.moduleId, projectId)
-      : undefined
+  const moduleFieldRequested = canManageTodoFields && 'moduleId' in request.body
+  const requestedModuleId = moduleFieldRequested ? parseProjectModuleId(request.body.moduleId) : undefined
   const watcherFieldRequested = canManageTodoFields && (
     'watcherUserIds' in request.body || 'watcherUserId' in request.body
   )
@@ -10892,15 +10894,17 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   let acceptanceNoteId: number | null = null
   try {
     await client.query('begin')
+    await lockProjectModules(client, projectId)
     const lockedTodoResult = await client.query<{
       assignee_user_id: string | null
       organization_id: string | null
+      project_module_id: string | null
       reviewer_user_id: string | null
       confirmation_status: TodoConfirmationStatus
       done: boolean
     }>(
       `
-      select t.assignee_user_id, p.organization_id, t.reviewer_user_id, t.confirmation_status, t.done
+      select t.assignee_user_id, p.organization_id, t.project_module_id, t.reviewer_user_id, t.confirmation_status, t.done
       from todos t
       join projects p on p.id = t.project_id
       where t.id = $1
@@ -10915,6 +10919,10 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
       response.status(404).json({ error: 'Todo not found' })
       return
     }
+    const nextModuleId = moduleFieldRequested
+      ? await resolveProjectModuleId(client, projectId, requestedModuleId,
+        lockedTodo.project_module_id ? Number(lockedTodo.project_module_id) : null)
+      : undefined
     if (systemAdminTodoAccess && lockedTodo.organization_id == null) {
       await client.query('rollback')
       response.status(403).json({ error: 'System administrator todo access is no longer available' })
@@ -12841,6 +12849,7 @@ async function confirmAiTodoProposalBatch(
     const catalog = await buildAiTodoProposalCatalog(
       userId,
       contextProjectId ?? undefined,
+      'confirmation',
     )
     if (contextProjectId && catalog.projects.length === 0) {
       throw new AiConversationStoreError('AI_PROJECT_NOT_FOUND', 'Project not found', 404)
@@ -13419,6 +13428,10 @@ app.get(/^(?!\/api).*/, (_request, response) => {
 
 app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
   void next
+  if (error instanceof ProjectModuleError) {
+    response.status(error.status).json({ error: error.message, code: error.code })
+    return
+  }
   if (error instanceof OrganizationPackageMarketPolicyError) {
     response.status(error.status).json({ error: error.message, code: error.code })
     return
@@ -13436,6 +13449,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 
 assertEncryptionConfigured()
 await query(schemaSql)
+await initializeProjectModules(pool)
 
 app.listen(port, () => {
   console.log(`API server listening on http://127.0.0.1:${port}`)
