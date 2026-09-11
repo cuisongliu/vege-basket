@@ -243,6 +243,14 @@ The membership row also stores the organization's long-lived weekly-report assig
 changes replace that assignee set immediately: only current assignees may create, generate, save,
 or submit reports, while prior personal reports remain readable. Collection, reminders, and
 organization summaries derive from the same active assignee set.
+Weekly-report display order is organization-scoped and stored separately in the nullable
+`organization_memberships.weekly_report_sort_order` column. Saving rules replaces both
+assignment and position in one transaction. Collection and the ordered assignee DTO use
+position, then the existing lowercased display-name/username key, then user ID; unranked
+members sort last. Rejoining members have their old position cleared. General organization
+membership lists retain their role-based order. Rule examples use the shared report-window
+calculation, with day numbers relative to the organization's week start and deadlines in the
+following period; invalid drafts never fall back to an example of the default rules.
 
 External entry points have separate trust boundaries:
 
