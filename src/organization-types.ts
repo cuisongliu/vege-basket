@@ -206,6 +206,7 @@ export type OrganizationDetail = {
   tasks: OrganizationTask[]
   testEnvironments: OrganizationTestEnvironment[]
   testSpaces: OrganizationTestSpace[]
+  weeklyReportAssigneeUserIds: number[]
   weeklyReportRules: WeeklyReportRules
   weekStartsOn: number
 }
