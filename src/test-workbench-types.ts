@@ -253,6 +253,11 @@ export type TestBug = {
   reproductionSteps: string
   severity: BugSeverity
   status: BugStatus
+  testCaseId?: number
+  testCaseTitle?: string
+  testCaseFolderId?: number
+  testCaseFolderName?: string
+  testCaseDirectoryPath?: Array<{ id: number; name: string }>
   testPlanCaseId?: number
   testPlanId?: number
   testPlanName?: string
