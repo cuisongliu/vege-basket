@@ -294,6 +294,8 @@ import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import { fetchAssignedTestBugs } from './test-workbench-api'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
+import { ProjectSubprojectsPanel } from './components/project-subprojects-panel'
+import { ProjectModulePicker } from './components/project-module-picker'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ImageSyncWorkbench } from './components/image-sync-workbench'
 import { MarkdownPreview } from './components/markdown-preview'
@@ -522,12 +524,13 @@ function formatAiMessageTime(value: string) {
 }
 type TodoUpdatePayload = Omit<
   Partial<Todo>,
-  'assigneeUserId' | 'moduleId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'
+  'assigneeUserId' | 'moduleId' | 'subprojectId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'
 > & {
   assigneeUserId?: number | null
   createdAt?: string
   acceptanceNote?: string
   moduleId?: number | null
+  subprojectId?: number | null
   rejectionReason?: string
   reviewerUserId?: number | null
   watcherUserId?: number | null
@@ -601,6 +604,7 @@ const appViews = [
 ] as const
 
 type TodoCreateDraftSnapshot = {
+  subprojectId: number | null
   assigneeUserId: number | null
   watcherUserIds: number[]
   reviewerUserId: number | null
@@ -738,6 +742,7 @@ function getDefaultTodoCreateDraft(): TodoCreateDraftSnapshot {
     draft: '',
     dueDate: today,
     moduleId: null,
+    subprojectId: null,
     priority: 'medium',
   }
 }
@@ -805,6 +810,7 @@ function loadTodoCreateDraft(projectId: number, userId?: number) {
       draft: typeof parsed.draft === 'string' ? parsed.draft : '',
       dueDate: typeof parsed.dueDate === 'string' && parsed.dueDate ? parsed.dueDate : today,
       moduleId: normalizeNullableNumber(parsed.moduleId),
+      subprojectId: normalizeNullableNumber(parsed.subprojectId),
       priority: isPriority(parsed.priority) ? parsed.priority : 'medium',
     }
   } catch {
@@ -822,6 +828,7 @@ function isTodoCreateDraftEmpty(draft: TodoCreateDraftSnapshot) {
     draft.assigneeUserId == null &&
     draft.watcherUserIds.length === 0 &&
     draft.reviewerUserId == null &&
+    draft.subprojectId == null &&
     draft.moduleId == null
   )
 }
@@ -1538,6 +1545,7 @@ const initialProjects: Project[] = [
   {
     id: 1,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: 'AIGC 内容工作台',
     description: '',
     ownerName: 'Felix',
@@ -1549,6 +1557,7 @@ const initialProjects: Project[] = [
     risks: ['模型输出质量波动，需要确认评估标准'],
     riskJournalEntryIds: [101],
     modules: [],
+    subprojects: [],
     journals: [
       {
         id: 101,
@@ -1573,6 +1582,7 @@ const initialProjects: Project[] = [
   {
     id: 2,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '数据看板重构',
     description: '',
     ownerName: 'Felix',
@@ -1584,6 +1594,7 @@ const initialProjects: Project[] = [
     risks: ['旧指标口径不一致，可能影响上线验收'],
     riskJournalEntryIds: [201],
     modules: [],
+    subprojects: [],
     journals: [
       {
         id: 201,
@@ -1599,6 +1610,7 @@ const initialProjects: Project[] = [
   {
     id: 3,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '内部知识库迁移',
     description: '',
     ownerName: 'Felix',
@@ -1610,6 +1622,7 @@ const initialProjects: Project[] = [
     risks: ['历史文档质量参差，自动整理前需要抽样检查'],
     riskJournalEntryIds: [301],
     modules: [],
+    subprojects: [],
     journals: [
       {
         id: 301,
@@ -1625,6 +1638,7 @@ const initialProjects: Project[] = [
   {
     id: 4,
     accessRole: 'owner',
+    moduleManagement: 'project',
     name: '支付链路稳定性',
     description: '',
     ownerName: 'Felix',
@@ -1636,6 +1650,7 @@ const initialProjects: Project[] = [
     risks: [],
     riskJournalEntryIds: [],
     modules: [],
+    subprojects: [],
     journals: [
       {
         id: 401,
@@ -1848,6 +1863,7 @@ function App() {
   const [todoWatcherUserIds, setTodoWatcherUserIds] = useState<number[]>([])
   const [todoReviewerUserId, setTodoReviewerUserId] = useState<number | null>(null)
   const [todoModuleId, setTodoModuleId] = useState<number | null>(null)
+  const [todoSubprojectId, setTodoSubprojectId] = useState<number | null>(null)
   const isLoadingTodoCreateDraftRef = useRef(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectTags, setNewProjectTags] = useState('')
@@ -2710,6 +2726,7 @@ function App() {
     setTodoWatcherUserIds(draft.watcherUserIds)
     setTodoReviewerUserId(draft.reviewerUserId)
     setTodoModuleId(draft.moduleId)
+    setTodoSubprojectId(draft.subprojectId)
   }, [authUser?.id, selectedProjectDraftId])
 
   useEffect(() => {
@@ -2727,6 +2744,7 @@ function App() {
       draft: todoDraft,
       dueDate: todoDueDate,
       moduleId: todoModuleId,
+      subprojectId: todoSubprojectId,
       priority: todoPriority,
     })
   }, [
@@ -2741,6 +2759,7 @@ function App() {
     todoDueDate,
     todoModuleId,
     todoPriority,
+    todoSubprojectId,
   ])
 
   useEffect(() => {
@@ -3521,6 +3540,7 @@ function App() {
         reviewerUserId: todoReviewerUserId ?? undefined,
         detail: todoDetailDraft,
         moduleId: todoModuleId ?? undefined,
+        subprojectId: todoSubprojectId,
         projectId: targetProjectId,
         title,
         createdAt: todoCreatedAt || undefined,
@@ -3530,6 +3550,7 @@ function App() {
     )
     if (!data) return
     clearTodoCreateDraft(projectId ?? targetProjectId, authUser?.id)
+    setTodoSubprojectId(null)
     setTodoDraft('')
     setTodoDetailDraft('')
     setTodoDueDate(today)
@@ -3542,6 +3563,7 @@ function App() {
   }
 
   function clearTodoCreateDraftState(projectId?: number) {
+    setTodoSubprojectId(null)
     const targetProjectId = projectId ?? selectedProject?.id
     if (targetProjectId) {
       clearTodoCreateDraft(targetProjectId, authUser?.id)
@@ -5133,7 +5155,7 @@ ${packageTimelineText}`
                       交付工作台
                     </Button>
                   )}
-                  {view === 'project' && selectedProject?.accessRole === 'owner' && (
+                  {view === 'project' && selectedProject?.accessRole === 'owner' && selectedProject.moduleManagement === 'project' && (
                     <Dialog
                       open={isProjectModulesDialogOpen}
                       onOpenChange={setIsProjectModulesDialogOpen}
@@ -5157,6 +5179,22 @@ ${packageTimelineText}`
                           onDraftChange={setProjectModuleDraft}
                           draft={projectModuleDraft}
                         />
+                      </DialogContent>
+                    </Dialog>
+                  )}
+                  {view === 'project' && selectedProject && selectedProject.accessRole === 'owner' && (
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button className="ghost-button" type="button" variant="outline">
+                          <ListChecks size={16} /> 子项目管理
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="project-subprojects-dialog">
+                        <DialogHeader>
+                          <DialogTitle>子项目管理</DialogTitle>
+                          <DialogDescription>按客户或交付单元拆分当前大项目，任务可以归属到对应子项目。</DialogDescription>
+                        </DialogHeader>
+                        <ProjectSubprojectsPanel key={selectedProject.id} projectId={selectedProject.id} canManage onChange={applyWorkspace} />
                       </DialogContent>
                     </Dialog>
                   )}
@@ -5308,6 +5346,8 @@ ${packageTimelineText}`
             onTodoDetailDraftChange={setTodoDetailDraft}
             onTodoDraftChange={setTodoDraft}
             onTodoModuleChange={setTodoModuleId}
+            onTodoSubprojectChange={setTodoSubprojectId}
+            todoSubprojectId={todoSubprojectId}
             onTodoPriorityChange={setTodoPriority}
             project={selectedProject}
             currentUser={authUser}
@@ -5400,7 +5440,16 @@ ${packageTimelineText}`
         {view === 'organization' && authUser ? (
           <OrganizationWorkbench
             currentUser={authUser}
+            onSubprojectsChanged={() => {
+              workspaceMutationEpochRef.current += 1
+              void Promise.resolve(workspaceRefreshPromiseRef.current).then(() => refreshWorkspace())
+            }}
             onOrganizationsChanged={() => setOrganizationRefreshVersion((current) => current + 1)}
+            onProjectModulesChanged={() => {
+              workspaceMutationEpochRef.current += 1
+              // Discard any workspace fetch begun before this catalog mutation.
+              void Promise.resolve(workspaceRefreshPromiseRef.current).then(() => refreshWorkspace())
+            }}
             onPackageMarketVisibilityChange={(organizationId, enabled) => {
               setOrganizations((current) => current.map((organization) => (
                 organization.id === organizationId
@@ -6174,6 +6223,8 @@ function ProjectDetail({
   onTodoDetailDraftChange,
   onTodoDraftChange,
   onTodoModuleChange,
+  onTodoSubprojectChange,
+  todoSubprojectId,
   onTodoPriorityChange,
   onTodoDetailViewChange,
   onReturnToNotifications,
@@ -6291,6 +6342,8 @@ function ProjectDetail({
   onTodoDetailDraftChange: (value: string) => void
   onTodoDraftChange: (value: string) => void
   onTodoModuleChange: (id: number | null) => void
+  onTodoSubprojectChange: (id: number | null) => void
+  todoSubprojectId: number | null
   onTodoPriorityChange: (value: Priority) => void
   onTodoDetailViewChange?: (active: boolean) => void
   onReturnToNotifications: () => void
@@ -6356,7 +6409,8 @@ function ProjectDetail({
       todoAssigneeUserId != null ||
       todoWatcherUserIds.length > 0 ||
       todoReviewerUserId != null ||
-      todoModuleId != null,
+      todoModuleId != null ||
+      todoSubprojectId != null,
   )
   const riskJournalEntryIds = useMemo(
     () => new Set(project.riskJournalEntryIds),
@@ -6746,8 +6800,10 @@ function ProjectDetail({
                   members={projectMembers}
                   mode="create"
                   moduleId={todoModuleId}
+                  subprojectId={todoSubprojectId}
+                  onSubprojectIdChange={onTodoSubprojectChange}
                   modules={projectModules}
-                  canCreateModule={isOwner}
+                  canCreateModule={isOwner && project.moduleManagement === 'project'}
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
@@ -7398,7 +7454,7 @@ function NotificationCenterView({
     for (const todo of visible(notifications.assignedTodos)) {
       result.push({
         id: `assigned-todo-${todo.id}`,
-        message: `${todo.assignedByName ?? '有人'} 在「${todo.projectName}」中为你添加了一条待办「${todo.title}」，请及时前往待办列表查看。`,
+        message: `${todo.assignedByName ?? '有人'} 在「${todo.projectName}${todo.subprojectName ? ` / ${todo.subprojectName}` : ''}」中为你添加了一条待办「${todo.title}」，请及时前往待办列表查看。`,
         sortAt: sortTime(todo),
         time: todo.assignedAt,
       })
@@ -7406,7 +7462,7 @@ function NotificationCenterView({
     for (const todo of visible(notifications.watchedTodos)) {
       result.push({
         id: `watched-todo-${todo.id}`,
-        message: `${todo.watchedByName ?? '有人'} 在「${todo.projectName}」中关注了待办「${todo.title}」。`,
+        message: `${todo.watchedByName ?? '有人'} 在「${todo.projectName}${todo.subprojectName ? ` / ${todo.subprojectName}` : ''}」中关注了待办「${todo.title}」。`,
         sortAt: sortTime(todo),
         time: todo.watchedAt,
       })
@@ -7430,7 +7486,7 @@ function NotificationCenterView({
     for (const todo of visible(notifications.dueTomorrowTodos)) {
       result.push({
         id: `due-tomorrow-${todo.id}`,
-        message: `「${todo.projectName}」中的待办「${todo.title}」将于 ${todo.dueDate} 到期，请及时处理。`,
+        message: `「${todo.projectName}${todo.subprojectName ? ` / ${todo.subprojectName}` : ''}」中的待办「${todo.title}」将于 ${todo.dueDate} 到期，请及时处理。`,
         sortAt: sortTime(todo),
         time: todo.dueDate,
       })
@@ -7438,7 +7494,7 @@ function NotificationCenterView({
     for (const note of visible(notifications.noteMentions)) {
       result.push({
         id: `note-mention-${note.noteId ?? note.id}`,
-        message: `${note.noteAuthorName ?? '有人'} 在「${note.projectName}」的待办「${note.title}」备注中提到了你${note.notePreview ? `：“${note.notePreview}”` : '。'}`,
+        message: `${note.noteAuthorName ?? '有人'} 在「${note.projectName}${note.subprojectName ? ` / ${note.subprojectName}` : ''}」的待办「${note.title}」备注中提到了你${note.notePreview ? `：“${note.notePreview}”` : '。'}`,
         sortAt: sortTime(note),
         time: note.createdAt,
       })
@@ -8489,171 +8545,6 @@ function ProjectMemberMultiPicker({
           })}
         </DropdownMenuContent>
       </DropdownMenu>
-    </span>
-  )
-}
-
-function ProjectModulePicker({
-  canCreate = false,
-  compact = false,
-  disabled = false,
-  modules,
-  onChange,
-  onCreate,
-  value,
-}: {
-  canCreate?: boolean
-  compact?: boolean
-  disabled?: boolean
-  modules: ProjectModule[]
-  onChange: (id: number | null) => void
-  onCreate?: (name: string) => Promise<ProjectModule | null>
-  value: number | null
-}) {
-  const [selectOpen, setSelectOpen] = useState(false)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [moduleName, setModuleName] = useState('')
-  const [createError, setCreateError] = useState('')
-  const [creating, setCreating] = useState(false)
-  const selectedModule = modules.find((module) => module.id === value)
-  const createModuleValue = '__create_module__'
-
-  async function createInlineModule() {
-    const nextName = moduleName.trim()
-    if (!nextName || !onCreate || creating) return
-    const existingModule = modules.find((module) => module.name === nextName)
-    if (existingModule) {
-      onChange(existingModule.id)
-      setModuleName('')
-      setCreateError('')
-      setCreateOpen(false)
-      return
-    }
-
-    setCreating(true)
-    setCreateError('')
-    try {
-      const createdModule = await onCreate(nextName)
-      if (!createdModule) {
-        setCreateError('模块创建失败，请重试。')
-        return
-      }
-      onChange(createdModule.id)
-      setModuleName('')
-      setCreateOpen(false)
-    } catch {
-      setCreateError('模块创建失败，请重试。')
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  function selectModule(nextValue: string) {
-    if (nextValue === createModuleValue) {
-      setSelectOpen(false)
-      setCreateOpen(true)
-      setCreateError('')
-      return
-    }
-    onChange(nextValue === 'none' ? null : Number(nextValue))
-    setCreateOpen(false)
-    setModuleName('')
-    setCreateError('')
-  }
-
-  return (
-    <span className={compact ? 'member-picker compact' : 'member-picker project-module-picker'}>
-      <Select
-        disabled={disabled}
-        open={selectOpen}
-        value={value ? String(value) : 'none'}
-        onOpenChange={(open) => {
-          setSelectOpen(open)
-          if (open) {
-            setCreateOpen(false)
-            setModuleName('')
-            setCreateError('')
-          }
-        }}
-        onValueChange={selectModule}
-      >
-        <SelectTrigger aria-label="待办所属模块">
-          <SelectValue placeholder="选择模块">
-            {compact && selectedModule ? selectedModule.name : compact ? '无模块' : undefined}
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {canCreate && onCreate ? (
-            <>
-              <SelectItem className="project-module-create-option" value={createModuleValue}>
-                <span><Plus size={15} /> 新增模块</span>
-              </SelectItem>
-              <SelectSeparator />
-            </>
-          ) : null}
-          <SelectItem value="none">无模块</SelectItem>
-          {modules.map((module) => (
-            <SelectItem key={module.id} value={String(module.id)}>
-              {module.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {canCreate && onCreate && createOpen ? (
-        <span className="project-module-inline-create">
-          <Input
-            autoFocus
-            aria-invalid={Boolean(createError)}
-            aria-label="新模块名称"
-            disabled={creating}
-            maxLength={40}
-            placeholder="输入模块名称"
-            value={moduleName}
-            onChange={(event) => {
-              setModuleName(event.target.value)
-              if (createError) setCreateError('')
-            }}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                void createInlineModule()
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setCreateOpen(false)
-                setModuleName('')
-                setCreateError('')
-              }
-            }}
-          />
-          <Button
-            className="project-module-inline-submit"
-            type="button"
-            disabled={!moduleName.trim() || creating}
-            onClick={() => void createInlineModule()}
-          >
-            <Plus size={14} />
-            {creating ? '新增中' : '新增'}
-          </Button>
-          <Button
-            className="project-module-inline-cancel"
-            type="button"
-            variant="outline"
-            aria-label="取消新增模块"
-            title="取消新增模块"
-            disabled={creating}
-            onClick={() => {
-              setCreateOpen(false)
-              setModuleName('')
-              setCreateError('')
-            }}
-          >
-            <X size={14} />
-          </Button>
-          {createError ? <small role="alert">{createError}</small> : null}
-        </span>
-      ) : null}
     </span>
   )
 }
@@ -11289,6 +11180,17 @@ function TodoPropertiesPanel({
       </div>
       <div className="todo-properties-list">
         <div className="todo-property-row">
+          <span>所属子项目</span>
+          <Select disabled={!canEdit} value={String(todo.subprojectId ?? 'none')}
+            onValueChange={(value) => onInlineUpdate({ subprojectId: value === 'none' ? null : Number(value) })}>
+            <SelectTrigger aria-label="所属子项目"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">无子项目</SelectItem>
+              {(project.subprojects ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="todo-property-row">
           <span>项目</span>
           <strong>{project.name}</strong>
         </div>
@@ -11323,6 +11225,7 @@ function TodoPropertiesPanel({
         <div className="todo-property-row">
           <span>所属模块</span>
           <ProjectModulePicker
+            organizationManaged={project.moduleManagement === 'organization'}
             disabled={!canEdit}
             modules={modules}
             value={moduleId}
@@ -11399,6 +11302,8 @@ function TodoPropertiesPanel({
 }
 
 function TodoEditorDialog({
+  subprojectId,
+  onSubprojectIdChange,
   assigneeUserId,
   departedUserIds,
   watcherUserIds,
@@ -11447,6 +11352,8 @@ function TodoEditorDialog({
   todo,
   dueDate,
 }: {
+  subprojectId?: number | null
+  onSubprojectIdChange?: (id: number | null) => void
   assigneeUserId: number | null
   departedUserIds: readonly number[]
   watcherUserIds: number[]
@@ -11590,6 +11497,16 @@ function TodoEditorDialog({
               </div>
             </Label>
             <div className="todo-editor-inline-grid">
+              <Label>
+                所属子项目
+                <Select value={String(subprojectId ?? 'none')} onValueChange={(value) => onSubprojectIdChange?.(value === 'none' ? null : Number(value))}>
+                  <SelectTrigger aria-label="所属子项目"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">无子项目</SelectItem>
+                    {(project.subprojects ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Label>
               <Label className="todo-inline-field-half">
                 截止日期
                 <JournalDatePicker
@@ -11632,6 +11549,7 @@ function TodoEditorDialog({
               <div className="todo-editor-field todo-inline-field-half">
                 <span>所属模块</span>
                 <ProjectModulePicker
+                  organizationManaged={project.moduleManagement === 'organization'}
                   canCreate={isCreateMode && canCreateModule}
                   modules={modules}
                   value={moduleId}
@@ -11923,6 +11841,7 @@ function TodoList({
     : todos.find((todo) => todo.id === initialTodoId) ?? null
   const [page, setPage] = useState(0)
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
+  const [subprojectFilter, setSubprojectFilter] = useState('all')
 	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
 	  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
 	  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
@@ -12022,6 +11941,7 @@ function TodoList({
         todo.title,
         todoCode(todo.id),
         todo.moduleName ?? '',
+        todo.subprojectName ?? '',
         todo.assigneeName ?? '',
         getTodoWatcherNames(todo).join(' '),
         todo.creatorName ?? '',
@@ -12037,11 +11957,14 @@ function TodoList({
         .includes(query)
       return (
         (!useDefaultDoneFilter || !todo.done) &&
+        (subprojectFilter === 'all' || (subprojectFilter === 'none'
+          ? todo.subprojectId == null
+          : String(todo.subprojectId) === subprojectFilter)) &&
         matchesSearch &&
         matchesTodoFilterConditions(todo, todoFilterConditions, todoFilterJoin)
       )
     })
-  }, [sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery])
+  }, [sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery, subprojectFilter])
   const totalPages = Math.max(1, Math.ceil(filteredTodos.length / itemsPerPage))
   const safePage = Math.min(page, totalPages - 1)
   const visibleTodos = compact
@@ -12326,6 +12249,18 @@ function TodoList({
   return (
     <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
       <div className="todo-list-filters" aria-label="待办筛选">
+        <Select value={subprojectFilter} onValueChange={(value) => { setSubprojectFilter(value); setPage(0) }}>
+          <SelectTrigger aria-label="按子项目筛选" style={{ width: 160, flexShrink: 0 }}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部子项目</SelectItem>
+            <SelectItem value="none">无子项目</SelectItem>
+            {(project.subprojects ?? []).map((item) => (
+              <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <div className="todo-search-field">
           <MagnifyingGlass size={14} />
           <Input
@@ -12477,7 +12412,7 @@ function TodoList({
                     <span className="todo-created-at">
                       {todo.creatorName ? <><UserName departedUserIds={departedUserIds} name={todo.creatorName} userId={todo.createdByUserId} /> 创建于 {todo.createdAt.slice(0, 16)}</> : `创建于 ${todo.createdAt.slice(0, 16)}`}
                     </span>
-                    {compact ? `截止 ${todo.dueDate}` : `${project?.name} · 截止 ${todo.dueDate}`}
+                    {compact ? `截止 ${todo.dueDate}` : `${project?.name}${todo.subprojectName ? ` / ${todo.subprojectName}` : ''} · 截止 ${todo.dueDate}`}
                     {todo.assigneeName && (
                       <span className="todo-assignee-inline">@<UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /></span>
                     )}
