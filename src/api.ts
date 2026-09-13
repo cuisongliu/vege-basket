@@ -749,6 +749,9 @@ export function updateOrganizationProjectGovernance(
   organizationId: number,
   projectId: number,
   payload: Partial<{
+    name: string
+    description: string
+    tags: string[]
     healthNote: string
     healthStatus: OrganizationProjectHealthStatus
     status: OrganizationProjectStatus
@@ -1038,6 +1041,17 @@ export function requestProjectTransfer(
   return request<{ ok: true; transferId: number }>(`/api/projects/${projectId}/transfer`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function transferOrganizationProjectOwnership(
+  organizationId: number,
+  projectId: number,
+  targetUserId: number,
+) {
+  return request<{ ok: true }>(`/api/organizations/${organizationId}/projects/${projectId}/transfer`, {
+    method: 'POST',
+    body: JSON.stringify({ targetUserId }),
   })
 }
 
