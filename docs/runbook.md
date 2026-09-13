@@ -68,6 +68,29 @@ curl --fail --silent http://127.0.0.1:8787/api/health
 Expected response: `{"ok":true}`. This health endpoint proves the process is serving;
 it does not prove database, OSS, Feishu, or AI workflows.
 
+## Organization Resource Management Verification
+
+After explicitly authorizing an external development PostgreSQL instance, run:
+
+```bash
+VEGES_INTEGRATION_DATABASE_URL="$DATABASE_URL" npm run test:resource-management
+```
+
+This opt-in suite creates a unique `veges_resource_test_*` schema, applies the schema twice,
+starts an API on an available local port, verifies management permissions, member admission,
+organization moves and ownership transfer, and removes its own schema and process afterward.
+It never falls back to the public schema. No AI provider, Feishu delivery or GitHub Actions
+are enabled in this test process. The ordinary `npm test` suite does not run these writes.
+
+For browser QA, `VEGES_KEEP_TEST_RUNTIME=true` retains that isolated API and a small set of
+fixture records. Its connection/session information stays in `.context/resource-integration-state.json`;
+never commit or print that file. Stop the recorded API process and drop only its generated
+schema when browser verification is finished.
+
+The resource-management migration adds transfer-owner metadata through the normal startup
+schema path; take the approved database snapshot before starting the updated API on an
+existing database. Do not run the migration separately merely to repeat startup work.
+
 ## Database Operations
 
 ### Bug Case Association Migration
@@ -384,6 +407,20 @@ encrypted record, and the workflow that triggered rollback.
 - Unexpected users can complete Feishu OAuth: narrow the company custom application's
   availability scope before re-enabling sign-in; Veges does not maintain a second tenant
   or email-domain allowlist.
+
+## Shared test environments and test-space transfer rollout
+
+The forward-only migration `server/migrations/20260910_test_space_transfer_shared_environments.sql`
+is mirrored by normal startup schema application. It creates ownership requests and expands
+existing environment assignments to all spaces of their organization, preserving the Bug snapshot
+and composite foreign key. Back up the authorized development database before startup. Existing
+restricted assignments become organization-wide intentionally; old clients cannot restrict them
+through `testSpaceIds`. Startup backfill takes organization locks, so perform production rollout
+only in an explicitly approved maintenance window. No separate manual migration is needed after
+successful normal startup. Application rollback does not undo expanded assignments.
+Organization-management direct test-space transfers use the existing request and membership
+tables without a migration. They complete immediately after administrator confirmation, cancel
+any pending request for that space, and cannot be undone by rolling back application code.
 
 ## Test-case directory-tree upgrade
 

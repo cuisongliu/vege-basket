@@ -1,3 +1,4 @@
+import { addOrganizationProjectMember } from './api'
 import {
   Component,
   useCallback,
@@ -79,6 +80,7 @@ import {
   ArrowLeft,
   X,
   UserSwitch,
+  UserPlus,
 } from '@phosphor-icons/react'
 import { ConfirmActionDialog as ConfirmDialog } from './components/confirm-action-dialog'
 import { useConfirmAction } from './hooks/use-confirm-action'
@@ -3449,6 +3451,18 @@ function App() {
     await runMutation(() => inviteProjectMember(projectId, { username: nextUsername }))
   }
 
+  async function addMemberDirectly(projectId: number, username: string) {
+    return Boolean(await runMutation(async () => {
+      const project = projects.find((item) => item.id === projectId)
+      if (!project?.organizationId) throw new Error('请选择组织项目。')
+      const organization = await fetchOrganization(project.organizationId)
+      const member = organization.members.find((item) => item.username.toLowerCase() === username.trim().toLowerCase())
+      if (!member) throw new Error('请先将该账号加入项目所属组织。')
+      await addOrganizationProjectMember(project.organizationId, projectId, member.id)
+      return fetchWorkspace()
+    }))
+  }
+
   async function deleteMember(projectId: number, membershipId: number) {
     const member = memberships.find((item) => item.id === membershipId)
     if (!member) return false
@@ -5217,7 +5231,7 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  {view === 'project' && selectedProject?.accessRole === 'owner' && (
+                  {view === 'project' && selectedProject && (selectedProject.canManageMembers ?? selectedProject.accessRole === 'owner') && (
                     <Dialog
                       open={isProjectMembersDialogOpen}
                       onOpenChange={setIsProjectMembersDialogOpen}
@@ -5246,6 +5260,9 @@ ${packageTimelineText}`
                             saveProjectFeishuSettings(selectedProject.id, payload)
                           }
                           onInvite={(email) => inviteMember(selectedProject.id, email)}
+                          onAddDirectMember={selectedProject.canManageOrganizationTodos
+                            ? (username) => addMemberDirectly(selectedProject.id, username)
+                            : undefined}
                           onRemove={(membershipId) => deleteMember(selectedProject.id, membershipId)}
                           project={selectedProject}
                         />
@@ -6900,6 +6917,7 @@ function ProjectMembersPanel({
   memberships,
   onCopyInviteLink,
   onInvite,
+  onAddDirectMember,
   onRemove,
   onSaveFeishuSettings,
   project,
@@ -6918,6 +6936,7 @@ function ProjectMembersPanel({
     url: string
   }>
   onInvite: (username: string) => void
+  onAddDirectMember?: (username: string) => Promise<boolean>
   onRemove: (membershipId: number) => void
   onSaveFeishuSettings: (payload: {
     feishuChatEnabled: boolean
@@ -6927,6 +6946,7 @@ function ProjectMembersPanel({
 }) {
   const memberPageSize = 4
   const [username, setUsername] = useState('')
+  const [addingMember, setAddingMember] = useState(false)
   const [memberPage, setMemberPage] = useState(0)
   const [inviteLinkStatus, setInviteLinkStatus] = useState('')
   const [inviteExpiresInMinutes, setInviteExpiresInMinutes] = useState(10)
@@ -7023,6 +7043,14 @@ function ProjectMembersPanel({
             邀请
           </Button>
         </form>
+        {onAddDirectMember ? <Button type="button" variant="outline" disabled={addingMember || !username.trim()} onClick={async () => {
+          setAddingMember(true)
+          try {
+            if (await onAddDirectMember(username)) setUsername('')
+          } finally {
+            setAddingMember(false)
+          }
+        }}><UserPlus /> {addingMember ? '添加中…' : '直接添加组织成员'}</Button> : null}
         <div className="member-list">
           {memberships.length === 0 ? (
             <p className="empty-state">还没有邀请成员。</p>
@@ -7120,7 +7148,7 @@ function ProjectMembersPanel({
           ) : null}
         </section>
 
-        <section className="project-config-section project-feishu-card">
+        {project.accessRole === 'owner' ? <section className="project-config-section project-feishu-card">
           <div className="project-config-section-head">
             <strong>项目群通知</strong>
             <p>默认关闭；开启后，负责人未配置飞书邮箱的项目通知会兜底发送到这个项目群。</p>
@@ -7172,7 +7200,7 @@ function ProjectMembersPanel({
             </div>
           )}
           {feishuStatus ? <p className="project-feishu-status">{feishuStatus}</p> : null}
-        </section>
+        </section> : null}
       </div>
     </div>
   )
@@ -7296,6 +7324,7 @@ function ProjectActionsMenu({
   onRenameClick,
   onTransferClick,
   projectName,
+  canUseContentActions = true,
 }: {
   exportProject: () => void
   generateDailySummary: () => void
@@ -7305,6 +7334,7 @@ function ProjectActionsMenu({
   onRenameClick: () => void
   onTransferClick: () => void
   projectName: string
+  canUseContentActions?: boolean
 }) {
   return (
     <DropdownMenu>
@@ -7329,7 +7359,7 @@ function ProjectActionsMenu({
         <DropdownMenuItem onSelect={onTransferClick}>
           <UserSwitch /> 项目转移
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={exportProject}>
+        {canUseContentActions ? <><DropdownMenuItem onSelect={exportProject}>
           <DownloadSimple /> 导出项目
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={generateWeeklySummary}>
@@ -7337,7 +7367,7 @@ function ProjectActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={generateDailySummary}>
           <CalendarBlank /> 生成日总结
-        </DropdownMenuItem>
+        </DropdownMenuItem></> : null}
         <DropdownMenuSeparator />
         <ConfirmDialog
           confirmLabel="删除项目"
@@ -8841,7 +8871,8 @@ function SearchView({
       const result = await fetchOrganizations()
       if (transferLoadRequestIdRef.current !== requestId) return
       const organizations = result.organizations.filter(
-        (organization) => Number.isSafeInteger(organization.id) && organization.id > 0,
+        (organization) => Number.isSafeInteger(organization.id) && organization.id > 0
+          && (project.accessRole === 'owner' || organization.id === project.organizationId),
       )
       setTransferOrganizations(organizations)
       if (organizations.length === 0) {
@@ -8958,7 +8989,7 @@ function SearchView({
                     {statusCopy[project.status]}
                   </Badge>
                   {project.accessRole === 'member' && (
-                    <Badge className="access-pill">{project.readOnly ? '组织只读' : '协作'}</Badge>
+                    <Badge className="access-pill">{project.canManageSettings ? '组织管理' : project.readOnly ? '组织只读' : '协作'}</Badge>
                   )}
                   <span>创建于 {project.createdAt}</span>
                 </div>
@@ -8969,7 +9000,7 @@ function SearchView({
                 {project.description.trim() ? <p>{project.description}</p> : null}
               </div>
             </button>
-            {project.accessRole === 'owner' && (
+            {(project.canManageSettings ?? project.accessRole === 'owner') && (
               <div className="result-actions">
                 <div className="project-status-control result-status-control">
                   <span>项目状态</span>
@@ -8999,6 +9030,7 @@ function SearchView({
                   onRenameClick={() => openRenameDialog(project)}
                   onTransferClick={() => void openTransferDialog(project)}
                   projectName={project.name}
+                  canUseContentActions={project.accessRole === 'owner'}
                 />
               </div>
             )}

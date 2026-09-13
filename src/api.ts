@@ -817,7 +817,7 @@ export function attachTestSpaceToOrganization(organizationId: number, spaceId: n
 export type OrganizationTestEnvironmentPayload = {
   accessUrl: string
   name: string
-  testSpaceIds: number[]
+  testSpaceIds?: number[]
 }
 
 export function createOrganizationTestEnvironment(

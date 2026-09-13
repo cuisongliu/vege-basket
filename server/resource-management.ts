@@ -38,6 +38,8 @@ export async function lockResourceManager(
     : 'select owner_user_id, organization_id from test_spaces where id = $1'
   const snapshot = await client.query<{ organization_id: string | null }>(resourceSql, [resourceId])
   if (!snapshot.rows[0]) return null
+  // Organization operations lock the organization before attached resources.
+  // Lock both organizations in numeric order before a space move.
   const organizationIds = [...new Set([snapshot.rows[0].organization_id, targetOrganizationId]
     .filter((id) => id != null).map(Number))].sort((a, b) => a - b)
   if (organizationIds.length) {

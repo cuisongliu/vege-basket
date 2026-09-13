@@ -1,3 +1,5 @@
+import { OrganizationTestEnvironmentPanel } from './organization-test-environments'
+import type { OrganizationDetail } from '../organization-types'
 import { ConfirmActionDialog } from './confirm-action-dialog'
 import { useConfirmAction } from '../hooks/use-confirm-action'
 import { reconcileAction } from '../confirmed-action'
@@ -91,6 +93,7 @@ import {
   type BugFilterJoin,
 } from './bug-filter'
 import {
+  fetchOrganization,
   fetchPackageMarketDetail,
   fetchPackageMarketCiVersions,
   fetchPackageMarketReleaseVersions,
@@ -106,6 +109,7 @@ import {
 import {
   addAssignedTestBugComment,
   addTestBugComment,
+  respondTestSpaceTransfer,
   acceptTestSpaceInvitation,
   acceptTestSpaceInviteLink,
   createTestBug,
@@ -133,6 +137,7 @@ import {
   importTestCases,
   importTestSpaceData,
   inviteTestSpaceMember,
+  addTestSpaceMember,
   previewTestCaseImport,
   removeTestPlanCase,
   removeTestSpaceMember,
@@ -169,6 +174,7 @@ import type {
   TestSpaceDataImportResult,
   TestSpaceImportCategory,
   TestSpaceImportSource,
+  TestSpaceOwnershipTransfer,
   TestSpaceInvitation,
   TestSpaceSettings,
   TestSubject,
@@ -552,6 +558,10 @@ export function TestWorkbench({
   const [bugFilterConditions, setBugFilterConditions] = useState<BugFilterCondition[]>([])
   const [bugSearchQuery, setBugSearchQuery] = useState('')
   const [spaceSwitcherOpen, setSpaceSwitcherOpen] = useState(false)
+  const [environmentManagerOpen,setEnvironmentManagerOpen]=useState(false)
+  const [environmentDetail,setEnvironmentDetail]=useState<OrganizationDetail|null>(null)
+  const [environmentError,setEnvironmentError]=useState('')
+  const [environmentBusy,setEnvironmentBusy]=useState(false)
   const [spaceAdministrationOpen, setSpaceAdministrationOpen] = useState(false)
   const [spaceCreateOpen, setSpaceCreateOpen] = useState(false)
   const [spaceSettings, setSpaceSettings] = useState<TestSpaceSettings>(emptyTestSpaceSettings)
@@ -913,7 +923,7 @@ export function TestWorkbench({
     !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
   ).length
   const notificationUnreadCount =
-    spaceSettings.invitations.length +
+    (spaceSettings.ownershipTransfers?.length ?? 0) + spaceSettings.invitations.length +
     returnedBugUnreadCount +
     rejectedBugUnreadCount +
     bugCommentUnreadCount +
@@ -1055,6 +1065,20 @@ export function TestWorkbench({
     }
   }
 
+  async function handleOwnershipTransfer(id:number,action:'accept'|'decline'){
+    setBusy(true);setError('')
+    try{const result=await respondTestSpaceTransfer(id,action);setSpaceSettings(result.settings);setData(result.workbench)}
+    catch(error){setError(error instanceof Error?error.message:'转移处理失败。')}
+    finally{setBusy(false)}
+  }
+  async function openEnvironmentManager(){
+    const organizationId=data.spaces.find(s=>s.id===spaceId)?.organizationId
+    if(!organizationId)return
+    setEnvironmentManagerOpen(true);setEnvironmentDetail(null);setEnvironmentError('');setEnvironmentBusy(true)
+    try{setEnvironmentDetail(await fetchOrganization(organizationId))}
+    catch(error){setEnvironmentError(error instanceof Error?error.message:'环境加载失败。')}
+    finally{setEnvironmentBusy(false)}
+  }
   async function handleAcceptInvitation(invitationSpaceId: number) {
     setBusy(true)
     setError('')
@@ -1185,6 +1209,7 @@ export function TestWorkbench({
                 <GearSix aria-hidden />
                 管理测试空间
               </DropdownMenuItem>
+              {data.spaces.find(s=>s.id===spaceId)?.organizationId ? <DropdownMenuItem onSelect={()=>{setSpaceSwitcherOpen(false);void openEnvironmentManager()}}><GearSix aria-hidden/>管理测试环境</DropdownMenuItem>:null}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1281,6 +1306,8 @@ export function TestWorkbench({
                 busy={busy}
                 data={data}
                 bugCommentNotifications={bugCommentNotifications}
+                ownershipTransfers={spaceSettings.ownershipTransfers ?? []}
+                onRespondOwnershipTransfer={(id,action)=>void handleOwnershipTransfer(id,action)}
                 invitations={spaceSettings.invitations}
                 planAssignmentNotifications={planAssignmentNotifications}
                 readNotificationKeys={readNotificationKeySet}
@@ -1472,6 +1499,12 @@ export function TestWorkbench({
           setBugFilterJoin(next.join)
         }}
       />
+      <Dialog open={environmentManagerOpen} onOpenChange={open=>{if(!environmentBusy)setEnvironmentManagerOpen(open)}}><DialogContent className="organization-resource-dialog" fixedHeader><DialogHeader><DialogTitle>管理测试环境</DialogTitle><DialogDescription>当前组织统一配置，所有测试空间共享。</DialogDescription></DialogHeader>
+        {environmentError?<p role="alert">{environmentError}</p>:null}
+        {!environmentDetail&&environmentBusy?<p role="status">正在加载…</p>:null}
+        {environmentDetail && !environmentDetail.canManageTestEnvironments ? <div className="organization-list">{data.testEnvironments.filter(environment=>environment.testSpaceIds.some(id=>data.spaces.some(space=>space.id===id&&space.organizationId===environmentDetail.id))).map(environment=><div key={environment.id} className="organization-resource-row"><strong>{environment.name}</strong><a href={environment.accessUrl} target="_blank" rel="noreferrer">{environment.accessUrl}</a></div>)}</div>:null}
+        {environmentDetail?.canManageTestEnvironments?<OrganizationTestEnvironmentPanel busy={environmentBusy} detail={environmentDetail} onMutate={async operation=>{setEnvironmentBusy(true);setEnvironmentError('');try{setEnvironmentDetail(await operation());await refreshWorkbench();return true}catch(error){setEnvironmentError(error instanceof Error?error.message:'环境保存失败。');return false}finally{setEnvironmentBusy(false)}}}/>:null}
+      </DialogContent></Dialog>
       <TestSpaceCreateDialog
         busy={busy}
         organizations={spaceSettings.organizations}
@@ -1639,6 +1672,8 @@ function NotificationsView({
   bugCommentNotifications,
   busy,
   data,
+  ownershipTransfers,
+  onRespondOwnershipTransfer,
   invitations,
   onAcceptInvitation,
   onDeclineInvitation,
@@ -1654,6 +1689,8 @@ function NotificationsView({
   bugCommentNotifications: BugCommentNotification[]
   busy: boolean
   data: TestWorkbenchData
+  ownershipTransfers: TestSpaceOwnershipTransfer[]
+  onRespondOwnershipTransfer: (id:number,action:'accept'|'decline')=>void
   invitations: TestSpaceInvitation[]
   onAcceptInvitation: (invitation: TestSpaceInvitation) => void
   onDeclineInvitation: (invitation: TestSpaceInvitation) => void
@@ -1667,6 +1704,7 @@ function NotificationsView({
   seenBugCommentIds: Set<number>
 }) {
   const notificationItems = [
+    ...ownershipTransfers.map(transfer=>({createdAt:transfer.createdAt,transfer,key:`ownership-transfer-${transfer.id}`,kind:'ownership_transfer' as const,sortAt:Date.parse(transfer.createdAt)})),
     ...invitations.map((invitation) => ({
       createdAt: invitation.createdAt,
       invitation,
@@ -1727,7 +1765,7 @@ function NotificationsView({
     return rightTime - leftTime
   })
   const unreadCount = notificationItems.filter((item) => {
-    if (item.kind === 'invitation') return true
+    if (item.kind === 'invitation' || item.kind === 'ownership_transfer') return true
     if (item.kind === 'bug_comment') return !seenBugCommentIds.has(item.comment.id)
     return !readNotificationKeys.has(item.notificationKey)
   }).length
@@ -1747,7 +1785,7 @@ function NotificationsView({
           <header>
             <div>
               <strong>待处理通知</strong>
-              <small>测试空间邀请、测试计划指派、Bug 返回和协作回复会按时间倒序排列。</small>
+              <small>测试空间邀请、所有权转移、测试计划指派、Bug 返回和协作回复按时间排列。</small>
             </div>
             <div className="test-notification-counts" aria-label="通知已读状态统计">
               {unreadCount > 0 ? <Badge className="test-notification-unread-badge">{unreadCount} 未读</Badge> : null}
@@ -1756,6 +1794,7 @@ function NotificationsView({
           </header>
           <div className="test-notification-list">
             {notificationItems.map((item) => {
+              if (item.kind === 'ownership_transfer') return <article key={item.key} className="test-notification-card unread"><div className="test-notification-copy"><span className="test-notification-kind unread">所有权转移</span><div><strong>{item.transfer.spaceName}</strong><p>{item.transfer.requestedByName} 申请将测试空间所有权转移给你。接受后你将成为所有者，原所有者保留可编辑权限。</p><small>有效期至 {formatTimestamp(item.transfer.expiresAt)}</small></div></div><div><Button variant="outline" disabled={busy} onClick={()=>onRespondOwnershipTransfer(item.transfer.id,'decline')}>拒绝</Button><Button disabled={busy} onClick={()=>onRespondOwnershipTransfer(item.transfer.id,'accept')}>接受所有权</Button></div></article>
               if (item.kind === 'invitation') {
                 const invitation = item.invitation
                 return (
@@ -3433,7 +3472,7 @@ function TestSpaceCreateDialog({ busy, onOpenChange, onSubmit, open, organizatio
           </Label>
           <Label>
             归属组织
-            <Select value={organizationValue} onValueChange={setOrganizationValue}>
+            <Select value={organizationValue} onValueChange={(value) => { if (value) setOrganizationValue(value) }}>
               <SelectTrigger aria-label="测试空间归属组织"><SelectValue placeholder="选择归属组织" /></SelectTrigger>
               <SelectContent>
                 {organizations.map((organization) => (
@@ -3569,6 +3608,9 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   const [dataImportError, setDataImportError] = useState('')
   const selectedSpace = settings.spaces.find((space) => space.id === selectedSpaceId)
   const isOwner = selectedSpace?.accessLevel === 'owner'
+  const canManageSettings = selectedSpace?.canManageSettings ?? isOwner
+  const canManageMembers = selectedSpace?.canManageMembers ?? isOwner
+  const canDelete = selectedSpace?.canDelete ?? isOwner
   const actionScope = `${open}:${selectedSpaceId}`
   const actionScopeRef = useRef(actionScope)
   useEffect(() => { actionScopeRef.current = actionScope }, [actionScope])
@@ -3612,6 +3654,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
       const result = confirmed ? await reconcileAction(operation, fetchTestSpaceSettings, matches) : await operation()
       if (actionScopeRef.current !== actionScope) return false
       setSettings(result)
+      setSelectedSpaceId((current) => result.spaces.some((space) => space.id === current) ? current : result.spaces[0]?.id)
       onSuccess?.(result)
       try { await onWorkbenchChange() } catch { /* The settings write already succeeded. */ }
       return true
@@ -3625,7 +3668,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
   }
 
   async function copyInviteLink() {
-    if (!selectedSpace || !isOwner) return
+    if (!selectedSpace || !canManageMembers) return
     setBusy(true)
     setInviteLinkStatus('')
     try {
@@ -3703,7 +3746,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                 {settings.spaces.map((space) => (
                   <button key={space.id} type="button" className={space.id === selectedSpaceId ? 'active' : ''} onClick={() => setSelectedSpaceId(space.id)}>
                     <strong>{space.name}</strong>
-                    <small>{space.accessLevel === 'owner' ? '所有者' : space.accessLevel === 'editor' ? '可编辑' : '只读'} · {space.members.filter((member) => member.status === 'active').length} 位成员 · {space.organizationName ?? '无组织'}</small>
+                    <small>{space.accessLevel === 'owner' ? '所有者' : space.canManageSettings ? '组织管理' : space.accessLevel === 'editor' ? '可编辑' : '只读'} · {space.members.filter((member) => member.status === 'active').length} 位成员 · {space.organizationName ?? '无组织'}</small>
                   </button>
                 ))}
                 {settings.spaces.length === 0 ? <p className="test-list-empty">还没有已加入的测试空间。</p> : null}
@@ -3713,7 +3756,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
             <section className="test-space-admin-detail">
               {selectedSpace ? (
                 <>
-                  {isOwner ? (
+                  {canManageSettings ? (
                     <form className="test-space-settings-row" onSubmit={(event) => {
                       event.preventDefault()
                       void mutateSettings(() => updateTestSpace(selectedSpace.id, {
@@ -3725,11 +3768,11 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                       <Label>空间名称<Input maxLength={80} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /></Label>
                       <Label>版本号<Input maxLength={80} value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} /></Label>
                       <Label>归属组织
-                        <Select value={organizationValue} onValueChange={setOrganizationValue}>
+                        <Select value={organizationValue} onValueChange={(value) => { if (value) setOrganizationValue(value) }}>
                           <SelectTrigger aria-label="测试空间归属组织"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="none">不归属组织</SelectItem>
-                            {settings.organizations.map((organization) => (
+                            {settings.organizations.filter((organization) => isOwner || organization.canManageResources).map((organization) => (
                               <SelectItem key={organization.id} value={String(organization.id)}>{organization.name}</SelectItem>
                             ))}
                             {selectedSpace.organizationId && !settings.organizations.some((organization) => organization.id === selectedSpace.organizationId) ? (
@@ -3763,12 +3806,12 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                         <strong>{selectedSpace.members.length}</strong>
                       </div>
                     </div>
-                    {isOwner ? <form
+                    {canManageMembers ? <form
                       className="test-space-member-add-row"
                       onSubmit={async (event) => {
                         event.preventDefault()
                         if (!inviteUsername.trim()) return
-                        const saved = await mutateSettings(() => inviteTestSpaceMember(selectedSpace.id, inviteUsername.trim(), memberAccess))
+                        const saved = await mutateSettings(() => addTestSpaceMember(selectedSpace.id, inviteUsername.trim(), memberAccess))
                         if (saved) setInviteUsername('')
                       }}
                     >
@@ -3777,18 +3820,22 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                         <SelectTrigger aria-label="成员权限"><SelectValue /></SelectTrigger>
                         <SelectContent><SelectItem value="editor">可编辑</SelectItem><SelectItem value="viewer">只读</SelectItem></SelectContent>
                       </Select>
-                      <Button size="icon" variant="outline" aria-label="邀请空间成员" title="邀请空间成员" disabled={busy || !inviteUsername.trim()}><UserPlus /></Button>
+                      <Button variant="outline" aria-label="直接添加空间成员" title="直接添加空间成员，无需对方确认" disabled={busy || !inviteUsername.trim()}><UserPlus /> 直接添加</Button>
                     </form> : null}
+                    {canManageMembers ? <Button type="button" variant="ghost" disabled={busy || !inviteUsername.trim()} onClick={async () => {
+                      const saved = await mutateSettings(() => inviteTestSpaceMember(selectedSpace.id, inviteUsername.trim(), memberAccess))
+                      if (saved) setInviteUsername('')
+                    }}>发送邀请，等待对方确认</Button> : null}
                     <div className="test-space-member-list">
                       {selectedSpace.members.map((member) => (
                         <article key={member.userId}>
                           <div><strong>{member.displayName}</strong><small>{member.username} · {member.status === 'pending' ? '待接受' : '已加入'}</small></div>
                           {member.accessLevel === 'owner' ? <Badge variant="outline">所有者</Badge> : (
-                            isOwner ? <Select value={member.accessLevel} onValueChange={(value) => void mutateSettings(() => updateTestSpaceMember(selectedSpace.id, member.userId, value as 'editor' | 'viewer'))} disabled={busy}>
+                            canManageMembers ? <Select value={member.accessLevel} onValueChange={(value) => void mutateSettings(() => updateTestSpaceMember(selectedSpace.id, member.userId, value as 'editor' | 'viewer'))} disabled={busy}>
                               <SelectTrigger aria-label={`${member.displayName}的空间权限`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="editor">可编辑</SelectItem><SelectItem value="viewer">只读</SelectItem></SelectContent>
                             </Select> : <Badge variant="outline">{member.accessLevel === 'editor' ? '可编辑' : '只读'}</Badge>
                           )}
-                          {member.accessLevel === 'owner' || !isOwner ? <span /> : (
+                          {member.accessLevel === 'owner' || !canManageMembers ? <span /> : (
                             <Button size="icon" variant="ghost" aria-label={`移除成员${member.displayName}`} title="移除成员" disabled={busy} onClick={() => void confirmAction({ title: '确认移除测试空间成员？',
                               description: `「${member.displayName}」将失去「${selectedSpace.name}」的成员权限，其创建的测试数据保留。`, confirmLabel: '移除成员',
                             }, () => mutateSettings(() => removeTestSpaceMember(selectedSpace.id, member.userId), undefined, true,
@@ -3799,7 +3846,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                     </div>
                   </section>
 
-                  {isOwner ? <section className="test-space-invite-link-section">
+                  {canManageMembers ? <section className="test-space-invite-link-section">
                     <div className="test-space-admin-section-heading"><div><span>邀请链接</span><strong>{inviteLinkAccess === 'editor' ? '可编辑' : '只读'}</strong></div></div>
                     <p>{selectedSpace.organizationId ? '复制给组织成员，对方登录并切换到测试工程师身份后即可加入。' : '复制给测试工程师，对方登录并切换到测试工程师身份后即可加入。'}</p>
                     <div className="test-space-invite-link-controls">
@@ -3817,7 +3864,7 @@ function TestSpaceSettingsDialog({ currentSpaceId, onCreateSpace, onOpenChange, 
                     {inviteLinkStatus ? <small>{inviteLinkStatus}</small> : null}
                   </section> : null}
 
-                  {isOwner ? <div className="test-space-danger-zone">
+                  {canDelete ? <div className="test-space-danger-zone">
                     <div><strong>删除测试空间</strong><small>将永久删除空间内全部测试对象、用例、计划、Bug 和评论。</small></div>
                     <Button type="button" variant="destructive" disabled={busy} onClick={() => setDeleteSpaceOpen(true)}><Trash /> 删除空间</Button>
                   </div> : null}
