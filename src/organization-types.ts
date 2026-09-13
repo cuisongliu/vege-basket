@@ -197,6 +197,7 @@ export type OrganizationDetail = {
   attachableTestSpaces: Array<{ id: number; name: string }>
   canManage: boolean
   canManageProjects: boolean
+  canManageTestSpaces: boolean
   canManageProjectModules: boolean
   canManageTestEnvironments: boolean
   canManageWeeklyReports: boolean

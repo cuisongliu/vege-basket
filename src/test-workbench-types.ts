@@ -16,6 +16,11 @@ export type BugStatus =
   | 'rejected'
 
 export type TestSpace = {
+  canManageSettings?: boolean
+  canManageMembers?: boolean
+  canDelete?: boolean
+  canChangeOrganization?: boolean
+  canTransferOwnership?: boolean
   accessLevel: 'owner' | 'editor' | 'viewer'
   createdAt: string
   id: number
@@ -37,6 +42,11 @@ export type TestSpaceMember = {
 }
 
 export type ManagedTestSpace = {
+  canManageSettings?: boolean
+  canManageMembers?: boolean
+  canDelete?: boolean
+  canChangeOrganization?: boolean
+  canTransferOwnership?: boolean
   accessLevel: 'owner' | 'editor' | 'viewer'
   createdAt: string
   id: number
@@ -49,6 +59,7 @@ export type ManagedTestSpace = {
 }
 
 export type TestSpaceOrganizationOption = {
+  canManageResources?: boolean
   id: number
   name: string
 }
@@ -61,7 +72,10 @@ export type TestSpaceInvitation = {
   spaceName: string
 }
 
+export type TestSpaceOwnershipTransfer = { id:number; spaceId:number; spaceName:string; requestedByName:string; createdAt:string; expiresAt:string }
+
 export type TestSpaceSettings = {
+  ownershipTransfers?: TestSpaceOwnershipTransfer[]
   invitations: TestSpaceInvitation[]
   organizations: TestSpaceOrganizationOption[]
   spaces: ManagedTestSpace[]

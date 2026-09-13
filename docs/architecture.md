@@ -148,8 +148,46 @@ projects, test spaces, Bugs, comments, and related records attached to that orga
 That dual authorization also permits project-governance mutations for lifecycle status,
 health, and milestones. It may also edit and delete todos in projects attached to that
 organization; todo completion and acceptance transitions retain their reviewer rules.
-Other project mutations continue to use direct project access; test-space and Bug mutations
-continue to require membership, creator ownership, or Bug assignment checks. Todo public-link
+Resource administration is another explicit exception: organization managers may edit
+attached project settings, manage members and invite links, delete projects and initiate
+ownership transfers. They may manage attached test-space settings, members, deletion and
+organization assignment. `server/resource-management.ts` authorizes these operations
+inside their transactions, preserving the real owner and all business-content permissions.
+It locks organization rows before project advisory locks and resource rows, then checks
+that the resource's organization has not changed. Space moves lock both organizations in
+numeric order. Client DTOs expose separate management capabilities; they never upgrade
+`accessRole`, `accessLevel` or general content write access.
+
+Organization management exposes complete project and test-space administration in its
+Projects and Test Spaces tabs. Project editing saves name, description, tags, lifecycle and
+health in one transaction. Test Spaces contains Organization Test Spaces and Test Environments
+child tabs; environment configuration is shared once per organization. Space member management
+selects eligible active organization members and can add them directly. Organization-space ownership
+transfer immediately changes ownership after the administrator's confirmation; the ordinary test-workbench
+transfer request remains recipient-confirmed. The space menu also offers deletion. Test-space administration
+accepts the assigned organization-admin role without changing the active persona; the
+workbench, import, case, plan and Bug routes still require their original active persona.
+The role check only admits the request: transactional resource authorization still decides
+whether the caller may manage the particular space.
+
+Test-space ownership transfers use `test_space_transfer_requests`, with separate initiator,
+previous owner and recipient IDs. Acceptance locks the organization and space before the request,
+rechecks authority and membership, then changes owner and member access atomically. Requests
+expire after 72 hours and are visible only to the recipient through test-space settings/notifications.
+
+Organization environment assignments are derived for all spaces in that organization. Space
+mutations synchronize only their locked space; bulk environment updates hold the organization
+exclusive lock. This prevents a concurrent move from restoring an old organization's binding.
+The composite Bug foreign key remains authoritative; removing a binding clears the live environment
+ID while retaining the encrypted snapshot. Startup backfill locks organizations in numeric order.
+
+Project transfers record `requested_by_user_id` separately from `previous_owner_user_id`.
+The recipient still accepts or declines within 72 hours. Acceptance rechecks the actual
+previous owner, shared organization membership and, for administrator-initiated requests,
+the initiator's current management authority and unchanged project organization. HTTP
+responses and legacy Feishu callbacks share these rules. Other project mutations continue
+to use direct project access; test records and Bugs continue to require membership,
+creator ownership or Bug assignment checks. Todo public-link
 creation and revocation are another explicit exception: managed organization administrators may
 share todos in projects attached to their organization without receiving general project mutation
 access.

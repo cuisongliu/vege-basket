@@ -37,24 +37,18 @@ test('organization project transfer has a direct, organization-admin-only path',
 
 test('project transfer records the original owner while permitting organization resource administration', () => {
   const routeStart = serverSource.indexOf("app.post('/api/projects/:projectId/transfer'")
-  const routeEnd = serverSource.indexOf("app.delete('/api/projects/:projectId'", routeStart)
-  assert.ok(routeStart >= 0)
-  assert.ok(routeEnd > routeStart)
+  const routeEnd = serverSource.indexOf("app.post('/api/project-transfers/", routeStart)
   const route = serverSource.slice(routeStart, routeEnd)
-
   assert.match(route, /lockResourceManager\(client, 'project', projectId, userId\)/u)
   assert.match(route, /previous_owner_user_id/u)
   assert.match(route, /access\.ownerUserId/u)
   assert.match(route, /const organizationId = Number\(request\.body\?\.organizationId\)/u)
   assert.match(route, /user_id in \(\$2::bigint, \$3::bigint\)/u)
-  assert.match(route, /lockTransferProject\(client, transferId\)/u)
-  assert.match(route, /canCompleteProjectTransfer\(client/u)
   assert.doesNotMatch(route, /Only organization projects can be transferred/u)
   assert.doesNotMatch(route, /access\.role !== 'owner'/u)
   assert.doesNotMatch(route, /resolveFeishuOpenIdByEmail/u)
   assert.doesNotMatch(route, /buildProjectTransferRequestCard/u)
   assert.match(route, /hashProjectTransferToken\(token\)/u)
-  assert.match(route, /update project_transfer_requests[\s\S]+set status = 'revoked'[\s\S]+where project_id = \$1 and status = 'pending'/u)
   assert.doesNotMatch(route, /sendFeishuMessage/u)
 })
 

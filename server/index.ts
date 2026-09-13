@@ -4017,6 +4017,7 @@ async function getProjectInviteLinkAccess(projectId: number, userId: number) {
       on membership.organization_id = p.organization_id
      and membership.user_id = $2
      and membership.status = 'active'
+     and membership.access_role in ('owner', 'admin')
     left join user_roles role
       on role.user_id = $2
      and role.role = 'organization_admin'
@@ -4731,6 +4732,10 @@ async function getWorkspace(userId: number) {
       moduleManagement: project.organization_id ? 'organization' as const : 'project' as const,
       readOnly: project.organization_admin_read_only,
       canManageOrganizationTodos: project.can_manage_organization_todos,
+      canManageSettings: project.access_role === 'owner' || project.can_manage_organization_todos,
+      canManageMembers: project.access_role === 'owner' || project.can_manage_organization_todos,
+      canDelete: project.access_role === 'owner' || project.can_manage_organization_todos,
+      canTransferOwnership: project.access_role === 'owner' || project.can_manage_organization_todos,
       canUpdateOrganizationTodoFields: project.can_update_organization_todo_fields,
       name: decryptText(project.name),
       description: project.description_encrypted ? decryptText(project.description_encrypted) : '',
@@ -9496,7 +9501,6 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
   } finally {
     client.release()
   }
-
   response.status(201).json(await getWorkspace(userId))
 }))
 
@@ -10170,91 +10174,84 @@ app.post('/api/projects/:projectId/invitations', asyncHandler(async (request, re
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
-  const access = await getProjectAccess(projectId, userId)
-  if (!access) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-  if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can invite members' })
-    return
-  }
-  const username = normalizeUsername(request.body.username ?? request.body.email)
-  if (!username) {
-    response.status(400).json({ error: 'Invite username is required' })
-    return
-  }
-  const invitedUser = await query<{ id: string }>(
-    'select id from users where email = $1',
-    [username],
-  )
-  const invitedUserId = invitedUser.rows[0] ? Number(invitedUser.rows[0].id) : null
-  if (invitedUserId === userId) {
-    response.status(400).json({ error: 'Owner already has access to this project' })
-    return
-  }
-
-  const organization = await query<{ organization_id: string | null }>(
-    'select organization_id from projects where id = $1 and user_id = $2',
-    [projectId, userId],
-  )
-  const organizationId = organization.rows[0]?.organization_id
-    ? Number(organization.rows[0].organization_id)
-    : null
-  if (organizationId) {
-    const organizationMember = invitedUserId ? await query<{ user_id: string }>(
-      `select user_id from organization_memberships
-       where organization_id = $1 and user_id = $2 and status = 'active'`,
-      [organizationId, invitedUserId],
-    ) : null
-    if (!organizationMember?.rows[0]) {
-      response.status(400).json({ error: 'Organization projects can invite only active organization members' })
+  if (!await withProjectManager(projectId, userId, response, async (client, access) => {
+    const username = normalizeUsername(request.body.username ?? request.body.email)
+    if (!username) {
+      response.status(400).json({ error: 'Invite username is required' })
       return
     }
-  }
+    const invitedUser = await client.query<{ id: string }>(
+      'select id from users where email = $1',
+      [username],
+    )
+    const invitedUserId = invitedUser.rows[0] ? Number(invitedUser.rows[0].id) : null
+    if (invitedUserId === access.ownerUserId) {
+      response.status(400).json({ error: 'Owner already has access to this project' })
+      return
+    }
 
-  const emailLookup = blindIndex(username)
-  const existingMembership = await query<{ id: string }>(
-    `
-    select id
-    from project_memberships
-    where project_id = $1 and invited_email_lookup = $2
-    `,
-    [projectId, emailLookup],
-  )
-  if (existingMembership.rows[0]) {
-    await query(
-      `
-      update project_memberships
-      set invited_user_id = coalesce(invited_user_id, $1),
-          invited_email = $2,
-          invited_email_lookup = $3,
-          status = 'pending',
-          role = 'member',
-          accepted_at = null,
-          declined_at = null
-      where id = $4
-      `,
-      [invitedUserId, encryptText(username), emailLookup, Number(existingMembership.rows[0].id)],
+    const organization = await client.query<{ organization_id: string | null }>(
+      'select organization_id from projects where id = $1 and user_id = $2',
+      [projectId, access.ownerUserId],
     )
-  } else {
-    await query(
+    const organizationId = organization.rows[0]?.organization_id
+      ? Number(organization.rows[0].organization_id)
+      : null
+    if (organizationId) {
+      const organizationMember = invitedUserId ? await client.query<{ user_id: string }>(
+        `select user_id from organization_memberships
+         where organization_id = $1 and user_id = $2 and status = 'active'`,
+        [organizationId, invitedUserId],
+      ) : null
+      if (!organizationMember?.rows[0]) {
+        response.status(400).json({ error: 'Organization projects can invite only active organization members' })
+        return
+      }
+    }
+
+    const emailLookup = blindIndex(username)
+    const existingMembership = await client.query<{ id: string }>(
       `
-      insert into project_memberships (
-        project_id,
-        owner_user_id,
-        invited_user_id,
-        invited_email,
-        invited_email_lookup,
-        role,
-        status,
-        accepted_at
+      select id
+      from project_memberships
+      where project_id = $1 and invited_email_lookup = $2
+      `,
+      [projectId, emailLookup],
+    )
+    if (existingMembership.rows[0]) {
+      await client.query(
+        `
+        update project_memberships
+        set invited_user_id = coalesce(invited_user_id, $1),
+            invited_email = $2,
+            invited_email_lookup = $3,
+            status = 'pending',
+            role = 'member',
+            accepted_at = null,
+            declined_at = null
+        where id = $4
+        `,
+        [invitedUserId, encryptText(username), emailLookup, Number(existingMembership.rows[0].id)],
       )
-      values ($1, $2, $3, $4, $5, 'member', 'pending', null)
-      `,
-      [projectId, userId, invitedUserId, encryptText(username), emailLookup],
-    )
-  }
+    } else {
+      await client.query(
+        `
+        insert into project_memberships (
+          project_id,
+          owner_user_id,
+          invited_user_id,
+          invited_email,
+          invited_email_lookup,
+          role,
+          status,
+          accepted_at
+        )
+        values ($1, $2, $3, $4, $5, 'member', 'pending', null)
+        `,
+        [projectId, access.ownerUserId, invitedUserId, encryptText(username), emailLookup],
+      )
+    }
+  })) return
   response.status(201).json(await getWorkspace(userId))
 }))
 
@@ -10279,6 +10276,12 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
   const client = await pool.connect()
   try {
     await client.query('begin')
+    const access = await lockResourceManager(client, 'project', projectId, userId)
+    if (!access) {
+      await client.query('rollback')
+      response.status(404).json({ error: 'Managed project not found' })
+      return
+    }
     await client.query(
       `
       update project_invite_links
@@ -10342,7 +10345,7 @@ app.post('/api/projects/:projectId/invite-link', asyncHandler(async (request, re
                 password_hash,
                 expires_at
       `,
-      [projectId, Number(inviteAccess.owner_user_id), createProjectInviteToken(), passwordHash, expiresInMinutes],
+      [projectId, access.ownerUserId, createProjectInviteToken(), passwordHash, expiresInMinutes],
     )
     const concurrentInviteLink = inviteLink.rows[0] ?? (await client.query<{
       expires_at: Date
@@ -10383,23 +10386,16 @@ app.delete('/api/projects/:projectId/invite-link', asyncHandler(async (request, 
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
-  const access = await getProjectAccess(projectId, userId)
-  if (!access) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-  if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can revoke invite links' })
-    return
-  }
-  await query(
-    `
-    update project_invite_links
-    set revoked_at = now()
-    where project_id = $1 and revoked_at is null
-    `,
-    [projectId],
-  )
+  if (!await withProjectManager(projectId, userId, response, async (client) => {
+    await client.query(
+      `
+      update project_invite_links
+      set revoked_at = now()
+      where project_id = $1 and revoked_at is null
+      `,
+      [projectId],
+    )
+  })) return
   response.json({ ok: true })
 }))
 
@@ -10407,22 +10403,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
-  const access = await getProjectAccess(projectId, userId)
-  if (!access) {
-    response.status(404).json({ error: 'Project not found' })
-    return
-  }
-  if (access.role !== 'owner') {
-    response.status(403).json({ error: 'Only the project owner can remove members' })
-    return
-  }
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    await client.query(
-      `select pg_advisory_xact_lock(hashtextextended($1, 0))`,
-      [`ai-project:${projectId}`],
-    )
+  if (!await withProjectManager(projectId, userId, response, async (client, access) => {
     await client.query(
       `
       update project_invite_links
@@ -10441,7 +10422,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
           where id = $2 and project_id = $1 and owner_user_id = $3
         )
       `,
-      [projectId, Number(request.params.membershipId), userId],
+      [projectId, Number(request.params.membershipId), access.ownerUserId],
     )
     await client.query(
       `
@@ -10456,7 +10437,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
           where id = $2 and project_id = $1 and owner_user_id = $3
         )
       `,
-      [projectId, Number(request.params.membershipId), userId],
+      [projectId, Number(request.params.membershipId), access.ownerUserId],
     )
     await client.query(
       `
@@ -10471,7 +10452,7 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
           where id = $2 and project_id = $1 and owner_user_id = $3
         )
       `,
-      [projectId, Number(request.params.membershipId), userId],
+      [projectId, Number(request.params.membershipId), access.ownerUserId],
     )
     await client.query(
       `
@@ -10484,22 +10465,16 @@ app.delete('/api/projects/:projectId/invitations/:membershipId', asyncHandler(as
           where id = $2 and project_id = $1 and owner_user_id = $3
         )
       `,
-      [projectId, Number(request.params.membershipId), userId],
+      [projectId, Number(request.params.membershipId), access.ownerUserId],
     )
     await client.query(
       `
       delete from project_memberships
       where id = $1 and project_id = $2 and owner_user_id = $3
       `,
-      [Number(request.params.membershipId), projectId, userId],
+      [Number(request.params.membershipId), projectId, access.ownerUserId],
     )
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally {
-    client.release()
-  }
+  })) return
   response.json(await getWorkspace(userId))
 }))
 

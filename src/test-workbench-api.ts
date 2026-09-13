@@ -85,6 +85,13 @@ export function transferTestBugToSpace(spaceId: number, bugId: number, targetSpa
   })
 }
 
+export function addTestSpaceMember(spaceId: number, username: string, accessLevel: 'editor' | 'viewer') {
+  return request<TestSpaceSettings>(`/api/test-spaces/${spaceId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ username, accessLevel }),
+  })
+}
+
 export function inviteTestSpaceMember(
   spaceId: number,
   username: string,
@@ -506,6 +513,10 @@ export function deleteAssignedTestBugComment(organizationId: OrganizationContext
     method: 'DELETE',
   })
 }
+
+export function requestTestSpaceTransfer(spaceId:number,targetUserId:number){return request<{transferId:number}>(`/api/test-spaces/${spaceId}/transfer`,{method:'POST',body:JSON.stringify({targetUserId})})}
+export function transferOrganizationTestSpaceOwnership(organizationId:number,spaceId:number,targetUserId:number){return request<TestSpaceSettings>(`/api/organizations/${organizationId}/test-spaces/${spaceId}/transfer`,{method:'POST',body:JSON.stringify({targetUserId})})}
+export function respondTestSpaceTransfer(transferId:number,action:'accept'|'decline'){return request<{settings:TestSpaceSettings;workbench:TestWorkbenchData}>(`/api/test-space-transfers/${transferId}/respond`,{method:'POST',body:JSON.stringify({action})})}
 
 function importDirectoryQuery(options?: { directoryMode: 'current' | 'tree'; targetFolderId: number | null }) {
   return options ? `&directoryMode=${options.directoryMode}${options.targetFolderId === null ? '' : `&targetFolderId=${options.targetFolderId}`}` : ''
