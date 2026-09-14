@@ -7,6 +7,10 @@ const sealosTemplate = readFileSync(
   new URL('../.sealos/template/index.yaml', import.meta.url),
   'utf8',
 )
+const dockerPushWorkflow = readFileSync(
+  new URL('../.github/workflows/docker-push.yml', import.meta.url),
+  'utf8',
+)
 
 test('runtime image installs production dependencies from the canonical lockfile', () => {
   const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM node:24-alpine AS runtime'))
@@ -42,4 +46,19 @@ test('Sealos bounds application and digest worker database pools separately', ()
   assert.match(sealosTemplate, /name: DB_POOL_IDLE_TIMEOUT_MS\s+value: '30000'/u)
   assert.equal(sealosTemplate.match(/name: DB_POOL_MAX\s+value: '10'/gu)?.length, 1)
   assert.equal(sealosTemplate.match(/name: DB_POOL_MAX\s+value: '2'/gu)?.length, 1)
+})
+
+test('main image workflow deploys the same immutable image to both Kubernetes workloads', () => {
+  const deployJob = dockerPushWorkflow.slice(dockerPushWorkflow.indexOf('  deploy-k8s:'))
+
+  assert.match(deployJob, /needs: merge-manifest/u)
+  assert.match(deployJob, /environment: production/u)
+  assert.match(deployJob, /secrets\.KUBE_CONFIG/u)
+  assert.match(deployJob, /deployment\/\$K8S_DEPLOYMENT_NAME/u)
+  assert.match(deployJob, /cronjob\/\$K8S_CRONJOB_NAME/u)
+  assert.match(deployJob, /grep -Fx "\$K8S_DEPLOYMENT_NAME"/u)
+  assert.match(deployJob, /grep -Fx 'todo-digest-worker'/u)
+  assert.match(deployJob, /rollout status/u)
+  assert.match(deployJob, /test "\$DEPLOYMENT_IMAGE" = "\$EXPECTED_IMAGE"/u)
+  assert.match(deployJob, /test "\$CRONJOB_IMAGE" = "\$EXPECTED_IMAGE"/u)
 })
