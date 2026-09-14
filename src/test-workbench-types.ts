@@ -137,6 +137,8 @@ export type TestCase = {
   expectedResult: string
   folderId?: number
   id: number
+  moduleId?: number
+  moduleName?: string
   preconditions: string
   priority: Priority
   remarks: string
@@ -260,6 +262,8 @@ export type TestBug = {
   expectedResult: string
   events: TestBugEvent[]
   id: number
+  moduleId?: number
+  moduleName?: string
   organizationMembers?: Array<{ id: number; name: string }>
   priority: Priority
   reporterName?: string
@@ -319,12 +323,20 @@ export type TestWorkbenchData = {
   departedUserIds: number[]
   folders: TestCaseFolder[]
   notifications: TestWorkbenchNotification[]
+  modules: TestWorkbenchModule[]
   planCases: TestPlanCase[]
   plans: TestPlan[]
   spaces: TestSpace[]
   subjects: TestSubject[]
   testEnvironments: TestEnvironment[]
   users: TestWorkspaceUser[]
+}
+
+export type TestWorkbenchModule = {
+  enabled: boolean
+  id: number
+  name: string
+  organizationId: number
 }
 
 export type TestWorkbenchProjectOption = Pick<Project, 'id' | 'name'>
