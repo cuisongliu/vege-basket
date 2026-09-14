@@ -7,6 +7,10 @@ const sealosTemplate = readFileSync(
   new URL('../.sealos/template/index.yaml', import.meta.url),
   'utf8',
 )
+const dockerPushWorkflow = readFileSync(
+  new URL('../.github/workflows/docker-push.yml', import.meta.url),
+  'utf8',
+)
 
 test('runtime image installs production dependencies from the canonical lockfile', () => {
   const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM node:24-alpine AS runtime'))
@@ -35,4 +39,19 @@ test('Sealos does not grant system administration to a predictable default usern
   )
   assert.match(adminInput, /default: ''/u)
   assert.doesNotMatch(adminInput, /default: admin/u)
+})
+
+test('main image workflow deploys the immutable image to the application Deployment', () => {
+  const deployJob = dockerPushWorkflow.slice(dockerPushWorkflow.indexOf('  deploy-k8s:'))
+
+  assert.match(deployJob, /needs: merge-manifest/u)
+  assert.match(deployJob, /environment: production/u)
+  assert.match(deployJob, /secrets\.KUBE_CONFIG/u)
+  assert.match(deployJob, /config view --minify/u)
+  assert.match(deployJob, /test -n "\$KUBE_NAMESPACE"/u)
+  assert.match(deployJob, /deployment\/\$K8S_DEPLOYMENT_NAME/u)
+  assert.match(deployJob, /grep -Fx "\$K8S_DEPLOYMENT_NAME"/u)
+  assert.match(deployJob, /rollout status/u)
+  assert.match(deployJob, /test "\$DEPLOYMENT_IMAGE" = "\$EXPECTED_IMAGE"/u)
+  assert.doesNotMatch(deployJob, /K8S_NAMESPACE|--namespace|K8S_CRONJOB_NAME|cronjob\//u)
 })
