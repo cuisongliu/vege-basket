@@ -143,6 +143,13 @@ sections for their active tab; omitting the section parameter preserves the comp
 response used by mutations and compatibility callers. Every section performs the same server-side
 authentication and resource authorization as the complete response.
 
+Test-workbench content sections are additionally scoped to the active test space. Case reads may
+narrow further to one subject, while Bug list reads omit comments, events, verification submissions,
+and large detail text until a single authorized Bug is selected. Notification rows carry bounded
+resource display metadata and recheck current test-space access, so the notification center does not
+need to hydrate every referenced Bug, plan, and case. The browser caches each tab/space scope,
+cancels superseded reads, and keeps periodic reconciliation inside the same scope.
+
 The API and digest worker share the pool implementation but receive separate connection budgets.
 The main query batches in wide read models admit at most four SQL statements concurrently, so one
 workbench load cannot consume the entire application pool through its direct query fan-out. Pool

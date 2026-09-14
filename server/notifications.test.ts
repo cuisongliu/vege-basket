@@ -579,7 +579,10 @@ test('notifies the Bug reporter privately when a developer rejects it', () => {
   assert.match(serverSource, /function enqueueTestBugRejectedDelivery/u)
   assert.match(testWorkbenchSource, /onTestBugRejected\(\{/u)
   assert.match(testWorkbenchSource, /'test_bug_rejected'/u)
-  assert.match(testWorkbenchClientSource, /rejectedBugNotifications/u)
+  assert.match(
+    testWorkbenchClientSource,
+    /notification\.kind === 'test_bug_rejected' && notification\.actionable/u,
+  )
   assert.equal(shouldDeliverNotificationToProjectChat('test_bug_rejected'), false)
 })
 

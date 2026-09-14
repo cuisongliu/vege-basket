@@ -26,10 +26,11 @@ function withOrganizationContext(path: string, organizationId: OrganizationConte
 }
 
 export function fetchTestWorkbench(
-  scope?: { sections?: TestWorkbenchSection[]; spaceId?: number; subjectId?: number },
+  scope?: { bugId?: number; sections?: TestWorkbenchSection[]; spaceId?: number; subjectId?: number },
   options: Pick<RequestInit, 'signal'> = {},
 ) {
   const params = new URLSearchParams()
+  if (scope?.bugId) params.set('bugId', String(scope.bugId))
   if (scope?.spaceId) params.set('spaceId', String(scope.spaceId))
   if (scope?.subjectId) params.set('subjectId', String(scope.subjectId))
   if (scope?.sections?.length) params.set('sections', scope.sections.join(','))

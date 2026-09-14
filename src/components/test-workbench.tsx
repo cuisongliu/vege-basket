@@ -243,26 +243,115 @@ const allTestWorkbenchSections: TestWorkbenchSection[] = [
 ]
 
 function testWorkbenchSectionsForTab(tab: WorkbenchTab): TestWorkbenchSection[] {
-  if (tab === 'notifications') return ['notifications', 'bugs', 'plans', 'cases']
+  if (tab === 'notifications' || tab === 'weekly_report') return []
   if (tab === 'bugs') return ['bugs', 'cases']
   if (tab === 'plans') return ['plans', 'cases']
-  if (tab === 'weekly_report') return []
   return [tab]
 }
 
-function mergeTestWorkbenchData(current: TestWorkbenchData, next: TestWorkbenchData) {
-  const currentSections = current.loadedSections ?? allTestWorkbenchSections
+type TestWorkbenchRequestScope = {
+  bugId?: number
+  sections: TestWorkbenchSection[]
+  spaceId?: number
+  subjectId?: number
+}
+
+function testWorkbenchRequestForTab(
+  tab: WorkbenchTab,
+  spaceId?: number,
+  subjectId?: number,
+): TestWorkbenchRequestScope {
+  return {
+    sections: testWorkbenchSectionsForTab(tab),
+    ...(spaceId ? { spaceId } : {}),
+    ...(tab === 'cases' && subjectId ? { subjectId } : {}),
+  }
+}
+
+function testWorkbenchScopeKey(tab: WorkbenchTab, spaceId?: number, subjectId?: number) {
+  if (tab === 'notifications' || tab === 'weekly_report' || !spaceId) return ''
+  return tab === 'cases' ? `${tab}:${spaceId}:${subjectId ?? 'all'}` : `${tab}:${spaceId}`
+}
+
+function testWorkbenchCasesScopeKey(spaceId: number, subjectId?: number) {
+  return `cases:${spaceId}:${subjectId ?? 'all'}`
+}
+
+type TestResourceWorkbenchNotification = Exclude<
+  TestWorkbenchNotification,
+  { kind: 'package_event_comment_added' }
+>
+
+function replaceScopedItems<T>(
+  current: T[],
+  next: T[],
+  belongsToScope: (item: T) => boolean,
+) {
+  return [...current.filter((item) => !belongsToScope(item)), ...next]
+}
+
+function mergeTestWorkbenchData(
+  current: TestWorkbenchData,
+  next: TestWorkbenchData,
+  scope: Omit<TestWorkbenchRequestScope, 'sections'> = {},
+) {
+  const currentSections = current.loadedSections ?? []
   const sections = new Set<TestWorkbenchSection>(next.loadedSections ?? allTestWorkbenchSections)
+  const caseInScope = (item: TestCase | TestWorkbenchData['folders'][number]) => (
+    (!scope.spaceId || item.testSpaceId === scope.spaceId)
+    && (!scope.subjectId || item.testSubjectId === scope.subjectId)
+  )
+  const planInScope = (item: TestPlan) => (
+    (!scope.spaceId || item.testSpaceId === scope.spaceId)
+    && (!scope.subjectId || item.testSubjectId === scope.subjectId || item.testSubjectIds.includes(scope.subjectId))
+  )
+  const scopedPlanIds = new Set(current.plans.filter(planInScope).map((plan) => plan.id))
+  const mergedBugs = (() => {
+    if (!sections.has('bugs')) return current.bugs
+    if (scope.bugId) {
+      return replaceScopedItems(current.bugs, next.bugs, (bug) => bug.id === scope.bugId)
+    }
+    const currentBugsById = new Map(current.bugs.map((bug) => [bug.id, bug]))
+    const summaries = next.bugs.map((bug) => {
+      const cached = currentBugsById.get(bug.id)
+      if (!bug.detailsLoaded && cached?.detailsLoaded && cached.updatedAt === bug.updatedAt) {
+        return {
+          ...bug,
+          actualResult: cached.actualResult,
+          comments: cached.comments,
+          detailsLoaded: true,
+          events: cached.events,
+          expectedResult: cached.expectedResult,
+          reproductionSteps: cached.reproductionSteps,
+          verificationSubmissions: cached.verificationSubmissions,
+        }
+      }
+      return bug
+    })
+    return replaceScopedItems(
+      current.bugs,
+      summaries,
+      (bug) => !scope.spaceId || bug.testSpaceId === scope.spaceId,
+    )
+  })()
   return {
     ...current,
     ...next,
-    bugs: sections.has('bugs') ? next.bugs : current.bugs,
-    cases: sections.has('cases') ? next.cases : current.cases,
+    bugs: mergedBugs,
+    cases: sections.has('cases')
+      ? replaceScopedItems(current.cases, next.cases, caseInScope)
+      : current.cases,
     departedUserIds: sections.has('core') ? next.departedUserIds : current.departedUserIds,
-    folders: sections.has('cases') ? next.folders : current.folders,
+    folders: sections.has('cases')
+      ? replaceScopedItems(current.folders, next.folders, caseInScope)
+      : current.folders,
     notifications: sections.has('notifications') ? next.notifications : current.notifications,
-    planCases: sections.has('plans') ? next.planCases : current.planCases,
-    plans: sections.has('plans') ? next.plans : current.plans,
+    planCases: sections.has('plans')
+      ? [...current.planCases.filter((planCase) => !scopedPlanIds.has(planCase.testPlanId)), ...next.planCases]
+      : current.planCases,
+    plans: sections.has('plans')
+      ? replaceScopedItems(current.plans, next.plans, planInScope)
+      : current.plans,
     spaces: sections.has('core') ? next.spaces : current.spaces,
     subjects: sections.has('core') ? next.subjects : current.subjects,
     testEnvironments: sections.has('core') ? next.testEnvironments : current.testEnvironments,
@@ -363,22 +452,6 @@ const testSpaceInviteParam = 'testSpaceInvite'
 const seenBugCommentStoragePrefix = 'veges.testWorkbench.seenBugComments.v1'
 const readNotificationStoragePrefix = 'veges.testWorkbench.readNotifications.v1'
 const assignedBugSpaceStoragePrefix = 'veges.assignedBugs.testSpace.v1'
-
-type BugCommentNotification = {
-  bug: TestBug
-  comment: TestBugComment
-  notification: TestWorkbenchNotification
-}
-
-type BugReturnNotification = {
-  bug: TestBug
-  notification: TestWorkbenchNotification
-}
-
-type PlanAssignmentNotification = {
-  notification: TestWorkbenchNotification
-  plan: TestPlan
-}
 
 function getTestSpaceInviteTokenFromUrl() {
   if (typeof window === 'undefined') return ''
@@ -580,6 +653,8 @@ export function TestWorkbench({
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
   const [loading, setLoading] = useState(true)
   const [sectionLoading, setSectionLoading] = useState(false)
+  const [bugDetailLoading, setBugDetailLoading] = useState(false)
+  const [loadedScopeKeys, setLoadedScopeKeys] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<WorkbenchTab>('cases')
@@ -640,8 +715,9 @@ export function TestWorkbench({
   const [seenBugCommentIds, setSeenBugCommentIds] = useState<Set<number>>(() => readSeenBugCommentIds(currentUserId))
   const [readNotificationKeySet, setReadNotificationKeySet] = useState<Set<string>>(() => loadReadNotificationKeys(currentUserId))
   const acceptingInviteTokenRef = useRef('')
-  const caseScopeRef = useRef('')
+  const activatedScopeKeyRef = useRef('')
   const refreshInFlightRef = useRef(false)
+  const selectedBugDetailScopeRef = useRef('')
   const viewStateReadyRef = useRef(false)
   const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
 
@@ -653,51 +729,25 @@ export function TestWorkbench({
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
-    const savedBeforeLoad = readTestWorkbenchViewState(currentUserId)
-    const initialTab = savedBeforeLoad?.tab ?? 'cases'
-    const initialSections = [...new Set<TestWorkbenchSection>([
-      'core',
-      'notifications',
-      ...testWorkbenchSectionsForTab(initialTab),
-    ])]
-    fetchTestWorkbench(savedBeforeLoad?.tab === 'cases' && savedBeforeLoad.spaceId && savedBeforeLoad.subjectId
-      ? { sections: initialSections, spaceId: savedBeforeLoad.spaceId, subjectId: savedBeforeLoad.subjectId }
-      : { sections: initialSections }, { signal: controller.signal })
+    setLoadedScopeKeys(new Set())
+    activatedScopeKeyRef.current = ''
+    selectedBugDetailScopeRef.current = ''
+    fetchTestWorkbench({ sections: ['core', 'notifications'] }, { signal: controller.signal })
       .then((result) => {
         if (cancelled) return
         setData(result)
-        caseScopeRef.current = initialSections.includes('cases')
-          ? initialTab === 'cases' && savedBeforeLoad?.spaceId && savedBeforeLoad.subjectId
-            ? `${savedBeforeLoad.spaceId}:${savedBeforeLoad.subjectId}`
-            : 'all'
-          : ''
         const saved = readTestWorkbenchViewState(currentUserId)
         const savedSpaceId = saved?.spaceId && result.spaces.some((space) => space.id === saved.spaceId)
           ? saved.spaceId
           : undefined
         setSpaceId(savedSpaceId ?? result.spaces[0]?.id)
-        if (saved && savedSpaceId) {
-          if (saved.subjectId != null && result.subjects.some((subject) => (
-            subject.id === saved.subjectId && subject.testSpaceId === savedSpaceId
-          ))) {
-            setSubjectId(saved.subjectId)
-          }
-          if (saved.selectedCaseId != null && result.cases.some((item) => (
-            item.id === saved.selectedCaseId && item.testSpaceId === savedSpaceId
-          ))) {
-            setSelectedCaseId(saved.selectedCaseId)
-          }
-          if (saved.selectedPlanId != null && result.plans.some((plan) => (
-            plan.id === saved.selectedPlanId && plan.testSpaceId === savedSpaceId
-          ))) {
-            setSelectedPlanId(saved.selectedPlanId)
-          }
-          if (saved.selectedBugId != null && result.bugs.some((bug) => (
-            bug.id === saved.selectedBugId && bug.testSpaceId === savedSpaceId
-          ))) {
-            setSelectedBugId(saved.selectedBugId)
-          }
-        }
+        const savedSubjectId = saved?.subjectId && savedSpaceId && result.subjects.some((subject) => (
+          subject.id === saved.subjectId && subject.testSpaceId === savedSpaceId
+        )) ? saved.subjectId : undefined
+        setSubjectId(savedSubjectId)
+        setSelectedCaseId(saved?.selectedCaseId)
+        setSelectedPlanId(saved?.selectedPlanId)
+        setSelectedBugId(saved?.selectedBugId)
         setTab(saved?.tab ?? 'cases')
         viewStateReadyRef.current = true
         setLoading(false)
@@ -744,18 +794,32 @@ export function TestWorkbench({
       if (refreshInFlightRef.current) return
       refreshInFlightRef.current = true
       controller = new AbortController()
-      const loadedSections = data.loadedSections
+      const activeRequest = testWorkbenchRequestForTab(tab, spaceId, subjectId)
+      const sections = [...new Set<TestWorkbenchSection>([
+        'core',
+        'notifications',
+        ...activeRequest.sections,
+      ])]
       Promise.all([
         fetchTestWorkbench(
-          loadedSections ? { sections: loadedSections } : undefined,
+          { ...activeRequest, sections },
           { signal: controller.signal },
         )
           .then((result) => {
             if (!cancelled) {
-              if (result.loadedSections?.includes('cases') || !result.loadedSections) {
-                caseScopeRef.current = 'all'
-              }
-              setData((current) => mergeTestWorkbenchData(current, result))
+              setData((current) => mergeTestWorkbenchData(current, result, activeRequest))
+            }
+          })
+          .catch(() => undefined),
+        (tab === 'bugs' && spaceId && selectedBugId
+          ? fetchTestWorkbench(
+            { bugId: selectedBugId, sections: ['bugs'], spaceId },
+            { signal: controller.signal },
+          )
+          : Promise.resolve(null))
+          .then((result) => {
+            if (!cancelled && result && selectedBugId) {
+              setData((current) => mergeTestWorkbenchData(current, result, { bugId: selectedBugId, spaceId }))
             }
           })
           .catch(() => undefined),
@@ -766,7 +830,7 @@ export function TestWorkbench({
             if (!cancelled && result) setSpaceSettings(result)
           })
           .catch(() => undefined),
-      ]).then(() => {
+      ]).finally(() => {
         refreshInFlightRef.current = false
       })
     }
@@ -776,35 +840,35 @@ export function TestWorkbench({
       controller?.abort()
       window.clearInterval(interval)
     }
-  }, [busy, data.loadedSections, loading, spaceAdministrationOpen, spaceCreateOpen, spaceId, spaceSwitcherOpen, subjectId, tab])
+  }, [busy, loading, selectedBugId, spaceAdministrationOpen, spaceCreateOpen, spaceId, spaceSwitcherOpen, subjectId, tab])
 
   useEffect(() => {
-    if (loading || tab === 'weekly_report') return
-    const desiredSections = testWorkbenchSectionsForTab(tab)
-    const loadedSections = new Set(data.loadedSections ?? allTestWorkbenchSections)
-    const caseScope = spaceId && subjectId ? `${spaceId}:${subjectId}` : 'all'
-    const sections = desiredSections.filter((section) => (
-      !loadedSections.has(section)
-      || (section === 'cases' && (
-        tab === 'cases'
-          ? caseScopeRef.current !== 'all' && caseScopeRef.current !== caseScope
-          : caseScopeRef.current !== 'all'
-      ))
-    ))
-    if (sections.length === 0) {
+    const requestScope = testWorkbenchRequestForTab(tab, spaceId, subjectId)
+    const scopeKey = testWorkbenchScopeKey(tab, spaceId, subjectId)
+    const scopeActivated = activatedScopeKeyRef.current !== scopeKey
+    activatedScopeKeyRef.current = scopeKey
+    if (
+      loading
+      || requestScope.sections.length === 0
+      || !scopeKey
+      || (loadedScopeKeys.has(scopeKey) && !scopeActivated)
+    ) {
       setSectionLoading(false)
       return
     }
     let cancelled = false
     const controller = new AbortController()
     setSectionLoading(true)
-    fetchTestWorkbench({
-      sections,
-      ...(tab === 'cases' && spaceId && subjectId ? { spaceId, subjectId } : {}),
-    }, { signal: controller.signal }).then((result) => {
+    fetchTestWorkbench(requestScope, { signal: controller.signal }).then((result) => {
       if (!cancelled) {
-        if (sections.includes('cases')) caseScopeRef.current = tab === 'cases' ? caseScope : 'all'
-        setData((current) => mergeTestWorkbenchData(current, result))
+        setData((current) => mergeTestWorkbenchData(current, result, requestScope))
+        setLoadedScopeKeys((current) => {
+          const next = new Set(current).add(scopeKey)
+          if (requestScope.sections.includes('cases') && requestScope.spaceId && !requestScope.subjectId) {
+            next.add(testWorkbenchCasesScopeKey(requestScope.spaceId))
+          }
+          return next
+        })
       }
     }).catch((loadError: unknown) => {
       if (!cancelled) setError(loadError instanceof Error ? loadError.message : '用例加载失败。')
@@ -815,7 +879,7 @@ export function TestWorkbench({
       cancelled = true
       controller.abort()
     }
-  }, [data.loadedSections, loading, spaceId, subjectId, tab])
+  }, [loadedScopeKeys, loading, spaceId, subjectId, tab])
 
   useEffect(() => {
     setInvitePasswordDraft('')
@@ -941,6 +1005,8 @@ export function TestWorkbench({
       bug.assigneeName,
     ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedBugSearchQuery))
   }), [bugFilterConditions, bugFilterJoin, bugs, normalizedBugSearchQuery])
+  const activeContentScopeKey = testWorkbenchScopeKey(tab, spaceId, subjectId)
+  const activeContentLoaded = !activeContentScopeKey || loadedScopeKeys.has(activeContentScopeKey)
   const bugFilterOptions = useMemo<BugFilterOptions>(() => ({
     assignees: uniqueBugFilterOptions(bugs, (bug) => bug.assigneeUserId && bug.assigneeName
       ? { label: bug.assigneeName, value: String(bug.assigneeUserId) }
@@ -967,87 +1033,15 @@ export function TestWorkbench({
       }
     })(),
   }), [bugs, data.cases, data.folders, data.subjects, spaceId])
-  const returnedBugs: BugReturnNotification[] = data.notifications.flatMap((notification) => {
-    if (notification.kind !== 'test_bug_status_changed') return []
-    const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
-    if (!bug || (bug.status !== 'pending_verification' && bug.status !== 'pending_confirmation')) return []
-    return [{ bug, notification }]
-  })
-  const rejectedBugNotifications: BugReturnNotification[] = data.notifications.flatMap((notification) => {
-    if (notification.kind !== 'test_bug_rejected') return []
-    const bug = data.bugs.find((candidate) => candidate.id === notification.sourceId)
-    if (!bug || bug.status !== 'rejected') return []
-    return [{ bug, notification }]
-  })
-  const bugCommentNotifications: BugCommentNotification[] = data.notifications.flatMap((notification) => {
-    if (notification.kind !== 'test_bug_comment_added') return []
-    for (const bug of data.bugs) {
-      const comment = bug.comments.find((candidate) => candidate.id === notification.sourceId)
-      if (!comment) continue
-      if (bug.status === 'closed' || bug.status === 'rejected') return []
-      return [{ bug, comment, notification }]
-    }
-    return []
-  })
-  const planAssignmentNotifications: PlanAssignmentNotification[] = currentUserId
-    ? data.notifications.flatMap((notification) => {
-      if (notification.kind !== 'test_plan_assigned') return []
-      const plan = data.plans.find((candidate) => candidate.id === notification.sourceId)
-      if (
-        !plan ||
-        plan.ownerUserId !== currentUserId ||
-        plan.createdByUserId === currentUserId ||
-        plan.status === 'completed' ||
-        plan.status === 'aborted'
-      ) return []
-      return [{ notification, plan }]
-    })
-    : []
-  const packageEventCommentNotifications = data.notifications.filter(
-    (notification) => notification.kind === 'package_event_comment_added',
-  )
-  const returnedBugUnreadCount = returnedBugs.filter(({ notification }) =>
-    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const rejectedBugUnreadCount = rejectedBugNotifications.filter(({ notification }) =>
-    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const planAssignmentUnreadCount = planAssignmentNotifications.filter(({ notification }) =>
-    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const bugCommentUnreadCount = bugCommentNotifications.filter(({ comment }) => !seenBugCommentIds.has(comment.id)).length
-  const packageEventCommentUnreadCount = packageEventCommentNotifications.filter((notification) =>
-    !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const bugsLoaded = data.loadedSections?.includes('bugs') ?? true
-  const plansLoaded = data.loadedSections?.includes('plans') ?? true
-  const lightweightReturnedBugUnreadCount = data.notifications.filter((notification) =>
-    notification.kind === 'test_bug_status_changed'
-      && notification.actionable
-      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const lightweightRejectedBugUnreadCount = data.notifications.filter((notification) =>
-    notification.kind === 'test_bug_rejected'
-      && notification.actionable
-      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
-  const lightweightBugCommentUnreadCount = data.notifications.filter((notification) =>
-    notification.kind === 'test_bug_comment_added'
-      && notification.actionable
-      && !seenBugCommentIds.has(notification.sourceId),
-  ).length
-  const lightweightPlanAssignmentUnreadCount = data.notifications.filter((notification) =>
-    notification.kind === 'test_plan_assigned'
-      && notification.actionable
-      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
-  ).length
+  const workbenchNotificationUnreadCount = data.notifications.filter((notification) => (
+    (!('actionable' in notification) || notification.actionable !== false)
+    && (notification.kind === 'test_bug_comment_added'
+      ? !seenBugCommentIds.has(notification.sourceId)
+      : !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)))
+  )).length
   const notificationUnreadCount =
     (spaceSettings.ownershipTransfers?.length ?? 0) + spaceSettings.invitations.length +
-    (bugsLoaded ? returnedBugUnreadCount : lightweightReturnedBugUnreadCount) +
-    (bugsLoaded ? rejectedBugUnreadCount : lightweightRejectedBugUnreadCount) +
-    (bugsLoaded ? bugCommentUnreadCount : lightweightBugCommentUnreadCount) +
-    (plansLoaded ? planAssignmentUnreadCount : lightweightPlanAssignmentUnreadCount) +
-    packageEventCommentUnreadCount
+    workbenchNotificationUnreadCount
 
   function markBugCommentAsSeen(commentId?: number) {
     if (!commentId || !currentUserId) return
@@ -1082,10 +1076,46 @@ export function TestWorkbench({
   }, [data.spaces, spaceId, subjectId, subjects])
 
   useEffect(() => {
+    if (!activeContentLoaded) return
     if (!cases.some((item) => item.id === selectedCaseId)) setSelectedCaseId(cases[0]?.id)
     if (!plans.some((item) => item.id === selectedPlanId)) setSelectedPlanId(plans[0]?.id)
     if (!filteredBugs.some((item) => item.id === selectedBugId)) setSelectedBugId(filteredBugs[0]?.id)
-  }, [bugs, cases, filteredBugs, plans, selectedBugId, selectedCaseId, selectedPlanId])
+  }, [activeContentLoaded, bugs, cases, filteredBugs, plans, selectedBugId, selectedCaseId, selectedPlanId])
+
+  useEffect(() => {
+    if (loading || tab !== 'bugs' || !spaceId || !selectedBugId) {
+      selectedBugDetailScopeRef.current = ''
+      setBugDetailLoading(false)
+      return
+    }
+    const detailScopeKey = `${spaceId}:${selectedBugId}`
+    const selectionChanged = selectedBugDetailScopeRef.current !== detailScopeKey
+    selectedBugDetailScopeRef.current = detailScopeKey
+    const selected = data.bugs.find((bug) => bug.id === selectedBugId && bug.testSpaceId === spaceId)
+    if (!selected || (selected.detailsLoaded && !selectionChanged)) {
+      setBugDetailLoading(false)
+      return
+    }
+    let cancelled = false
+    const controller = new AbortController()
+    setBugDetailLoading(true)
+    fetchTestWorkbench({ bugId: selectedBugId, sections: ['bugs'], spaceId }, { signal: controller.signal })
+      .then((result) => {
+        if (!cancelled) {
+          setData((current) => mergeTestWorkbenchData(current, result, { bugId: selectedBugId, spaceId }))
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Bug 详情加载失败。')
+      })
+      .finally(() => {
+        if (!cancelled) setBugDetailLoading(false)
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [data.bugs, loading, selectedBugId, spaceId, tab])
 
   useEffect(() => {
     if (subjectDeleteDialogOpen || !subjectPendingDelete) return
@@ -1117,7 +1147,6 @@ export function TestWorkbench({
     try {
       const result = confirmed ? await reconcileAction(operation, fetchTestWorkbench, matches) : await operation()
       if (actionScopeRef.current !== actionScope) return false
-      caseScopeRef.current = 'all'
       setData(result)
       return true
     } catch (mutationError) {
@@ -1139,9 +1168,37 @@ export function TestWorkbench({
     }
   }
 
+  async function loadTestSpaceCases(targetSpaceId: number) {
+    const scopeKey = testWorkbenchCasesScopeKey(targetSpaceId)
+    if (loadedScopeKeys.has(scopeKey)) return
+    const requestScope = { sections: ['cases' as const], spaceId: targetSpaceId }
+    const result = await fetchTestWorkbench(requestScope)
+    setData((current) => mergeTestWorkbenchData(current, result, requestScope))
+    setLoadedScopeKeys((current) => new Set(current).add(scopeKey))
+  }
+
+  function invalidateWorkbenchScope(targetTab: WorkbenchTab, targetSpaceId: number, targetSubjectId?: number) {
+    const scopeKey = testWorkbenchScopeKey(targetTab, targetSpaceId, targetSubjectId)
+    if (!scopeKey) return
+    setLoadedScopeKeys((current) => {
+      if (!current.has(scopeKey)) return current
+      const next = new Set(current)
+      next.delete(scopeKey)
+      return next
+    })
+  }
+
   async function refreshWorkbench(preferredSpaceId?: number) {
-    const result = await fetchTestWorkbench()
-    setData(result)
+    const targetSpaceId = preferredSpaceId ?? spaceId
+    const activeRequest = testWorkbenchRequestForTab(tab, targetSpaceId, targetSpaceId === spaceId ? subjectId : undefined)
+    const requestScope = {
+      ...activeRequest,
+      sections: [...new Set<TestWorkbenchSection>(['core', 'notifications', ...activeRequest.sections])],
+    }
+    const result = await fetchTestWorkbench(requestScope)
+    setData((current) => mergeTestWorkbenchData(current, result, activeRequest))
+    const scopeKey = testWorkbenchScopeKey(tab, targetSpaceId, targetSpaceId === spaceId ? subjectId : undefined)
+    if (scopeKey) setLoadedScopeKeys((current) => new Set(current).add(scopeKey))
     setSpaceId((current) => {
       if (preferredSpaceId && result.spaces.some((space) => space.id === preferredSpaceId)) return preferredSpaceId
       if (current && result.spaces.some((space) => space.id === current)) return current
@@ -1159,6 +1216,7 @@ export function TestWorkbench({
       const prepared = await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true
       if (!prepared) return
     }
+    setSubjectId(data.subjects.find((subject) => subject.testSpaceId === nextSpaceId)?.id)
     setSpaceId(nextSpaceId)
   }
 
@@ -1425,29 +1483,27 @@ export function TestWorkbench({
               <NotificationsView
                 busy={busy}
                 data={data}
-                bugCommentNotifications={bugCommentNotifications}
                 ownershipTransfers={spaceSettings.ownershipTransfers ?? []}
                 onRespondOwnershipTransfer={(id,action)=>void handleOwnershipTransfer(id,action)}
                 invitations={spaceSettings.invitations}
-                planAssignmentNotifications={planAssignmentNotifications}
                 readNotificationKeys={readNotificationKeySet}
-                rejectedBugNotifications={rejectedBugNotifications}
-                returnedBugs={returnedBugs}
                 seenBugCommentIds={seenBugCommentIds}
                 onAcceptInvitation={(invitation) => void handleAcceptInvitation(invitation.spaceId)}
                 onDeclineInvitation={(invitation) => void handleDeclineInvitation(invitation.spaceId)}
-                onOpenBug={(bug, notification, commentId) => {
+                onOpenBug={(notification, commentId) => {
                   markNotificationAsRead(getTestWorkbenchNotificationKey(notification))
                   markBugCommentAsSeen(commentId)
-                  setSpaceId(bug.testSpaceId)
-                  setSubjectId(bug.testSubjectId)
-                  setSelectedBugId(bug.id)
+                  invalidateWorkbenchScope('bugs', notification.testSpaceId)
+                  setSpaceId(notification.testSpaceId)
+                  setSubjectId(notification.testSubjectId)
+                  setSelectedBugId(notification.targetId)
                   setTab('bugs')
                 }}
-                onOpenPlan={(plan, notification) => {
+                onOpenPlan={(notification) => {
                   markNotificationAsRead(getTestWorkbenchNotificationKey(notification))
-                  setSpaceId(plan.testSpaceId)
-                  setSelectedPlanId(plan.id)
+                  invalidateWorkbenchScope('plans', notification.testSpaceId)
+                  setSpaceId(notification.testSpaceId)
+                  setSelectedPlanId(notification.targetId)
                   setTab('plans')
                 }}
                 onMarkNotificationRead={(notification) => markNotificationAsRead(getTestWorkbenchNotificationKey(notification))}
@@ -1555,12 +1611,14 @@ export function TestWorkbench({
               <WorkspaceError message={error} />
               <BugsView
                 bugs={filteredBugs}
+                bugDetailLoading={bugDetailLoading}
                 busy={busy}
                 data={data}
                 draftOwnerUserId={currentUserId}
                 filterConditions={bugFilterConditions}
                 onFilterOpenChange={setBugFilterDialogOpen}
                 onFilterClear={() => setBugFilterConditions([])}
+                onLoadTransferCases={loadTestSpaceCases}
                 searchQuery={bugSearchQuery}
                 onSearchQueryChange={setBugSearchQuery}
                 readOnly={activeSpaceReadOnly}
@@ -1789,7 +1847,6 @@ export function TestWorkbench({
 }
 
 function NotificationsView({
-  bugCommentNotifications,
   busy,
   data,
   ownershipTransfers,
@@ -1800,13 +1857,9 @@ function NotificationsView({
   onOpenBug,
   onOpenPlan,
   onMarkNotificationRead,
-  planAssignmentNotifications,
   readNotificationKeys,
-  rejectedBugNotifications,
-  returnedBugs,
   seenBugCommentIds,
 }: {
-  bugCommentNotifications: BugCommentNotification[]
   busy: boolean
   data: TestWorkbenchData
   ownershipTransfers: TestSpaceOwnershipTransfer[]
@@ -1814,13 +1867,10 @@ function NotificationsView({
   invitations: TestSpaceInvitation[]
   onAcceptInvitation: (invitation: TestSpaceInvitation) => void
   onDeclineInvitation: (invitation: TestSpaceInvitation) => void
-  onOpenBug: (bug: TestBug, notification: TestWorkbenchNotification, commentId?: number) => void
-  onOpenPlan: (plan: TestPlan, notification: TestWorkbenchNotification) => void
+  onOpenBug: (notification: TestResourceWorkbenchNotification, commentId?: number) => void
+  onOpenPlan: (notification: TestResourceWorkbenchNotification) => void
   onMarkNotificationRead: (notification: TestWorkbenchNotification) => void
-  planAssignmentNotifications: PlanAssignmentNotification[]
   readNotificationKeys: Set<string>
-  rejectedBugNotifications: BugReturnNotification[]
-  returnedBugs: BugReturnNotification[]
   seenBugCommentIds: Set<number>
 }) {
   const notificationItems = [
@@ -1832,43 +1882,42 @@ function NotificationsView({
       kind: 'invitation' as const,
       sortAt: Date.parse(invitation.createdAt),
     })),
-    ...returnedBugs.map(({ bug, notification }) => ({
-      bug,
+    ...data.notifications.flatMap((notification) => notification.kind === 'test_bug_status_changed' && notification.actionable
+      ? [{
       createdAt: notification.createdAt,
-      key: `bug-${bug.id}`,
+      key: `bug-${notification.targetId}`,
       kind: 'bug_return' as const,
       notification,
       notificationKey: getTestWorkbenchNotificationKey(notification),
       sortAt: Date.parse(notification.createdAt),
-    })),
-    ...rejectedBugNotifications.map(({ bug, notification }) => ({
-      bug,
+    }] : []),
+    ...data.notifications.flatMap((notification) => notification.kind === 'test_bug_rejected' && notification.actionable
+      ? [{
       createdAt: notification.createdAt,
-      key: `bug-rejected-${bug.id}`,
+      key: `bug-rejected-${notification.targetId}`,
       kind: 'bug_rejected' as const,
       notification,
       notificationKey: getTestWorkbenchNotificationKey(notification),
       sortAt: Date.parse(notification.createdAt),
-    })),
-    ...bugCommentNotifications.map(({ bug, comment, notification }) => ({
-      bug,
-      comment,
+    }] : []),
+    ...data.notifications.flatMap((notification) => notification.kind === 'test_bug_comment_added' && notification.actionable
+      ? [{
       createdAt: notification.createdAt,
-      key: `bug-comment-${comment.id}`,
+      key: `bug-comment-${notification.sourceId}`,
       kind: 'bug_comment' as const,
       notification,
       notificationKey: getTestWorkbenchNotificationKey(notification),
       sortAt: getTimestampMs(notification.createdAt),
-    })),
-    ...planAssignmentNotifications.map(({ notification, plan }) => ({
+    }] : []),
+    ...data.notifications.flatMap((notification) => notification.kind === 'test_plan_assigned' && notification.actionable
+      ? [{
       createdAt: notification.createdAt,
-      key: `plan-assignment-${plan.id}`,
+      key: `plan-assignment-${notification.targetId}`,
       kind: 'plan_assignment' as const,
       notification,
       notificationKey: getTestWorkbenchNotificationKey(notification),
-      plan,
       sortAt: getTimestampMs(notification.createdAt),
-    })),
+    }] : []),
     ...data.notifications
       .filter((notification) => notification.kind === 'package_event_comment_added')
       .map((notification) => ({
@@ -1886,7 +1935,7 @@ function NotificationsView({
   })
   const unreadCount = notificationItems.filter((item) => {
     if (item.kind === 'invitation' || item.kind === 'ownership_transfer') return true
-    if (item.kind === 'bug_comment') return !seenBugCommentIds.has(item.comment.id)
+    if (item.kind === 'bug_comment') return !seenBugCommentIds.has(item.notification.sourceId)
     return !readNotificationKeys.has(item.notificationKey)
   }).length
   const readCount = Math.max(0, notificationItems.length - unreadCount)
@@ -1935,25 +1984,23 @@ function NotificationsView({
                 )
               }
               if (item.kind === 'plan_assignment') {
-                const plan = item.plan
-                const spaceName = data.spaces.find((space) => space.id === plan.testSpaceId)?.name ?? '未知测试空间'
-                const subjectNames = (plan.testSubjectIds.length ? plan.testSubjectIds : [plan.testSubjectId])
-                  .map((id) => data.subjects.find((subject) => subject.id === id)?.name)
-                  .filter(Boolean)
-                  .join('、') || '未关联测试对象'
+                const notification = item.notification
+                const subjectNames = notification.testSubjects?.map((subject) => subject.name).join('、')
+                  || notification.testSubjectName
+                  || '未关联测试对象'
                 const read = readNotificationKeys.has(item.notificationKey)
                 return (
                   <article key={item.key} className={read ? 'test-notification-card read' : 'test-notification-card unread'}>
                     <div className="test-notification-copy">
                       <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>计划指派</span>
                       <div>
-                        <strong>PLAN-{plan.id} · {plan.name}</strong>
+                        <strong>PLAN-{notification.targetId} · {notification.targetTitle}</strong>
                         <p>这个测试计划已指派给你，需要跟进执行。</p>
-                        <small>{spaceName} · {subjectNames} · {formatTimestamp(item.createdAt)}</small>
+                        <small>{notification.testSpaceName || '未知测试空间'} · {subjectNames} · {formatTimestamp(item.createdAt)}</small>
                       </div>
                     </div>
                     <div>
-                      <Button variant="outline" onClick={() => onOpenPlan(plan, item.notification)}><ListChecks /> 查看计划</Button>
+                      <Button variant="outline" onClick={() => onOpenPlan(notification)}><ListChecks /> 查看计划</Button>
                     </div>
                   </article>
                 )
@@ -1983,24 +2030,24 @@ function NotificationsView({
                   </article>
                 )
               }
-              const bug = item.bug
-              const spaceName = data.spaces.find((space) => space.id === bug.testSpaceId)?.name ?? '未知测试空间'
-              const caseName = bug.testCaseId ? `CASE-${bug.testCaseId} ${bug.testCaseTitle || ''}` : '待补关联'
+              const notification = item.notification
+              const caseName = notification.testCaseId
+                ? `CASE-${notification.testCaseId} ${notification.testCaseTitle || ''}`
+                : '待补关联'
               if (item.kind === 'bug_comment') {
-                const comment = item.comment
-                const read = seenBugCommentIds.has(comment.id)
+                const read = seenBugCommentIds.has(notification.sourceId)
                 return (
                   <article key={item.key} className={read ? 'test-notification-card read' : 'test-notification-card unread'}>
                     <div className="test-notification-copy">
                       <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>Bug 回复</span>
                       <div>
-                        <strong>BUG-{bug.id} · {bug.title}</strong>
-                        <p>{comment.authorName} 添加了协作备注，需要测试侧查看。</p>
-                        <small>{spaceName} · {caseName} · {formatTimestamp(item.createdAt)}</small>
+                        <strong>BUG-{notification.targetId} · {notification.targetTitle}</strong>
+                        <p>{notification.commentAuthorName || '协作者'} 添加了协作备注，需要测试侧查看。</p>
+                        <small>{notification.testSpaceName || '未知测试空间'} · {caseName} · {formatTimestamp(item.createdAt)}</small>
                       </div>
                     </div>
                     <div>
-                      <Button variant="outline" onClick={() => onOpenBug(bug, item.notification, comment.id)}><Bug /> 查看 Bug</Button>
+                      <Button variant="outline" onClick={() => onOpenBug(notification, notification.sourceId)}><Bug /> 查看 Bug</Button>
                     </div>
                   </article>
                 )
@@ -2012,13 +2059,13 @@ function NotificationsView({
                     <div className="test-notification-copy">
                       <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>Bug 驳回</span>
                       <div>
-                        <strong>BUG-{bug.id} · {bug.title}</strong>
+                        <strong>BUG-{notification.targetId} · {notification.targetTitle}</strong>
                         <p>开发工程师驳回了这个 Bug，需要测试侧处理。</p>
-                        <small>{spaceName} · {caseName} · {formatTimestamp(item.createdAt)}</small>
+                        <small>{notification.testSpaceName || '未知测试空间'} · {caseName} · {formatTimestamp(item.createdAt)}</small>
                       </div>
                     </div>
                     <div>
-                      <Button variant="outline" onClick={() => onOpenBug(bug, item.notification)}><Bug /> 查看 Bug</Button>
+                      <Button variant="outline" onClick={() => onOpenBug(notification)}><Bug /> 查看 Bug</Button>
                     </div>
                   </article>
                 )
@@ -2029,13 +2076,13 @@ function NotificationsView({
                   <div className="test-notification-copy">
                     <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>Bug 返回</span>
                     <div>
-                      <strong>BUG-{bug.id} · {bug.title}</strong>
-                      <p>{bugStatusLabel[bug.status]}，需要测试侧回看。</p>
-                      <small>{spaceName} · {caseName} · {formatTimestamp(item.createdAt)}</small>
+                      <strong>BUG-{notification.targetId} · {notification.targetTitle}</strong>
+                      <p>{bugStatusLabel[notification.targetStatus as BugStatus] ?? '状态已更新'}，需要测试侧回看。</p>
+                      <small>{notification.testSpaceName || '未知测试空间'} · {caseName} · {formatTimestamp(item.createdAt)}</small>
                     </div>
                   </div>
                   <div>
-                    <Button variant="outline" onClick={() => onOpenBug(bug, item.notification)}><Bug /> 查看 Bug</Button>
+                    <Button variant="outline" onClick={() => onOpenBug(notification)}><Bug /> 查看 Bug</Button>
                   </div>
                 </article>
               )
@@ -2444,8 +2491,9 @@ function PlanCaseDetailDialog({ onClose, planCase }: {
   )
 }
 
-function BugsView({ bugs, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
+function BugsView({ bugs, bugDetailLoading, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onLoadTransferCases, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
   bugs: TestBug[]
+  bugDetailLoading: boolean
   busy: boolean
   data: TestWorkbenchData
   draftOwnerUserId?: number
@@ -2458,6 +2506,7 @@ function BugsView({ bugs, busy, data, draftOwnerUserId, filterConditions, onAssi
   onEdit: (bug: TestBug) => void
   onFilterClear: () => void
   onFilterOpenChange: (open: boolean) => void
+  onLoadTransferCases: (spaceId: number) => Promise<void>
   onSearchQueryChange: (value: string) => void
   onSelect: (id: number) => void
   onStatus: (bug: TestBug, status: BugStatus) => void
@@ -2508,14 +2557,18 @@ function BugsView({ bugs, busy, data, draftOwnerUserId, filterConditions, onAssi
             {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · <UserName departedUserIds={data.departedUserIds} name={bug.assigneeName || '未分配'} userId={bug.assigneeUserId} />{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试空间还没有 Bug。'}</div>}
         </div>
         <div className="test-record-detail">
-          {selected ? <BugDetail bug={selected} busy={busy} cases={data.cases} departedUserIds={data.departedUserIds} draftOwnerUserId={draftOwnerUserId} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDelete={onDelete} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} /> : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
+          {selected && selected.detailsLoaded
+            ? <BugDetail bug={selected} busy={busy} cases={data.cases} departedUserIds={data.departedUserIds} draftOwnerUserId={draftOwnerUserId} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDelete={onDelete} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onLoadTransferCases={onLoadTransferCases} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} />
+            : selected && bugDetailLoading
+              ? <div className="test-detail-empty"><Bug size={28} /><p>正在加载 Bug 详情...</p></div>
+              : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
         </div>
       </div>
     </div>
   )
 }
 
-function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssignee, onComment, onDelete, onDeleteComment, onEdit, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
+function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssignee, onComment, onDelete, onDeleteComment, onEdit, onLoadTransferCases, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
   bug: TestBug
   busy: boolean
   cases: TestCase[]
@@ -2526,6 +2579,7 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
   onDelete: (bug: TestBug) => void
   onDeleteComment?: (bug: TestBug, comment: TestBugComment) => Promise<boolean>
   onEdit: (bug: TestBug) => void
+  onLoadTransferCases: (spaceId: number) => Promise<void>
   onStatus: (bug: TestBug, status: BugStatus) => void
   onTransferSpace: (bug: TestBug, targetSpaceId: number, targetTestCaseId: number) => Promise<boolean>
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
@@ -2595,26 +2649,43 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
       onUpdateComment={onUpdateComment}
     />
     <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
-    <BugSpaceTransferDialog bug={bug} busy={busy} cases={cases} open={transferSpaceOpen} onOpenChange={setTransferSpaceOpen} onSubmit={onTransferSpace} />
+    <BugSpaceTransferDialog bug={bug} busy={busy} cases={cases} open={transferSpaceOpen} onLoadCases={onLoadTransferCases} onOpenChange={setTransferSpaceOpen} onSubmit={onTransferSpace} />
     <BugTimelineDialog bug={bug} departedUserIds={departedUserIds} open={timelineOpen} onOpenChange={setTimelineOpen} />
   </>
 }
 
-function BugSpaceTransferDialog({ bug, busy, cases, onOpenChange, onSubmit, open }: {
+function BugSpaceTransferDialog({ bug, busy, cases, onLoadCases, onOpenChange, onSubmit, open }: {
   bug: TestBug
   busy: boolean
   cases: TestCase[]
+  onLoadCases: (spaceId: number) => Promise<void>
   onOpenChange: (open: boolean) => void
   onSubmit: (bug: TestBug, targetSpaceId: number, targetTestCaseId: number) => Promise<boolean>
   open: boolean
 }) {
   const [targetSpaceId, setTargetSpaceId] = useState('')
   const [targetCaseId, setTargetCaseId] = useState('')
+  const [loadingSpaceId, setLoadingSpaceId] = useState('')
+  const [loadError, setLoadError] = useState('')
   const targetCases = cases.filter((item) => String(item.testSpaceId) === targetSpaceId)
 
   useEffect(() => {
-    if (open) { setTargetSpaceId(''); setTargetCaseId('') }
+    if (open) { setTargetSpaceId(''); setTargetCaseId(''); setLoadingSpaceId(''); setLoadError('') }
   }, [bug.id, open])
+
+  function selectTargetSpace(value: string) {
+    setTargetSpaceId(value)
+    setTargetCaseId('')
+    setLoadingSpaceId(value)
+    setLoadError('')
+    void onLoadCases(Number(value))
+      .catch((error: unknown) => {
+        setLoadError(error instanceof Error ? error.message : '目标空间用例加载失败，请重试。')
+      })
+      .finally(() => {
+        setLoadingSpaceId((current) => current === value ? '' : current)
+      })
+  }
 
   async function submit() {
     if (!targetSpaceId || !targetCaseId) return
@@ -2631,7 +2702,7 @@ function BugSpaceTransferDialog({ bug, busy, cases, onOpenChange, onSubmit, open
         </DialogHeader>
         {(bug.transferSpaceCandidates?.length ?? 0) > 0 ? (
           <Label>目标测试空间
-            <Select value={targetSpaceId} onValueChange={(value) => { setTargetSpaceId(value); setTargetCaseId('') }}>
+            <Select value={targetSpaceId} onValueChange={selectTargetSpace}>
               <SelectTrigger aria-label="目标测试空间"><SelectValue placeholder="选择测试空间" /></SelectTrigger>
               <SelectContent>
                 {bug.transferSpaceCandidates?.map((space) => (
@@ -2648,11 +2719,14 @@ function BugSpaceTransferDialog({ bug, busy, cases, onOpenChange, onSubmit, open
             <SelectTrigger aria-label="目标测试用例"><SelectValue placeholder="选择测试用例" /></SelectTrigger>
             <SelectContent>{targetCases.map((item) => <SelectItem key={item.id} value={String(item.id)}>CASE-{item.id} {item.title}</SelectItem>)}</SelectContent>
           </Select>
-          {!targetCases.length ? <span>目标空间暂无用例，请先创建用例。</span> : null}
+          {loadingSpaceId === targetSpaceId
+            ? <span>正在加载目标空间用例...</span>
+            : loadError ? <span>{loadError}</span>
+              : !targetCases.length ? <span>目标空间暂无用例，请先创建用例。</span> : null}
         </Label> : null}
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-          <Button disabled={busy || !targetSpaceId || !targetCaseId} onClick={() => void submit()}><ArrowsLeftRight />{busy ? '转移中...' : '确认转移'}</Button>
+          <Button disabled={busy || Boolean(loadError) || loadingSpaceId === targetSpaceId || !targetSpaceId || !targetCaseId} onClick={() => void submit()}><ArrowsLeftRight />{busy ? '转移中...' : '确认转移'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

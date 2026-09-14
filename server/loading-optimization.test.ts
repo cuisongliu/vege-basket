@@ -12,6 +12,7 @@ const testClientSource = readFileSync(
   new URL('../src/components/test-workbench.tsx', import.meta.url),
   'utf8',
 )
+const testClientApiSource = readFileSync(new URL('../src/test-workbench-api.ts', import.meta.url), 'utf8')
 const testServerSource = readFileSync(new URL('./test-workbench.ts', import.meta.url), 'utf8')
 
 test('role and view changes do not invalidate unrelated application data', () => {
@@ -24,19 +25,39 @@ test('role and view changes do not invalidate unrelated application data', () =>
   assert.match(appSource, /initialOrganizations=\{organizations\}/u)
 })
 
-test('test workbench sections are opt-in and merged without replacing unloaded data', () => {
+test('test workbench reads stay sectioned and scoped to the active space', () => {
   assert.match(testServerSource, /if \(value === undefined\) return undefined/u)
   assert.match(testServerSource, /const includes = \(section: TestWorkbenchSection\) => !sections \|\| sections\.has\(section\)/u)
   assert.match(testServerSource, /const workbenchQuery = createLimitedQuery\(\)/u)
   assert.match(testServerSource, /loadedSections: sections \? \[\.\.\.sections\] : undefined/u)
+  assert.match(testServerSource, /const scopeBugs = .*b\.test_space_id/u)
+  assert.match(testServerSource, /const includeBugDetails = !sections \|\| Boolean\(scope\?\.bugId\)/u)
+  assert.match(testServerSource, /includes\('bugs'\) && includeBugDetails/u)
+  assert.match(testServerSource, /detailsLoaded: includeBugDetails/u)
+  assert.match(testServerSource, /latest_assignment\.transfer_source as latest_assignment_transfer_source/u)
+  assert.match(testServerSource, /\|\| \(subjectId && !spaceId\)/u)
+  assert.match(testServerSource, /\|\| \(bugId && !spaceId\)/u)
+  assert.match(testClientApiSource, /if \(scope\?\.bugId\) params\.set\('bugId'/u)
   assert.match(testClientSource, /mergeTestWorkbenchData/u)
-  assert.match(testClientSource, /sections: initialSections/u)
-  assert.match(testClientSource, /caseScopeRef/u)
-  assert.match(testClientSource, /'core',\s*'notifications',\s*\.\.\.testWorkbenchSectionsForTab/u)
-  assert.match(testClientSource, /caseScopeRef\.current = 'all'/u)
+  assert.match(testClientSource, /testWorkbenchScopeKey/u)
+  assert.match(testClientSource, /fetchTestWorkbench\(\{ sections: \['core', 'notifications'\] \}/u)
+  assert.match(testClientSource, /\{ \.\.\.activeRequest, sections \}/u)
   assert.match(testClientSource, /if \(tab === 'bugs'\) return \['bugs', 'cases'\]/u)
   assert.match(testClientSource, /if \(tab === 'plans'\) return \['plans', 'cases'\]/u)
-  assert.match(testServerSource, /end as actionable/u)
+  assert.match(testClientSource, /bugId: selectedBugId, sections: \['bugs'\], spaceId/u)
+  assert.match(testClientSource, /actualResult: cached\.actualResult/u)
+  assert.match(testClientSource, /invalidateWorkbenchScope\('bugs', notification\.testSpaceId\)/u)
+  assert.match(testClientSource, /activatedScopeKeyRef\.current !== scopeKey/u)
+  assert.doesNotMatch(testClientSource, /caseScopeRef/u)
+})
+
+test('test notifications are self-contained and retain server-side resource authorization', () => {
+  assert.match(testClientSource, /if \(tab === 'notifications' \|\| tab === 'weekly_report'\) return \[\]/u)
+  assert.match(testServerSource, /coalesce\(notification_bug\.id, notification_plan\.id\) as target_id/u)
+  assert.match(testServerSource, /comment_author\.display_name as comment_author_display_name/u)
+  assert.match(testServerSource, /testSpaceMembershipPresentSql\('notification_membership'\)/u)
+  assert.match(testServerSource, /managedOrganizationReadScopeSql\('notification_space\.organization_id'\)/u)
+  assert.match(testClientSource, /notification\.targetId/u)
 })
 
 test('organization sections preserve the complete default and avoid multiplied counts', () => {
