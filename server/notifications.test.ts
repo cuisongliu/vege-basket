@@ -747,12 +747,16 @@ test('supports a slower interval for heavier workspace refreshes', () => {
   assert.equal(intervalDelay, workspaceRefreshIntervalMs)
 })
 
-test('refreshes the workspace snapshot independently from notification polling', () => {
+test('does not refresh the workspace snapshot just because the view changes', () => {
   assert.match(appSource, /const refreshWorkspace = useCallback\(async \(\) =>/u)
   assert.match(appSource, /fetchWorkspace\(\)/u)
   assert.match(appSource, /intervalMs: workspaceRefreshIntervalMs/u)
-  assert.match(appSource, /if \(!workspaceHydratedRef\.current\) \{\s*workspaceHydratedRef\.current = true\s*return/u)
-  assert.match(appSource, /\[loggedIn, view, workspaceLoaded, refreshWorkspace\]/u)
+  assert.doesNotMatch(appSource, /workspaceHydratedRef/u)
+  assert.doesNotMatch(appSource, /\[loggedIn, view, workspaceLoaded, refreshWorkspace\]/u)
+  assert.match(
+    appSource,
+    /const refreshed = await refreshWorkspace\(\)\s*if \(refreshed\) setOrganizationRefreshVersion/u,
+  )
   assert.match(appSource, /refreshToken=\{workspaceRefreshVersion\}/u)
 })
 

@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs'
 import express, { Router } from 'express'
 import type { PoolClient } from 'pg'
 import { blindIndex, decryptJson, decryptText, encryptJson, encryptText } from './crypto.ts'
-import { pool, query } from './db.ts'
+import { createLimitedQuery, pool, query } from './db.ts'
 import { bugCaseDirectoryJoinSql, serializeBugCaseDirectory, type BugCaseDirectoryRow } from './bug-case-directory.ts'
 import { getDepartedUserIds } from './user-lifecycle.ts'
 import {
@@ -80,6 +80,25 @@ type TestWorkbenchNotificationKind =
   | 'test_bug_rejected'
   | 'test_bug_comment_added'
   | 'package_event_comment_added'
+type TestWorkbenchSection = 'bugs' | 'cases' | 'core' | 'notifications' | 'plans'
+
+const testWorkbenchSections = new Set<TestWorkbenchSection>([
+  'bugs',
+  'cases',
+  'core',
+  'notifications',
+  'plans',
+])
+
+function parseTestWorkbenchSections(value: unknown) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !value.trim()) return null
+  const sections = new Set(value.split(',').map((section) => section.trim()))
+  if ([...sections].some((section) => !testWorkbenchSections.has(section as TestWorkbenchSection))) {
+    return null
+  }
+  return sections as Set<TestWorkbenchSection>
+}
 
 const router = Router()
 
@@ -1575,7 +1594,13 @@ function mapVerificationSubmissions(rows: readonly VerificationSubmissionRow[]) 
   return submissionsByBug
 }
 
-async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subjectId?: number }) {
+async function getTestWorkbench(
+  userId: number,
+  scope?: { spaceId?: number; subjectId?: number },
+  sections?: Set<TestWorkbenchSection>,
+) {
+  const workbenchQuery = createLimitedQuery()
+  const includes = (section: TestWorkbenchSection) => !sections || sections.has(section)
   const scopeCases = scope?.spaceId && scope?.subjectId
     ? ` and c.test_space_id = ${scope.spaceId} and c.test_subject_id = ${scope.subjectId}`
     : ''
@@ -1605,7 +1630,7 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
     users,
     notifications,
   ] = await Promise.all([
-    query<{
+    includes('core') || includes('bugs') ? workbenchQuery<{
       access_level: TestSpaceAccess
       can_manage: boolean
       created_at: Date
@@ -1626,8 +1651,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by ts.updated_at desc, ts.id desc
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('core') ? workbenchQuery<{
       access_url: string
       id: string
       name: string
@@ -1644,8 +1669,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by environment.id, assignment.test_space_id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('core') ? workbenchQuery<{
       created_at: Date
       created_by_user_id: string | null
       description: string
@@ -1663,8 +1688,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by s.updated_at desc, s.id desc
       `,
       [userId],
-    ),
-    query<{ created_at: Date; id: string; name: string; parent_id: string | null; test_space_id: string; test_subject_id: string }>(
+    ) : Promise.resolve({ rows: [] }),
+    includes('cases') ? workbenchQuery<{ created_at: Date; id: string; name: string; parent_id: string | null; test_space_id: string; test_subject_id: string }>(
       `
       select f.*
       from test_case_folders f
@@ -1675,8 +1700,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by f.name, f.id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('cases') ? workbenchQuery<{
       case_type: string
           created_at: Date
       created_by_user_id: string | null
@@ -1706,8 +1731,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by c.updated_at desc, c.id desc
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('plans') ? workbenchQuery<{
       created_at: Date
       created_by_user_id: string | null
       ends_on: string | null
@@ -1735,8 +1760,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by p.updated_at desc, p.id desc
       `,
       [userId],
-    ),
-    query<{ test_plan_id: string; test_subject_id: string }>(
+    ) : Promise.resolve({ rows: [] }),
+    includes('plans') ? workbenchQuery<{ test_plan_id: string; test_subject_id: string }>(
       `
       select ps.test_plan_id, ps.test_subject_id
       from test_plan_subjects ps
@@ -1748,8 +1773,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by ps.test_plan_id, ps.test_subject_id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('plans') ? workbenchQuery<{
       executed_at: Date | null
       executed_by_user_id: string | null
       id: string
@@ -1775,8 +1800,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by pc.id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('bugs') ? workbenchQuery<{
       actual_result: string
       assignee_display_name: string | null
       assignee_email: string | null
@@ -1843,8 +1868,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by b.updated_at desc, b.id desc
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('bugs') ? workbenchQuery<{
       author_display_name: string | null
       author_email: string | null
       author_user_id: string | null
@@ -1867,8 +1892,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by c.created_at, c.id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('bugs') ? workbenchQuery<{
       actor_display_name: string | null
       actor_email: string | null
       actor_user_id: string | null
@@ -1907,8 +1932,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by e.created_at, e.id
       `,
       [userId],
-    ),
-    query<VerificationSubmissionRow>(
+    ) : Promise.resolve({ rows: [] }),
+    includes('bugs') ? workbenchQuery<VerificationSubmissionRow>(
       `
       select submission.id as submission_id, submission.test_bug_id, submission.submitted_by_user_id,
              submission.created_at,
@@ -1935,8 +1960,8 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by submission.created_at desc, submission.id desc, package.position, image.position
       `,
       [userId],
-    ),
-    query<{ display_name: string; email: string; id: string; roles: string[] }>(
+    ) : Promise.resolve({ rows: [] }),
+    includes('core') ? workbenchQuery<{ display_name: string; email: string; id: string; roles: string[] }>(
       `
       select u.id, u.email, u.display_name, array_agg(distinct ur.role order by ur.role) as roles
       from users u
@@ -1973,8 +1998,9 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
       `,
       [userId],
-    ),
-    query<{
+    ) : Promise.resolve({ rows: [] }),
+    includes('notifications') ? workbenchQuery<{
+      actionable: boolean
       author_display_name: string | null
       author_email: string | null
       comment_content: string | null
@@ -1989,6 +2015,33 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       `
       select delivery.kind,
              delivery.source_id,
+             case delivery.kind
+               when 'test_bug_status_changed' then exists (
+                 select 1 from test_bugs actionable_bug
+                 where actionable_bug.id = delivery.source_id
+                   and actionable_bug.status in ('pending_verification', 'pending_confirmation')
+               )
+               when 'test_bug_rejected' then exists (
+                 select 1 from test_bugs actionable_bug
+                 where actionable_bug.id = delivery.source_id
+                   and actionable_bug.status = 'rejected'
+               )
+               when 'test_bug_comment_added' then exists (
+                 select 1
+                 from test_bug_comments actionable_comment
+                 join test_bugs actionable_bug on actionable_bug.id = actionable_comment.test_bug_id
+                 where actionable_comment.id = delivery.source_id
+                   and actionable_bug.status not in ('closed', 'rejected')
+               )
+               when 'test_plan_assigned' then exists (
+                 select 1 from test_plans actionable_plan
+                 where actionable_plan.id = delivery.source_id
+                   and actionable_plan.owner_user_id = $1
+                   and actionable_plan.created_by_user_id is distinct from $1
+                   and actionable_plan.status not in ('completed', 'aborted')
+               )
+               else true
+             end as actionable,
              coalesce(
                max(delivery.created_at) filter (where delivery.channel = 'in_app'),
                min(delivery.created_at) filter (where delivery.channel = 'feishu')
@@ -2036,7 +2089,7 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
       limit 200
       `,
       [userId],
-    ),
+    ) : Promise.resolve({ rows: [] }),
   ])
 
   const commentsByBug = new Map<number, Array<Record<string, unknown>>>()
@@ -2113,9 +2166,10 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
     environment.testSpaceIds.push(Number(row.test_space_id))
     testEnvironmentsById.set(id, environment)
   }
-  const departedUserIds = await getDepartedUserIds()
+  const departedUserIds = includes('core') ? await getDepartedUserIds() : []
 
   return {
+    loadedSections: sections ? [...sections] : undefined,
     departedUserIds,
     bugs: bugs.rows.map((row) => ({
       actualResult: decryptText(row.actual_result),
@@ -2213,6 +2267,7 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
     })),
     notifications: notifications.rows.map((row) => row.kind === 'package_event_comment_added'
       ? {
+        actionable: true,
         authorName: row.author_display_name || row.author_email || '未知用户',
         commentPreview: row.comment_content ? decryptText(row.comment_content).slice(0, 160) : '',
         createdAt: row.created_at.toISOString(),
@@ -2224,6 +2279,7 @@ async function getTestWorkbench(userId: number, scope?: { spaceId?: number; subj
         sourceId: Number(row.source_id),
       }
       : {
+        actionable: row.actionable,
         createdAt: row.created_at.toISOString(),
         kind: row.kind,
         sourceId: Number(row.source_id),
@@ -2301,11 +2357,20 @@ router.get('/test-workbench', asyncRoute(async (request, response) => {
   if (!session) return
   const spaceId = positiveId(request.query.spaceId)
   const subjectId = positiveId(request.query.subjectId)
+  const sections = parseTestWorkbenchSections(request.query.sections)
   if ((request.query.spaceId !== undefined && !spaceId) || (request.query.subjectId !== undefined && !subjectId)) {
     response.status(400).json({ error: 'Invalid workbench scope' })
     return
   }
-  response.json(await getTestWorkbench(session.userId, spaceId && subjectId ? { spaceId, subjectId } : undefined))
+  if (sections === null) {
+    response.status(400).json({ error: 'Invalid workbench sections' })
+    return
+  }
+  response.json(await getTestWorkbench(
+    session.userId,
+    spaceId && subjectId ? { spaceId, subjectId } : undefined,
+    sections,
+  ))
 }))
 
 router.get('/test-spaces/settings', asyncRoute(async (request, response) => {

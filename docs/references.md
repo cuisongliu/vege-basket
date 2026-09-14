@@ -37,6 +37,14 @@ Required for server startup:
 | `APP_ENCRYPTION_ACTIVE_KEY_ID` | Key ID used for new AES-256-GCM writes. |
 | `APP_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-key` ring; each key is 32 bytes. |
 
+PostgreSQL pool controls:
+
+| Variable | Default / behavior |
+| --- | --- |
+| `DB_POOL_MAX` | `10`. Maximum clients in one process; the digest CronJob sets `2`. |
+| `DB_POOL_CONNECTION_TIMEOUT_MS` | `3000`. Bounded wait for a PostgreSQL client connection. |
+| `DB_POOL_IDLE_TIMEOUT_MS` | `30000`. Idle time before a pooled client is closed. |
+
 Core and AI controls:
 
 | Variable | Default / behavior |

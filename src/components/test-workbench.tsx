@@ -182,6 +182,7 @@ import type {
   TestWorkbenchData,
   TestWorkbenchNotification,
   TestWorkbenchProjectOption,
+  TestWorkbenchSection,
 } from '@/test-workbench-types'
 import type { OrganizationContext } from '../../shared/organization-context'
 import { containerImageReferenceKey, normalizeContainerImageReference } from '../../shared/container-image-reference'
@@ -231,6 +232,43 @@ const emptyWorkbench: TestWorkbenchData = {
   subjects: [],
   testEnvironments: [],
   users: [],
+}
+
+const allTestWorkbenchSections: TestWorkbenchSection[] = [
+  'core',
+  'cases',
+  'plans',
+  'bugs',
+  'notifications',
+]
+
+function testWorkbenchSectionsForTab(tab: WorkbenchTab): TestWorkbenchSection[] {
+  if (tab === 'notifications') return ['notifications', 'bugs', 'plans', 'cases']
+  if (tab === 'bugs') return ['bugs', 'cases']
+  if (tab === 'plans') return ['plans', 'cases']
+  if (tab === 'weekly_report') return []
+  return [tab]
+}
+
+function mergeTestWorkbenchData(current: TestWorkbenchData, next: TestWorkbenchData) {
+  const currentSections = current.loadedSections ?? allTestWorkbenchSections
+  const sections = new Set<TestWorkbenchSection>(next.loadedSections ?? allTestWorkbenchSections)
+  return {
+    ...current,
+    ...next,
+    bugs: sections.has('bugs') ? next.bugs : current.bugs,
+    cases: sections.has('cases') ? next.cases : current.cases,
+    departedUserIds: sections.has('core') ? next.departedUserIds : current.departedUserIds,
+    folders: sections.has('cases') ? next.folders : current.folders,
+    notifications: sections.has('notifications') ? next.notifications : current.notifications,
+    planCases: sections.has('plans') ? next.planCases : current.planCases,
+    plans: sections.has('plans') ? next.plans : current.plans,
+    spaces: sections.has('core') ? next.spaces : current.spaces,
+    subjects: sections.has('core') ? next.subjects : current.subjects,
+    testEnvironments: sections.has('core') ? next.testEnvironments : current.testEnvironments,
+    users: sections.has('core') ? next.users : current.users,
+    loadedSections: [...new Set([...currentSections, ...sections])],
+  }
 }
 
 const priorityLabel: Record<Priority, string> = { high: '高', low: '低', medium: '中' }
@@ -541,6 +579,7 @@ export function TestWorkbench({
 }) {
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
   const [loading, setLoading] = useState(true)
+  const [sectionLoading, setSectionLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<WorkbenchTab>('cases')
@@ -601,6 +640,7 @@ export function TestWorkbench({
   const [seenBugCommentIds, setSeenBugCommentIds] = useState<Set<number>>(() => readSeenBugCommentIds(currentUserId))
   const [readNotificationKeySet, setReadNotificationKeySet] = useState<Set<string>>(() => loadReadNotificationKeys(currentUserId))
   const acceptingInviteTokenRef = useRef('')
+  const caseScopeRef = useRef('')
   const refreshInFlightRef = useRef(false)
   const viewStateReadyRef = useRef(false)
   const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
@@ -612,13 +652,25 @@ export function TestWorkbench({
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     const savedBeforeLoad = readTestWorkbenchViewState(currentUserId)
+    const initialTab = savedBeforeLoad?.tab ?? 'cases'
+    const initialSections = [...new Set<TestWorkbenchSection>([
+      'core',
+      'notifications',
+      ...testWorkbenchSectionsForTab(initialTab),
+    ])]
     fetchTestWorkbench(savedBeforeLoad?.tab === 'cases' && savedBeforeLoad.spaceId && savedBeforeLoad.subjectId
-      ? { spaceId: savedBeforeLoad.spaceId, subjectId: savedBeforeLoad.subjectId }
-      : undefined)
+      ? { sections: initialSections, spaceId: savedBeforeLoad.spaceId, subjectId: savedBeforeLoad.subjectId }
+      : { sections: initialSections }, { signal: controller.signal })
       .then((result) => {
         if (cancelled) return
         setData(result)
+        caseScopeRef.current = initialSections.includes('cases')
+          ? initialTab === 'cases' && savedBeforeLoad?.spaceId && savedBeforeLoad.subjectId
+            ? `${savedBeforeLoad.spaceId}:${savedBeforeLoad.subjectId}`
+            : 'all'
+          : ''
         const saved = readTestWorkbenchViewState(currentUserId)
         const savedSpaceId = saved?.spaceId && result.spaces.some((space) => space.id === saved.spaceId)
           ? saved.spaceId
@@ -649,21 +701,24 @@ export function TestWorkbench({
         setTab(saved?.tab ?? 'cases')
         viewStateReadyRef.current = true
         setLoading(false)
+        void fetchTestSpaceSettings({ signal: controller.signal })
+          .then((settings) => {
+            if (cancelled) return
+            setSpaceSettings(settings)
+            if (settings.spaces.length === 0 && settings.invitations.length > 0) {
+              setTab('notifications')
+            }
+          })
+          .catch(() => undefined)
       })
       .catch((loadError) => {
         if (cancelled) return
         setError(loadError instanceof Error ? loadError.message : '测试工作台加载失败。')
         setLoading(false)
       })
-    fetchTestSpaceSettings()
-      .then((result) => {
-        if (cancelled) return
-        setSpaceSettings(result)
-        if (result.spaces.length === 0 && result.invitations.length > 0) setTab('notifications')
-      })
-      .catch(() => undefined)
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [currentUserId])
 
@@ -682,20 +737,33 @@ export function TestWorkbench({
   useEffect(() => {
     if (loading) return
     let cancelled = false
+    let controller: AbortController | null = null
     const refreshIfVisible = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       if (busy) return
       if (refreshInFlightRef.current) return
       refreshInFlightRef.current = true
+      controller = new AbortController()
+      const loadedSections = data.loadedSections
       Promise.all([
-        fetchTestWorkbench(tab === 'cases' && spaceId && subjectId ? { spaceId, subjectId } : undefined)
+        fetchTestWorkbench(
+          loadedSections ? { sections: loadedSections } : undefined,
+          { signal: controller.signal },
+        )
           .then((result) => {
-            if (!cancelled) setData(result)
+            if (!cancelled) {
+              if (result.loadedSections?.includes('cases') || !result.loadedSections) {
+                caseScopeRef.current = 'all'
+              }
+              setData((current) => mergeTestWorkbenchData(current, result))
+            }
           })
           .catch(() => undefined),
-        fetchTestSpaceSettings()
+        (tab === 'notifications' || spaceSwitcherOpen || spaceAdministrationOpen || spaceCreateOpen
+          ? fetchTestSpaceSettings({ signal: controller.signal })
+          : Promise.resolve(null))
           .then((result) => {
-            if (!cancelled) setSpaceSettings(result)
+            if (!cancelled && result) setSpaceSettings(result)
           })
           .catch(() => undefined),
       ]).then(() => {
@@ -705,20 +773,49 @@ export function TestWorkbench({
     const interval = window.setInterval(refreshIfVisible, notificationRefreshIntervalMs)
     return () => {
       cancelled = true
+      controller?.abort()
       window.clearInterval(interval)
     }
-  }, [busy, loading, spaceId, subjectId, tab])
+  }, [busy, data.loadedSections, loading, spaceAdministrationOpen, spaceCreateOpen, spaceId, spaceSwitcherOpen, subjectId, tab])
 
   useEffect(() => {
-    if (loading || (tab !== 'bugs' && tab !== 'plans')) return
+    if (loading || tab === 'weekly_report') return
+    const desiredSections = testWorkbenchSectionsForTab(tab)
+    const loadedSections = new Set(data.loadedSections ?? allTestWorkbenchSections)
+    const caseScope = spaceId && subjectId ? `${spaceId}:${subjectId}` : 'all'
+    const sections = desiredSections.filter((section) => (
+      !loadedSections.has(section)
+      || (section === 'cases' && (
+        tab === 'cases'
+          ? caseScopeRef.current !== 'all' && caseScopeRef.current !== caseScope
+          : caseScopeRef.current !== 'all'
+      ))
+    ))
+    if (sections.length === 0) {
+      setSectionLoading(false)
+      return
+    }
     let cancelled = false
-    fetchTestWorkbench().then((result) => {
-      if (!cancelled) setData(result)
+    const controller = new AbortController()
+    setSectionLoading(true)
+    fetchTestWorkbench({
+      sections,
+      ...(tab === 'cases' && spaceId && subjectId ? { spaceId, subjectId } : {}),
+    }, { signal: controller.signal }).then((result) => {
+      if (!cancelled) {
+        if (sections.includes('cases')) caseScopeRef.current = tab === 'cases' ? caseScope : 'all'
+        setData((current) => mergeTestWorkbenchData(current, result))
+      }
     }).catch((loadError: unknown) => {
       if (!cancelled) setError(loadError instanceof Error ? loadError.message : '用例加载失败。')
+    }).finally(() => {
+      if (!cancelled) setSectionLoading(false)
     })
-    return () => { cancelled = true }
-  }, [loading, tab, spaceId])
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [data.loadedSections, loading, spaceId, subjectId, tab])
 
   useEffect(() => {
     setInvitePasswordDraft('')
@@ -922,12 +1019,34 @@ export function TestWorkbench({
   const packageEventCommentUnreadCount = packageEventCommentNotifications.filter((notification) =>
     !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
   ).length
+  const bugsLoaded = data.loadedSections?.includes('bugs') ?? true
+  const plansLoaded = data.loadedSections?.includes('plans') ?? true
+  const lightweightReturnedBugUnreadCount = data.notifications.filter((notification) =>
+    notification.kind === 'test_bug_status_changed'
+      && notification.actionable
+      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
+  const lightweightRejectedBugUnreadCount = data.notifications.filter((notification) =>
+    notification.kind === 'test_bug_rejected'
+      && notification.actionable
+      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
+  const lightweightBugCommentUnreadCount = data.notifications.filter((notification) =>
+    notification.kind === 'test_bug_comment_added'
+      && notification.actionable
+      && !seenBugCommentIds.has(notification.sourceId),
+  ).length
+  const lightweightPlanAssignmentUnreadCount = data.notifications.filter((notification) =>
+    notification.kind === 'test_plan_assigned'
+      && notification.actionable
+      && !readNotificationKeySet.has(getTestWorkbenchNotificationKey(notification)),
+  ).length
   const notificationUnreadCount =
     (spaceSettings.ownershipTransfers?.length ?? 0) + spaceSettings.invitations.length +
-    returnedBugUnreadCount +
-    rejectedBugUnreadCount +
-    bugCommentUnreadCount +
-    planAssignmentUnreadCount +
+    (bugsLoaded ? returnedBugUnreadCount : lightweightReturnedBugUnreadCount) +
+    (bugsLoaded ? rejectedBugUnreadCount : lightweightRejectedBugUnreadCount) +
+    (bugsLoaded ? bugCommentUnreadCount : lightweightBugCommentUnreadCount) +
+    (plansLoaded ? planAssignmentUnreadCount : lightweightPlanAssignmentUnreadCount) +
     packageEventCommentUnreadCount
 
   function markBugCommentAsSeen(commentId?: number) {
@@ -998,6 +1117,7 @@ export function TestWorkbench({
     try {
       const result = confirmed ? await reconcileAction(operation, fetchTestWorkbench, matches) : await operation()
       if (actionScopeRef.current !== actionScope) return false
+      caseScopeRef.current = 'all'
       setData(result)
       return true
     } catch (mutationError) {
@@ -1288,7 +1408,7 @@ export function TestWorkbench({
       </aside>
 
       <section className="test-workbench-content">
-          {workspaceContent ?? (loading ? (
+          {workspaceContent ?? (loading || sectionLoading ? (
             <div className="test-workbench-loading">正在加载测试工作台...</div>
           ) : tab === 'weekly_report' ? (
             <div className="test-workbench-weekly-report">

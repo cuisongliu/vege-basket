@@ -229,4 +229,14 @@ export type OrganizationDetail = {
   weeklyReportAssigneeUserIds: number[]
   weeklyReportRules: WeeklyReportRules
   weekStartsOn: number
+  loadedSections?: OrganizationDetailSection[]
 }
+
+export type OrganizationDetailSection =
+  | 'members'
+  | 'overview'
+  | 'packageMarket'
+  | 'projects'
+  | 'reports'
+  | 'settings'
+  | 'testSpaces'

@@ -298,6 +298,7 @@ export type TestWorkspaceUser = {
 }
 
 export type TestWorkbenchNotification = {
+  actionable?: boolean
   createdAt: string
   kind: 'test_plan_assigned' | 'test_bug_status_changed' | 'test_bug_rejected' | 'test_bug_comment_added'
   sourceId: number
@@ -325,7 +326,10 @@ export type TestWorkbenchData = {
   subjects: TestSubject[]
   testEnvironments: TestEnvironment[]
   users: TestWorkspaceUser[]
+  loadedSections?: TestWorkbenchSection[]
 }
+
+export type TestWorkbenchSection = 'bugs' | 'cases' | 'core' | 'notifications' | 'plans'
 
 export type TestWorkbenchProjectOption = Pick<Project, 'id' | 'name'>
 
