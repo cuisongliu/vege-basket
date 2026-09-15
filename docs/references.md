@@ -236,8 +236,12 @@ create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANA
   ordered IDs, deduplicating by first occurrence. Saving atomically replaces the assignee set
   and zero-based positions; deselected members lose their position. Existing unranked members
   follow ranked members in name/username order with user ID as a stable tie breaker. New and
-  restored memberships remain unranked until the next rule save. Search only filters the
-  candidate list; selected member order remains fully visible for up/down movement.
+  restored memberships remain unranked until the next rule save. The rule editor uses one
+  list: selected members remain first with their draft assignment checkbox, draft-order
+  position, and up/down controls; unselected members follow with assignment checkboxes.
+  Search filters only unselected members so the entire selected order remains available.
+  New selections append to the selected order; checkbox, bulk selection, and reorder changes
+  take effect together only on rule save.
 - Weekly-rule configuration shows a live example for the calendar period containing today's
   Shanghai date: report range, opening, deadline (inclusive through its minute), and next
   opening. `T`/`T+1` refer to report periods; day 1 is the configured organization week start.
@@ -641,6 +645,20 @@ column and the complete encryption key ring.
 
 `PATCH /api/organizations/:organizationId/projects/:projectId/governance` accepts optional
 `name`, `description`, `tags` together with `status`, `healthStatus`, `healthNote`, atomically.
+`GET /api/organizations/:organizationId/projects/:projectId/organization-transfer-options`
+returns manageable target organizations with `eligible` and structured `blockers` for missing
+members, pending invitations, and missing or disabled modules referenced by todos.
+`POST /api/organizations/:organizationId/projects/:projectId/organization-transfer` accepts
+`{ targetOrganizationId }`, repeats those checks under both organization catalog locks and the
+project lock, and returns the target `OrganizationDetail`. A failed precondition returns 409 with
+`code: PROJECT_ORGANIZATION_TRANSFER_BLOCKED` and the same blocker DTO. Both endpoints require
+the `organization_admin` role plus active Owner/Admin membership in the source and target.
+
+Project and organization member deletion returns 409 while the member has actionable assigned
+work. The project response uses `PROJECT_MEMBER_HAS_TASKS`; organization deletion uses
+`ORGANIZATION_MEMBER_HAS_TASKS`. Completed/delivered/achieved/cancelled history is retained and
+does not block deletion.
+
 `POST /api/test-spaces/:spaceId/transfer` accepts `{ targetUserId }` and returns `{ transferId }`.
 `POST /api/test-space-transfers/:transferId/respond` accepts `{ action: 'accept' | 'decline' }`
 and returns `{ settings, workbench }`. `GET /api/test-spaces/settings` includes recipient-only
