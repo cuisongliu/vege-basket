@@ -55,9 +55,12 @@ test('test notifications are self-contained and retain server-side resource auth
   assert.match(testClientSource, /if \(tab === 'notifications' \|\| tab === 'weekly_report'\) return \[\]/u)
   assert.match(testServerSource, /coalesce\(notification_bug\.id, notification_plan\.id\) as target_id/u)
   assert.match(testServerSource, /comment_author\.display_name as comment_author_display_name/u)
+  assert.match(testServerSource, /notification_space\.version_label as test_space_version_label/u)
+  assert.match(testServerSource, /testSpaceVersionLabel: row\.test_space_version_label/u)
   assert.match(testServerSource, /testSpaceMembershipPresentSql\('notification_membership'\)/u)
   assert.match(testServerSource, /managedOrganizationReadScopeSql\('notification_space\.organization_id'\)/u)
   assert.match(testClientSource, /notification\.targetId/u)
+  assert.match(testClientSource, /notification\.testSpaceVersionLabel/u)
 })
 
 test('organization sections preserve the complete default and avoid multiplied counts', () => {

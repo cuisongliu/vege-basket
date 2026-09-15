@@ -825,9 +825,11 @@ async function getTestSpaceSettings(userId: number) {
       invited_by_email: string | null
       test_space_id: string
       test_space_name: string
+      test_space_version_label: string | null
     }>(
       `
       select m.test_space_id, m.access_level, m.created_at, s.name as test_space_name,
+        s.version_label as test_space_version_label,
         invited_by.email as invited_by_email,
         invited_by.display_name as invited_by_display_name,
         invited.email,
@@ -870,8 +872,8 @@ async function getTestSpaceSettings(userId: number) {
     ])
   }
 
-  const transfers = await query<{id:string;test_space_id:string;name:string;requester:string;created_at:Date;expires_at:Date}>(
-    `select transfer.id,transfer.test_space_id,space.name,coalesce(nullif(requester.display_name,''),requester.email) as requester,transfer.created_at,transfer.expires_at
+  const transfers = await query<{id:string;test_space_id:string;name:string;version_label:string|null;requester:string;created_at:Date;expires_at:Date}>(
+    `select transfer.id,transfer.test_space_id,space.name,space.version_label,coalesce(nullif(requester.display_name,''),requester.email) as requester,transfer.created_at,transfer.expires_at
      from test_space_transfer_requests transfer join test_spaces space on space.id=transfer.test_space_id
      join users requester on requester.id=transfer.requested_by_user_id
      join test_space_memberships member on member.test_space_id=space.id and member.user_id=$1 and member.status='active'
@@ -879,7 +881,7 @@ async function getTestSpaceSettings(userId: number) {
      and space.owner_user_id=transfer.previous_owner_user_id and space.organization_id is not distinct from transfer.organization_id
      order by transfer.created_at desc`,[userId])
   return {
-    ownershipTransfers: transfers.rows.map(row=>({id:Number(row.id),spaceId:Number(row.test_space_id),spaceName:decryptText(row.name),requestedByName:row.requester,createdAt:row.created_at.toISOString(),expiresAt:row.expires_at.toISOString()})),
+    ownershipTransfers: transfers.rows.map(row=>({id:Number(row.id),spaceId:Number(row.test_space_id),spaceName:decryptText(row.name),versionLabel:row.version_label ? decryptText(row.version_label) : undefined,requestedByName:row.requester,createdAt:row.created_at.toISOString(),expiresAt:row.expires_at.toISOString()})),
     organizations: organizations.rows.map((row) => ({
       id: Number(row.id),
       name: decryptText(row.name),
@@ -907,6 +909,7 @@ async function getTestSpaceSettings(userId: number) {
       invitedByName: row.invited_by_display_name || row.invited_by_email || '测试空间所有者',
       spaceId: Number(row.test_space_id),
       spaceName: decryptText(row.test_space_name),
+      versionLabel: row.test_space_version_label ? decryptText(row.test_space_version_label) : undefined,
     })),
   }
 }
@@ -2038,6 +2041,7 @@ async function getTestWorkbench(
       test_case_title: string | null
       test_space_id: string | null
       test_space_name: string | null
+      test_space_version_label: string | null
       test_subject_id: string | null
       test_subject_name: string | null
       target_subjects: Array<{ id: number | string; name: string }> | null
@@ -2102,6 +2106,7 @@ async function getTestWorkbench(
              notification_case.title as test_case_title,
              notification_space.id as test_space_id,
              notification_space.name as test_space_name,
+             notification_space.version_label as test_space_version_label,
              notification_subject.id as test_subject_id,
              notification_subject.name as test_subject_name,
              case when notification_plan.id is null then null else (
@@ -2355,6 +2360,9 @@ async function getTestWorkbench(
         testCaseTitle: row.test_case_title ? decryptText(row.test_case_title) : undefined,
         testSpaceId: Number(row.test_space_id),
         testSpaceName: row.test_space_name ? decryptText(row.test_space_name) : '',
+        testSpaceVersionLabel: row.test_space_version_label
+          ? decryptText(row.test_space_version_label)
+          : undefined,
         testSubjectId: row.test_subject_id ? Number(row.test_subject_id) : undefined,
         testSubjectName: row.test_subject_name ? decryptText(row.test_subject_name) : undefined,
         testSubjects: row.target_subjects?.map((subject) => ({
