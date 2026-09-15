@@ -44,6 +44,7 @@ export type BugShareView = {
   status: string
   testPlanName: string | null
   testSpaceName: string
+  testSpaceVersionLabel?: string
   testSubjectName: string
   moduleId?: number
   moduleName?: string
@@ -77,6 +78,7 @@ type ShareBugRow = {
   test_subject_name: string | null
   organization_module_id: string | null
   organization_module_name: string | null
+  test_space_version_label: string | null
   title: string
   updated_at: Date
 }
@@ -126,6 +128,7 @@ async function readView(token: string, userId?: number | null) {
            b.created_at, b.updated_at, b.assignee_user_id,
            space.organization_id,
            space.name as test_space_name,
+           space.version_label as test_space_version_label,
            subject.name as test_subject_name,
            b.organization_module_id,
            organization_module.name as organization_module_name,
@@ -220,6 +223,7 @@ async function readView(token: string, userId?: number | null) {
     status: bug.status,
     testPlanName: bug.test_plan_name ? decryptText(bug.test_plan_name) : null,
     testSpaceName: decryptText(bug.test_space_name),
+    testSpaceVersionLabel: bug.test_space_version_label ? decryptText(bug.test_space_version_label) : undefined,
     testSubjectName: bug.test_subject_name ? decryptText(bug.test_subject_name) : '未关联测试对象',
     moduleId: bug.organization_module_id ? Number(bug.organization_module_id) : undefined,
     moduleName: bug.organization_module_name ? decryptText(bug.organization_module_name) : undefined,
