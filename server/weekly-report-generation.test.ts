@@ -66,7 +66,7 @@ test('tester weekly report source names identity, period, plans, and targets wit
   assert.match(source, /周期：2026年7月27日 至 2026年8月2日/)
   assert.doesNotMatch(source, /角色：/)
   assert.match(source, /回归测试计划/)
-  assert.match(source, /测试对象：支付服务/)
+  assert.match(source, /一级目录（测试对象）：支付服务/)
   assert.match(source, /本周期本人保留的最新执行记录：12 条/)
   assert.doesNotMatch(source, /项目日记（总结主体）/)
   assert.match(source, /<!-- veges-weekly-report:v3 -->[\s\S]+#### 任务 1[\s\S]+##### 任务进度\n待填写/u)
