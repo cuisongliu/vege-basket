@@ -44,5 +44,5 @@ test('create and edit allow standalone Bugs while validating optional canonical 
   assert.match(client, /const caseLocked = !editing && Boolean\(seed.testPlanCaseId\)/)
   assert.match(source, /历史 Bug 补关联：原计划/)
   assert.match(source, /if \(sources.some\(\(source\) => source.categories.includes\('bugs'\)\) && !targetCase\)/)
-  assert.doesNotMatch(source, /scopeBugs/)
+  assert.match(source, /const scopeBugs = .*b\.test_space_id/u)
 })
