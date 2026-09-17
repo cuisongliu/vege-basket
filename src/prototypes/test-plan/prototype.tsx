@@ -12,8 +12,10 @@ import type { PrototypeStore } from './mock-api'
 import { reportSnapshot } from './workbench-data'
 import { resultLabels, type Plan } from './data'
 import { ExecutionHistory, PlanReport } from './report'
+import { ExecutionImageEditor } from './execution-images'
+import type { ExecutionImage } from './data'
 
-type Draft = { id: string; result: TestResult; actual: string; note: string }
+type Draft = { id: string; result: TestResult; actual: string; note: string; images: ExecutionImage[] }
 
 function ExecutionPanel({ row, store, initialTab, drafts, commit }: {
   row: TestPlanCase
@@ -24,7 +26,7 @@ function ExecutionPanel({ row, store, initialTab, drafts, commit }: {
 }) {
   useSyncExternalStore(store.subscribe, store.getRevision)
   const [tab, setTab] = useState(initialTab)
-  const [draft, setDraft] = useState(() => drafts.get(row.id) ?? { id: crypto.randomUUID(), result: row.result === 'untested' ? 'passed' : row.result, actual: '', note: '' })
+  const [draft, setDraft] = useState(() => drafts.get(row.id) ?? { id: crypto.randomUUID(), result: row.result === 'untested' ? 'passed' : row.result, actual: '', note: '', images: [] })
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -51,7 +53,7 @@ function ExecutionPanel({ row, store, initialTab, drafts, commit }: {
         })
         if (!success) throw new Error('保存失败，填写内容已保留。')
         drafts.delete(row.id)
-        setDraft({ id: crypto.randomUUID(), result: draft.result, actual: '', note: '' })
+        setDraft({ id: crypto.randomUUID(), result: draft.result, actual: '', note: '', images: [] })
         setError(''); setSaved(true); setTab('history')
       } catch (failure) { setError(failure instanceof Error ? failure.message : '保存失败，填写内容已保留。') }
       finally { locked.current = false; setSaving(false) }
@@ -60,6 +62,7 @@ function ExecutionPanel({ row, store, initialTab, drafts, commit }: {
       <div><Label htmlFor="execution-result">执行结果</Label><Select value={draft.result} onValueChange={value => change({ result: value as TestResult })}><SelectTrigger id="execution-result"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{Object.entries(resultLabels).map(([value, label]) => <SelectItem value={value} key={value}>{label}</SelectItem>)}</SelectGroup></SelectContent></Select></div>
       <div><Label htmlFor="execution-actual">实际结果（选填）</Label><Textarea id="execution-actual" maxLength={10000} value={draft.actual} onChange={event => change({ actual: event.target.value })} /></div>
       <div><Label htmlFor="execution-note">执行备注（选填）</Label><Textarea id="execution-note" maxLength={5000} value={draft.note} onChange={event => change({ note: event.target.value })} /></div>
+      <ExecutionImageEditor disabled={saving} images={draft.images} onChange={images => change({ images })} />
       {draft.result === 'untested' && <p className="form-note">最终结果将重置为未执行，已有执行历史保留。</p>}
       {error && <p role="alert" className="form-error">{error}</p>}
       <footer><span>当前最终结果：{resultLabels[current.result]}</span><Button type="submit" disabled={saving}><Check />{saving ? '保存中' : '保存执行记录'}</Button></footer>
@@ -88,7 +91,12 @@ export function TestPlanPrototype({ store }: { store: PrototypeStore }) {
     },
     caseDetail: (row, commit) => <ExecutionPanel key={row.id} row={row} store={store} initialTab={requestedRecord.current === row.id ? 'record' : 'history'} drafts={drafts.current} commit={commit} />,
     onDetailClose: () => { requestedRecord.current = undefined },
-    bugActualResult: row => store.histories[row.id]?.at(-1)?.actual || row.resultNote,
+    bugActualResult: row => {
+      const latest = store.histories[row.id]?.at(-1)
+      if (!latest) return row.resultNote
+      const images = (latest.images ?? []).map(image => `![${image.name.replace(/[\]\r\n]/g, ' ')}](${image.src})`)
+      return [latest.actual, ...images].filter(Boolean).join('\n\n')
+    },
   }
   return <div className="proto-live-workbench">
     <TestWorkbench currentUserId={900001} projects={[{ id: 1, name: 'Veges 工作台' }]} planPresentation={presentation} accountMenu={

@@ -4,6 +4,22 @@ export const resultLabels: Record<TestResult, string> = {
   untested: '未执行', passed: '通过', failed: '失败', blocked: '阻塞', skipped: '跳过',
 }
 
+export const executionImageLimits = {
+  maxCount: 6,
+  maxFileBytes: 10 * 1024 * 1024,
+  maxTotalBytes: 30 * 1024 * 1024,
+} as const
+
+export const executionImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const
+
+export type ExecutionImage = {
+  id: string
+  name: string
+  size: number
+  src: string
+  type: typeof executionImageTypes[number]
+}
+
 export type Execution = {
   id: string
   result: TestResult
@@ -11,6 +27,19 @@ export type Execution = {
   note: string
   actor: string
   time: string
+  images?: ExecutionImage[]
+}
+
+export function validateExecutionImages(existing: ExecutionImage[], files: Array<Pick<File, 'name' | 'size' | 'type'>>) {
+  if (!files.length) return '请选择图片。'
+  if (existing.length + files.length > executionImageLimits.maxCount) return `每条执行记录最多上传 ${executionImageLimits.maxCount} 张图片。`
+  const unsupported = files.find(file => !executionImageTypes.includes(file.type as ExecutionImage['type']))
+  if (unsupported) return `“${unsupported.name}”格式不支持，请选择 PNG、JPEG、WebP 或 GIF 图片。`
+  const oversized = files.find(file => file.size > executionImageLimits.maxFileBytes)
+  if (oversized) return `“${oversized.name}”超过 10 MiB，请压缩后重试。`
+  const totalBytes = [...existing, ...files].reduce((total, item) => total + item.size, 0)
+  if (totalBytes > executionImageLimits.maxTotalBytes) return '本条执行记录的图片总大小不能超过 30 MiB。'
+  return ''
 }
 
 export type PlanCase = {

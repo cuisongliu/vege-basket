@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PrototypeStore } from '../src/prototypes/test-plan/mock-api'
 import { reportSnapshot, type PrototypeExecution } from '../src/prototypes/test-plan/workbench-data'
+import { validateExecutionImages, type ExecutionImage } from '../src/prototypes/test-plan/data'
 
 const request = (store: PrototypeStore, path: string, method: string, payload?: unknown) =>
   store.handle(new URL(path, 'http://prototype.local'), method, payload ? JSON.stringify(payload) : '')
@@ -72,4 +73,23 @@ test('unsupported Bug subroutes fail without mutating the Bug', async () => {
   const bug = structuredClone(store.data.bugs[0])
   assert.equal((await request(store, `/api/test-spaces/1/bugs/${bug.id}/transfer-space`, 'POST', { targetSpaceId: 2, targetTestCaseId: 101 })).status, 501)
   assert.deepEqual(store.data.bugs[0], bug)
+})
+
+test('execution images survive append and immutable report snapshots', () => {
+  const store = new PrototypeStore()
+  const image: ExecutionImage = { id: 'image-1', name: '登录失败.png', size: 128, src: 'data:image/png;base64,AA==', type: 'image/png' }
+  store.appendExecution(24102, { ...execution('with-image', 'failed'), images: [image] })
+  const report = reportSnapshot(store.data, store.histories, 24)
+  assert.deepEqual(report.cases.find(item => item.id === 24102)?.history.at(-1)?.images, [image])
+  store.histories[24102].at(-1)!.images![0].name = '后来修改.png'
+  assert.equal(report.cases.find(item => item.id === 24102)?.history.at(-1)?.images?.[0].name, '登录失败.png')
+})
+
+test('execution image limits reject unsupported, oversized and excessive batches', () => {
+  const file = (name: string, size: number, type: string) => ({ name, size, type }) as File
+  assert.match(validateExecutionImages([], [file('记录.txt', 1, 'text/plain')]), /格式不支持/)
+  assert.match(validateExecutionImages([], [file('超大.png', 10 * 1024 * 1024 + 1, 'image/png')]), /超过 10 MiB/)
+  assert.match(validateExecutionImages([], Array.from({ length: 7 }, (_, index) => file(`${index}.png`, 1, 'image/png'))), /最多上传 6 张/)
+  assert.match(validateExecutionImages([], [file('1.png', 10 * 1024 * 1024, 'image/png'), file('2.png', 10 * 1024 * 1024, 'image/png'), file('3.png', 10 * 1024 * 1024, 'image/png'), file('4.png', 1, 'image/png')]), /总大小不能超过 30 MiB/)
+  assert.equal(validateExecutionImages([], [file('有效.webp', 1024, 'image/webp')]), '')
 })

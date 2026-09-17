@@ -34,6 +34,29 @@
 .proto-form [data-slot='select-trigger'] { width: 100%; }
 .proto-form textarea { min-height: 110px; font-size: 13px; background: var(--control-bg); }
 .proto-form #execution-note { min-height: 80px; }
+.proto-image-editor { display: grid; gap: 10px; }
+.proto-image-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.proto-image-editor-heading > div { display: grid; gap: 4px; }
+.proto-image-editor-heading strong { font-size: 13px; font-weight: 500; }
+.proto-image-editor-heading small { color: var(--muted-foreground); font-size: 11px; line-height: 1.5; }
+.proto-image-dropzone { min-height: 112px; display: grid; align-items: center; padding: 10px; border: 1px dashed var(--line); border-radius: 6px; background: color-mix(in oklch, var(--secondary) 35%, transparent); cursor: pointer; transition: border-color 150ms ease, background 150ms ease; }
+.proto-image-dropzone:hover, .proto-image-dropzone:focus-visible, .proto-image-dropzone.dragging { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 7%, transparent); outline: none; }
+.proto-image-dropzone-empty { display: grid; justify-items: center; gap: 6px; color: var(--muted-foreground); text-align: center; }
+.proto-image-dropzone-empty svg { width: 22px; height: 22px; }
+.proto-image-dropzone-empty strong { color: var(--strong); font-size: 12px; font-weight: 550; }
+.proto-image-dropzone-empty span { font-size: 11px; }
+.proto-image-grid, .proto-history-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
+.proto-image-grid figure, .proto-history-images figure { position: relative; min-width: 0; margin: 0; }
+.proto-image-grid figure > button:first-child, .proto-history-images figure > button { display: block; width: 100%; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: var(--secondary); cursor: zoom-in; }
+.proto-image-grid img, .proto-history-images img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+.proto-image-grid figcaption, .proto-history-images figcaption { margin-top: 5px; overflow: hidden; color: var(--muted-foreground); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.proto-image-remove { position: absolute; top: 5px; right: 5px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: color-mix(in oklch, var(--strong) 80%, transparent); color: white; }
+.proto-image-remove:hover { background: var(--destructive); }
+.proto-image-remove svg { width: 13px; height: 13px; }
+.proto-history-images { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); margin-top: 14px; }
+.proto-image-preview[data-slot='dialog-content'] { width: min(92vw, 960px); max-height: calc(100dvh - 40px); }
+.proto-image-preview > div { min-height: 0; display: grid; justify-items: center; gap: 12px; overflow: auto; }
+.proto-image-preview img { display: block; max-width: 100%; max-height: calc(100dvh - 150px); object-fit: contain; }
 .proto-success { display: flex; align-items: start; gap: 6px; color: var(--primary); font-size: 12px; padding-top: 12px; }
 .proto-success svg { flex-shrink: 0; }
 .proto-report-overlay[data-slot='dialog-content'] { inset: 0; translate: none; transform: none; width: 100%; max-width: none; height: 100dvh; max-height: none; padding: 0; gap: 0; border: 0; border-radius: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
@@ -77,6 +100,9 @@
   .proto-report-toc { display: none; }
 }
 @media (max-width: 600px) {
+  .proto-image-editor-heading { align-items: flex-start; }
+  .proto-image-editor-heading > button { flex-shrink: 0; }
+  .proto-image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .proto-report-toolbar { padding: 10px; flex-wrap: wrap; }
   .proto-report-toolbar > div { order: 3; width: 100%; padding: 6px 10px; }
   .proto-report-layout { padding: 14px 10px; }
@@ -102,6 +128,11 @@
   .proto-paper table { margin: 14px 0; }
   .proto-paper th, .proto-paper td { padding: 6px 8px; }
   .proto-history > article { break-inside: avoid; padding: 14px 0; }
+  .proto-history-images { grid-template-columns: repeat(2, minmax(0, 1fr)); break-inside: auto; }
+  .proto-history-images figure { break-inside: avoid; }
+  .proto-history-images figure > button { border: 0; cursor: default; }
+  .proto-history-images img { max-height: 78mm; aspect-ratio: auto; object-fit: contain; }
+  .proto-history-images figcaption { white-space: normal; }
   .proto-paper-running { padding-bottom: 14px; margin-bottom: 18px; }
   .proto-paper .proto-history header { justify-content: space-between; }
   .proto-paper .proto-history header > div { width: auto; }
