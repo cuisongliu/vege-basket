@@ -57,7 +57,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { JournalDatePicker } from '@/components/journal-date-picker'
-import { notificationRefreshIntervalMs } from '@/notifications'
+import { notificationRefreshIntervalMs } from '@/refresh-schedule'
 import {
   Dialog,
   DialogContent,
@@ -654,13 +654,11 @@ export function TestWorkbench({
   accountMenu,
   currentUserId,
   projects,
-  refreshToken = 0,
   workspaceContent,
 }: {
   accountMenu: ReactNode
   currentUserId?: number
   projects: TestWorkbenchProjectOption[]
-  refreshToken?: number
   workspaceContent?: ReactNode
 }) {
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
@@ -1412,7 +1410,6 @@ export function TestWorkbench({
                 ref={weeklyReportWorkbenchRef}
                 embedded
                 organizationId={activeWeeklyReportOrganizationId}
-                refreshToken={refreshToken}
               />
             </div>
           ) : tab === 'notifications' ? (
@@ -2378,7 +2375,7 @@ export function CasesView({ busy, currentUserId, subjects, spaceId, cases, data,
       <Dialog open={narrow && drawerOpen} onOpenChange={setDrawerOpen}><DialogContent className="test-directory-drawer"><DialogHeader><DialogTitle>用例目录</DialogTitle><DialogDescription>选择目录查看对应范围的用例。</DialogDescription></DialogHeader><DirectoryTree viewState={treeState} subjects={subjects} folders={folders} cases={cases} selected={effectiveFolderFilter} onSelect={selectDirectory} onCollapse={() => setDrawerOpen(false)} busy={busy} readOnly={readOnly} onCreateRoot={onCreateRoot} onEditRoot={onEditRoot} onDeleteRoot={onDeleteRoot} onCreate={onCreateFolder} onUpdate={onUpdateFolder} onDelete={onDeleteFolder} /></DialogContent></Dialog>
       <div className="test-directory-content">
       <div className="test-directory-scope"><Button size="sm" variant="outline" aria-label={(panelHidden || narrow) ? "展开用例目录" : "收缩用例目录"} onClick={togglePanel}><FolderPlus /> {(panelHidden || narrow) ? "展开目录" : "收缩目录"}</Button><strong title={scopeLabel}>{scopeLabel}</strong><span>{filteredCases.length} 条用例</span>{activeFolderId !== null && <Label><Checkbox checked={includeChildren} onCheckedChange={value => setIncludeChildren(value === true)} /> 包含下级目录</Label>}</div>
-      <div className="test-case-filters" aria-label="用例搜索与筛选">
+      <div className="test-case-filters" aria-label="用例搜索与筛选" role="group">
         <label className="test-case-search">
           <MagnifyingGlass />
           <Input
