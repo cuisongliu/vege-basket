@@ -79,8 +79,13 @@ export type { AiTurnStreamPhase } from '../shared/server-sent-events'
 export type WorkspaceData = {
   departedUserIds: number[]
   inbox: InboxItem[]
+  loadedSections?: Array<'catalog' | 'inbox' | 'journals' | 'overview' | 'summaries' | 'todos'>
   memberships: ProjectMembership[]
   projects: Project[]
+  scope?: {
+    projectId?: number
+    todoId?: number
+  }
   summaries: Summary[]
   todos: Todo[]
 }
@@ -93,6 +98,12 @@ export type AiTurnDocumentResponse = {
 
 export type NotificationResponse = {
   notifications: NotificationCenterData
+}
+
+export type NavigationCounts = {
+  assignedBugCount: number
+  openTodoCount: number
+  organizationId: OrganizationContext
 }
 
 export type PackageMarketRulesResponse = {
@@ -380,6 +391,42 @@ export function fetchWorkspace() {
   return request<WorkspaceData>('/api/workspace')
 }
 
+export function fetchProjectCatalog(options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>('/api/workspace/catalog', options)
+}
+
+export function fetchWorkspaceOverview(options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>('/api/workspace/overview', options)
+}
+
+export function fetchWorkspaceInbox(options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>('/api/workspace/inbox', options)
+}
+
+export function fetchWorkspaceDocuments(options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>('/api/workspace/documents', options)
+}
+
+export function fetchWorkspaceSearch(options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>('/api/workspace/search', options)
+}
+
+export function fetchProjectOverview(projectId: number, options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/overview`, options)
+}
+
+export function fetchProjectJournals(projectId: number, options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/journals`, options)
+}
+
+export function fetchProjectTodos(projectId: number, options: Pick<RequestInit, 'signal'> = {}) {
+  return request<WorkspaceData>(`/api/projects/${projectId}/todos?subprojectId=all`, options)
+}
+
+export function fetchTodoDetail(todoId: number, options: Pick<RequestInit, 'signal'> = {}) {
+  return request<{ todo: Todo }>(`/api/todos/${todoId}/detail`, options)
+}
+
 export function fetchChangelog() {
   return request<ChangelogResponse>('/api/changelog')
 }
@@ -433,6 +480,14 @@ export function deleteImageSyncRun(runId: number) {
 
 export function fetchNotifications() {
   return request<NotificationResponse>('/api/notifications')
+}
+
+export function fetchNavigationCounts(
+  organizationId: OrganizationContext,
+  options: RequestInit = {},
+) {
+  const params = new URLSearchParams({ organizationId: serializeOrganizationContext(organizationId) })
+  return request<NavigationCounts>(`/api/navigation-counts?${params.toString()}`, options)
 }
 
 export function markAllNotificationsRead() {
