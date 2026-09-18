@@ -15,6 +15,11 @@ import {
 process.env.APP_ENCRYPTION_ACTIVE_KEY_ID = 'new'
 process.env.APP_ENCRYPTION_KEYS = `old:${Buffer.alloc(32, 13).toString('base64')},new:${Buffer.alloc(32, 17).toString('base64')}`
 
+const organizationModulePanelSource = readFileSync(
+  new URL('../src/components/organization-project-modules-panel.tsx', import.meta.url),
+  'utf8',
+)
+
 type Call = { sql: string; values: unknown[] }
 function fakeClient(answer: (call: Call) => object[] = () => []) {
   const calls: Call[] = []
@@ -126,16 +131,54 @@ test('disable changes only catalog state and never deletes historical mappings',
   assert.deepEqual(writes(calls)[0].values.slice(3), [2, 1])
 })
 
-test('disable rechecks current task usage and rejects modules still referenced', async () => {
+test('disable reports all todo references with at most five project and title samples, then leaves state unchanged', async () => {
   const { client, calls } = fakeClient(({ sql }) => {
     if (sql.includes('select name, name_lookup')) return [{ name: encryptText('支付'), name_lookup: 'lookup', enabled: true }]
-    if (sql.includes('count(t.id)')) return [{ usage_count: 2 }]
+    if (sql.includes('count(*) over')) return [
+      { project_name: encryptText('商城'), todo_title: encryptText('核对订单'), usage_count: 6 },
+      { project_name: encryptText('后台'), todo_title: encryptText('补充退款入口'), usage_count: 6 },
+    ]
     return []
   })
-  await assert.rejects(updateOrganizationProjectModule(client, 1, 2, normalizeOrganizationModuleUpdate({ enabled: false })), {
-    code: 'PROJECT_MODULE_IN_USE', status: 409,
-  })
+  await assert.rejects(
+    updateOrganizationProjectModule(client, 1, 2, normalizeOrganizationModuleUpdate({ enabled: false })),
+    (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'PROJECT_MODULE_IN_USE'
+      && error.message.includes('模块仍被 6 个待办引用')
+      && error.message.includes('项目「商城」的待办「核对订单」')
+      && error.message.includes('项目「后台」的待办「补充退款入口」'),
+  )
+  const usageSql = calls.find(call => call.sql.includes('count(*) over'))?.sql ?? ''
+  assert.match(usageSql, /join todos t/u)
+  assert.match(usageSql, /limit 5/u)
+  assert.doesNotMatch(usageSql, /t\.done/u)
   assert.equal(writes(calls).length, 0)
+})
+
+test('organization module switch stays actionable so the server can report current todo blockers', () => {
+  const switchStart = organizationModulePanelSource.indexOf('<button type="button" role="switch"')
+  const switchEnd = organizationModulePanelSource.indexOf('onClick=', switchStart)
+  assert.ok(switchStart >= 0 && switchEnd > switchStart)
+  const switchProps = organizationModulePanelSource.slice(switchStart, switchEnd)
+  assert.match(switchProps, /disabled=\{busy\}/u)
+  assert.doesNotMatch(switchProps, /usageCount/u)
+})
+
+test('organization module catalog paginates five rows and keeps new modules visible', () => {
+  assert.match(organizationModulePanelSource, /const organizationProjectModulePageSize = 5/u)
+  assert.match(organizationModulePanelSource, /const visibleModules = modules\.slice/u)
+  assert.match(organizationModulePanelSource, /visibleModules\.map\(module =>/u)
+  assert.match(organizationModulePanelSource, /aria-label="项目模块分页"/u)
+  assert.match(organizationModulePanelSource, /detail\.projectModules\.length \/ organizationProjectModulePageSize/u)
+})
+
+test('organization module deletion uses the shared confirmation dialog and returns canonical success', () => {
+  assert.match(organizationModulePanelSource, /<ConfirmActionDialog/u)
+  assert.match(organizationModulePanelSource, /organization-project-module-delete:/u)
+  assert.match(organizationModulePanelSource, /onConfirm=\{\(\) => deleteModule\(module\)\}/u)
+  assert.match(organizationModulePanelSource, /function deleteModule\(module: OrganizationProjectModule\)/u)
+  assert.doesNotMatch(organizationModulePanelSource, /window\.confirm/u)
 })
 
 test('disabled modules can be deleted while preserving local history mappings', async () => {

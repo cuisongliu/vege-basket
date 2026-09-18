@@ -57,7 +57,6 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
-import { clearMarkdownEditorRecovery } from './markdown-editor-recovery'
 
 type MarkdownWysiwygEditorProps = {
   ariaLabel: string
@@ -351,7 +350,6 @@ export const MarkdownWysiwygEditor = forwardRef<
     extensions,
     immediatelyRender: true,
     onCreate: ({ editor: currentEditor }) => {
-      clearMarkdownEditorRecovery()
       const markdown = currentEditor.getMarkdown()
       lastEmittedMarkdownRef.current = markdown
       if (normalizeOnCreate && !readOnlyRef.current && markdown !== value) onChangeRef.current(markdown)

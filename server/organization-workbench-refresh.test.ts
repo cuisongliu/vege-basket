@@ -21,7 +21,7 @@ test('organization weekly collection does not reload from whole detail object re
   assert.match(workbenchSource, /const canManageWeeklyReports = detail\?\.canManageWeeklyReports \?\? false/u)
   assert.match(workbenchSource, /fetchWeeklyReportCollection\(weeklyOrganizationId, weekStart\)/u)
   assert.match(workbenchSource, /\}, \[canManageWeeklyReports, weekStart, weeklyOrganizationId\]\)/u)
-  assert.match(workbenchSource, /\[loadWeeklyCollection, tab, weeklyCollectionRefresh\]/u)
+  assert.match(workbenchSource, /\[backgroundRefreshVersion, loadWeeklyCollection, tab, weeklyCollectionRefresh\]/u)
   assert.match(workbenchSource, /weeklyCollectionLoading && !weeklyCollection/u)
   assert.doesNotMatch(workbenchSource, /weeklyCollectionLoading \? <EmptyRow/u)
 })
@@ -41,7 +41,7 @@ test('organization management replaces the workspace navigation in the existing 
   assert.match(appSource, /sidebarNavigationHost=\{organizationSidebarHost\}/u)
   assert.match(appSource, /ref=\{view === 'organization' \? setOrganizationTopbarHost : undefined\}/u)
   assert.match(appSource, /topbarActionHost=\{organizationTopbarHost\}/u)
-  assert.match(appSource, /onOpenOrganization=\{openOrganizationManagement\}/u)
+  assert.match(appSource, /onRoleChange=\{\(role\) => void changeActiveUserRole\(role\)\}/u)
   assert.doesNotMatch(appSource, /onCloseOrganization/u)
   assert.match(workbenchSource, /createPortal\([\s\S]*?organization-sidebar-panel[\s\S]*?sidebarNavigationHost/u)
   assert.match(workbenchSource, /createPortal\([\s\S]*?organization-topbar-controls[\s\S]*?topbarActionHost/u)
@@ -96,4 +96,33 @@ test('global package market uses the selected sidebar organization as its only c
 test('organization weekly reports use the previous week until its deadline', () => {
   assert.match(workbenchSource, /getWeeklyReportTargetWeekStart\(\{ now, rules, weekStartsOn \}\)/u)
   assert.match(workbenchSource, /const weekStart = reportWeekStart\(/u)
+})
+
+test('organization overview renders every current Bug status as user-facing Chinese', () => {
+  assert.match(workbenchSource, /pending_confirmation: '待确认'/u)
+})
+
+test('organization weekly reminders stay outside the native disclosure trigger', () => {
+  const summaryStart = workbenchSource.indexOf('<summary>')
+  const summaryEnd = workbenchSource.indexOf('</summary>', summaryStart)
+
+  assert.notEqual(summaryStart, -1)
+  assert.notEqual(summaryEnd, -1)
+  assert.doesNotMatch(workbenchSource.slice(summaryStart, summaryEnd), /<Button/u)
+  assert.match(workbenchSource, /className="organization-weekly-reminder"/u)
+})
+
+test('organization workbench uses readable scoped colors for secondary and status text', () => {
+  assert.match(workbenchCssSource, /--organization-muted-readable:\s*var\(--muted-text\)/u)
+  assert.match(workbenchCssSource, /--organization-danger-readable:/u)
+  assert.match(workbenchCssSource, /--organization-positive-readable:/u)
+  assert.match(workbenchCssSource, /--organization-warning-readable:/u)
+  assert.match(
+    workbenchCssSource,
+    /\.organization-package-market-component-status\.available\s*\{[^}]*color:\s*var\(--organization-positive-readable\)/su,
+  )
+  assert.match(
+    workbenchCssSource,
+    /\.organization-package-market-dependency-type\s*\{[^}]*color:\s*var\(--organization-warning-readable\)/su,
+  )
 })

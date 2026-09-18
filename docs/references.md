@@ -181,8 +181,8 @@ families are:
 | --- | --- |
 | Health | `GET /api/health` (public) |
 | Authentication | `/api/auth/register`, `/api/auth/login`, `/api/auth/me`, `/api/auth/password`, `/api/auth/feishu/oauth/*` |
-| Workspace | `GET /api/workspace`, `GET /api/my-work?organizationId=:id|personal`, `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
-| Assigned Bugs | `GET /api/test-bugs/assigned?organizationId=:id|personal` and all `/api/test-bugs/:bugId/assigned*` mutations require the same active organization context; verification submissions require either package snapshots or one or more validated, pinned cluster-image references, and create an immutable acceptance comment in the same transaction. `GET /api/test-bugs/:bugId/verification-submissions/:submissionId/script?expireMinutes=30|60|120` rechecks tester/developer access and returns an ephemeral script; package URLs are signed only for that response, while cluster images run directly. |
+| Workspace | Compatibility `GET /api/workspace`; live scoped reads under `GET /api/workspace/{catalog,overview,inbox,documents,search}`, `GET /api/projects/:projectId/{overview,journals,todos}`, and `GET /api/todos/:todoId/detail`; `GET /api/my-work?organizationId=:id|personal`; lightweight `GET /api/navigation-counts?organizationId=:id|personal`; `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
+| Assigned Bugs | `GET /api/test-bugs/assigned?organizationId=:id|personal` and all `/api/test-bugs/:bugId/assigned*` mutations require the same active organization context; verification submissions require either package snapshots or one or more validated, pinned cluster-image references, and create an immutable acceptance comment in the same transaction. CI package snapshots retain their validated branch when the object path uses the canonical `/ci/<branch>/<hash>/` layout; branchless middleware CI snapshots remain valid without one. `GET /api/test-bugs/:bugId/verification-submissions/:submissionId/script?expireMinutes=30|60|120` rechecks tester/developer access and returns an ephemeral script; package URLs are signed only for that response, while cluster images run directly. |
 | Changelog | `GET /api/changelog` for authenticated readers; `POST /api/admin/changelog` and `PATCH /api/admin/changelog/:id` require `VEGES_ADMIN_USERNAMES` system-admin access |
 | Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
@@ -196,13 +196,18 @@ families are:
 | Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, test-environment `POST/PATCH/DELETE /api/organizations/:organizationId/test-environments(/:environmentId)`, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, weekly summaries, and the dedicated package-market catalog/policy settings Tab |
 | Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, persona-specific item/task forms and v3 Markdown AI templates, source insertion into an item or field, versioned draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Organization project modules | `POST /api/organizations/:organizationId/project-modules` with `{ name }`; `PATCH .../project-modules/:moduleId` with nonempty `{ name?, enabled? }`; returns `OrganizationDetail` (201/200). Requires `organization_admin` and active organization owner/admin. Names trim to 1–40 characters, exact case-sensitive uniqueness including disabled names. Invalid input 400; permission change 403; missing nested resource 404; duplicate/legacy rename collision 409. |
-| Test workbench | `GET /api/test-workbench` supports optional `sections=core,cases,plans,bugs,notifications`, active `spaceId`, case/plan `subjectId`, and single-Bug `bugId` scopes; `bugId` and `subjectId` require `spaceId`, while omitting `sections` preserves the complete legacy response. Also includes owner-or-organization-manager administered `/api/test-spaces/*` with optional organization assignment on create/update, direct-member owner-or-Bug-creator `PATCH /api/test-spaces/:spaceId/version`, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, creator-only `DELETE /api/test-spaces/:spaceId/bugs/:bugId`, environment-bound Bugs, comments, and author-owned comment edits/deletions |
+| Test workbench | `GET /api/test-workbench` supports optional `sections=core,cases,plans,bugs,notifications`, active `spaceId`, case/plan `subjectId`, and single-Bug `bugId` scopes; `bugId` and `subjectId` require `spaceId`, while omitting `sections` preserves the complete legacy response. The lightweight `core` space metadata includes `caseCount`, `planCount`, and `bugCount`, so navigation counts do not require loading entity sections. Also includes owner-or-organization-manager administered `/api/test-spaces/*` with optional organization assignment on create/update, direct-member owner-or-Bug-creator `PATCH /api/test-spaces/:spaceId/version`, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, creator-only `DELETE /api/test-spaces/:spaceId/bugs/:bugId`, environment-bound Bugs, comments, and author-owned comment edits/deletions |
 | Test-space collaboration | `GET /api/test-spaces/settings`, `POST /api/test-spaces/:spaceId/members` direct admission, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
 | Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, `POST /api/test-bugs/:bugId/assigned/transfer`, `POST /api/test-bugs/:bugId/assigned/reject` (mandatory reason, records an immutable `reject` comment and notifies the reporting tester by personal Feishu message), organization-admin assignment of unassigned Bugs with a direct Feishu notification to the new assignee, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
 
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
 must remain bound to the authorized project ID.
+
+`GET /api/navigation-counts` returns only `openTodoCount`, `assignedBugCount`, and the
+requested organization context. It rechecks active organization membership and applies
+the same resource authorization boundaries as My Work and assigned Bugs without loading,
+decrypting, or serializing their entity details.
 
 Organization detail includes `projectModules: { id, name, enabled, createdAt, updatedAt }[]`
 and `canManageProjectModules`. Workspace projects expose `moduleManagement: 'organization' | 'project'`;
@@ -313,8 +318,10 @@ create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANA
   bypasses organization visibility.
 - Supported todo images and test-workbench evidence attachments: PNG, JPEG, WebP, GIF images; MP4, WebM, and QuickTime videos.
 - Account roles: `developer`, `tester`, `organization_admin`. `developer` and `tester`
-  are switchable session personas. `organization_admin` is additive, is not shown in the
-  role switcher, and allows the account to assume either business persona.
+  are switchable session personas. `organization_admin` is additive and allows the account
+  to assume either business persona. When assigned, it also appears as a workspace identity
+  in login selection and the account role switcher. Selecting it opens organization management
+  and updates the displayed identity without sending it to `POST /api/auth/active-role`.
   System administrators assign it through user role management.
 - Organization access: `owner`, `admin`, `member`. System administrators create
   organizations; organization owners and administrators rename or delete organizations
@@ -322,8 +329,12 @@ create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANA
   an expiring browser invite link; link acceptance activates ordinary member access without
   a Feishu callback. Deletion requires the exact organization name,
   detaches projects and test spaces, and removes organization-only records.
-  Accounts assigned `organization_admin` and recognized system administrators always see
-  the organization management entry; it is independent of the global organization selector.
+  Only accounts assigned `organization_admin` see the organization-management identity in
+  the role switcher; system-administrator status alone does not expose it. The separate
+  organization-management entry is removed. This selection is independent of the global
+  organization selector. Refreshing a stored management view rechecks the assigned role;
+  losing it returns the user to their available business workspace. Server authorization
+  and system-administrator APIs remain unchanged.
   If they also have active `owner` or `admin` membership in an organization, they receive
   access to all attached projects and project records, test spaces and test records, and
   Bugs and comments. That dual authorization may update attached project lifecycle status,

@@ -16,17 +16,20 @@ export type BugStatus =
   | 'rejected'
 
 export type TestSpace = {
+  bugCount: number
   canManageSettings?: boolean
   canManageMembers?: boolean
   canDelete?: boolean
   canChangeOrganization?: boolean
   canTransferOwnership?: boolean
+  caseCount: number
   accessLevel: 'owner' | 'editor' | 'viewer'
   createdAt: string
   id: number
   name: string
   organizationId?: number
   ownerUserId: number
+  planCount: number
   versionLabel?: string
 }
 
@@ -222,6 +225,7 @@ export type TestBugVerificationPackage = {
   arch: string
   channel: 'release' | 'ci'
   channelLabel: string
+  ciBranch?: string
   id: number
   objectKey: string
   objectLastModified?: string
