@@ -79,7 +79,8 @@ test('login announcements use a server-canonical monotonic read cursor', () => {
 test('the login announcement only closes after canonical acknowledgement', () => {
   assert.match(appSource, /await acknowledgeChangelogAnnouncement\(entry\.id\)[\s\S]*?setChangelogAnnouncement\(null\)/u)
   assert.match(appSource, /catch \(acknowledgeError\)[\s\S]*?await fetchChangelogAnnouncement\(\)/u)
-  assert.match(appSource, /!roleSelectionOpen[\s\S]*?!displayNameOnboardingOpen/u)
+  assert.match(appSource, /!roleSelectionOpen[\s\S]*?invitePasswordRequired/u)
+  assert.doesNotMatch(appSource, /displayNameOnboarding/u)
 })
 
 test('changelog loads independently from workspace polling and starts collapsed', () => {
