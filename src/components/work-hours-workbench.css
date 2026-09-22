@@ -3,6 +3,9 @@
 .work-hours-header h3, .work-hours-card h4 { margin: 0; }
 .work-hours-eyebrow { color: var(--muted-text); font-size: 12px; margin: 0 0 5px; }
 .work-hours-filters, .work-hours-recorder { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; }
+.work-hours-tabs { border-bottom: 1px solid var(--border); display: flex; gap: 4px; }
+.work-hours-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted-text); cursor: pointer; padding: 8px 12px; }
+.work-hours-tabs button.is-active { border-bottom-color: var(--primary); color: var(--text); font-weight: 600; }
 .work-hours-filters label, .work-hours-recorder label { color: var(--muted-text); display: grid; font-size: 12px; gap: 5px; }
 .work-hours-recorder { background: color-mix(in srgb, var(--primary) 5%, var(--surface)); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
 .work-hours-recorder select, .work-hours-recorder input { min-width: 150px; }
