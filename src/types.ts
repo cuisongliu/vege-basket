@@ -87,6 +87,9 @@ export type Todo = {
   completedByUserId?: number
   completedByName?: string
   confirmationStatus: TodoConfirmationStatus
+  estimatedWorkMinutes?: number | null
+  needsRevision?: boolean
+  rejectionReason?: string
   linkedToDeliveryEvent: boolean
   moduleId?: number
   moduleName?: string
@@ -337,6 +340,7 @@ export type TodoProposal = {
   priority: Priority
   confidence: number
   sourceExcerpt: string
+  estimatedWorkMinutes?: number | null
 }
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
@@ -523,6 +527,7 @@ export type Project = {
   moduleManagement: 'organization' | 'project'
   canManageOrganizationTodos?: boolean
   canUpdateOrganizationTodoFields?: boolean
+  canViewOrganizationWorkHours?: boolean
   readOnly?: boolean
   status: ProjectStatus
   feishuChatEnabled?: boolean

@@ -121,6 +121,39 @@ export type NavigationCounts = {
   organizationId: OrganizationContext
 }
 
+export type WorkHourStatus = 'pending' | 'confirmed'
+export type WorkHourEntry = {
+  id: number
+  projectId: number
+  todoId: number
+  userId: number
+  workDate: string
+  minutes: number
+  hours: number
+  status: WorkHourStatus
+  description: string
+  createdAt: string
+  updatedAt: string
+  projectName?: string
+  todoTitle?: string
+  userName?: string
+  estimatedWorkMinutes?: number | null
+}
+export type WorkHourSummary = {
+  totalMinutes: number
+  totalHours: number
+  confirmedMinutes: number
+  pendingMinutes: number
+  projectCount: number
+  taskCount: number
+  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number }>
+  byDate: Array<{ date: string; minutes: number; hours: number }>
+  byUser: Array<{ userId: number; userName: string; minutes: number }>
+  estimatedMinutes?: number
+  estimatedHours?: number
+}
+export type WorkHoursResponse = { entries: WorkHourEntry[]; summary: WorkHourSummary }
+
 export type PackageMarketRulesResponse = {
   expireMinutes: number
   organizationId: number | null
@@ -544,6 +577,79 @@ export function fetchMyWork(organizationId: OrganizationContext, filters: MyWork
   if (filters.limit) params.set('limit', String(filters.limit))
   const query = params.toString()
   return request<MyWorkData>(`/api/my-work${query ? `?${query}` : ''}`)
+}
+
+function workHoursQuery(filters: {
+  endDate?: string
+  projectId?: number
+  startDate?: string
+  status?: WorkHourStatus | 'all'
+} = {}) {
+  const params = new URLSearchParams()
+  if (filters.startDate) params.set('startDate', filters.startDate)
+  if (filters.endDate) params.set('endDate', filters.endDate)
+  if (filters.projectId) params.set('projectId', String(filters.projectId))
+  if (filters.status && filters.status !== 'all') params.set('status', filters.status)
+  const queryString = params.toString()
+  return queryString ? `?${queryString}` : ''
+}
+
+export function fetchMyWorkHours(filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/my-work-hours${workHoursQuery(filters)}`)
+}
+
+export function createWorkHour(payload: {
+  description?: string
+  minutes?: number
+  todoId: number
+  workDate: string
+}) {
+  return request<{ entry: WorkHourEntry }>('/api/my-work-hours', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateWorkHour(entryId: number, payload: Partial<Pick<WorkHourEntry, 'description' | 'minutes' | 'workDate'>>) {
+  return request<{ entry: WorkHourEntry }>(`/api/my-work-hours/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeWorkHour(entryId: number) {
+  return request<{ ok: true }>(`/api/my-work-hours/${entryId}`, { method: 'DELETE' })
+}
+
+export function fetchOrganizationWorkHours(organizationId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/organizations/${organizationId}/work-hours${workHoursQuery(filters)}`)
+}
+
+export function fetchProjectWorkHours(projectId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/projects/${projectId}/work-hours${workHoursQuery(filters)}`)
+}
+
+export function submitTodoForReview(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/submit-review`, { method: 'POST' })
+}
+
+export function withdrawTodoReview(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/withdraw-review`, { method: 'POST' })
+}
+
+export function acceptTodo(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/accept`, { method: 'POST' })
+}
+
+export function returnTodoForRevision(todoId: number, reason: string) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/return`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
+export function reopenTodo(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/reopen`, { method: 'POST' })
 }
 
 export function fetchCurrentUser() {
@@ -1520,6 +1626,7 @@ export function createTodo(payload: {
   priority: Priority
   projectId: number
   title: string
+  estimatedWorkMinutes?: number | null
 }) {
   return request<WorkspaceData>('/api/todos', {
     method: 'POST',

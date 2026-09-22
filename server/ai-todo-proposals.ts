@@ -12,6 +12,7 @@ export type AiTodoProposal = {
   projectId: number | null
   sourceExcerpt: string
   title: string
+  estimatedWorkMinutes?: number | null
 }
 
 export type AiTodoProposalCatalog = {
@@ -38,7 +39,7 @@ export type AiTodoProposalValidationOptions = {
 }
 
 export const AI_TODO_PROPOSAL_SYSTEM_PROMPT = `你是 Veges 的待办候选提取助手。根据自然语言指令或 Markdown 内容识别可执行事项，并从权限目录中推断项目、模块和负责人。
-只返回一个 JSON 对象，结构必须是 {"proposals":[...]}。每项必须且只能包含 projectId、moduleId、assigneeUserId、title、detail、dueDate、priority、confidence、sourceExcerpt。
+只返回一个 JSON 对象，结构必须是 {"proposals":[...]}。每项必须且只能包含 projectId、moduleId、assigneeUserId、title、detail、dueDate、priority、confidence、sourceExcerpt；如果明确推断出企业项目工时，可额外包含 estimatedWorkMinutes（15 分钟的正整数倍），否则不要包含该字段。
 projectId、moduleId 和 assigneeUserId 应优先从权限目录推断；无法判断时使用 null。非空 projectId 必须来自权限目录，非空 moduleId 和 assigneeUserId 必须属于该项目。用户修正项目后，如果原模块或负责人不属于新项目，对应字段必须改为 null。dueDate 使用 YYYY-MM-DD，无法判断时使用 null。priority 只能是 high、medium、low。confidence 是 0 到 1 的数字。sourceExcerpt 必须原样摘自输入内容。不要创建输入中没有依据的事项。`
 
 const proposalKeys = [
@@ -52,6 +53,7 @@ const proposalKeys = [
   'sourceExcerpt',
   'title',
 ].sort()
+const proposalKeysWithEstimate = [...proposalKeys, 'estimatedWorkMinutes'].sort()
 
 export class AiTodoProposalValidationError extends Error {
   constructor(message: string) {
@@ -112,7 +114,9 @@ function parseProposal(
     throw new AiTodoProposalValidationError(`proposals[${index}] must be an object`)
   }
   const keys = Object.keys(value).sort()
-  if (keys.length !== proposalKeys.length || keys.some((key, keyIndex) => key !== proposalKeys[keyIndex])) {
+  const hasEstimate = Object.prototype.hasOwnProperty.call(value, 'estimatedWorkMinutes')
+  const expectedKeys = hasEstimate ? proposalKeysWithEstimate : proposalKeys
+  if (keys.length !== expectedKeys.length || keys.some((key, keyIndex) => key !== expectedKeys[keyIndex])) {
     throw new AiTodoProposalValidationError(`proposals[${index}] has missing or unknown fields`)
   }
 
@@ -172,7 +176,7 @@ function parseProposal(
     )
   }
 
-  return {
+  const result: AiTodoProposal = {
     assigneeUserId,
     confidence: value.confidence,
     detail: boundedString(value.detail, `proposals[${index}].detail`, 4_000, true),
@@ -183,6 +187,14 @@ function parseProposal(
     sourceExcerpt,
     title: boundedString(value.title, `proposals[${index}].title`, 200),
   }
+  if (hasEstimate) {
+    const minutes = value.estimatedWorkMinutes
+    if (!Number.isSafeInteger(minutes) || Number(minutes) <= 0 || Number(minutes) > 1440 || Number(minutes) % 15 !== 0) {
+      throw new AiTodoProposalValidationError(`proposals[${index}].estimatedWorkMinutes must be a positive multiple of 15 minutes`)
+    }
+    result.estimatedWorkMinutes = Number(minutes)
+  }
+  return result
 }
 
 export function parseAiTodoProposalResponse(

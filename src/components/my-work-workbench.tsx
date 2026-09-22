@@ -10,6 +10,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import './my-work-workbench.css'
+import { WorkHoursWorkbench } from './work-hours-workbench'
 
 const kindLabels: Record<MyWorkKind, string> = {
   todo: '待办',
@@ -124,6 +125,7 @@ export function MyWorkWorkbench({
   const hasLoadedRef = useRef(false)
   const [backgroundRefreshVersion, setBackgroundRefreshVersion] = useState(0)
   const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState<'work' | 'hours'>('work')
 
   useEffect(() => startVisibleRefreshSchedule({
     clearInterval: (handle) => window.clearInterval(handle),
@@ -216,6 +218,12 @@ export function MyWorkWorkbench({
 
   return (
     <section className="panel my-work-panel">
+      <div className="my-work-tabs" role="tablist" aria-label="我的工作视图">
+        <button className={activeTab === 'work' ? 'is-active' : ''} type="button" role="tab" aria-selected={activeTab === 'work'} onClick={() => setActiveTab('work')}>我的待办</button>
+        <button className={activeTab === 'hours' ? 'is-active' : ''} type="button" role="tab" aria-selected={activeTab === 'hours'} onClick={() => setActiveTab('hours')}>我的工时</button>
+      </div>
+      {activeTab === 'hours' ? <WorkHoursWorkbench mode="mine" projects={projects} /> : null}
+      {activeTab === 'work' ? <>
       <div className="my-work-toolbar">
         <label className="my-work-search">
           <MagnifyingGlass size={17} />
@@ -280,6 +288,7 @@ export function MyWorkWorkbench({
           <Button type="button" variant="outline" onClick={() => setCursor(data.nextCursor ?? '')}>下一页</Button>
         </div>
       ) : null}
+      </> : null}
     </section>
   )
 }

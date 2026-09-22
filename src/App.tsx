@@ -1,4 +1,3 @@
-import { addOrganizationProjectMember } from './api'
 import {
   Component,
   useCallback,
@@ -35,7 +34,6 @@ import {
 } from '../shared/weekly-report-deep-link'
 import {
   Archive,
-  AddressBook,
   At,
   Bell,
   Buildings,
@@ -64,7 +62,6 @@ import {
   Paperclip,
   PaperPlaneTilt,
   Plus,
-  Question,
   ShoppingCartSimple,
   SignIn,
   SignOut,
@@ -174,8 +171,6 @@ import {
   fetchProjectInviteLinkInfo,
   formatApiErrorDiagnostic,
   getAuthToken,
-  getProjectInviteLink,
-  inviteProjectMember,
   markAllNotificationsRead,
   loginAccount,
   clearAuthToken,
@@ -190,7 +185,6 @@ import {
   removeProjectPackageOperation,
   removeProject,
   removeProjectModule,
-  removeProjectMember,
   removeTodo,
   requestProjectTransfer,
   respondToProjectTransfer,
@@ -200,7 +194,6 @@ import {
   updateJournalEntry,
   updateProjectPackageOperation,
   updateProject,
-  updateProjectFeishuSettings,
   updateTodo,
   updateTodoNote,
   uploadTodoImage,
@@ -315,7 +308,6 @@ import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
 import { PlatformManagementWorkbench } from './components/platform-management-workbench'
-import { ProjectSubprojectsPanel } from './components/project-subprojects-panel'
 import { ProjectModulePicker } from './components/project-module-picker'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ChangelogAnnouncementDialog } from './components/changelog-announcement-dialog'
@@ -326,6 +318,7 @@ import {
   type WeeklyReportWorkbenchHandle,
 } from './components/weekly-report-workbench'
 import { MyWorkWorkbench } from './components/my-work-workbench'
+import { WorkHoursWorkbench } from './components/work-hours-workbench'
 import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import { UserRoleSelectionDialog } from './components/user-role-dialogs'
 import {
@@ -572,7 +565,7 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'journal' | 'activity' | 'packages'
+type ProjectDetailTab = 'journal' | 'activity' | 'packages' | 'work_hours'
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -997,15 +990,6 @@ function useTodoNoteReadState(currentUserId?: number) {
   }, [currentUserId, readAtByTodoId])
 
   return { getTodoNoteBadge, markTodoNotesRead }
-}
-
-function buildProjectInviteUrl(token: string) {
-  if (typeof window === 'undefined') return `?invite=${encodeURIComponent(token)}`
-  const url = new URL(window.location.href)
-  url.search = ''
-  url.hash = ''
-  url.searchParams.set('invite', token)
-  return url.toString()
 }
 
 function getInitialTheme(): ThemeMode {
@@ -1882,6 +1866,7 @@ function App() {
   const [todoDraft, setTodoDraft] = useState('')
   const [todoDetailDraft, setTodoDetailDraft] = useState('')
   const [todoDueDate, setTodoDueDate] = useState(today)
+  const [todoEstimatedWorkHours, setTodoEstimatedWorkHours] = useState('')
   const [todoCreatedAt, setTodoCreatedAt] = useState('')
   const [todoPriority, setTodoPriority] = useState<Priority>('medium')
   const [todoAssigneeUserId, setTodoAssigneeUserId] = useState<number | null>(null)
@@ -1893,7 +1878,6 @@ function App() {
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectTags, setNewProjectTags] = useState('')
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
-  const [isProjectMembersDialogOpen, setIsProjectMembersDialogOpen] = useState(false)
   const [isProjectModulesDialogOpen, setIsProjectModulesDialogOpen] = useState(false)
   const [projectModuleDraft, setProjectModuleDraft] = useState('')
   const [search, setSearch] = useState('')
@@ -3884,73 +3868,6 @@ function App() {
     setInboxDraft('')
   }
 
-  async function inviteMember(projectId: number, username: string) {
-    const nextUsername = username.trim()
-    if (!nextUsername) return
-    await runMutation(() => inviteProjectMember(projectId, { username: nextUsername }))
-  }
-
-  async function addMemberDirectly(projectId: number, username: string) {
-    return Boolean(await runMutation(async () => {
-      const project = projects.find((item) => item.id === projectId)
-      if (!project?.organizationId) throw new Error('请选择组织项目。')
-      const organization = await fetchOrganization(project.organizationId)
-      const member = organization.members.find((item) => item.username.toLowerCase() === username.trim().toLowerCase())
-      if (!member) throw new Error('请先将该账号加入项目所属组织。')
-      await addOrganizationProjectMember(project.organizationId, projectId, member.id)
-      return fetchWorkspace()
-    }))
-  }
-
-  async function deleteMember(projectId: number, membershipId: number) {
-    const member = memberships.find((item) => item.id === membershipId)
-    if (!member) return false
-    return confirmAction({
-      title: member.status === 'pending' ? '确认撤回邀请？' : '确认移除项目成员？',
-      description: `「${member.memberName || member.invitedUsername}」${member.status === 'pending' ? '的待接受邀请将被撤回' : '将失去当前项目的成员权限，相关待办负责人、验收人、关注关系和交付指派将按项目规则清理'}。当前项目的旧邀请链接也会失效。`,
-      confirmLabel: member.status === 'pending' ? '撤回邀请' : '移除成员',
-    }, () => runConfirmedMutation(() => removeProjectMember(projectId, membershipId),
-      (data) => !data.memberships.some((item) => item.id === membershipId)))
-  }
-
-  async function saveProjectFeishuSettings(projectId: number, payload: {
-    feishuChatEnabled: boolean
-    feishuChatId: string
-  }) {
-    await runMutation(() => updateProjectFeishuSettings(projectId, payload))
-  }
-
-  async function copyProjectInviteLink(
-    projectId: number,
-    payload: {
-      encryptedShare: boolean
-      expiresInMinutes: number
-      password?: string
-    },
-  ) {
-    const inviteLink = await getProjectInviteLink(projectId, {
-      expiresInMinutes: payload.expiresInMinutes,
-      password: payload.password,
-      rotate: true,
-    })
-    const { token } = inviteLink
-    const inviteUrl = buildProjectInviteUrl(token)
-    if (!navigator.clipboard) throw new Error('Clipboard is not available')
-    const project = projects.find((item) => item.id === projectId)
-    const inviterName = authUser?.displayName || authUser?.username || '项目成员'
-    const projectName = project?.name || 'Veges'
-    const shareText =
-      payload.encryptedShare && payload.password
-        ? `${inviterName} 邀请你加入 ${projectName} 项目，请点击此链接进入：${inviteUrl}，密码：${payload.password}`
-        : inviteUrl
-    await navigator.clipboard.writeText(shareText)
-    return {
-      ...inviteLink,
-      password: payload.password,
-      url: inviteUrl,
-    }
-  }
-
   async function createModule(projectId: number, rawName: string): Promise<ProjectModule | null> {
     const name = rawName.trim()
     if (!name) return null
@@ -4010,6 +3927,7 @@ function App() {
         createdAt: todoCreatedAt || undefined,
         dueDate: todoDueDate,
         priority: todoPriority,
+        estimatedWorkMinutes: todoEstimatedWorkHours ? Math.round(Number(todoEstimatedWorkHours) * 60) : undefined,
       }),
     )
     if (!data) return
@@ -4020,6 +3938,7 @@ function App() {
     setTodoDueDate(today)
     setTodoCreatedAt('')
     setTodoPriority('medium')
+    setTodoEstimatedWorkHours('')
     setTodoAssigneeUserId(null)
     setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
@@ -4037,6 +3956,7 @@ function App() {
     setTodoDueDate(today)
     setTodoCreatedAt('')
     setTodoPriority('medium')
+    setTodoEstimatedWorkHours('')
     setTodoAssigneeUserId(null)
     setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
@@ -5641,6 +5561,16 @@ ${packageTimelineText}`
                       交付工作台
                     </Button>
                   )}
+                  {view === 'project' && selectedProject?.canViewOrganizationWorkHours ? (
+                    <Button
+                      className={projectDetailTab === 'work_hours' ? 'solid-button' : 'ghost-button'}
+                      type="button"
+                      variant={projectDetailTab === 'work_hours' ? 'default' : 'outline'}
+                      onClick={() => setProjectDetailTab('work_hours')}
+                    >
+                      项目工时
+                    </Button>
+                  ) : null}
                   {view === 'project' && selectedProject?.accessRole === 'owner' && selectedProject.moduleManagement === 'project' && (
                     <Dialog
                       open={isProjectModulesDialogOpen}
@@ -5664,60 +5594,6 @@ ${packageTimelineText}`
                           onDelete={(moduleId) => deleteProjectModule(selectedProject.id, moduleId)}
                           onDraftChange={setProjectModuleDraft}
                           draft={projectModuleDraft}
-                        />
-                      </DialogContent>
-                    </Dialog>
-                  )}
-                  {view === 'project' && selectedProject && selectedProject.accessRole === 'owner' && (
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button className="ghost-button" type="button" variant="outline">
-                          <ListChecks size={16} /> 子项目管理
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="project-subprojects-dialog">
-                        <DialogHeader>
-                          <DialogTitle>子项目管理</DialogTitle>
-                          <DialogDescription>按客户或交付单元拆分当前大项目，任务可以归属到对应子项目。</DialogDescription>
-                        </DialogHeader>
-                        <ProjectSubprojectsPanel key={selectedProject.id} projectId={selectedProject.id} canManage onChange={applyWorkspace} />
-                      </DialogContent>
-                    </Dialog>
-                  )}
-                  {view === 'project' && selectedProject && (selectedProject.canManageMembers ?? selectedProject.accessRole === 'owner') && (
-                    <Dialog
-                      open={isProjectMembersDialogOpen}
-                      onOpenChange={setIsProjectMembersDialogOpen}
-                    >
-                      <DialogTrigger asChild>
-                        <Button className="ghost-button project-members-trigger" type="button" variant="outline">
-                          <AddressBook size={16} /> 邀请成员
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="project-members-dialog">
-                        <DialogHeader>
-                          <DialogTitle>邀请成员</DialogTitle>
-                          <DialogDescription>
-                            管理成员、邀请链接和项目群通知。
-                          </DialogDescription>
-                        </DialogHeader>
-                        <ProjectMembersPanel
-                          departedUserIds={departedUserIds}
-                          memberships={memberships.filter(
-                            (membership) => membership.projectId === selectedProject.id,
-                          )}
-                          onCopyInviteLink={(payload) =>
-                            copyProjectInviteLink(selectedProject.id, payload)
-                          }
-                          onSaveFeishuSettings={(payload) =>
-                            saveProjectFeishuSettings(selectedProject.id, payload)
-                          }
-                          onInvite={(email) => inviteMember(selectedProject.id, email)}
-                          onAddDirectMember={selectedProject.canManageOrganizationTodos
-                            ? (username) => addMemberDirectly(selectedProject.id, username)
-                            : undefined}
-                          onRemove={(membershipId) => deleteMember(selectedProject.id, membershipId)}
-                          project={selectedProject}
                         />
                       </DialogContent>
                     </Dialog>
@@ -5853,6 +5729,8 @@ ${packageTimelineText}`
             todoDraft={todoDraft}
             todoModuleId={todoModuleId}
             todoPriority={todoPriority}
+            todoEstimatedWorkHours={todoEstimatedWorkHours}
+            onTodoEstimatedWorkHoursChange={setTodoEstimatedWorkHours}
           />
         )}
 
@@ -6703,6 +6581,8 @@ function ProjectDetail({
   todoDraft,
   todoModuleId,
   todoPriority,
+  todoEstimatedWorkHours,
+  onTodoEstimatedWorkHoursChange,
 }: {
   departedUserIds: readonly number[]
   initialTodoId?: number | null
@@ -6824,6 +6704,8 @@ function ProjectDetail({
   todoDraft: string
   todoModuleId: number | null
   todoPriority: Priority
+  todoEstimatedWorkHours: string
+  onTodoEstimatedWorkHoursChange: (value: string) => void
 }) {
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
@@ -6861,7 +6743,7 @@ function ProjectDetail({
       : undefined
   const projectMembers = getProjectAssignableUsers(project, memberships)
   const projectModules = project.modules
-  const canWriteProject = !project.readOnly
+  const canWriteProject = !project.readOnly && (!project.organizationId || Boolean(project.canManageOrganizationTodos))
   const isOwner = project.accessRole === 'owner'
   const hasTodoCreateDraft = Boolean(
     todoDraft.trim() ||
@@ -6873,7 +6755,8 @@ function ProjectDetail({
       todoWatcherUserIds.length > 0 ||
       todoReviewerUserId != null ||
       todoModuleId != null ||
-      todoSubprojectId != null,
+      todoSubprojectId != null ||
+      todoEstimatedWorkHours,
   )
   const riskJournalEntryIds = useMemo(
     () => new Set(project.riskJournalEntryIds),
@@ -6957,6 +6840,8 @@ function ProjectDetail({
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
+        ) : projectDetailTab === 'work_hours' ? (
+          <WorkHoursWorkbench mode="project" project={project} projects={projects} />
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
@@ -7271,7 +7156,7 @@ function ProjectDetail({
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
-                  submitDisabled={!todoDraft.trim()}
+                  submitDisabled={!todoDraft.trim() || Boolean(project.organizationId && !todoEstimatedWorkHours)}
                   title={todoDraft}
                   onAssigneeUserIdChange={onTodoAssigneeChange}
                   onWatcherUserIdsChange={onTodoWatcherChange}
@@ -7282,6 +7167,8 @@ function ProjectDetail({
                   onCreateModule={(name) => onCreateTodoModule(project.id, name)}
                   onDetailChange={onTodoDetailDraftChange}
                   onDueDateChange={onTodoDueDateChange}
+                  estimatedWorkHours={todoEstimatedWorkHours}
+                  onEstimatedWorkHoursChange={onTodoEstimatedWorkHoursChange}
                   onModuleIdChange={onTodoModuleChange}
                   onOpenChange={(open) => {
                     if (!open) closeTodoCreateDialog()
@@ -7339,7 +7226,7 @@ function generateInviteSharePassword(length = 8) {
   return Array.from(values, (value) => alphabet[value % alphabet.length]).join('')
 }
 
-function ProjectMembersPanel({
+export function ProjectMembersPanel({
   departedUserIds,
   memberships,
   onCopyInviteLink,
@@ -11793,6 +11680,8 @@ function TodoEditorDialog({
   title,
   todo,
   dueDate,
+  estimatedWorkHours,
+  onEstimatedWorkHoursChange,
 }: {
   subprojectId?: number | null
   onSubprojectIdChange?: (id: number | null) => void
@@ -11843,6 +11732,8 @@ function TodoEditorDialog({
   title: string
   todo?: Todo | null
   dueDate: string
+  estimatedWorkHours?: string
+  onEstimatedWorkHoursChange?: (value: string) => void
 }) {
   const isCreateMode = mode === 'create'
   const isDetailMode = mode === 'detail'
@@ -11939,6 +11830,21 @@ function TodoEditorDialog({
               </div>
             </Label>
             <div className="todo-editor-inline-grid">
+              {project.organizationId ? (
+                <Label className="todo-inline-field-half">
+                  预估工时（小时）
+                  <Input
+                    aria-label="预估工时"
+                    min="0.25"
+                    step="0.25"
+                    type="number"
+                    value={estimatedWorkHours ?? ''}
+                    onChange={(event) => onEstimatedWorkHoursChange?.(event.target.value)}
+                    placeholder="例如 8"
+                  />
+                  <span className="field-hint">企业待办必填，按 0.25 小时递增</span>
+                </Label>
+              ) : null}
               <Label>
                 所属子项目
                 <Select value={String(subprojectId ?? 'none')} onValueChange={(value) => onSubprojectIdChange?.(value === 'none' ? null : Number(value))}>
@@ -12015,29 +11921,6 @@ function TodoEditorDialog({
                   members={members}
                   values={watcherUserIds}
                   onChange={onWatcherUserIdsChange}
-                />
-              </Label>
-              <Label className="todo-inline-field-half">
-                <span className="todo-reviewer-field-label">
-                  指定验收人
-                  <span
-                    aria-label="可以在此选择指定验收人，默认为待办创建人。"
-                    className="todo-reviewer-help"
-                    role="img"
-                    tabIndex={0}
-                  >
-                    <Question size={14} weight="bold" />
-                    <span className="todo-reviewer-tooltip" role="tooltip">
-                      可以在此选择指定验收人，默认为待办创建人。
-                    </span>
-                  </span>
-                </span>
-                <ProjectMemberPicker
-                  emptyLabel="待办创建人"
-                  label="指定验收人"
-                  members={members}
-                  value={reviewerUserId}
-                  onChange={onReviewerUserIdChange}
                 />
               </Label>
             </div>
@@ -12484,14 +12367,14 @@ function TodoList({
 
   function canRespondToTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
+    const isTodoCreator = currentUserId != null && (
+      todo.createdByUserId === currentUserId ||
+      (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
+    )
     return Boolean(
       currentUserId != null &&
       !project?.readOnly &&
-      (
-        project?.accessRole === 'owner' ||
-        todo.assigneeUserId === currentUserId ||
-        todo.reviewerUserId === currentUserId
-      ),
+      (isTodoCreator || todo.assigneeUserId === currentUserId),
     )
   }
 
@@ -12501,20 +12384,12 @@ function TodoList({
 
   function canToggleTodoDone(todo: Todo) {
     const project = projectById.get(todo.projectId)
-    const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
     const isTodoCreator = currentUserId != null && (
       todo.createdByUserId === currentUserId ||
       (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
     )
-    const isReviewer = currentUserId != null && (
-      isTodoCreator || effectiveReviewerUserId === currentUserId
-    )
     return (
-      (isTodoCreator || isReviewer && (
-        todo.reviewerUserId == null ||
-        todo.confirmationStatus === 'pending_review' ||
-        todo.done
-      ))
+      isTodoCreator
     ) && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
   }
 

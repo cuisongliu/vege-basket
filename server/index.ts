@@ -52,7 +52,6 @@ import {
 import type { AiTodoProposal, AiTodoProposalCatalog } from './ai-todo-proposals.ts'
 import { buildConfirmedTodoInsertQuery } from './ai-todo-confirmation.ts'
 import {
-  canUserReviewTodo,
   hasTodoAssigneeChanged,
   hasTodoWatchersChanged,
   resolveTodoNoteRecipientUserIds,
@@ -183,6 +182,7 @@ import {
 import { waitForAiTurnStreamDrain } from './ai-turn-stream.ts'
 import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
+import { createWorkHoursRouter, parseWorkMinutes } from './work-hours.ts'
 import {
   getAuthenticatedRoleSession,
   getUserRoleContext,
@@ -4304,6 +4304,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       completed_by_email: string | null
       completed_by_display_name: string | null
       confirmation_status: TodoConfirmationStatus
+      estimated_work_minutes: number | null
+      needs_revision: boolean
+      rejection_reason: string | null
       linked_to_delivery_event: boolean
       project_module_id: string | null
       module_name: string | null
@@ -4339,6 +4342,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              t.completed_at,
              t.completed_by_user_id,
              t.confirmation_status,
+             t.estimated_work_minutes,
+             t.needs_revision,
+             t.rejection_reason,
              exists (
                select 1
                from project_package_operation_todos operation_todo
@@ -4703,6 +4709,7 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       canDelete: project.access_role === 'owner' || project.can_manage_organization_todos,
       canTransferOwnership: project.access_role === 'owner' || project.can_manage_organization_todos,
       canUpdateOrganizationTodoFields: project.can_update_organization_todo_fields,
+      canViewOrganizationWorkHours: project.can_manage_organization_todos,
       name: decryptText(project.name),
       description: project.description_encrypted ? decryptText(project.description_encrypted) : '',
       ownerName: displayNameFromUser({
@@ -4790,6 +4797,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
         })
         : undefined,
       confirmationStatus: todo.confirmation_status,
+      estimatedWorkMinutes: todo.estimated_work_minutes == null ? null : Number(todo.estimated_work_minutes),
+      needsRevision: todo.needs_revision,
+      rejectionReason: todo.rejection_reason ? decryptText(todo.rejection_reason) : undefined,
       linkedToDeliveryEvent: todo.linked_to_delivery_event,
       moduleId: todo.project_module_id ? Number(todo.project_module_id) : undefined,
       moduleName: todo.module_name ? decryptText(todo.module_name) : undefined,
@@ -11084,6 +11094,29 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  const projectScope = await query<{
+    organization_id: string | null
+    organization_admin_access: boolean
+  }>(
+    `select p.organization_id,
+            ${managedOrganizationReadScopeSql('p.organization_id', '$2')} as organization_admin_access
+       from projects p where p.id = $1`,
+    [projectId, userId],
+  )
+  const projectOrganization = projectScope.rows[0]
+  let estimatedWorkMinutes: number | null = null
+  if (projectOrganization?.organization_id) {
+    if (!projectOrganization.organization_admin_access) {
+      response.status(403).json({ error: '只有目标组织的组织管理员可以创建企业待办。' })
+      return
+    }
+    try {
+      estimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: true })
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : '企业待办必须填写预估工时。' })
+      return
+    }
+  }
   const assigneeUserId = await ensureProjectMemberUserId(
     request.body.assigneeUserId,
     projectId,
@@ -11149,9 +11182,10 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
         watched_at,
         assigned_by_user_id,
         assigned_at,
-        reviewer_user_id
+        reviewer_user_id,
+        estimated_work_minutes
       )
-      values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, $8, $9, $10, $11, case when $11::bigint is null then null else $9::bigint end, case when $11::bigint is null then null else now() end, case when $10::bigint is null then null else $9::bigint end, case when $10::bigint is null then null else now() end, $12)
+      values ($1, $2, $3, $4, $5, coalesce($6::timestamptz, now()), $7, $8, $9, $10, $11, case when $11::bigint is null then null else $9::bigint end, case when $11::bigint is null then null else now() end, case when $10::bigint is null then null else $9::bigint end, case when $10::bigint is null then null else now() end, $12, $13)
       returning id
       `,
       [
@@ -11167,6 +11201,7 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
         assigneeUserId,
         watcherUserId,
         reviewerUserId,
+        estimatedWorkMinutes,
       ],
     )
     createdTodoId = Number(createdTodo.rows[0].id)
@@ -11294,18 +11329,12 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const watcherUserIds = watcherRows.rows.length > 0
     ? watcherRows.rows.map((row) => Number(row.user_id))
     : legacyWatcherUserId == null ? [] : [legacyWatcherUserId]
-  const reviewerUserId = existingTodo.rows[0].reviewer_user_id
-    ? Number(existingTodo.rows[0].reviewer_user_id)
-    : null
   const canManageTodo = organizationAdminTodoAccess || access.role === 'owner' || createdByUserId === userId
   const canManageTodoFields = canManageTodo || systemAdminTodoAccess
   const isSystemAdminTodoFieldUpdate = systemAdminTodoAccess && isOrganizationTodoFieldUpdate(request.body)
-  const canReviewTodo = canUserReviewTodo({
-    creatorUserId: createdByUserId,
-    projectOwnerUserId: access.ownerUserId,
-    reviewerUserId,
-    userId,
-  })
+  // Acceptance belongs to the task creator. Keep the legacy reviewer field for
+  // history and display, but it must not grant completion authority.
+  const canReviewTodo = createdByUserId === userId
   const canActOnTodo = access.role === 'owner' || canReviewTodo || assigneeUserId === userId
   const requestedConfirmationStatus = request.body.confirmationStatus
   const isConfirmationStatusUpdate = 'confirmationStatus' in request.body
@@ -11340,12 +11369,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     return
   }
   const isCompletionUpdate = 'done' in request.body
-  const canCompleteTodo = canReviewTodo && (
-    createdByUserId === userId ||
-    reviewerUserId == null ||
-    existingTodo.rows[0].confirmation_status === 'pending_review' ||
-    existingTodo.rows[0].done
-  )
+  const canCompleteTodo = canReviewTodo
   const isAcceptanceDecisionUpdate =
     isConfirmationStatusUpdate &&
     (requestedConfirmationStatus === 'confirmed' || requestedConfirmationStatus === 'acceptance_failed') &&
@@ -11507,24 +11531,11 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
       lockedAssigneeUserId,
       nextAssigneeUserId,
     )
-    const lockedReviewerUserId = lockedTodo.reviewer_user_id
-      ? Number(lockedTodo.reviewer_user_id)
-      : null
-    const canReviewLockedTodo = canUserReviewTodo({
-      creatorUserId: createdByUserId,
-      projectOwnerUserId: access.ownerUserId,
-      reviewerUserId: lockedReviewerUserId,
-      userId,
-    })
+    const canReviewLockedTodo = createdByUserId === userId
     const canActOnLockedTodo = access.role === 'owner' ||
       lockedAssigneeUserId === userId ||
       canReviewLockedTodo
-    const canCompleteLockedTodo = canReviewLockedTodo && (
-      createdByUserId === userId ||
-      lockedReviewerUserId == null ||
-      lockedTodo.confirmation_status === 'pending_review' ||
-      lockedTodo.done
-    )
+    const canCompleteLockedTodo = canReviewLockedTodo
     if (
       (isCompletionUpdate && !canCompleteLockedTodo) ||
       (isConfirmationStatusUpdate && !isAcceptanceDecisionUpdate && !canActOnLockedTodo) ||
@@ -12827,6 +12838,15 @@ app.post('/api/drafts/:draftId/archive', asyncHandler(async (request, response) 
       const title = decryptText(draft.todo_title)
       const detail = decryptText(draft.content)
       const dueDate = formatDate(draft.todo_due_date)
+      const projectPolicy = await client.query<{ organization_id: string | null }>(
+        'select organization_id from projects where id = $1',
+        [projectId],
+      )
+      if (projectPolicy.rows[0]?.organization_id) {
+        await client.query('rollback')
+        response.status(400).json({ error: '企业待办草稿必须在创建时填写预估工时，暂不支持从旧草稿直接归档。' })
+        return
+      }
       const insertQuery = buildConfirmedTodoInsertQuery({
         assigneeUserId: null,
         createdByUserId: userId,
@@ -13481,6 +13501,17 @@ async function confirmAiTodoProposalBatch(
       const dueDate = proposal.dueDate
       if (!dueDate) throw new Error('Confirmed todo proposal is missing its due date')
       if (projectId) {
+        const projectPolicy = await client.query<{ organization_id: string | null; can_manage: boolean }>(
+          `select p.organization_id,
+                  ${managedOrganizationReadScopeSql('p.organization_id', '$2')} as can_manage
+             from projects p where p.id = $1 for share of p`,
+          [projectId, userId],
+        )
+        const policy = projectPolicy.rows[0]
+        if (!policy) throw new AiConversationStoreError('AI_PROJECT_NOT_FOUND', 'Project not found', 404)
+        if (policy.organization_id && (!policy.can_manage || proposal.estimatedWorkMinutes == null)) {
+          throw new AiConversationStoreError('AI_TODO_ESTIMATE_REQUIRED', '企业待办必须由组织管理员确认并填写预估工时（15 分钟递增）。', 400)
+        }
         const insertQuery = buildConfirmedTodoInsertQuery({
           assigneeUserId: proposal.assigneeUserId,
           createdByUserId: userId,
@@ -13490,6 +13521,7 @@ async function confirmAiTodoProposalBatch(
           priority: proposal.priority,
           projectId,
           title: encryptText(proposal.title),
+          estimatedWorkMinutes: proposal.estimatedWorkMinutes,
         })
         const createdTodo = await client.query<{ id: string }>(
           insertQuery.text,
@@ -13941,6 +13973,10 @@ app.use('/api', createWeeklyReportRouter({
   resolveFeishuOpenIdByEmail,
   sendFeishuMessage,
 }))
+
+// Enterprise work-time routes are kept in their own router so every read and
+// mutation shares the same organization/project authorization boundary.
+app.use('/api', createWorkHoursRouter())
 
 function setShareDocumentHeaders(response: express.Response, todoShare = false) {
   response.setHeader('Cache-Control', 'private, no-store')
