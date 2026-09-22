@@ -143,6 +143,33 @@ existing database. Do not run the migration separately merely to repeat startup 
 
 ## Database Operations
 
+### Legacy Weekly-Report Cleanup
+
+After explicit authorization to delete historical-format weekly reports, inspect the
+configured database first (this command does not start the API or apply schema changes):
+
+```bash
+node --import tsx server/weekly-report-legacy-cleanup.ts --env-file /secure/path/runtime.env
+```
+
+Apply only with the inspected report count and a new private backup path:
+
+```bash
+node --import tsx server/weekly-report-legacy-cleanup.ts --env-file /secure/path/runtime.env \
+  --apply --expected-count 8 --backup /secure/path/weekly-reports.enc
+```
+
+The command locks report tables, rechecks the count, writes and flushes an encrypted
+0600 backup, then deletes only recognizable legacy reports with null profile metadata
+throughout their drafts and revisions. Older free-form Markdown revisions are included.
+Any v3/future marker, unrecognized current draft/content, or non-null profile preserves
+the whole report. Report revisions and source links cascade; linked
+tasks, Bugs, test plans and reminder history remain. Organization summaries for periods
+with removed submitted reports are invalidated in the same transaction. Retain the
+backup and its encryption key ring; do not commit either. A failed command requires a
+fresh inspection because a lost connection during commit can leave an uncertain result.
+This is an explicit operator action, never an automatic startup migration.
+
 ### Bug Case Association and Module Migration
 
 `server/migrations/20260914_test_workbench_modules_optional_bugs.sql` adds organization module
@@ -255,7 +282,17 @@ backup; it backfills rows whose object key has the canonical `/ci/<branch>/<hash
 leaves branchless middleware CI rows unchanged. The migration is idempotent and does not rewrite
 package object keys.
 
-The weekly-report assignee release adds
+The weekly-report snapshot release adds
+encrypted nullable `organization_weekly_reports.draft_item_sources` and
+`organization_weekly_report_revisions.source_snapshots`
+(`server/migrations/20260921_weekly_report_snapshots.sql`, automatic schema version
+`20260921_schema_v8`). Startup applies the additive migration. Existing reports keep null
+snapshots; never reconstruct historical counts from current execution results. Both columns
+participate in the idempotent `db:encrypt-existing` command for legacy plaintext values.
+Before rollout, retain a database snapshot and the complete encryption key ring. An application
+rollback may leave these nullable columns intact; it does not restore the database.
+
+The earlier weekly-report assignee release adds
 `organization_memberships.weekly_report_required`. Existing and future memberships default to
 requiring a report, while the reserved `admin` account is excluded. The application startup path
 applies the compatible addition idempotently; the matching forward-only migration remains the

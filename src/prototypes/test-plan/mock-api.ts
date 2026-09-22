@@ -1,11 +1,34 @@
 import type { PersonalWeeklyReport } from '../../organization-types'
 import type { TestCase, TestPlan, TestPlanCase, TestWorkbenchData } from '../../test-workbench-types'
 import { defaultWeeklyReportRules } from '../../../shared/weekly-report-availability'
+import { weeklyReportProfiles } from '../../../shared/weekly-report-profile'
 import { createPrototypeData, newPrototypeBug, prototypeSettings, prototypeUserId, type PrototypeExecution } from './workbench-data'
 
 const now = () => new Date().toISOString()
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 const fail = (message: string): never => { throw new Error(message) }
+
+const emptyWeeklyReport = (weekStart: string): PersonalWeeklyReport => ({
+  itemSources: [],
+  publishedSourceSnapshots: [],
+  organizationName: '',
+  authorName: '',
+  activeProfile: 'tester',
+  reportProfile: null,
+  allowedSourceKinds: [...weeklyReportProfiles.tester.sourceKinds],
+  readOnlyReason: null,
+  progressSummary: null,
+  publishedProgressSummary: null,
+  weekStart,
+  content: '',
+  publishedContent: '',
+  publishedRevision: null,
+  draftVersion: 0,
+  sourceMode: 'manual',
+  sources: [],
+  state: 'empty',
+  submittedAt: null,
+})
 
 /** This store is deliberately in-memory; it never imports the server or forwards API requests. */
 export class PrototypeStore {
@@ -74,7 +97,7 @@ export class PrototypeStore {
         const week = path[3]
         if (!week) return response({ total: this.reports.size, limit: 10, offset: 0, items: [...this.reports.values()].map(item => ({ ...item, sourceCount: 0, updatedAt: now() })) })
         if (path[4] === 'sources') return response({ sources: [] })
-        const current = this.reports.get(week) ?? { weekStart: week, content: '', publishedContent: '', publishedRevision: null, draftVersion: 0, sourceMode: 'manual', sources: [], state: 'empty', submittedAt: null } satisfies PersonalWeeklyReport
+        const current = this.reports.get(week) ?? emptyWeeklyReport(week)
         if (method !== 'GET') {
           const content = path[4] === 'generate' ? '## 本周工作\n\n完成核心流程回归测试。\n\n## 下周计划\n\n继续验证待修复问题。' : String(payload.content ?? current.content)
           const next: PersonalWeeklyReport = { ...current, content, state: path[4] === 'submit' ? 'submitted' : 'draft', draftVersion: current.draftVersion + 1 }
