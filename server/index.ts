@@ -9833,13 +9833,21 @@ app.post('/api/projects', asyncHandler(async (request, response) => {
     if (organizationId) {
       await lockOrganizationModuleCatalog(client, organizationId)
       const membership = await client.query(
-        `select organization_id from organization_memberships
-         where organization_id = $1 and user_id = $2 and status = 'active' for share`,
+        `select membership.organization_id
+           from organization_memberships membership
+           join user_roles role
+             on role.user_id = membership.user_id
+            and role.role = 'organization_admin'
+          where membership.organization_id = $1
+            and membership.user_id = $2
+            and membership.status = 'active'
+            and membership.access_role in ('owner', 'admin')
+          for share of membership`,
         [organizationId, userId],
       )
       if (!membership.rows[0]) {
         await client.query('rollback')
-        response.status(404).json({ error: 'Organization not found' })
+        response.status(403).json({ error: '只有目标组织的组织管理员可以创建企业项目。' })
         return
       }
     }
@@ -11651,6 +11659,35 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     )
     const updatedTodo = updatedTodoResult.rows[0]
     if (!updatedTodo) throw new Error('Todo update failed')
+    if (requestedConfirmationStatus === 'pending_review') {
+      await client.query(
+        `update todos
+            set submitted_at = now(), needs_revision = false, rejection_reason = null
+          where id = $1 and project_id = $2`,
+        [todoId, projectId],
+      )
+    } else if (requestedConfirmationStatus === 'rejected') {
+      await client.query(
+        `update todos
+            set needs_revision = true, rejection_reason = $3
+          where id = $1 and project_id = $2`,
+        [todoId, projectId, encryptText(requestedRejectionReason)],
+      )
+    }
+    if (updatedTodo.done && !lockedTodo.done) {
+      await client.query(
+        `update todo_work_hours
+            set status = 'confirmed', confirmed_by_user_id = $2, confirmed_at = now(), updated_at = now()
+          where todo_id = $1 and status = 'pending'`,
+        [todoId, userId],
+      )
+      await client.query(
+        `update todos
+            set accepted_at = now(), accepted_by_user_id = $2, acceptance_version = acceptance_version + 1
+          where id = $1 and project_id = $3`,
+        [todoId, userId, projectId],
+      )
+    }
     if (nextDetailMentionedUserIds != null) {
       newTodoMentionIds = await writeTodoMentions(client, todoId, nextDetailMentionedUserIds)
     }

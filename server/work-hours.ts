@@ -201,16 +201,38 @@ async function getTodoForWork(client: PoolClient, todoId: number, userId: number
     confirmation_status: string
     needs_revision: boolean
     creator_is_manager: boolean
+    title: string
+    due_date: Date | string
+    priority: 'high' | 'medium' | 'low'
   }>(
     `select t.id, t.project_id, p.organization_id, p.user_id as owner_user_id,
             t.assignee_user_id, t.created_by_user_id, t.done, t.confirmation_status,
-            t.needs_revision,
+            t.needs_revision, t.title, t.due_date, t.priority,
             ${managedOrganizationReadScopeSql('p.organization_id', '$2')} as creator_is_manager
        from todos t join projects p on p.id = t.project_id
       where t.id = $1 ${lock ? 'for update of t' : ''}`,
     [todoId, userId],
   )
   return result.rows[0] ?? null
+}
+
+async function insertWorkHoursActivityEvent(client: PoolClient, todo: Awaited<ReturnType<typeof getTodoForWork>>, actorUserId: number, eventType: 'completed' | 'reopened' | 'rejected') {
+  if (!todo) return
+  await client.query(
+    `insert into todo_activity_events (
+       project_id, todo_id, actor_user_id, assignee_user_id, event_type, title, due_date, priority
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      Number(todo.project_id),
+      Number(todo.id),
+      actorUserId,
+      todo.assignee_user_id ? Number(todo.assignee_user_id) : null,
+      eventType,
+      encryptText(decryptText(todo.title)),
+      formatDate(todo.due_date),
+      todo.priority,
+    ],
+  )
 }
 
 async function loadEntries(userId: number, filters: {
@@ -526,14 +548,17 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_ACCEPT_FORBIDDEN', '只有任务创建人可以验收。', 403)
         await client.query(`update todos set done = true, confirmation_status = 'confirmed', needs_revision = false, completed_at = now(), completed_by_user_id = $2, accepted_at = now(), accepted_by_user_id = $2, acceptance_version = acceptance_version + 1, updated_at = now() where id = $1`, [todoId, userId])
         await client.query(`update todo_work_hours set status = 'confirmed', confirmed_by_user_id = $2, confirmed_at = now(), updated_at = now() where todo_id = $1 and status = 'pending'`, [todoId, userId])
+        await insertWorkHoursActivityEvent(client, todo, userId, 'completed')
       } else if (action === 'return') {
         if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_RETURN_FORBIDDEN', '只有任务创建人可以退回任务。', 403)
         const reason = typeof request.body.reason === 'string' ? request.body.reason.trim() : ''
         if (!reason) throw new WorkHoursError('TODO_RETURN_REASON', '退回修改必须填写原因。', 400)
         await client.query(`update todos set done = false, confirmation_status = 'confirmed', needs_revision = true, rejection_reason = $2, updated_at = now() where id = $1`, [todoId, encryptText(reason)])
+        await insertWorkHoursActivityEvent(client, todo, userId, 'rejected')
       } else {
         if (!todo.done || (!manager && creatorId !== userId)) throw new WorkHoursError('TODO_REOPEN_FORBIDDEN', '只有任务创建人或组织管理员可以重新打开。', 403)
         await client.query(`update todos set done = false, confirmation_status = 'confirmed', needs_revision = false, completed_at = null, completed_by_user_id = null, updated_at = now() where id = $1`, [todoId])
+        await insertWorkHoursActivityEvent(client, todo, userId, 'reopened')
       }
       await client.query('commit')
       response.json({ ok: true })
