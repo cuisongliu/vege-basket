@@ -15,8 +15,8 @@ export type DatabaseMigrationStatus = {
   startedAt?: string
 }
 
-const migrationId = '20260922_schema_v10'
-const migrationName = '缺陷发现难度与加密评定依据'
+const migrationId = '20260923_schema_v11'
+const migrationName = '企业项目工时管理结构'
 const migrationChecksum = crypto.createHash('sha256').update(schemaSql).digest('hex')
 const bootstrapPasswordFile = '/run/secrets/veges-bootstrap-admin-password/password'
 let status: DatabaseMigrationStatus = { phase: 'waiting' }
