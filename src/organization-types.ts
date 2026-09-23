@@ -147,6 +147,7 @@ export type OrganizationTask = {
 export type OrganizationWeeklyReport = {
   content: string
   memberName: string
+  reportProfile: WeeklyReportProfile | null
   status: 'draft' | 'submitted'
   submittedAt?: string
   updatedAt: string
@@ -157,6 +158,8 @@ export type OrganizationWeeklyReport = {
 export type OrganizationWeeklySummary = {
   content: string
   createdAt: string
+  staleAt: string | null
+  stale: boolean
   sourceReportCount: number
   weekStart: string
 }
@@ -207,6 +210,7 @@ export type PersonalWeeklyReportList = {
 export type WeeklyReportCollectionMember = {
   sourceSnapshots: WeeklyReportSourceSnapshot[]
   reportProfile: WeeklyReportProfile | null
+  profile: WeeklyReportProfile | null
   progressSummary: WeeklyReportProgressSummary | null
   content: string
   feishuBound: boolean

@@ -90,6 +90,7 @@ import {
   WeeklyReportWorkbench,
   type WeeklyReportWorkbenchHandle,
 } from './weekly-report-workbench'
+import type { WeeklyReportProfile } from '../../shared/weekly-report-profile'
 import { BugShareDialog } from './bug-share-dialog'
 import { UserName } from './user-name'
 import {
@@ -667,6 +668,7 @@ type TestSpaceOrganizationGroup = {
 
 export function TestWorkbench({
   weeklyReportRef,
+  weeklyReportProfiles = ['tester'],
   navigationBusy = false,
   accountMenu,
   currentUserId,
@@ -676,6 +678,7 @@ export function TestWorkbench({
 }: {
   navigationBusy?: boolean
   weeklyReportRef?: { current: WeeklyReportWorkbenchHandle | null }
+  weeklyReportProfiles?: WeeklyReportProfile[]
   accountMenu: ReactNode
   currentUserId?: number
   projects: TestWorkbenchProjectOption[]
@@ -1434,6 +1437,7 @@ export function TestWorkbench({
               <WeeklyReportWorkbench
                 navigationBusy={navigationBusy}
                 activeProfile="tester"
+                availableProfiles={weeklyReportProfiles}
                 ref={weeklyReportWorkbenchRef}
                 embedded
                 organizationId={activeWeeklyReportOrganizationId}

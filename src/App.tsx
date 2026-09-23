@@ -2073,7 +2073,7 @@ function App() {
     const targetOrganizationId = requestedWeeklyReport.organizationId
     if (!organizations.some((organization) => organization.id === targetOrganizationId)) {
       setWorkspaceError('周报链接已失效或你无权访问对应组织。')
-      setRequestedWeeklyReport({ organizationId: null, status: 'absent', weekStart: null })
+      setRequestedWeeklyReport({ organizationId: null, profile: null, status: 'absent', weekStart: null })
       setView('search')
       const search = removeWeeklyReportDeepLink(window.location.search)
       window.history.replaceState({}, '', `${window.location.pathname}${search}${window.location.hash}`)
@@ -5345,6 +5345,9 @@ ${packageTimelineText}`
         {changelogAnnouncementDialog}
         <TestWorkbench
           weeklyReportRef={weeklyReportWorkbenchRef}
+          weeklyReportProfiles={authUser.roles.includes('organization_admin')
+            ? ['developer', 'tester']
+            : authUser.roles.filter((role): role is 'developer' | 'tester' => role === 'developer' || role === 'tester')}
           navigationBusy={roleSelectionBusy}
           accountMenu={(
             <AccountMenu
@@ -6009,6 +6012,11 @@ ${packageTimelineText}`
           <WeeklyReportWorkbench
             navigationBusy={roleSelectionBusy}
             activeProfile={authUser?.activeRole === 'tester' ? 'tester' : 'developer'}
+            availableProfiles={authUser
+              ? authUser.roles.includes('organization_admin')
+                ? ['developer', 'tester']
+                : authUser.roles.filter((role): role is 'developer' | 'tester' => role === 'developer' || role === 'tester')
+              : []}
             ref={weeklyReportWorkbenchRef}
             initialOrganizationId={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.organizationId
@@ -6016,9 +6024,11 @@ ${packageTimelineText}`
             initialWeekStart={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.weekStart
               : null}
+            initialProfile={requestedWeeklyReport.status === 'valid' ? requestedWeeklyReport.profile : null}
             organizationId={selectedOrganizationId}
             onInitialContextConsumed={() => setRequestedWeeklyReport({
               organizationId: null,
+              profile: null,
               status: 'absent',
               weekStart: null,
             })}

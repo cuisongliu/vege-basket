@@ -836,6 +836,7 @@ async function getOrganizationDetail(
       content: string
       display_name: string
       email: string
+      report_profile: WeeklyReportProfile | null
       status: string
       submitted_at: Date | null
       updated_at: Date
@@ -843,7 +844,7 @@ async function getOrganizationDetail(
       week_start: Date | string
     }>(
       `
-      select r.user_id, r.week_start, r.content, r.status, r.updated_at, r.submitted_at,
+      select r.user_id, r.week_start, r.content, r.status, r.updated_at, r.submitted_at, r.report_profile,
         u.email, u.display_name
       from organization_weekly_reports r
       join users u on u.id = r.user_id
@@ -860,6 +861,7 @@ async function getOrganizationDetail(
         )
         or r.user_id = $3
       )
+        and r.deleted_at is null
       order by r.week_start desc, report_membership.weekly_report_sort_order asc nulls last,
         lower(coalesce(nullif(u.display_name, ''), u.email)), r.user_id
       limit 200
@@ -869,10 +871,12 @@ async function getOrganizationDetail(
     canManageWeeklyReports && includes('reports') ? detailQuery<{
       content: string
       created_at: Date
+      stale_at: Date | null
+      stale: boolean
       source_report_count: number
       week_start: Date | string
     }>(
-      `select week_start, content, source_report_count, created_at
+      `select week_start, content, source_report_count, created_at, stale, stale_at
        from organization_weekly_summaries where organization_id = $1
        order by week_start desc limit 12`,
       [organizationId],
@@ -1097,12 +1101,15 @@ async function getOrganizationDetail(
       submittedAt: report.submitted_at?.toISOString(),
       updatedAt: report.updated_at.toISOString(),
       userId: Number(report.user_id),
+      reportProfile: report.report_profile,
       weekStart: dateOnly(report.week_start),
     })),
     summaries: summaries.rows.map((summary) => ({
       content: decryptText(summary.content),
       createdAt: summary.created_at.toISOString(),
       sourceReportCount: summary.source_report_count,
+      stale: summary.stale,
+      staleAt: summary.stale_at?.toISOString() ?? null,
       weekStart: dateOnly(summary.week_start),
     })),
     testEnvironments: testEnvironments.rows.map((environment) => ({
@@ -3148,8 +3155,10 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
         and membership.status = 'active'
         and membership.weekly_report_required = true
        where r.organization_id = $1 and r.week_start = $2 and r.status = 'submitted'
+         and r.deleted_at is null
          and lower(u.email) <> 'admin'
-       order by lower(coalesce(nullif(u.display_name, ''), u.email))`,
+       order by lower(coalesce(nullif(u.display_name, ''), u.email)), r.user_id,
+         coalesce(revision.report_profile, r.report_profile)`,
       [organizationId, weekStart],
     )
     if (reports.rows.length === 0) {
@@ -3171,6 +3180,7 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
        on conflict (organization_id, week_start) do update
          set requested_by_user_id = excluded.requested_by_user_id,
            content = excluded.content, source_report_count = excluded.source_report_count,
+           stale = false, stale_at = null,
            updated_at = now()`,
       [organizationId, weekStart, session.userId, encryptText(generated.message), reports.rows.length],
     )

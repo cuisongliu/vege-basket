@@ -450,7 +450,7 @@ export function OrganizationWorkbench({
   const [backgroundRefreshVersion, setBackgroundRefreshVersion] = useState(0)
   const [weeklyReminderNotice, setWeeklyReminderNotice] = useState('')
   const [weeklyAdminTab, setWeeklyAdminTab] = useState<'collection' | 'summary' | 'rules'>('collection')
-  const [weeklyReadingUserId, setWeeklyReadingUserId] = useState<number | null>(null)
+  const [weeklyReadingKey, setWeeklyReadingKey] = useState<string | null>(null)
   const [selectedReportWeek, setSelectedReportWeek] = useState('')
   const weeklyRulesContext = useRef(0)
   const weeklyCollectionRequest = useRef({ version: 0 })
@@ -636,7 +636,7 @@ export function OrganizationWorkbench({
       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
       setWeeklyReportAssigneeUserIds(detail.weeklyReportAssigneeUserIds)
       setSelectedReportWeek('')
-      setWeeklyReadingUserId(null)
+      setWeeklyReadingKey(null)
       setWeeklyAdminTab('collection')
     }
   }, [detail])
@@ -859,7 +859,8 @@ export function OrganizationWorkbench({
     detail?.weeklyReportRules ?? defaultWeeklyReportRules,
   )
   const weekStart = selectedReportWeek || targetReportWeek
-  const weeklyReadingMember = weeklyCollection?.members.find(member => member.userId === weeklyReadingUserId && member.revision != null)
+  const weeklyMemberKey = (member: WeeklyReportCollection['members'][number]) => `${member.userId}:${member.profile ?? 'legacy'}`
+  const weeklyReadingMember = weeklyCollection?.members.find(member => weeklyMemberKey(member) === weeklyReadingKey && member.revision != null)
   const weeklyReportMemberCount = weeklyCollection?.members.length
     ?? detail?.members.filter((member) => (
       member.weeklyReportRequired && member.username.toLowerCase() !== 'admin'
@@ -871,6 +872,7 @@ export function OrganizationWorkbench({
   function collectionMemberRoles(member: WeeklyReportCollection['members'][number]) {
     if (member.reportProfile) return [member.reportProfile]
     if (member.revision != null) return []
+    if (member.profile) return [member.profile]
     return detail?.members.find(candidate => candidate.id === member.userId)?.roles.filter(role => role === 'developer' || role === 'tester') ?? []
   }
   const visibleWeeklyMembers = weeklyCollection?.members.filter(member => member.memberName.includes(reportMemberQuery)
@@ -946,13 +948,13 @@ export function OrganizationWorkbench({
     void loadWeeklyCollection()
   }, [backgroundRefreshVersion, loadWeeklyCollection, tab, weeklyCollectionRefresh])
 
-  async function remindWeeklyReportUsers(userIds: number[]) {
+  async function remindWeeklyReportUsers(userIds: number[], profile: WeeklyReportProfile) {
     if (!detail || userIds.length === 0) return
     setBusy(true)
     setError('')
     setWeeklyReminderNotice('')
     try {
-      const result = await remindWeeklyReportMembers(detail.id, weekStart, userIds)
+      const result = await remindWeeklyReportMembers(detail.id, weekStart, userIds, profile)
       setWeeklyReminderNotice([
         result.sent ? `已发送 ${result.sent} 人` : '',
         result.skipped ? `跳过 ${result.skipped} 人` : '',
@@ -964,6 +966,15 @@ export function OrganizationWorkbench({
     } finally {
       setBusy(false)
     }
+  }
+
+  async function remindVisibleWeeklyMembers(members: WeeklyReportCollection['members']) {
+    const targets = new Map<WeeklyReportProfile, number[]>()
+    for (const member of members) {
+      const profiles = collectionMemberRoles(member)
+      for (const profile of profiles) targets.set(profile, [...(targets.get(profile) ?? []), member.userId])
+    }
+    for (const [profile, userIds] of targets) await remindWeeklyReportUsers([...new Set(userIds)], profile)
   }
   const selectedDetail = detail?.id === selectedOrganizationId ? detail : null
   useEffect(() => {
@@ -1457,11 +1468,11 @@ export function OrganizationWorkbench({
                 <span>{formatWeekRange(weekStart)}</span>
               </div>
               <div className="organization-report-header-actions">
-                <Select value={weekStart} onValueChange={value => { setSelectedReportWeek(value); setWeeklyReadingUserId(null) }}>
+                <Select value={weekStart} onValueChange={value => { setSelectedReportWeek(value); setWeeklyReadingKey(null) }}>
                   <SelectTrigger aria-label="组织周报周期" disabled={busy}><CalendarBlank size={16} /><SelectValue /></SelectTrigger>
                   <SelectContent>{Array.from({ length: 12 }, (_, index) => shiftDateOnly(targetReportWeek, -index * 7)).map(value => <SelectItem value={value} key={value}>{formatWeekRange(value)}</SelectItem>)}</SelectContent>
                 </Select>
-                {weeklyReadingMember ? <Button variant="outline" onClick={() => { setWeeklyReadingUserId(null); setWeeklyAdminTab('collection') }}><ArrowLeft size={16} />返回收集列表</Button> : null}
+                {weeklyReadingMember ? <Button variant="outline" onClick={() => { setWeeklyReadingKey(null); setWeeklyAdminTab('collection') }}><ArrowLeft size={16} />返回收集列表</Button> : null}
               </div>
             </header>
             {detail.canManageWeeklyReports && !weeklyReadingMember ? <nav className="organization-weekly-report-tabs" aria-label="组织周报视图">
@@ -1638,11 +1649,11 @@ export function OrganizationWorkbench({
                         </footer>
                       </fieldset></form>
                 </section>
-                <aside className="wr-admin-aside"><h3>规则如何生效</h3><p>开发和测试分别使用自己的周报模板。</p><p>取消填写资格后，成员仍可阅读历史周报，不再计入收集和催交名单。</p><p>同一成员每个组织周只有一份周报。已选成员的排列顺序在保存后生效。</p></aside>
+                <aside className="wr-admin-aside"><h3>规则如何生效</h3><p>开发和测试分别使用自己的周报模板；双角色成员需分别提交两份周报。</p><p>取消填写资格后，成员仍可阅读历史周报，不再计入收集和催交名单。</p><p>已选成员的排列顺序在保存后生效。</p></aside>
               </div>
             ) : null}
             {detail.canManageWeeklyReports && weeklyReadingMember ? <div className="wr-admin-reading">
-              <aside className="wr-admin-members"><h3>已提交成员</h3>{weeklyCollection?.members.filter(member => member.revision != null).map(member => <button key={member.userId} type="button" aria-pressed={member.userId === weeklyReadingUserId} onClick={() => setWeeklyReadingUserId(member.userId)}><strong>{member.memberName}</strong><small>{member.reportProfile ? weeklyReportProfiles[member.reportProfile].label : '历史周报'} · 第 {member.revision} 版</small></button>)}</aside>
+              <aside className="wr-admin-members"><h3>已提交成员</h3>{weeklyCollection?.members.filter(member => member.revision != null).map(member => <button key={weeklyMemberKey(member)} type="button" aria-pressed={weeklyMemberKey(member) === weeklyReadingKey} onClick={() => setWeeklyReadingKey(weeklyMemberKey(member))}><strong>{member.memberName}</strong><small>{member.reportProfile ? weeklyReportProfiles[member.reportProfile].label : '历史周报'} · 第 {member.revision} 版</small></button>)}</aside>
               <article className="wr-admin-paper"><p className="wr-published-note">{weeklyReadingMember.state === 'modified' ? '该成员有未提交修改，以下为上次确认提交的版本。' : '以下为成员已确认提交的版本。'}</p><div className="wr-paper-title"><small>{detail.name} / 已提交周报</small><h2>{weeklyReadingMember.memberName}的{weeklyReadingMember.reportProfile ? weeklyReportProfiles[weeklyReadingMember.reportProfile].label : '周报'}</h2><p>{formatWeekRange(weekStart)} · 第 {weeklyReadingMember.revision} 版 · {formatDateTime(weeklyReadingMember.submittedAt)}</p></div><WeeklyReportReading content={weeklyReadingMember.content} sourceSnapshots={weeklyReadingMember.sourceSnapshots} published /></article>
             </div> : null}
             {detail.canManageWeeklyReports && !weeklyReadingMember ? (
@@ -1661,10 +1672,10 @@ export function OrganizationWorkbench({
                     disabled={busy || weeklyCollectionLoading || !weeklyCollection?.members.some((member) => member.revision == null)}
                     type="button"
                     variant="outline"
-                    onClick={() => void remindWeeklyReportUsers(
+                    onClick={() => void remindVisibleWeeklyMembers(
                       weeklyCollection?.members
                         .filter((member) => member.revision == null)
-                        .map((member) => member.userId) ?? [],
+                        ?? [],
                     )}
                   ><PaperPlaneTilt size={16} /> 提醒未提交成员</Button>
                 </div> : null}
@@ -1678,20 +1689,20 @@ export function OrganizationWorkbench({
                   {weeklyCollectionLoading && !weeklyCollection ? <EmptyRow text="正在加载周报收集状态..." /> : null}
                   <table className="wr-collection-table"><thead><tr><th>成员</th><th>职业身份</th><th>提交状态</th><th>任务平均进度</th><th>最近提交</th><th>操作</th></tr></thead><tbody>
                   {visibleWeeklyMembers.map((member) => (
-                    <tr key={member.userId}>
+                    <tr key={weeklyMemberKey(member)}>
                       <td><UserName departedUserIds={detail.departedUserIds} name={member.memberName} userId={member.userId} /></td>
                       <td>{member.reportProfile ? weeklyReportProfiles[member.reportProfile].label : member.revision ? '历史周报' : collectionMemberRoles(member).map(role => role === 'developer' ? '开发' : '测试').join(' / ') || '尚未确定'}</td>
                       <td><span className={`organization-weekly-state ${member.state}`}>{weeklyReportStateLabel[member.state]}</span></td>
                       <td><strong>{formatWeeklyReportPercent(member.progressSummary?.averagePercent ?? null)}</strong><small>{member.progressSummary ? `${member.progressSummary.taskCount} 项任务` : member.revision ? '历史周报无进度' : '尚未提交，不计入'}</small>{member.progressSummary ? <progress max={100} value={member.progressSummary.averagePercent ?? 0} /> : null}</td>
                       <td>{formatDateTime(member.submittedAt)}<small>{member.revision ? `第 ${member.revision} 版` : '尚未提交'}</small></td>
-                      <td>{member.revision != null ? <Button variant="ghost" size="sm" onClick={() => setWeeklyReadingUserId(member.userId)}>阅读周报</Button> : (
+                      <td>{member.revision != null ? <Button variant="ghost" size="sm" onClick={() => setWeeklyReadingKey(weeklyMemberKey(member))}>阅读周报</Button> : (
                         <Button
                           disabled={busy || !member.feishuBound}
                           size="sm"
                           title={member.feishuBound ? '发送飞书私信提醒' : '该成员未绑定飞书'}
                           type="button"
                           variant="outline"
-                          onClick={() => void remindWeeklyReportUsers([member.userId])}
+                          onClick={() => void remindVisibleWeeklyMembers([member])}
                         >{member.feishuBound ? '提醒填写' : '未绑定飞书'}</Button>
                       )}</td>
                     </tr>
@@ -1709,11 +1720,12 @@ export function OrganizationWorkbench({
                 <div className="wr-paper-title"><small>{detail.name} / 已提交周报汇总</small><h2>本周组织工作汇总</h2><p>{formatWeekRange(weekStart)}{currentSummary ? ` · 基于 ${currentSummary.sourceReportCount} 份提交版本 · ${formatDateTime(currentSummary.createdAt)}` : ''}</p></div>
               {currentSummary ? (
                 <div className="organization-summary-content">
+                  {currentSummary.stale ? <p className="wr-published-note" role="status">来源周报已于 {formatDateTime(currentSummary.staleAt)} 撤回，此汇总为历史快照，请重新生成当前汇总。</p> : null}
                   <MarkdownPreview content={currentSummary.content} />
                 </div>
               ) : <EmptyRow text="本周暂无组织周报汇总" />}
               </div>
-              <aside className="wr-admin-aside"><h3>汇总范围</h3><p>当前已提交 {weeklyCollection?.members.filter(member => member.revision != null).length ?? 0} / {weeklyReportMemberCount} 份</p><p>草稿及未提交修改不参与。执行记录按成员分别呈现，不直接累加可能重复的用例数。</p><Button disabled={busy || weeklyCollectionLoading || !weeklyCollection?.members.some(member => member.revision != null)} onClick={() => void mutate(() => generateOrganizationWeeklySummary(detail.id, weekStart))}><Sparkle size={16} />{currentSummary ? '重新生成' : '生成组织汇总'}</Button><h3>已提交来源</h3>{weeklyCollection?.members.filter(member => member.revision != null).map(member => <Button key={member.userId} variant="ghost" onClick={() => setWeeklyReadingUserId(member.userId)}>{member.memberName} · 第 {member.revision} 版</Button>)}</aside>
+              <aside className="wr-admin-aside"><h3>汇总范围</h3><p>当前已提交 {weeklyCollection?.members.filter(member => member.revision != null).length ?? 0} / {weeklyReportMemberCount} 份</p><p>草稿及未提交修改不参与。执行记录按成员分别呈现，不直接累加可能重复的用例数。</p><Button disabled={busy || weeklyCollectionLoading || !weeklyCollection?.members.some(member => member.revision != null)} onClick={() => void mutate(() => generateOrganizationWeeklySummary(detail.id, weekStart))}><Sparkle size={16} />{currentSummary ? currentSummary.stale ? '重新生成过期汇总' : '重新生成' : '生成组织汇总'}</Button><h3>已提交来源</h3>{weeklyCollection?.members.filter(member => member.revision != null).map(member => <Button key={weeklyMemberKey(member)} variant="ghost" onClick={() => setWeeklyReadingKey(weeklyMemberKey(member))}>{member.memberName} · {member.reportProfile ? weeklyReportProfiles[member.reportProfile].label : '历史周报'} · 第 {member.revision} 版</Button>)}</aside>
             </div> : null}
           </section>
         ) : null}

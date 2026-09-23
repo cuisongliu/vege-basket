@@ -265,11 +265,11 @@ case/weekly-report pagination remain unchanged.
   `expectedVersion`, `sourceMode`, `sources`, and optional `itemSources` (`itemIndex` plus canonical
   source references). Item references must belong to `sources`; client statistics are discarded.
   Detail returns `itemSources`, `publishedSourceSnapshots`, `organizationName`, and `authorName`;
-  organization collection returns only published `sourceSnapshots`. `convertLegacy: true` explicitly converts a strictly
-  recognizable legacy report and fixes its persona. New reports always use the active developer/tester
-  persona. The legacy `PUT /api/organizations/:organizationId/weekly-reports/:weekStart` returns 410.
-  The browser uses the task form for all new reports. Legacy content is read-only with an
-  explicit conversion preview; it never reopens the old free-form editor. Authorized legacy
+  organization collection returns only published `sourceSnapshots`. The `profile` field explicitly
+  selects the developer/tester persona. New reports use the selected persona; historical
+  null-profile rows remain read-only and are never assigned a guessed identity. The legacy
+  `PUT /api/organizations/:organizationId/weekly-reports/:weekStart` returns 410. The browser uses
+  the task form for all new reports and never reopens the old free-form editor. Authorized legacy
   cleanup is an explicit operator command documented in the runbook, not a startup migration.
 - Task progress is a nullable integer in drafts and required for submission. Status derives from exact
   percentages: 0 not started, 1–99 in progress, 100 complete. Reports retain raw percentage sums/counts
@@ -277,8 +277,11 @@ case/weekly-report pagination remain unchanged.
   are excluded from task averages, with coverage shown separately. No task update mutates source state.
 - Personal weekly-report state: `draft`, `submitted`, `modified`; the detail endpoint may
   additionally return `empty` before a draft exists. The personal index returns metadata only,
-  newest week first, with `limit` and `offset` pagination. One organization member has at most
-  one report record for each normalized organization week.
+  newest week first, with `limit` and `offset` pagination. A profile query/body field identifies
+  developer or tester reports; active uniqueness is `(organization, user, week, profile)`, allowing
+  dual-role members to keep both reports. `DELETE /api/weekly-reports/:organizationId/:weekStart?profile=developer|tester`
+  hard-deletes drafts and soft-deletes submitted reports only through the inclusive weekly deadline.
+  Submitted withdrawal marks the current organization summary stale; its historical snapshot remains.
 - Organization weekly-report collection omits the reserved `admin` username from member rows,
   submission counts, and reminder targets. Organization weekly-report managers configure a
   long-lived assignee set together with the reporting window. Membership defaults to requiring a
