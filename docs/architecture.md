@@ -102,8 +102,26 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   aggregate draft saves, one-way publication/completion transitions, encrypted timeline
   fields, document-level todo links, and Markdown export. Publication atomically replaces
   the draft's packages, documents, and document todo links, changes the event to `delivering`,
-  and makes document content and package structure read-only. Project members may continue
-  managing document todo links, their notes, and todo completion after publication.
+  and makes document content and package structure read-only. For organization projects,
+  only the assigned executor may manage execution links/notes and complete the event;
+  ordinary todo completion retains its separate authorization. Only unpublished plans may
+  be deleted through the timeline.
+- `shared/project-delivery.ts`, `server/project-delivery.ts`: independent project planning and
+  execution grants, per-event capabilities, transactional authorization, and reassignment audit.
+  `project_delivery_members` binds grants to project and organization. Configuration requires
+  the organization Owner/Admin membership and assigned `organization_admin` role; selected
+  active organization accounts must already own/belong to the project. Empty initial rosters
+  deny organization-project delivery writes. Drafts may be unassigned; publication requires an
+  eligible executor. Reassignment checks the expected previous executor and requires an encrypted
+  reason. Completion stores the actual actor and timestamp separately from creator and publisher.
+  Mutations lock organization catalog, project, then resources and recheck access. Participant
+  locks use NOWAIT to return 409 rather than invert the account-offboarding lock order.
+  Database triggers revoke grants on project/organization membership removal, account disabling,
+  and project organization changes; later re-admission never resurrects grants.
+- `src/components/project-delivery-members-panel.tsx`: inline organization-project roster editor,
+  searchable multiple-person selection and independent duty checkboxes. An expected roster rejects
+  stale replacements. Explicit read recovery preserves local edits and unrelated concurrent
+  changes; uncertain writes stay blocked until a read confirms the saved roster.
 - `server/package-market.ts`: OSS configuration, package rules, object-key allowlisting,
   object access, and signed download URLs.
 - `server/organization-package-market.ts`, `shared/organization-package-market.ts`:
@@ -380,10 +398,39 @@ Personal organization weekly reports use a separate draft-and-publish lifecycle.
 submitted report changes only its encrypted draft; organization management continues to read the
 latest immutable submitted revision until the member confirms another submission. AI generation
 uses only organization-scoped sources the current user may read and never submits a report
-automatically. A genuinely empty editor presents a shared two-item Markdown template; each item has
-the ordered `本周进展`, `风险问题`, and `下周计划` fields and is not persisted until the user changes
-the draft. AI generation uses the same item-based contract. Selected work sources insert at the active editor selection;
-when the selection is inside a heading, insertion occurs immediately below that heading.
+automatically. New reports fix a `developer` or `tester` profile on the first actual save,
+with one report per organization, user, and week. The stepwise form stores a versioned Markdown
+string in the existing encrypted content columns: items contain multiple named tasks, progress
+notes, and nullable draft percentages. Integer percentages derive task state; submitted tasks must
+have a name, note, and 0–100 percentage. Personal and organization progress sums every task before
+dividing by the task count (including zero), never averages item/member averages. This progress is
+independent of real todo/Bug state and test execution/pass rates. Administrators read only immutable
+submitted revisions and group them by the saved profile. Blank placeholder rows are omitted from
+published content. Old Markdown stays editable as raw content; strictly recognizable legacy templates
+may be explicitly previewed and converted, with cancellation before the profile is fixed. Existing
+submitted revisions remain unchanged. The former unversioned organization report PUT returns 410.
+
+`shared/weekly-report-document.ts` owns lossless field quoting, parsing, validation, and progress;
+`shared/weekly-report-profile.ts` owns persona/source contracts. `server/weekly-report-sources.ts`
+filters authorization, Shanghai week intervals `[start, nextStart)`, and source eligibility before
+candidate limits. Testers receive only authorized test plans and Bugs; developers receive project
+work and their assigned Bugs (plus the existing organization-admin read scope). Bug candidates must
+currently be `in_progress` or `closed`, supported by an overlapping repair interval or latest closure
+within the report period. Test-plan statistics count the user's retained latest executed case records
+within the period, not an event history. Candidate limits are explicit; submitted references are checked
+by ID independently of those limits. New references and AI inputs require period eligibility; existing
+draft references retain text while access is rechecked, and submission revalidates all new-format refs.
+Canonical Bug/plan rows are locked before the final eligibility check and revision write. Task/source
+edits freeze while leaving, generating, or submitting; failed saves retain the editor and draft.
+
+Item/source bindings are stored separately from Markdown in encrypted `draft_item_sources`.
+Submission revalidates all references and writes encrypted `source_snapshots` in the same revision
+transaction. Snapshots contain canonical plan metadata and personal period execution counts, with
+indices remapped after blank items are removed. They omit detailed execution records and never
+read live counts when displaying a published revision. Historical null snapshots remain empty.
+The personal preview and administrator reader share the same read-only renderer. Organization
+collection, summary, and rules are separate page tabs; rules retain member ordering and search.
+
 Organization collection and reminder actions require both owner/admin organization
 membership and the additive `organization_admin` role.
 The membership row also stores the organization's long-lived weekly-report assignment. Rule
@@ -532,7 +579,14 @@ The schema is normalized around these groups:
   Test subjects describe the tested object itself and record their creator; only that
   creator may delete the subject and its cascading test data. Test plans may optionally
   link to an accessible project after project access is checked, and also record their
-  creator. Only that creator may edit plan metadata, change the selected test-subject
+  creator. Plan-case execution is append-only: each record keeps encrypted actual-result
+  text and notes, the executing user and timestamp, while the plan-case row remains the
+  latest-result projection for existing clients. Execution screenshots are private OSS
+  objects under a dedicated signed prefix, limited to six images and 30 MiB total per
+  record; the per-image limit follows the platform storage upload setting. Authorized
+  workbench reads expose signed URLs, and failed-case Bug creation carries the latest
+  execution evidence. Only that creator
+  may edit plan metadata, change the selected test-subject
   scope, append current active cases as new immutable snapshots, remove an unexecuted
   snapshot, or delete the plan. Test cases use hierarchical directories; the former
   baseline/archiving concept has been removed. Deleting a plan

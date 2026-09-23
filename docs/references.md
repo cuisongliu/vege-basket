@@ -186,9 +186,10 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 | Platform management | `/api/admin/platform-config`, config test/history/restore/runtime routes, `/api/admin/users`, `POST /api/admin/users/:userId/feishu-name-sync`, platform grants, and platform organization create/delete routes require a platform administrator. The name-sync route accepts no caller-supplied name and rejects the built-in `admin`. |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |
 | Organizations | `/api/organizations/*`, system-admin organization creation, owner/admin organization rename, week-start setting and confirmed deletion, direct member admission, expiring `/api/organization-invite-links/*` browser links, legacy Feishu invitations, resource attachment, organization-admin project governance, test-environment `POST/PATCH/DELETE /api/organizations/:organizationId/test-environments(/:environmentId)`, direct organization-member admission to organization projects without invite notifications, milestones including inline `PATCH .../milestones/:milestoneId/status`, task overview, weekly reports, weekly summaries, and the dedicated package-market catalog/policy settings Tab |
+| Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, persona-specific item/task forms and v3 Markdown AI templates, source insertion into an item or field, versioned draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Organization project modules | `POST /api/organizations/:organizationId/project-modules` with `{ name }`; `PATCH .../project-modules/:moduleId` with nonempty `{ name?, enabled? }`; returns `OrganizationDetail` (201/200). Requires `organization_admin` and active organization owner/admin. Names trim to 1–40 characters, exact case-sensitive uniqueness including disabled names. Invalid input 400; permission change 403; missing nested resource 404; duplicate/legacy rename collision 409. |
-| Personal weekly reports | paginated `GET /api/weekly-reports/:organizationId`, `GET /api/weekly-reports/:organizationId/:weekStart`, the shared four-section editor/AI template, cursor-position source insertion, draft save, AI generation, and submit routes under `/api/weekly-reports/*` |
 | Test workbench | `GET /api/test-workbench` supports optional `sections=core,cases,plans,bugs,notifications`, active `spaceId`, case/plan `subjectId`, and single-Bug `bugId` scopes; `bugId` and `subjectId` require `spaceId`, while omitting `sections` preserves the complete legacy response. The lightweight `core` space metadata includes `caseCount`, `planCount`, and `bugCount`, so navigation counts do not require loading entity sections. Also includes owner-or-organization-manager administered `/api/test-spaces/*` with optional organization assignment on create/update, direct-member owner-or-Bug-creator `PATCH /api/test-spaces/:spaceId/version`, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, executions, creator-only `DELETE /api/test-spaces/:spaceId/bugs/:bugId`, environment-bound Bugs, comments, and author-owned comment edits/deletions |
+| Test workbench | `GET /api/test-workbench` supports optional `sections=core,cases,plans,bugs,notifications`, active `spaceId`, case/plan `subjectId`, and single-Bug `bugId` scopes; `bugId` and `subjectId` require `spaceId`, while omitting `sections` preserves the complete legacy response. The lightweight `core` space metadata includes `caseCount`, `planCount`, and `bugCount`, so navigation counts do not require loading entity sections. Also includes owner-or-organization-manager administered `/api/test-spaces/*` with optional organization assignment on create/update, direct-member owner-or-Bug-creator `PATCH /api/test-spaces/:spaceId/version`, creator-owned test-subject deletion, editor-managed case folders, tester-managed cases including creator-only `DELETE /api/test-spaces/:spaceId/cases/:caseId`, CSV case preview/import, creator-managed plan details/cases/deletion, append-only `POST /api/test-spaces/:spaceId/plan-cases/:planCaseId/executions` records with encrypted actual results, notes and up to six execution screenshots, creator-only `DELETE /api/test-spaces/:spaceId/bugs/:bugId`, environment-bound Bugs, comments, and author-owned comment edits/deletions. `GET /api/test-workbench` returns the effective per-image execution limit from platform storage configuration; `POST /api/test-plan-images` accepts tester-authenticated PNG/JPEG/WebP/GIF uploads up to that limit and returns a signed private URL used by execution records; signed `GET /api/test-plan-images` serves those objects. |
 | Test-space collaboration | `GET /api/test-spaces/settings`, `POST /api/test-spaces/:spaceId/members` direct admission, username invitations, member access updates, pending invitation acceptance, and expiring `/api/test-space-invite-links/*` share links |
 | Assigned bugs | `GET/PATCH /api/test-bugs/*/assigned`, `POST /api/test-bugs/:bugId/assigned/transfer`, `POST /api/test-bugs/:bugId/assigned/reject` (mandatory reason, records an immutable `reject` comment and notifies the reporting tester by personal Feishu message), organization-admin assignment of unassigned Bugs with a direct Feishu notification to the new assignee, assigned-bug comments, and author-owned assigned-comment edits/deletions for the active developer role |
 
@@ -209,6 +210,36 @@ New selections and AI confirmation reject unavailable modules with 409 `PROJECT_
 updates may retain the locked todo's unchanged historical module or clear it. Personal module
 create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANAGED_BY_ORGANIZATION`.
 
+### Workbench pagination
+
+`GET /api/my-work` accepts `cursor` (non-negative offset), `limit` (1–50),
+`kind`, `projectId`, `creator`, `q`, `status`, `sort`, and `due`.
+`due` is one of `overdue`, `today`, `this_week`, `later`, or `unscheduled`;
+`this_week` is the remaining days after today through Sunday, matching the date
+filter's mutually exclusive buckets. Omit it for all dates.
+
+The response includes `items`, `total` (all matching date-filtered records),
+`offset` (the effective offset, clamped after removals), optional `nextCursor`,
+`summary` (before the date filter), and `filterOptions.creators/statuses` from
+all matching records before date filtering and pagination. No 500-row truncation
+is applied. The existing authorized query runs in a read-only cursor transaction,
+fetching 200 rows at a time; encrypted keyword matching still scans the authorized
+result, so the bounded batch size does not imply constant-time queries.
+Only the requested page, trailing fallback page, counts, and distinct filter values
+are retained. Read failures roll back; rollback failures discard the connection.
+
+The project basket shows eight projects per page and displays pagination only when
+the filtered result exceeds eight. Search, status, tag, user, and organization changes
+reset its page; opening a project and returning preserves its page and scroll position.
+Bug lists and My Work default to 20 rows with a 50-row option. Project todo cards
+retain their adaptive page size and share the range/previous/next controls.
+My Work remembers filters, page size, page, and list scroll position in App memory,
+scoped to the user and organization and cleared on logout. Failed page requests
+keep the last successful records and disable pagination until retry or a new filter
+succeeds. Bug detail links reveal their selected page; removing the last record on
+a page falls back to the preceding valid page. Existing chat/history loading and
+case/weekly-report pagination remain unchanged.
+
 ## Data And Status Contracts
 
 - Project status: `active`, `paused`, `completed`, `archived`.
@@ -226,6 +257,24 @@ create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANA
 - Daily digest run: `pending`, `processing`, `retry`, `sent`, `failed`, `skipped`.
 - Image sync run: `dispatching`, `queued`, `in_progress`, `completed`, `failed`; GitHub's terminal result remains in the separate `conclusion` field. A server-generated `dispatch_key` is sent as workflow `request_id` and appears only in the GitHub run name for reconciliation; an uncertain dispatch stays `dispatching` until its run is found or the five-minute window expires.
 - Image sync filtering maps `completed/success` to success, active statuses to running, and every other terminal state to failure. Successful DTOs expose tar and MD5 `oss://` URIs derived from the server-side bucket, GitHub Run UTC date, image safe base, and architecture; these are object identifiers rather than signed public download URLs.
+- Weekly-report detail exposes `reportProfile`, `activeProfile`, `allowedSourceKinds`, `readOnlyReason`,
+  `progressSummary`, and `publishedProgressSummary`. Source results include per-kind `truncated`,
+  `period.start/endExclusive`, `matchedDate`, and `matchReason`. Project sources use `projectId`;
+  Bug/test-plan sources use `testSpaceId`. Source identities and parent IDs are validated on the server.
+- `PUT /api/weekly-reports/:organizationId/:weekStart/draft` accepts the existing Markdown `content`,
+  `expectedVersion`, `sourceMode`, `sources`, and optional `itemSources` (`itemIndex` plus canonical
+  source references). Item references must belong to `sources`; client statistics are discarded.
+  Detail returns `itemSources`, `publishedSourceSnapshots`, `organizationName`, and `authorName`;
+  organization collection returns only published `sourceSnapshots`. `convertLegacy: true` explicitly converts a strictly
+  recognizable legacy report and fixes its persona. New reports always use the active developer/tester
+  persona. The legacy `PUT /api/organizations/:organizationId/weekly-reports/:weekStart` returns 410.
+  The browser uses the task form for all new reports. Legacy content is read-only with an
+  explicit conversion preview; it never reopens the old free-form editor. Authorized legacy
+  cleanup is an explicit operator command documented in the runbook, not a startup migration.
+- Task progress is a nullable integer in drafts and required for submission. Status derives from exact
+  percentages: 0 not started, 1–99 in progress, 100 complete. Reports retain raw percentage sums/counts
+  for aggregation and display the task average to one decimal. Historical reports without task records
+  are excluded from task averages, with coverage shown separately. No task update mutates source state.
 - Personal weekly-report state: `draft`, `submitted`, `modified`; the detail endpoint may
   additionally return `empty` before a draft exists. The personal index returns metadata only,
   newest week first, with `limit` and `offset` pagination. One organization member has at most
@@ -417,6 +466,18 @@ create/delete routes reject organization projects with 409 `PROJECT_MODULES_MANA
   for linked cases without a folder and `unlinked` for legacy Bugs without a case.
   Returning a Bug to `pending_confirmation` replaces the former `reopened` status, and marking a
   duplicate Bug closes it instead of using a separate `duplicate` status.
+- Bug discovery difficulty (`discoveryDifficulty`): `high`, `medium`, `low`, independent of
+  severity and priority. Creating a Bug requires an explicit value; the form starts with an
+  unselected placeholder, which is not a stored fourth level. Existing Bugs are initialized
+  to `medium` once by the column migration, not treated as individually assessed.
+  `discoveryDifficultyReason` is optional for low/medium and required for high, trimmed and
+  limited to 1,000 characters. It describes necessary trigger conditions or observation methods.
+  Non-empty reasons are encrypted at rest; `db:encrypt-existing` covers legacy plaintext.
+  Only the reporting creator with existing tester/editor access may edit these detail fields.
+  PATCH omission preserves the locked current value; explicit null/invalid values are rejected.
+  Both workbenches expose the level in lists/details and equality/inequality filters; reasons
+  are returned with Bug details, not lightweight tester list rows. See
+  [the discovery difficulty rubric](bug-discovery-difficulty.md) for assessment examples.
 - Bug deletion requires the active tester persona, direct active membership in its test
   space, and the reporting creator identity. It cascades comments, event timeline rows, and
   share links; delivery rows that do not have foreign keys are explicitly removed in the
@@ -716,3 +777,25 @@ canonical header order above, emit the organization module name in `所属模块
 complete reversible path in `用例目录`. Canonical exports intentionally omit custom tags. The case list can
 export either every case in the active directory/search/type/priority filter or the explicitly
 selected cases across pages.
+
+## Project delivery personnel and permissions
+
+Organization managers use `GET/PUT /api/organizations/:organizationId/projects/:projectId/delivery-members`.
+PUT accepts `{ members, expectedMembers }`, each entry `{ userId, canPlan, canExecute }`. Multiple people
+and dual duties are supported; every entry needs at least one duty. GET returns current members and active
+organization candidates with `projectMember` eligibility. Stale configurations, locked accounts, or removing
+an executor with unfinished assigned work return 409. No implicit project membership is granted.
+
+`POST /api/projects/:projectId/package-timeline/events/:eventId/reassign` accepts
+`{ assigneeUserId, previousAssigneeUserId, reason }`. Planning permission and a published unfinished event
+are required; reason is 1–1000 characters. The previous assignee is checked atomically and the target must
+retain execution permission. Completion uses the existing `/complete` route and records the actual actor.
+
+Timeline DTOs include `canPlanDelivery`, `deliveryMembers`, and event `capabilities` (`canEditPlan`,
+`canPublish`, `canReassign`, `canExecute`, `canComplete`, `canComment`). Creator, publisher and executor names
+are distinct; completion adds `completedByUserId`, `completedByName`, and `completedAt`. Draft aggregate
+requests accept `assigneeUserId: null`; publication requires an active executor. Owners/admins do not bypass
+organization-project grants. Feedback writes require planning permission or the assigned executor's
+permission; edits/deletion additionally require authorship. Published content stays immutable; execution
+links/notes require the current executor. Todo completion retains its own authorization. Ordinary todo-note
+PATCH also checks delivery permission when `source_operation_id` is present.

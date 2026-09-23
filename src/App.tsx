@@ -1,3 +1,7 @@
+import { clampListPage } from './list-pagination'
+import { reassignProjectPackageEvent } from './api'
+import type { MyWorkViewState } from './my-work-types'
+import { ListPagination } from './components/list-pagination'
 import {
   Component,
   useCallback,
@@ -1760,8 +1764,12 @@ function todoDetailWorkspace(todo: Todo): WorkspaceData {
 }
 
 function App() {
+  const [myWorkViewState, setMyWorkViewState] = useState<MyWorkViewState>()
+  const [projectBasketPage, setProjectBasketPage] = useState({ scope: '', page: 0 })
+  const projectBasketScrollRef = useRef({ scope: '', page: 0, top: 0 })
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
   const [loggedIn, setLoggedIn] = useState(Boolean(getAuthToken()))
+  useEffect(() => { if (!loggedIn) setMyWorkViewState(undefined) }, [loggedIn])
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus>()
   const authUserId = authUser?.id
@@ -1883,6 +1891,11 @@ function App() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [tagFilter, setTagFilter] = useState('全部')
+  const projectBasketScope = JSON.stringify([authUserId, selectedOrganizationId, search, statusFilter, tagFilter])
+  useEffect(() => {
+    setProjectBasketPage({ scope: projectBasketScope, page: 0 })
+    projectBasketScrollRef.current = { scope: projectBasketScope, page: 0, top: 0 }
+  }, [projectBasketScope])
   const [aiHistory, dispatchAiHistory] = useReducer(
     aiConversationHistoryReducer,
     GENERAL_AI_CONVERSATION_CONTEXT,
@@ -3523,6 +3536,7 @@ function App() {
       return
     }
 
+    if (!(await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true)) return
     const roleLandingView = targetView ?? getRoleLandingView(role)
     if (authUser.activeRole === role) {
       setRoleSelectionOpen(false)
@@ -4075,6 +4089,19 @@ function App() {
         : '交付事件草稿保存失败，请稍后再试。')
       return null
     }
+  }
+
+  async function reassignInstallEvent(eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) {
+    if (!selectedProject) return false
+    const timeline = await reconcileAction(
+      () => reassignProjectPackageEvent(selectedProject.id, eventId, payload),
+      () => fetchProjectPackageTimeline(selectedProject.id),
+      data => data.events.some(event => event.id === eventId && event.assigneeUserId === payload.assigneeUserId),
+    )
+    if (confirmationScopeRef.current !== confirmationScope) return false
+    setProjectPackageTimelines(current => ({ ...current, [selectedProject.id]: timeline }))
+    void refreshNotifications()
+    return true
   }
 
   async function completeInstallEvent(eventId: number) {
@@ -5237,6 +5264,8 @@ ${packageTimelineText}`
         {roleSelectionDialog}
         {changelogAnnouncementDialog}
         <TestWorkbench
+          weeklyReportRef={weeklyReportWorkbenchRef}
+          navigationBusy={roleSelectionBusy}
           accountMenu={(
             <AccountMenu
               activeView={view}
@@ -5674,6 +5703,7 @@ ${packageTimelineText}`
             projectDetailTab={projectDetailTab}
             onAddTodo={addTodo}
             onAddInstallEventComment={addInstallEventComment}
+            onReassignInstallEvent={reassignInstallEvent}
             onCompleteInstallEvent={completeInstallEvent}
             onCreateInstallOperation={createInstallOperation}
             onDeleteInstallEvent={deleteInstallEvent}
@@ -5762,7 +5792,10 @@ ${packageTimelineText}`
 
         {view === 'my_work' && (
           <MyWorkWorkbench
-            key={selectedOrganizationId ?? 'personal'}
+            key={`${authUserId}:${selectedOrganizationId}`}
+            scope={`${authUserId}:${selectedOrganizationId}`}
+            savedView={myWorkViewState}
+            onViewChange={setMyWorkViewState}
             organizationId={selectedOrganizationId}
             projects={scopedProjects}
             onTodoClick={selectMyWorkTodo}
@@ -5786,6 +5819,10 @@ ${packageTimelineText}`
 
         {view === 'search' && (
           <SearchView
+            page={projectBasketPage.scope === projectBasketScope ? projectBasketPage.page : 0}
+            onPageChange={(page) => setProjectBasketPage({ scope: projectBasketScope, page })}
+            paginationScope={projectBasketScope}
+            scrollPositionRef={projectBasketScrollRef}
             allTags={allTags}
             filteredResults={filteredResults}
             search={search}
@@ -5848,6 +5885,8 @@ ${packageTimelineText}`
 
         {view === 'weekly_report' ? (
           <WeeklyReportWorkbench
+            navigationBusy={roleSelectionBusy}
+            activeProfile={authUser?.activeRole === 'tester' ? 'tester' : 'developer'}
             ref={weeklyReportWorkbenchRef}
             initialOrganizationId={requestedWeeklyReport.status === 'valid'
               ? requestedWeeklyReport.organizationId
@@ -6526,6 +6565,7 @@ function ProjectDetail({
   projectDetailTab,
   onAddTodo,
   onAddInstallEventComment,
+  onReassignInstallEvent,
   onCompleteInstallEvent,
   onCreateInstallOperation,
   onDeleteInstallEvent,
@@ -6593,6 +6633,7 @@ function ProjectDetail({
   projectDetailTab: ProjectDetailTab
   onAddTodo: (projectId: number) => void | Promise<void>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
+  onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
   onCompleteInstallEvent: (eventId: number) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
@@ -6846,6 +6887,7 @@ function ProjectDetail({
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
             onAddEventComment={onAddInstallEventComment}
+            onReassignEvent={onReassignInstallEvent}
             onCompleteEvent={onCompleteInstallEvent}
             onCreateOperation={onCreateInstallOperation}
             onDeleteEvent={onDeleteInstallEvent}
@@ -9088,7 +9130,13 @@ function ArchiveControl({
   )
 }
 
+const projectBasketPageSize = 8
+
 function SearchView({
+  page,
+  onPageChange,
+  paginationScope,
+  scrollPositionRef,
   allTags,
   exportMarkdown,
   filteredResults,
@@ -9105,6 +9153,10 @@ function SearchView({
   statusFilter,
   tagFilter,
 }: {
+  page: number
+  onPageChange: (page: number) => void
+  paginationScope: string
+  scrollPositionRef: RefObject<{ scope: string; page: number; top: number }>
   allTags: string[]
   exportMarkdown: (projectId?: number) => Promise<void>
   filteredResults: Project[]
@@ -9121,6 +9173,26 @@ function SearchView({
   statusFilter: ProjectStatus | 'all'
   tagFilter: string
 }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const safePage = clampListPage(page, filteredResults.length, projectBasketPageSize)
+  const visibleProjects = filteredResults.slice(safePage * projectBasketPageSize, (safePage + 1) * projectBasketPageSize)
+  useEffect(() => {
+    if (page !== safePage) onPageChange(safePage)
+  }, [onPageChange, page, safePage])
+  useLayoutEffect(() => {
+    const workspace = panelRef.current?.closest('.workspace')
+    const saved = scrollPositionRef.current
+    if (workspace) workspace.scrollTop = saved.scope === paginationScope && saved.page === safePage ? saved.top : 0
+  }, [paginationScope, safePage, scrollPositionRef])
+
+  function openProject(id: number) {
+    scrollPositionRef.current = {
+      scope: paginationScope, page: safePage,
+      top: panelRef.current?.closest('.workspace')?.scrollTop ?? 0,
+    }
+    onProjectClick(id)
+  }
+
   const [renamingProject, setRenamingProject] = useState<Project | null>(null)
   const [projectNameDraft, setProjectNameDraft] = useState('')
   const [editingDescriptionProject, setEditingDescriptionProject] = useState<Project | null>(null)
@@ -9246,7 +9318,7 @@ function SearchView({
   }
 
   return (
-    <Card className="panel search-panel">
+    <Card className="panel search-panel" ref={panelRef}>
       <div className="search-controls">
         <Label className="search-field">
           <span>关键词</span>
@@ -9294,9 +9366,9 @@ function SearchView({
         </Label>
       </div>
       <div className="search-results">
-        {filteredResults.map((project) => (
+        {visibleProjects.map((project) => (
           <article key={project.id} className="result-item">
-            <button className="result-main" type="button" onClick={() => onProjectClick(project.id)}>
+            <button className="result-main" type="button" onClick={() => openProject(project.id)}>
               <div>
                 <div className="result-meta-row">
                   <Badge className={`status-pill ${project.status}`}>
@@ -9351,6 +9423,13 @@ function SearchView({
           </article>
         ))}
       </div>
+      {filteredResults.length > projectBasketPageSize ? (
+        <ListPagination label="项目篮子分页" page={safePage} pageSize={projectBasketPageSize} total={filteredResults.length}
+          onPageChange={(next) => {
+            scrollPositionRef.current = { scope: paginationScope, page: next, top: 0 }
+            onPageChange(next)
+          }} />
+      ) : null}
       <Dialog
         open={Boolean(renamingProject)}
         onOpenChange={(open) => {
@@ -11580,17 +11659,19 @@ function TodoPropertiesPanel({
             onChange={updateWatchers}
           />
         </div>
-        <div className="todo-property-row">
-          <span>验收人</span>
-          <ProjectMemberPicker
-            disabled={!canEdit}
-            emptyLabel="待办创建人"
-            label="指定验收人"
-            members={members}
-            value={reviewerUserId}
-            onChange={updateReviewer}
-          />
-        </div>
+        {!project.organizationId ? (
+          <div className="todo-property-row">
+            <span>验收人</span>
+            <ProjectMemberPicker
+              disabled={!canEdit}
+              emptyLabel="待办创建人"
+              label="指定验收人"
+              members={members}
+              value={reviewerUserId}
+              onChange={updateReviewer}
+            />
+          </div>
+        ) : null}
         <div className="todo-property-row">
           <span>创建人</span>
           <strong>{creatorName}</strong>
@@ -11923,6 +12004,18 @@ function TodoEditorDialog({
                   onChange={onWatcherUserIdsChange}
                 />
               </Label>
+              {!project.organizationId ? (
+                <Label className="todo-inline-field-half">
+                  指定验收人
+                  <ProjectMemberPicker
+                    emptyLabel="待办创建人"
+                    label="指定验收人"
+                    members={members}
+                    value={reviewerUserId}
+                    onChange={onReviewerUserIdChange}
+                  />
+                </Label>
+              ) : null}
             </div>
             <div className="todo-editor-detail-field">
               <span className="todo-editor-field-label">待办详情</span>
@@ -12168,6 +12261,9 @@ function TodoList({
     ? null
     : todos.find((todo) => todo.id === initialTodoId) ?? null
   const [page, setPage] = useState(0)
+  const [listPageSize, setListPageSize] = useState(20)
+  const todoListRef = useRef<HTMLDivElement>(null)
+  const todoListScrollRef = useRef(0)
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
   const [subprojectFilter, setSubprojectFilter] = useState('all')
 	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
@@ -12297,11 +12393,10 @@ function TodoList({
       )
     })
   }, [sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery, subprojectFilter])
-  const totalPages = Math.max(1, Math.ceil(filteredTodos.length / itemsPerPage))
+  const pageSize = compact ? itemsPerPage : listPageSize
+  const totalPages = Math.max(1, Math.ceil(filteredTodos.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
-  const visibleTodos = compact
-    ? filteredTodos.slice(safePage * itemsPerPage, safePage * itemsPerPage + itemsPerPage)
-    : filteredTodos
+  const visibleTodos = filteredTodos.slice(safePage * pageSize, (safePage + 1) * pageSize)
   const activeFilterCount = todoFilterConditions.length
   const filterSummary = activeFilterCount > 0
     ? `已筛选 ${activeFilterCount} 条件`
@@ -12371,10 +12466,13 @@ function TodoList({
       todo.createdByUserId === currentUserId ||
       (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
     )
+    const canRespond = project?.organizationId
+      ? isTodoCreator || todo.assigneeUserId === currentUserId
+      : project?.accessRole === 'owner' || todo.assigneeUserId === currentUserId || todo.reviewerUserId === currentUserId
     return Boolean(
       currentUserId != null &&
       !project?.readOnly &&
-      (isTodoCreator || todo.assigneeUserId === currentUserId),
+      canRespond,
     )
   }
 
@@ -12388,9 +12486,11 @@ function TodoList({
       todo.createdByUserId === currentUserId ||
       (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
     )
-    return (
-      isTodoCreator
-    ) && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
+    const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
+    const canReview = project?.organizationId
+      ? isTodoCreator
+      : isTodoCreator || effectiveReviewerUserId === currentUserId
+    return canReview && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
   }
 
   function canUseTodoCheckbox(todo: Todo) {
@@ -12399,7 +12499,7 @@ function TodoList({
 
   useEffect(() => {
     setPage(0)
-  }, [todoFilterConditions, todoFilterJoin, todoSearchQuery])
+  }, [todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery, subprojectFilter, listPageSize])
 
   useEffect(() => {
     setPage((current) => Math.min(current, totalPages - 1))
@@ -12411,6 +12511,15 @@ function TodoList({
       onDetailModeChange?.(false)
     }
   }, [editingTodoId, onDetailModeChange])
+
+  useLayoutEffect(() => {
+    if (!editingTodoId && todoListRef.current) todoListRef.current.scrollTop = todoListScrollRef.current
+  }, [editingTodoId])
+
+  useLayoutEffect(() => {
+    todoListScrollRef.current = 0
+    if (todoListRef.current) todoListRef.current.scrollTop = 0
+  }, [safePage, pageSize, todoSearchQuery, todoFilterConditions, todoFilterJoin, subprojectFilter])
 
   function handleTodoCheckboxClick(todo: Todo) {
     if (canToggleTodoDone(todo)) {
@@ -12464,6 +12573,7 @@ function TodoList({
   }
 
   function openTodoEditDialog(todo: Todo) {
+    todoListScrollRef.current = todoListRef.current?.scrollTop ?? 0
     setEditingTodoId(todo.id)
     if (todo.detailsLoaded === false) {
       setLoadingTodoDetailId(todo.id)
@@ -12720,7 +12830,7 @@ function TodoList({
       ) : filteredTodos.length === 0 ? (
         <p className="empty-state">没有符合筛选条件的待办。</p>
       ) : (
-        <div className={compact ? 'todo-list compact' : 'todo-list'}>
+        <div className={compact ? 'todo-list compact' : 'todo-list paginated-todo-list'} ref={todoListRef}>
           {visibleTodos.map((todo) => {
             const project = projects.find((item) => item.id === todo.projectId)
             const rowCanManageTodo = canManageTodo(todo)
@@ -12872,15 +12982,7 @@ function TodoList({
           })}
         </div>
       )}
-      {compact && totalPages > 1 && (
-        <SidePager
-          label="待办翻页"
-          page={safePage}
-          totalPages={totalPages}
-          onPrevious={() => setPage((current) => Math.max(0, current - 1))}
-          onNext={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
-        />
-      )}
+      <ListPagination label="待办分页" page={safePage} pageSize={pageSize} total={filteredTodos.length} onPageChange={setPage} onPageSizeChange={compact ? undefined : setListPageSize} />
     </div>
   )
 }

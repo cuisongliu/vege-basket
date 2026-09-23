@@ -1,3 +1,5 @@
+import type { ProjectDeliveryMember } from '../shared/project-delivery'
+import type { WeeklyReportItemSources, WeeklyReportSourceResult } from '../shared/weekly-report-profile'
 import type {
   InboxItem,
   AiConversationContextKind,
@@ -67,7 +69,6 @@ import type {
   PersonalWeeklyReportList,
   WeeklyReportCollection,
   WeeklyReportRules,
-  WeeklyReportSourceCandidate,
   WeeklyReportSourceRef,
 } from './organization-types'
 import type { MyWorkData, MyWorkFilters } from './my-work-types'
@@ -260,6 +261,12 @@ export class AiTurnStreamTerminalError extends Error {
 export type TodoImageUploadResponse = {
   attachmentUrl?: string
   contentType?: string
+  imageUrl: string
+  objectKey: string
+}
+
+export type TestPlanExecutionImageUploadResponse = {
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
   imageUrl: string
   objectKey: string
 }
@@ -567,6 +574,7 @@ export function markAllNotificationsRead() {
 export function fetchMyWork(organizationId: OrganizationContext, filters: MyWorkFilters = {}) {
   const params = new URLSearchParams()
   params.set('organizationId', serializeOrganizationContext(organizationId))
+  if (filters.due) params.set('due', filters.due)
   if (filters.cursor) params.set('cursor', filters.cursor)
   if (filters.kind) params.set('kind', filters.kind)
   if (filters.projectId) params.set('projectId', String(filters.projectId))
@@ -1330,7 +1338,7 @@ export function fetchPersonalWeeklyReports(
 }
 
 export function fetchWeeklyReportSources(organizationId: number, weekStart: string) {
-  return request<{ sources: WeeklyReportSourceCandidate[] }>(
+  return request<WeeklyReportSourceResult>(
     `/api/weekly-reports/${organizationId}/${weekStart}/sources`,
   )
 }
@@ -1340,6 +1348,8 @@ export function savePersonalWeeklyReportDraft(
   weekStart: string,
   payload: {
     content: string
+    convertLegacy?: boolean
+    itemSources?: WeeklyReportItemSources[]
     expectedVersion: number
     sourceMode: 'ai' | 'manual'
     sources: WeeklyReportSourceRef[]
@@ -1609,6 +1619,30 @@ export async function uploadTodoImage(file: File) {
   }
 
   return response.json() as Promise<TodoImageUploadResponse>
+}
+
+export async function uploadTestPlanExecutionImage(file: File) {
+  const contentType = inferTodoAttachmentContentType(file)
+  if (!contentType.startsWith('image/')) throw new Error('执行截图仅支持图片文件。')
+  const response = await fetch('/api/test-plan-images', {
+    method: 'POST',
+    headers: {
+      'Content-Type': contentType,
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: file,
+  })
+  if (!response.ok) {
+    const fallbackMessage = `Request failed: ${response.status}`
+    let data: { error?: string }
+    try {
+      data = await response.json() as { error?: string }
+    } catch (error) {
+      throw new Error(fallbackMessage, { cause: error })
+    }
+    throw new Error(data.error || fallbackMessage)
+  }
+  return response.json() as Promise<TestPlanExecutionImageUploadResponse>
 }
 
 export const uploadWorkbenchAttachment = uploadTodoImage
@@ -2266,4 +2300,24 @@ export function fetchPackageMarketCiVersions(payload: {
   return request<{ versions: PackageMarketVersion[] }>(
     `/api/package-market/packages/${encodeURIComponent(payload.packageId)}/ci-versions?${params.toString()}`,
   )
+}
+
+export type ProjectDeliveryConfiguration = {
+  members: ProjectDeliveryMember[]
+  candidates: Array<{ id: number; name: string; username: string; projectMember: boolean }>
+}
+export function fetchProjectDeliveryConfiguration(organizationId: number, projectId: number) {
+  return request<ProjectDeliveryConfiguration>(`/api/organizations/${organizationId}/projects/${projectId}/delivery-members`)
+}
+export function saveProjectDeliveryConfiguration(organizationId: number, projectId: number, members: ProjectDeliveryMember[], expectedMembers: ProjectDeliveryMember[]) {
+  return request<ProjectDeliveryConfiguration>(`/api/organizations/${organizationId}/projects/${projectId}/delivery-members`, {
+    method: 'PUT', body: JSON.stringify({ members, expectedMembers }),
+  })
+}
+export function reassignProjectPackageEvent(projectId: number, eventId: number, payload: {
+  assigneeUserId: number; previousAssigneeUserId: number | null; reason: string
+}) {
+  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events/${eventId}/reassign`, {
+    method: 'POST', body: JSON.stringify(payload),
+  })
 }

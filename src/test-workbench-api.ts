@@ -1,3 +1,4 @@
+import type { BugDiscoveryDifficulty } from '../shared/bug-discovery-difficulty'
 import { request } from './api'
 import type {
   BugSeverity,
@@ -345,6 +346,7 @@ export function deleteTestPlan(spaceId: number, planId: number) {
 }
 
 export function updateTestPlanCase(spaceId: number, planCaseId: number, payload: {
+  clientId?: string
   result: TestResult
   resultNote?: string
 }) {
@@ -354,7 +356,27 @@ export function updateTestPlanCase(spaceId: number, planCaseId: number, payload:
   })
 }
 
+export function appendTestPlanExecution(spaceId: number, planCaseId: number, payload: {
+  actualResult?: string
+  clientId: string
+  images?: Array<{
+    contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+    fileName: string
+    fileSize: number
+    objectKey: string
+  }>
+  note?: string
+  result: TestResult
+}) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/plan-cases/${planCaseId}/executions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function createTestBug(spaceId: number, payload: {
+  discoveryDifficulty: BugDiscoveryDifficulty
+  discoveryDifficultyReason?: string
   actualResult: string
   assigneeUserId?: number
   environment: string
@@ -377,6 +399,8 @@ export function createTestBug(spaceId: number, payload: {
 }
 
 export function updateTestBug(spaceId: number, bugId: number, payload: {
+  discoveryDifficulty?: BugDiscoveryDifficulty
+  discoveryDifficultyReason?: string
   actualResult?: string
   assigneeUserId?: number
   environment?: string

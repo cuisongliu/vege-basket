@@ -143,6 +143,47 @@ existing database. Do not run the migration separately merely to repeat startup 
 
 ## Database Operations
 
+### Legacy Weekly-Report Cleanup
+
+After explicit authorization to delete historical-format weekly reports, inspect the
+configured database first (this command does not start the API or apply schema changes):
+
+```bash
+node --import tsx server/weekly-report-legacy-cleanup.ts --env-file /secure/path/runtime.env
+```
+
+Apply only with the inspected report count and a new private backup path:
+
+```bash
+node --import tsx server/weekly-report-legacy-cleanup.ts --env-file /secure/path/runtime.env \
+  --apply --expected-count 8 --backup /secure/path/weekly-reports.enc
+```
+
+The command locks report tables, rechecks the count, writes and flushes an encrypted
+0600 backup, then deletes only recognizable legacy reports with null profile metadata
+throughout their drafts and revisions. Older free-form Markdown revisions are included.
+Any v3/future marker, unrecognized current draft/content, or non-null profile preserves
+the whole report. Report revisions and source links cascade; linked
+tasks, Bugs, test plans and reminder history remain. Organization summaries for periods
+with removed submitted reports are invalidated in the same transaction. Retain the
+backup and its encryption key ring; do not commit either. A failed command requires a
+fresh inspection because a lost connection during commit can leave an uncertain result.
+This is an explicit operator action, never an automatic startup migration.
+
+### Bug Discovery Difficulty Migration
+
+`server/migrations/20260922_bug_discovery_difficulty.sql` and the corresponding startup
+schema (baseline `20260922_schema_v10`) add `test_bugs.discovery_difficulty` (`high`, `medium`, `low`, non-null, default
+`medium`) and `discovery_difficulty_reason`. Existing rows receive `medium` and an empty
+reason; rerunning the migration does not reset later assessments. The API requires an
+explicit level on creation despite the database compatibility default. Non-empty reasons
+are encrypted, and `npm run db:encrypt-existing` can encrypt legacy plaintext idempotently.
+
+Apply only with explicit database-write authorization, a pre-release snapshot and the complete
+key ring. App rollback can leave both additive columns in place; older code ignores them and
+its inserts receive `medium`. Retain these columns and encryption keys to preserve assessments
+for a subsequent upgrade. Do not drop the columns as part of an application rollback.
+
 ### Bug Case Association and Module Migration
 
 `server/migrations/20260914_test_workbench_modules_optional_bugs.sql` adds organization module
@@ -255,7 +296,17 @@ backup; it backfills rows whose object key has the canonical `/ci/<branch>/<hash
 leaves branchless middleware CI rows unchanged. The migration is idempotent and does not rewrite
 package object keys.
 
-The weekly-report assignee release adds
+The weekly-report snapshot release adds
+encrypted nullable `organization_weekly_reports.draft_item_sources` and
+`organization_weekly_report_revisions.source_snapshots`
+(`server/migrations/20260921_weekly_report_snapshots.sql`, automatic schema version
+`20260921_schema_v8`). Startup applies the additive migration. Existing reports keep null
+snapshots; never reconstruct historical counts from current execution results. Both columns
+participate in the idempotent `db:encrypt-existing` command for legacy plaintext values.
+Before rollout, retain a database snapshot and the complete encryption key ring. An application
+rollback may leave these nullable columns intact; it does not restore the database.
+
+The earlier weekly-report assignee release adds
 `organization_memberships.weekly_report_required`. Existing and future memberships default to
 requiring a report, while the reserved `admin` account is excluded. The application startup path
 applies the compatible addition idempotently; the matching forward-only migration remains the
@@ -536,3 +587,29 @@ constraint, migration or HTTP integration behavior.
 
 `npm test` supplies an inert loopback database URL only when the caller has not configured one.
 Pure tests import database-aware modules but do not start the API or issue queries.
+
+## Project delivery permissions rollout
+
+`server/migrations/20260922_project_delivery_permissions.sql` adds project delivery grants, completion
+attribution, and revocation triggers. `server/schema.ts` carries the same idempotent DDL and the startup
+migration receipt advances to `20260922_schema_v9`. No text backfill or new secret is required; reassignment
+reasons and audit details use the existing encryption key ring.
+
+Before an explicitly approved deployment, retain the database snapshot and complete encryption key ring.
+All existing organization-project rosters start empty. Plan a configuration window: organization managers
+must explicitly assign planning/execution duties before those projects can publish or complete deliveries.
+Existing assignees are historical responsibility, not an automatic permission grant. Projects moved to a
+new organization also require a new roster. Personal projects continue using direct membership authorization.
+
+Run `npm run build`, `npm run lint`, `npm test`, and `git diff --check` first. Only with explicit authorization
+for an isolated development PostgreSQL database, run `npm run test:resource-management` using the existing
+`VEGES_INTEGRATION_DATABASE_URL` opt-in. It includes manager-only configuration, multi-person and dual duties,
+unassigned drafts, assignment eligibility, old endpoint restrictions, transfer, actor attribution,
+feedback authorship, wrong-event IDs, stale roster rejection, and permanent revocation on re-admission.
+Also exercise configuration/offboarding and transfer/completion concurrency before production rollout.
+Browser checks with simulated HTTP responses verify interaction only, not database behavior.
+
+The schema additions preserve historical events. Application rollback can leave additive tables/columns
+in place, but an old image restores broad delivery write permissions and is not a safe permission rollback.
+Prefer a forward fix or maintenance window; restoring a snapshot loses subsequent writes. Do not start the
+API merely to verify these changes against a configured database: startup applies the schema.

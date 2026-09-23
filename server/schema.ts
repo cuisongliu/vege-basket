@@ -2049,6 +2049,53 @@ create table if not exists test_plan_cases (
   unique (id, test_plan_id)
 );
 
+create table if not exists test_plan_executions (
+  id bigserial primary key,
+  test_plan_case_id bigint not null references test_plan_cases(id) on delete cascade,
+  client_id uuid not null,
+  result text not null check (result in ('untested', 'passed', 'failed', 'blocked', 'skipped')),
+  actual_result text not null default '',
+  note text not null default '',
+  executed_by_user_id bigint references users(id) on delete set null,
+  executed_at timestamptz not null default now(),
+  unique (test_plan_case_id, client_id)
+);
+
+create table if not exists test_plan_execution_images (
+  id bigserial primary key,
+  execution_id bigint not null references test_plan_executions(id) on delete cascade,
+  object_key text not null,
+  file_name text not null default '',
+  content_type text not null check (content_type in ('image/jpeg', 'image/png', 'image/webp', 'image/gif')),
+  file_size bigint not null check (file_size > 0 and file_size <= 31457280),
+  unique (execution_id, object_key)
+);
+
+do $$
+begin
+  if exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'test_plan_execution_images'::regclass
+       and conname = 'test_plan_execution_images_file_size_check'
+       and pg_get_constraintdef(oid) not like '%31457280%'
+  ) then
+    alter table test_plan_execution_images
+      drop constraint test_plan_execution_images_file_size_check;
+  end if;
+
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'test_plan_execution_images'::regclass
+       and conname = 'test_plan_execution_images_file_size_check'
+  ) then
+    alter table test_plan_execution_images
+      add constraint test_plan_execution_images_file_size_check
+      check (file_size > 0 and file_size <= 31457280);
+  end if;
+end $$;
+
 alter table test_plan_cases
   add column if not exists test_subject_id bigint references test_subjects(id) on delete set null;
 
@@ -2088,6 +2135,12 @@ create table if not exists test_bugs (
   foreign key (test_plan_case_id, test_plan_id)
     references test_plan_cases(id, test_plan_id) on delete set null
 );
+
+-- Historical Bugs start at medium; new HTTP requests must select a level explicitly.
+alter table test_bugs
+  add column if not exists discovery_difficulty text not null default 'medium'
+    constraint test_bugs_discovery_difficulty_check check (discovery_difficulty in ('high', 'medium', 'low')),
+  add column if not exists discovery_difficulty_reason text not null default '';
 
 alter table test_bugs
   add column if not exists organization_module_id bigint
@@ -2643,6 +2696,10 @@ create index if not exists idx_test_plan_subjects_subject_id
   on test_plan_subjects(test_subject_id, test_plan_id);
 create index if not exists idx_test_plan_cases_plan_id
   on test_plan_cases(test_plan_id, id);
+create index if not exists idx_test_plan_executions_case_id
+  on test_plan_executions(test_plan_case_id, id);
+create index if not exists idx_test_plan_execution_images_execution_id
+  on test_plan_execution_images(execution_id, id);
 create index if not exists idx_test_bugs_space_status
   on test_bugs(test_space_id, status, updated_at desc);
 create index if not exists idx_test_bugs_assignee_id
@@ -2664,6 +2721,30 @@ create unique index if not exists idx_test_spaces_organization_version_lookup
   where organization_id is not null and version_label_lookup is not null;
 create index if not exists idx_test_bug_comments_bug_id
   on test_bug_comments(test_bug_id, created_at);
+-- Additive migration. Do not infer the occupational profile of historical reports.
+alter table organization_weekly_reports
+  add column if not exists draft_item_sources text;
+alter table organization_weekly_report_revisions
+  add column if not exists source_snapshots text;
+alter table organization_weekly_reports
+  add column if not exists report_profile text check (report_profile in ('developer', 'tester'));
+alter table organization_weekly_report_revisions
+  add column if not exists report_profile text check (report_profile in ('developer', 'tester'));
+create table if not exists organization_weekly_report_test_sources (
+  id bigserial primary key,
+  report_id bigint not null references organization_weekly_reports(id) on delete cascade,
+  revision_id bigint,
+  bug_id bigint references test_bugs(id) on delete cascade,
+  test_plan_id bigint references test_plans(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  foreign key (revision_id, report_id) references organization_weekly_report_revisions(id, report_id) on delete cascade,
+  check (num_nonnulls(bug_id, test_plan_id) = 1)
+);
+create unique index if not exists idx_weekly_report_test_sources_bug
+  on organization_weekly_report_test_sources(report_id, coalesce(revision_id, 0), bug_id) where bug_id is not null;
+create unique index if not exists idx_weekly_report_test_sources_plan
+  on organization_weekly_report_test_sources(report_id, coalesce(revision_id, 0), test_plan_id) where test_plan_id is not null;
+
 create table if not exists test_space_transfer_requests (
   id bigserial primary key,
   test_space_id bigint not null references test_spaces(id) on delete cascade,
@@ -2690,6 +2771,51 @@ insert into test_environment_spaces (test_environment_id,test_space_id)
 select environment.id,space.id from test_environments environment
 join test_spaces space on space.organization_id=environment.organization_id
 on conflict (test_environment_id,test_space_id) do nothing;
+
+create table if not exists project_delivery_members (
+  project_id bigint not null references projects(id) on delete cascade,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  can_plan boolean not null default false,
+  can_execute boolean not null default false,
+  configured_by_user_id bigint references users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (project_id, user_id),
+  check (can_plan or can_execute),
+  foreign key (organization_id, user_id) references organization_memberships(organization_id, user_id) on delete cascade
+);
+create index if not exists idx_project_delivery_member_user on project_delivery_members(user_id, organization_id);
+alter table project_package_events add column if not exists completed_by_user_id bigint references users(id) on delete set null;
+alter table project_package_events add column if not exists completed_at timestamptz;
+
+
+create or replace function revoke_project_delivery_membership() returns trigger language plpgsql as $$
+begin
+  if TG_TABLE_NAME = 'project_memberships' then
+    if TG_OP = 'DELETE' or NEW.status <> 'active' then
+      delete from project_delivery_members d where d.project_id = OLD.project_id and d.user_id = OLD.invited_user_id
+        and not exists(select 1 from projects p where p.id = OLD.project_id and p.user_id = OLD.invited_user_id);
+    end if;
+  elsif TG_TABLE_NAME = 'organization_memberships' then
+    if TG_OP = 'DELETE' or NEW.status <> 'active' then
+      delete from project_delivery_members where organization_id = OLD.organization_id and user_id = OLD.user_id;
+    end if;
+  elsif TG_TABLE_NAME = 'users' then
+    if NEW.account_status <> 'active' then delete from project_delivery_members where user_id = OLD.id; end if;
+  elsif TG_TABLE_NAME = 'projects' then
+    if NEW.organization_id is distinct from OLD.organization_id then delete from project_delivery_members where project_id = OLD.id; end if;
+  end if;
+  return null;
+end;
+$$;
+drop trigger if exists project_delivery_membership_revoked on project_memberships;
+create trigger project_delivery_membership_revoked after delete or update of status on project_memberships for each row execute function revoke_project_delivery_membership();
+drop trigger if exists organization_delivery_membership_revoked on organization_memberships;
+create trigger organization_delivery_membership_revoked after delete or update of status on organization_memberships for each row execute function revoke_project_delivery_membership();
+drop trigger if exists user_delivery_membership_revoked on users;
+create trigger user_delivery_membership_revoked after update of account_status on users for each row execute function revoke_project_delivery_membership();
+drop trigger if exists project_delivery_organization_changed on projects;
+create trigger project_delivery_organization_changed after update of organization_id on projects for each row execute function revoke_project_delivery_membership();
 
 ${platformManagementSchemaSql}
 ${platformMaintenanceSchemaSql}

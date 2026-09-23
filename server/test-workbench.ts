@@ -6,6 +6,7 @@ import {
 } from './test-space-transfer.ts'
 import { shareOrganizationTestEnvironments } from './test-environment-sharing.ts'
 import { lockResourceManager, lockOrganizationResourceManager, type ManagedResource } from './resource-management.ts'
+import { parseBugDiscoveryAssessment, type BugDiscoveryDifficulty } from '../shared/bug-discovery-difficulty.ts'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import express, { Router } from 'express'
@@ -46,6 +47,7 @@ import {
   packageMarketCiBranchFromObjectKey,
 } from './package-market.ts'
 import { getPlatformConfigSnapshot } from './platform-config-runtime.ts'
+import { isTestPlanImageObjectKey, testPlanImageMaxTotalBytes, testPlanImageUploadMaxBytes, testPlanImageUrl } from './test-plan-image.ts'
 import { getPackageMarketRulesForConfigRevision } from './platform-package-rules.ts'
 import {
   canDeleteTestCase,
@@ -89,6 +91,13 @@ type TestWorkbenchNotificationKind =
   | 'test_bug_comment_added'
   | 'package_event_comment_added'
 type TestWorkbenchSection = 'bugs' | 'cases' | 'core' | 'notifications' | 'plans'
+type TestPlanExecutionImageInput = {
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+  fileName: string
+  fileSize: number
+  objectKey: string
+}
+const maxTestPlanExecutionImages = 6
 
 const testWorkbenchSections = new Set<TestWorkbenchSection>([
   'bugs',
@@ -187,6 +196,44 @@ function text(value: unknown, maxLength: number) {
 function positiveId(value: unknown) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+function executionClientId(value: unknown) {
+  const id = text(value, 80)
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) ? id : null
+}
+
+function executionInputError(message: string): never {
+  throw Object.assign(new Error(message), { status: 400 })
+}
+
+function executionImages(value: unknown, ownerUserId: number): TestPlanExecutionImageInput[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > maxTestPlanExecutionImages) {
+    executionInputError(`每条执行记录最多上传 ${maxTestPlanExecutionImages} 张图片。`)
+  }
+  const images = value.map((item) => {
+    if (!item || typeof item !== 'object') executionInputError('执行截图格式无效。')
+    const input = item as Record<string, unknown>
+    const fileName = text(input.fileName, 255)
+    const objectKey = text(input.objectKey, 512)
+    const fileSize = Number(input.fileSize)
+    const contentType = text(input.contentType, 40) as TestPlanExecutionImageInput['contentType']
+    if (!fileName || !objectKey || !isTestPlanImageObjectKey(objectKey, ownerUserId)) executionInputError('执行截图对象无效。')
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)) executionInputError('执行截图格式不支持。')
+    const maxImageBytes = testPlanImageUploadMaxBytes()
+    if (!Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > maxImageBytes) executionInputError(`单张执行截图不能超过 ${Math.round(maxImageBytes / 1024 / 1024)} MiB。`)
+    return { contentType, fileName, fileSize, objectKey }
+  })
+  if (images.reduce((total, image) => total + image.fileSize, 0) > testPlanImageMaxTotalBytes) {
+    executionInputError('本条执行记录的图片总大小不能超过 30 MiB。')
+  }
+  const keys = new Set<string>()
+  for (const image of images) {
+    if (keys.has(image.objectKey)) executionInputError('执行截图不能重复。')
+    keys.add(image.objectKey)
+  }
+  return images
 }
 
 type VerificationPackageInput = {
@@ -1671,6 +1718,8 @@ async function getTestWorkbench(
     plans,
     planSubjects,
     planCases,
+    planExecutions,
+    planExecutionImages,
     bugs,
     comments,
     events,
@@ -1876,6 +1925,57 @@ async function getTestWorkbench(
       `,
       [userId],
     ) : Promise.resolve({ rows: [] }),
+    includes('plans') ? workbenchQuery<{
+      actual_result: string
+      actor_display_name: string | null
+      actor_email: string | null
+      executed_at: Date
+      executed_by_user_id: string | null
+      id: string
+      note: string
+      result: string
+      test_plan_case_id: string
+    }>(
+      `
+      select execution.id, execution.test_plan_case_id, execution.result,
+        execution.actual_result, execution.note, execution.executed_at,
+        execution.executed_by_user_id,
+        actor.display_name as actor_display_name, actor.email as actor_email
+      from test_plan_executions execution
+      join test_plan_cases pc on pc.id = execution.test_plan_case_id
+      join test_plans p on p.id = pc.test_plan_id
+      join test_spaces space on space.id = p.test_space_id
+      left join test_space_memberships m
+        on m.test_space_id = p.test_space_id and m.user_id = $1 and m.status = 'active'
+      left join users actor on actor.id = execution.executed_by_user_id
+      where (${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')})${scopePlanCases}
+      order by execution.test_plan_case_id, execution.id
+      `,
+      [userId],
+    ) : Promise.resolve({ rows: [] }),
+    includes('plans') ? workbenchQuery<{
+      content_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+      execution_id: string
+      file_name: string
+      file_size: string
+      id: string
+      object_key: string
+    }>(
+      `
+      select image.id, image.execution_id, image.object_key, image.file_name,
+        image.content_type, image.file_size
+      from test_plan_execution_images image
+      join test_plan_executions execution on execution.id = image.execution_id
+      join test_plan_cases pc on pc.id = execution.test_plan_case_id
+      join test_plans p on p.id = pc.test_plan_id
+      join test_spaces space on space.id = p.test_space_id
+      left join test_space_memberships m
+        on m.test_space_id = p.test_space_id and m.user_id = $1 and m.status = 'active'
+      where (${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')})${scopePlanCases}
+      order by image.execution_id, image.id
+      `,
+      [userId],
+    ) : Promise.resolve({ rows: [] }),
     includes('bugs') ? workbenchQuery<{
       actual_result: string
       assignee_display_name: string | null
@@ -1894,6 +1994,8 @@ async function getTestWorkbench(
       reporter_email: string | null
       reporter_user_id: string | null
       reproduction_steps: string
+      discovery_difficulty: BugDiscoveryDifficulty
+      discovery_difficulty_reason: string
       severity: string
       space_owner_user_id: string
       status: BugStatus
@@ -1922,10 +2024,10 @@ async function getTestWorkbench(
         b.test_plan_id, b.test_plan_case_id, b.test_environment_id,
         b.organization_module_id,
         b.reporter_user_id, b.assignee_user_id, b.title, b.environment,
-        b.severity, b.priority, b.status, b.created_at, b.updated_at,
+        b.severity, b.priority, b.discovery_difficulty, b.status, b.created_at, b.updated_at,
         ${includeBugDetails
-          ? 'b.actual_result, b.expected_result, b.reproduction_steps,'
-          : "''::text as actual_result, ''::text as expected_result, ''::text as reproduction_steps,"}
+          ? 'b.actual_result, b.expected_result, b.reproduction_steps, b.discovery_difficulty_reason,'
+          : "''::text as actual_result, ''::text as expected_result, ''::text as reproduction_steps, ''::text as discovery_difficulty_reason,"}
         space.owner_user_id as space_owner_user_id,
         m.access_level as direct_access_level,
         space.name as test_space_name,
@@ -2298,6 +2400,53 @@ async function getTestWorkbench(
     const planId = Number(row.test_plan_id)
     subjectIdsByPlan.set(planId, [...(subjectIdsByPlan.get(planId) ?? []), Number(row.test_subject_id)])
   }
+  const imagesByExecution = new Map<number, Array<{
+    id: number
+    name: string
+    size: number
+    src: string
+    type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+  }>>()
+  for (const row of planExecutionImages.rows) {
+    let src = ''
+    try {
+      src = testPlanImageUrl(row.object_key)
+    } catch {
+      // Object storage may be configured after legacy execution metadata exists.
+    }
+    const executionId = Number(row.execution_id)
+    imagesByExecution.set(executionId, [
+      ...(imagesByExecution.get(executionId) ?? []),
+      { id: Number(row.id), name: decryptText(row.file_name), size: Number(row.file_size), src, type: row.content_type },
+    ])
+  }
+  const executionsByCase = new Map<number, Array<{
+    actualResult: string
+    actorName?: string
+    actorUserId?: number
+    executedAt: string
+    id: number
+    images: Array<{ id: number; name: string; size: number; src: string; type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' }>
+    note: string
+    result: string
+  }>>()
+  for (const row of planExecutions.rows) {
+    const executionId = Number(row.id)
+    const caseId = Number(row.test_plan_case_id)
+    executionsByCase.set(caseId, [
+      ...(executionsByCase.get(caseId) ?? []),
+      {
+        actualResult: decryptText(row.actual_result),
+        actorName: row.actor_display_name || row.actor_email || undefined,
+        actorUserId: row.executed_by_user_id ? Number(row.executed_by_user_id) : undefined,
+        executedAt: row.executed_at.toISOString(),
+        id: executionId,
+        images: imagesByExecution.get(executionId) ?? [],
+        note: decryptText(row.note),
+        result: row.result,
+      },
+    ])
+  }
   const editableSpaces = spaces.rows.filter((row) => row.access_level !== 'viewer')
   const testEnvironmentsById = new Map<number, {
     accessUrl: string
@@ -2319,6 +2468,7 @@ async function getTestWorkbench(
   const departedUserIds = includes('core') ? await getDepartedUserIds() : []
 
   return {
+    testPlanImageMaxBytes: testPlanImageUploadMaxBytes(),
     loadedSections: sections ? [...sections] : undefined,
     departedUserIds,
     bugs: bugs.rows.map((row) => ({
@@ -2357,6 +2507,8 @@ async function getTestWorkbench(
       reporterName: row.reporter_display_name || row.reporter_email || undefined,
       reporterUserId: row.reporter_user_id ? Number(row.reporter_user_id) : undefined,
       reproductionSteps: decryptText(row.reproduction_steps),
+      discoveryDifficulty: row.discovery_difficulty,
+      discoveryDifficultyReason: decryptText(row.discovery_difficulty_reason),
       severity: row.severity,
       status: row.status,
       testEnvironmentAccessUrl: row.test_environment_access_url
@@ -2468,6 +2620,7 @@ async function getTestWorkbench(
     planCases: planCases.rows.map((row) => ({
       executedAt: row.executed_at?.toISOString(),
       executedByUserId: row.executed_by_user_id ? Number(row.executed_by_user_id) : undefined,
+      executions: executionsByCase.get(Number(row.id)) ?? [],
       id: Number(row.id),
       result: row.result,
       resultNote: decryptText(row.result_note),
@@ -4406,12 +4559,73 @@ router.delete('/test-spaces/:spaceId/plans/:planId', asyncRoute(async (request, 
   response.json(await getTestWorkbench(session.userId))
 }))
 
+async function appendTestPlanExecution(client: PoolClient, input: {
+  actualResult: string
+  clientId: string
+  images: TestPlanExecutionImageInput[]
+  note: string
+  planCaseId: number
+  result: TestResult
+  sessionUserId: number
+  spaceId: number
+}) {
+  const target = await client.query<{ plan_id: string }>(
+    `
+    select p.id as plan_id
+    from test_plan_cases pc
+    join test_plans p on p.id = pc.test_plan_id
+    where pc.id = $1 and p.test_space_id = $2
+    for update of pc, p
+    `,
+    [input.planCaseId, input.spaceId],
+  )
+  if (!target.rows[0]) throw Object.assign(new Error('Plan case not found'), { status: 404 })
+  const inserted = await client.query<{ id: string }>(
+    `
+    insert into test_plan_executions
+      (test_plan_case_id, client_id, result, actual_result, note, executed_by_user_id)
+    values ($1, $2, $3, $4, $5, $6)
+    on conflict (test_plan_case_id, client_id) do nothing
+    returning id
+    `,
+    [input.planCaseId, input.clientId, input.result, encryptText(input.actualResult), encryptText(input.note), input.sessionUserId],
+  )
+  if (!inserted.rows[0]) return
+  for (const image of input.images) {
+    await client.query(
+      `
+      insert into test_plan_execution_images
+        (execution_id, object_key, file_name, content_type, file_size)
+      values ($1, $2, $3, $4, $5)
+      `,
+      [inserted.rows[0].id, image.objectKey, encryptText(image.fileName), image.contentType, image.fileSize],
+    )
+  }
+  await client.query(
+    `
+    update test_plan_cases
+    set result = $1, result_note = $2, executed_by_user_id = $3, executed_at = now()
+    where id = $4
+    `,
+    [input.result, encryptText(input.note), input.sessionUserId, input.planCaseId],
+  )
+  await client.query(
+    `
+    update test_plans
+    set status = case when status = 'draft' then 'in_progress' else status end,
+        updated_at = now()
+    where id = $1
+    `,
+    [Number(target.rows[0].plan_id)],
+  )
+}
+
 router.patch('/test-spaces/:spaceId/plan-cases/:planCaseId', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'tester')
   if (!session) return
   const spaceId = positiveId(request.params.spaceId)
   const planCaseId = positiveId(request.params.planCaseId)
-  if (!(await requireSpaceAccess(response, spaceId, session.userId, true)) || !planCaseId) return
+  if (!spaceId || !planCaseId || !(await requireSpaceAccess(response, spaceId, session.userId, true))) return
   if (!isTestResult(request.body.result)) {
     response.status(400).json({ error: 'Valid test result is required' })
     return
@@ -4419,38 +4633,68 @@ router.patch('/test-spaces/:spaceId/plan-cases/:planCaseId', asyncRoute(async (r
   const client = await pool.connect()
   try {
     await client.query('begin')
-    const updated = await client.query<{ test_plan_id: string }>(
-      `
-      update test_plan_cases pc set
-        result = $1, result_note = $2, executed_by_user_id = $3, executed_at = now()
-      from test_plans p
-      where pc.id = $4 and p.id = pc.test_plan_id and p.test_space_id = $5
-      returning pc.test_plan_id
-      `,
-      [request.body.result, encryptText(text(request.body.resultNote, 5000)), session.userId, planCaseId, spaceId],
-    )
-    if (!updated.rows[0]) {
-      await client.query('rollback')
-      response.status(404).json({ error: 'Plan case not found' })
-      return
-    }
-    await client.query(
-      `
-      update test_plans
-      set status = case when status = 'draft' then 'in_progress' else status end,
-          updated_at = now()
-      where id = $1
-      `,
-      [Number(updated.rows[0].test_plan_id)],
-    )
+    await appendTestPlanExecution(client, {
+      actualResult: '',
+      clientId: executionClientId(request.body.clientId) ?? crypto.randomUUID(),
+      images: [],
+      note: text(request.body.resultNote, 5000),
+      planCaseId,
+      result: request.body.result,
+      sessionUserId: session.userId,
+      spaceId,
+    })
     await client.query('commit')
-    onTestExecutionResultChanged({ actorUserId: session.userId, planCaseId })
   } catch (error) {
     await client.query('rollback')
     throw error
   } finally {
     client.release()
   }
+  onTestExecutionResultChanged({ actorUserId: session.userId, planCaseId })
+  response.json(await getTestWorkbench(session.userId))
+}))
+
+router.post('/test-spaces/:spaceId/plan-cases/:planCaseId/executions', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const planCaseId = positiveId(request.params.planCaseId)
+  if (!spaceId || !planCaseId) {
+    response.status(400).json({ error: 'Valid test-space and plan-case ids are required' })
+    return
+  }
+  if (!(await requireSpaceAccess(response, spaceId, session.userId, true))) return
+  if (!isTestResult(request.body.result)) {
+    response.status(400).json({ error: 'Valid test result is required' })
+    return
+  }
+  const clientId = executionClientId(request.body.clientId)
+  if (!clientId) {
+    response.status(400).json({ error: 'Valid execution client id is required' })
+    return
+  }
+  const images = executionImages(request.body.images, session.userId)
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await appendTestPlanExecution(client, {
+      actualResult: text(request.body.actualResult, 10000),
+      clientId,
+      images,
+      note: text(request.body.note, 5000),
+      planCaseId,
+      result: request.body.result,
+      sessionUserId: session.userId,
+      spaceId,
+    })
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally {
+    client.release()
+  }
+  onTestExecutionResultChanged({ actorUserId: session.userId, planCaseId })
   response.json(await getTestWorkbench(session.userId))
 }))
 
@@ -4475,6 +4719,11 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
   }
   if (!requestedEnvironment.valid) {
     response.status(400).json({ error: 'Test environment must be valid' })
+    return
+  }
+  const discovery = parseBugDiscoveryAssessment(request.body)
+  if (!discovery.valid) {
+    response.status(400).json({ error: discovery.error })
     return
   }
   const severity = ['blocker', 'critical', 'major', 'minor', 'trivial'].includes(request.body.severity)
@@ -4573,8 +4822,9 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
         insert into test_bugs
           (test_space_id, test_subject_id, test_plan_id, test_plan_case_id, test_environment_id,
            title, severity, priority, status, environment, reproduction_steps, expected_result,
-           actual_result, reporter_user_id, assignee_user_id, test_case_id, organization_module_id)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+           actual_result, reporter_user_id, assignee_user_id, test_case_id, organization_module_id,
+           discovery_difficulty, discovery_difficulty_reason)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         returning id
         `,
         [
@@ -4595,6 +4845,8 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
           assigneeUserId,
           caseId,
           moduleId,
+          discovery.value.discoveryDifficulty,
+          discovery.value.discoveryDifficultyReason ? encryptText(discovery.value.discoveryDifficultyReason) : '',
         ],
       )
       const bugId = Number(inserted.rows[0].id)
@@ -4679,13 +4931,15 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
     priority: string
     reporter_user_id: string | null
     reproduction_steps: string
+    discovery_difficulty: BugDiscoveryDifficulty
+    discovery_difficulty_reason: string
     severity: string
     status: BugStatus
     test_case_id: string | null
     test_subject_id: string | null
     title: string
   }>(
-    `select status, assignee_user_id, reporter_user_id, title, severity, priority,
+    `select status, assignee_user_id, reporter_user_id, title, severity, priority, discovery_difficulty, discovery_difficulty_reason,
             test_case_id, test_subject_id, organization_module_id,
             environment, test_environment_id, reproduction_steps, expected_result, actual_result
        from test_bugs where id = $1 and test_space_id = $2`,
@@ -4701,6 +4955,8 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
     'moduleId',
     'title',
     'severity',
+    'discoveryDifficulty',
+    'discoveryDifficultyReason',
     'priority',
     'environment',
     'testEnvironmentId',
@@ -4763,12 +5019,14 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
         expected_result: string
         reproduction_steps: string
         reporter_user_id: string | null
+        discovery_difficulty: BugDiscoveryDifficulty
+        discovery_difficulty_reason: string
         severity: string
         status: BugStatus
         test_environment_id: string | null
         title: string
       }>(
-        `select status, assignee_user_id, reporter_user_id, title, severity, priority, test_case_id, test_subject_id, organization_module_id, test_plan_id, test_plan_case_id,
+        `select status, assignee_user_id, reporter_user_id, title, severity, priority, discovery_difficulty, discovery_difficulty_reason, test_case_id, test_subject_id, organization_module_id, test_plan_id, test_plan_case_id,
                 environment, test_environment_id, reproduction_steps, expected_result, actual_result
            from test_bugs where id = $1 and test_space_id = $2 for update`,
         [bugId, spaceId],
@@ -4779,6 +5037,14 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
       if (hasDetailEdit && !canEditTestBug(lockedReporter, session.userId)) {
         throw importFailure('Only the Bug creator can edit its details', 403)
       }
+      const discovery = parseBugDiscoveryAssessment(request.body, {
+        discoveryDifficulty: lockedBug.discovery_difficulty,
+        discoveryDifficultyReason: decryptText(lockedBug.discovery_difficulty_reason),
+      })
+      if (!discovery.valid) throw importFailure(discovery.error, 400)
+      const nextDiscoveryReason = request.body.discoveryDifficultyReason === undefined
+        ? lockedBug.discovery_difficulty_reason
+        : discovery.value.discoveryDifficultyReason ? encryptText(discovery.value.discoveryDifficultyReason) : ''
       let caseBinding: { caseId: number | null; subjectId: number | null; moduleId: number | null } | undefined
       if (request.body.testCaseId !== undefined) {
         const caseId = positiveId(request.body.testCaseId)
@@ -4875,10 +5141,12 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
       await client.query(
         `update test_bugs set title = $1, severity = $2, priority = $3, environment = $4,
                 test_environment_id = $5, reproduction_steps = $6, expected_result = $7,
-                actual_result = $8, status = $9, assignee_user_id = $10, updated_at = now()
+                actual_result = $8, status = $9, assignee_user_id = $10, updated_at = now(),
+                discovery_difficulty = $13, discovery_difficulty_reason = $14
            where id = $11 and test_space_id = $12`,
         [nextTitle, severity, priority, nextEnvironment, nextEnvironmentId, nextReproduction,
-          nextExpected, nextActual, lockedStatus, normalizedAssigneeUserId, bugId, spaceId],
+          nextExpected, nextActual, lockedStatus, normalizedAssigneeUserId, bugId, spaceId,
+          discovery.value.discoveryDifficulty, nextDiscoveryReason],
       )
       if (normalizedAssigneeUserId && normalizedAssigneeUserId !== lockedPreviousAssignee) {
         await recordTestBugEvent({
@@ -5100,6 +5368,8 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
     reporter_email: string | null
     reporter_user_id: string | null
     reproduction_steps: string
+    discovery_difficulty: BugDiscoveryDifficulty
+    discovery_difficulty_reason: string
     severity: string
     status: BugStatus
     test_plan_id: string | null
@@ -5121,6 +5391,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
       linked_case.folder_id as test_case_folder_id,
       case_directory.path as test_case_directory_path,
       b.reporter_user_id, b.assignee_user_id, b.title, b.severity, b.priority,
+      b.discovery_difficulty, b.discovery_difficulty_reason,
       b.status, b.environment, b.reproduction_steps, b.expected_result, b.actual_result,
       b.created_at, b.updated_at,
       space.organization_id as organization_id,
@@ -5404,6 +5675,8 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
       reporterName: row.reporter_display_name || row.reporter_email || undefined,
       reporterUserId: row.reporter_user_id ? Number(row.reporter_user_id) : undefined,
       reproductionSteps: decryptText(row.reproduction_steps),
+      discoveryDifficulty: row.discovery_difficulty,
+      discoveryDifficultyReason: decryptText(row.discovery_difficulty_reason),
       severity: row.severity,
       status: row.status,
       testPlanId: row.test_plan_id ? Number(row.test_plan_id) : undefined,

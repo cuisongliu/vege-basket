@@ -1,3 +1,6 @@
+import { bugDiscoveryDifficulties, bugDiscoveryDifficultyLabels, bugDiscoveryDifficultyDescriptions, bugDiscoveryDifficultyReasonMaxLength, parseBugDiscoveryAssessment, type BugDiscoveryAssessment, type BugDiscoveryDifficulty } from '../../shared/bug-discovery-difficulty'
+import { ListPagination } from './list-pagination'
+import { usePagedSelection } from '../hooks/use-paged-selection'
 import { ConfirmActionDialog } from './confirm-action-dialog'
 import { useConfirmAction } from '../hooks/use-confirm-action'
 import { reconcileAction } from '../confirmed-action'
@@ -43,6 +46,7 @@ import {
   ListChecks,
   LinkSimple,
   MagnifyingGlass,
+  NotePencil,
   PencilSimple,
   Plus,
   Stack,
@@ -78,7 +82,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MentionTextarea, type MentionMember } from './mention-textarea'
@@ -197,8 +201,19 @@ import { containerImageReferenceKey, normalizeContainerImageReference } from '..
 import { formatTestSpaceReference } from '../../shared/test-space-reference'
 import type { PackageMarketCiBranch, PackageMarketRule, PackageMarketVersion, Priority } from '@/types'
 import './test-workbench.css'
+import { TestPlanExecutionPanel } from './test-plan-execution'
+import { testPlanExecutionBugEvidence } from '../test-plan-execution'
 
 type WorkbenchTab = 'cases' | 'plans' | 'bugs' | 'weekly_report' | 'notifications'
+
+export type TestPlanPresentation = {
+  rowBlockSize?: number
+  caseActions?: (planCase: TestWorkbenchData['planCases'][number], openDetail: () => void) => ReactNode
+  caseMetadata?: (planCase: TestWorkbenchData['planCases'][number]) => ReactNode
+  caseDetail?: (planCase: TestWorkbenchData['planCases'][number], commit: (operation: () => Promise<TestWorkbenchData>) => Promise<boolean>) => ReactNode
+  onDetailClose?: () => void
+  bugActualResult?: (planCase: TestWorkbenchData['planCases'][number]) => string | undefined
+}
 type VerificationPackageSelection = {
   arch: string
   channel: 'release' | 'ci'
@@ -459,7 +474,7 @@ function uniqueBugFilterOptions(
     left.label.localeCompare(right.label, 'zh-CN')
   ))
 }
-const PLAN_EXECUTION_ROW_BLOCK_SIZE = 88
+const PLAN_EXECUTION_ROW_BLOCK_SIZE = 116
 const emptyTestSpaceSettings: TestSpaceSettings = { invitations: [], organizations: [], spaces: [] }
 const testSpaceInviteParam = 'testSpaceInvite'
 const seenBugCommentStoragePrefix = 'veges.testWorkbench.seenBugComments.v1'
@@ -651,15 +666,21 @@ type TestSpaceOrganizationGroup = {
 }
 
 export function TestWorkbench({
+  weeklyReportRef,
+  navigationBusy = false,
   accountMenu,
   currentUserId,
   projects,
   workspaceContent,
+  planPresentation,
 }: {
+  navigationBusy?: boolean
+  weeklyReportRef?: { current: WeeklyReportWorkbenchHandle | null }
   accountMenu: ReactNode
   currentUserId?: number
   projects: TestWorkbenchProjectOption[]
   workspaceContent?: ReactNode
+  planPresentation?: TestPlanPresentation
 }) {
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
   const [loading, setLoading] = useState(true)
@@ -726,7 +747,12 @@ export function TestWorkbench({
   const refreshInFlightRef = useRef(false)
   const selectedBugDetailScopeRef = useRef('')
   const viewStateReadyRef = useRef(false)
-  const weeklyReportWorkbenchRef = useRef<WeeklyReportWorkbenchHandle>(null)
+  const localWeeklyReportRef = useRef<WeeklyReportWorkbenchHandle>(null)
+  const weeklyReportWorkbenchRef = weeklyReportRef ?? localWeeklyReportRef
+  async function changeTab(next: WorkbenchTab) {
+    if (tab === 'weekly_report' && !(await weeklyReportWorkbenchRef.current?.prepareOrganizationChange() ?? true)) return
+    setTab(next)
+  }
 
   useEffect(() => {
     setSeenBugCommentIds(readSeenBugCommentIds(currentUserId))
@@ -1087,7 +1113,6 @@ export function TestWorkbench({
     if (!activeContentLoaded) return
     if (!cases.some((item) => item.id === selectedCaseId)) setSelectedCaseId(cases[0]?.id)
     if (!plans.some((item) => item.id === selectedPlanId)) setSelectedPlanId(plans[0]?.id)
-    if (!filteredBugs.some((item) => item.id === selectedBugId)) setSelectedBugId(filteredBugs[0]?.id)
   }, [activeContentLoaded, bugs, cases, filteredBugs, plans, selectedBugId, selectedCaseId, selectedPlanId])
 
   useEffect(() => {
@@ -1321,7 +1346,7 @@ export function TestWorkbench({
             type="button"
             aria-label="通知中心"
             title="通知中心"
-            onClick={() => setTab('notifications')}
+            onClick={() => void changeTab('notifications')}
           >
             <Bell size={18} weight="duotone" />
             {notificationUnreadCount > 0 ? <span className="sidebar-notifications-dot" aria-hidden /> : null}
@@ -1392,10 +1417,10 @@ export function TestWorkbench({
         </div>
           <div className="test-workbench-nav-main">
             <nav className="test-workbench-nav-actions" aria-label="测试工作台模块">
-              <button className={tab === 'cases' ? 'active' : ''} onClick={() => setTab('cases')}><ClipboardText /><span className="test-nav-label">用例管理</span><span className="test-nav-count">{activeSpace?.caseCount ?? 0}</span></button>
-              <button className={tab === 'plans' ? 'active' : ''} onClick={() => setTab('plans')}><ListChecks /><span className="test-nav-label">测试计划</span><span className="test-nav-count">{activeSpace?.planCount ?? 0}</span></button>
-              <button className={tab === 'bugs' ? 'active' : ''} onClick={() => setTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{activeSpace?.bugCount ?? 0}</span></button>
-              <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => setTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
+              <button className={tab === 'cases' ? 'active' : ''} onClick={() => void changeTab('cases')}><ClipboardText /><span className="test-nav-label">用例管理</span><span className="test-nav-count">{activeSpace?.caseCount ?? 0}</span></button>
+              <button className={tab === 'plans' ? 'active' : ''} onClick={() => void changeTab('plans')}><ListChecks /><span className="test-nav-label">测试计划</span><span className="test-nav-count">{activeSpace?.planCount ?? 0}</span></button>
+              <button className={tab === 'bugs' ? 'active' : ''} onClick={() => void changeTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{activeSpace?.bugCount ?? 0}</span></button>
+              <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => void changeTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
             </nav>
           </div>
           <div className="test-workbench-account">{accountMenu}</div>
@@ -1407,6 +1432,8 @@ export function TestWorkbench({
           ) : tab === 'weekly_report' ? (
             <div className="test-workbench-weekly-report">
               <WeeklyReportWorkbench
+                navigationBusy={navigationBusy}
+                activeProfile="tester"
                 ref={weeklyReportWorkbenchRef}
                 embedded
                 organizationId={activeWeeklyReportOrganizationId}
@@ -1506,6 +1533,8 @@ export function TestWorkbench({
             <>
               <WorkspaceError message={error} />
               <PlansView
+                presentation={planPresentation}
+                onPresentationCommit={mutate}
                 key={`plans:${spaceId}`}
                 busy={busy}
                 data={data}
@@ -1534,11 +1563,11 @@ export function TestWorkbench({
                       (next) => next.plans.some((item) => item.id === plan.id && item.status === status)))
                   } else void mutate(() => updateTestPlanStatus(plan.testSpaceId, plan.id, status))
                 }}
-                onResult={(planCaseId, result) => void mutate(() => updateTestPlanCase(spaceId!, planCaseId, { result }))}
+                onResult={(planCaseId, result) => void mutate(() => updateTestPlanCase(spaceId!, planCaseId, { result, clientId: crypto.randomUUID() }))}
                 onCreateBug={(plan, planCase) => {
                   setEditingBug(undefined)
                   setBugSeed({
-                    actualResult: planCase.resultNote,
+                    actualResult: planPresentation?.bugActualResult?.(planCase) ?? testPlanExecutionBugEvidence(planCase),
                     environment: plan.environment,
                     expectedResult: planCase.snapshotExpectedResult,
                     reproductionSteps: planCase.snapshotSteps,
@@ -1557,6 +1586,7 @@ export function TestWorkbench({
               <WorkspaceError message={error} />
               <BugsView
                 bugs={filteredBugs}
+                paginationScope={JSON.stringify([spaceId, bugSearchQuery, bugFilterJoin, bugFilterConditions])}
                 bugDetailLoading={bugDetailLoading}
                 busy={busy}
                 data={data}
@@ -2466,7 +2496,9 @@ export function CasesView({ busy, currentUserId, subjects, spaceId, cases, data,
   )
 }
 
-function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemoveCase, onResult, onSelect, onStatus, plans, projects, readOnly, selectedId }: {
+function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemoveCase, onResult, onSelect, onStatus, onPresentationCommit, plans, presentation, projects, readOnly, selectedId }: {
+  presentation?: TestPlanPresentation
+  onPresentationCommit: (operation: () => Promise<TestWorkbenchData>) => Promise<boolean>
   busy: boolean
   data: TestWorkbenchData
   onCreate: () => void
@@ -2516,14 +2548,14 @@ function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemo
         return
       }
       const availableHeight = list.getBoundingClientRect().height
-      const nextPageSize = Math.max(3, Math.min(20, Math.floor((availableHeight + 8) / PLAN_EXECUTION_ROW_BLOCK_SIZE)))
+      const nextPageSize = Math.max(3, Math.min(20, Math.floor((availableHeight + 8) / (presentation?.rowBlockSize ?? PLAN_EXECUTION_ROW_BLOCK_SIZE))))
       setExecutionPageSize((current) => current === nextPageSize ? current : nextPageSize)
     }
     updatePageSize()
     const observer = new ResizeObserver(updatePageSize)
     observer.observe(list)
     return () => observer.disconnect()
-  }, [selectedId])
+  }, [selectedId, presentation?.rowBlockSize])
 
   useEffect(() => {
     setExecutionPage(0)
@@ -2570,13 +2602,17 @@ function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemo
                 </p>
               </div>
               <div className="test-plan-heading-actions">
-                <Select value={selected.status} onValueChange={(value) => onStatus(selected, value as TestPlan['status'])} disabled={busy || readOnly}>
-                  <SelectTrigger className="test-status-select"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="draft">草稿</SelectItem><SelectItem value="in_progress">执行中</SelectItem><SelectItem value="completed">已完成</SelectItem><SelectItem value="aborted">已终止</SelectItem></SelectContent>
-                </Select>
+                <div className="test-plan-primary-actions">
+                  <Select value={selected.status} onValueChange={(value) => onStatus(selected, value as TestPlan['status'])} disabled={busy || readOnly}>
+                    <SelectTrigger aria-label={`${selected.name} 计划状态`} className="test-status-select"><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="draft">草稿</SelectItem><SelectItem value="in_progress">执行中</SelectItem><SelectItem value="completed">已完成</SelectItem><SelectItem value="aborted">已终止</SelectItem></SelectContent>
+                  </Select>
+                </div>
                 {selected.canManage && !readOnly ? <>
-                  <Button variant="outline" disabled={busy} onClick={() => onEdit(selected)}><PencilSimple /> 编辑</Button>
-                  <Button variant="destructive" disabled={busy} onClick={() => onDelete(selected)}><Trash /> 删除</Button>
+                  <div className="test-plan-manage-actions">
+                    <Button variant="outline" disabled={busy} onClick={() => onEdit(selected)}><PencilSimple /> 编辑</Button>
+                    <Button variant="destructive" disabled={busy} onClick={() => onDelete(selected)}><Trash /> 删除</Button>
+                  </div>
                 </> : null}
               </div>
             </div>
@@ -2585,10 +2621,11 @@ function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemo
             <div className="test-plan-progress"><div><strong>{passed}</strong><span>通过</span></div><div><strong>{executions.filter((item) => item.result === 'failed').length}</strong><span>失败</span></div><div><strong>{executions.filter((item) => item.result === 'blocked').length}</strong><span>阻塞</span></div><div><strong>{executions.length ? Math.round((executions.filter((item) => item.result !== 'untested').length / executions.length) * 100) : 0}%</strong><span>进度</span></div></div>
             <div ref={executionListRef} className="test-execution-list">
               {visibleExecutions.map((row) => <article key={row.id}>
-                <div className="test-execution-copy"><code>CASE-{row.testCaseId ?? 'SNAPSHOT'}</code><strong>{row.snapshotTitle}</strong><small>{data.subjects.find((subject) => subject.id === row.testSubjectId)?.name || '未知一级目录'}</small></div>
-                <Select value={row.result} onValueChange={(value) => onResult(row.id, value as TestResult)} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(resultLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select>
+                <div className="test-execution-copy"><code>CASE-{row.testCaseId ?? 'SNAPSHOT'}</code><strong>{row.snapshotTitle}</strong><small>{data.subjects.find((subject) => subject.id === row.testSubjectId)?.name || '未知一级目录'}</small>{presentation?.caseMetadata?.(row) ?? <small>{row.executions?.length ? `${row.executions.length} 次执行记录` : row.result === 'untested' ? '暂无执行记录' : '历史结果 · 暂无执行记录'}</small>}</div>
+                <div className="test-execution-result"><span>执行结果</span><Select value={row.result} onValueChange={(value) => onResult(row.id, value as TestResult)} disabled={busy || readOnly}><SelectTrigger aria-label={`${row.snapshotTitle} 执行结果`}><SelectValue /></SelectTrigger><SelectContent>{Object.entries(resultLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
                 <div className="test-execution-actions">
                   <Button variant="outline" onClick={() => setDetailExecutionId(row.id)}><ClipboardText /> 详情</Button>
+                  {!readOnly ? presentation?.caseActions?.(row, () => setDetailExecutionId(row.id)) ?? <Button variant="outline" onClick={() => setDetailExecutionId(row.id)}><NotePencil />记录执行</Button> : null}
                   {row.result === 'failed' && !readOnly ? <Button variant="outline" onClick={() => onCreateBug(selected, row)}><Bug /> 创建 Bug</Button> : null}
                   {selected.canManage && !readOnly && row.result === 'untested' ? <Button
                     aria-label={`从计划移除 ${row.snapshotTitle}`}
@@ -2618,12 +2655,15 @@ function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemo
           </> : <div className="test-detail-empty"><ListChecks size={28} /><p>选择一个计划开始执行。</p></div>}
         </div>
       </div>
-      <PlanCaseDetailDialog planCase={detailExecution} onClose={() => setDetailExecutionId(undefined)} />
+      <PlanCaseDetailDialog planCase={detailExecution} onClose={() => { setDetailExecutionId(undefined); presentation?.onDetailClose?.() }}>
+        {detailExecution ? presentation?.caseDetail?.(detailExecution, onPresentationCommit) ?? <TestPlanExecutionPanel plan={selected!} planCase={detailExecution} commit={onPresentationCommit} maxImageBytes={data.testPlanImageMaxBytes} /> : null}
+      </PlanCaseDetailDialog>
     </div>
   )
 }
 
-function PlanCaseDetailDialog({ onClose, planCase }: {
+function PlanCaseDetailDialog({ children, onClose, planCase }: {
+  children?: ReactNode
   onClose: () => void
   planCase?: TestWorkbenchData['planCases'][number]
 }) {
@@ -2643,12 +2683,35 @@ function PlanCaseDetailDialog({ onClose, planCase }: {
           <DetailBlock title="预期结果" content={planCase.snapshotExpectedResult} />
           {planCase.resultNote ? <DetailBlock title="执行备注" content={planCase.resultNote} /> : null}
         </div>
+        {children}
       </DialogContent>
     </Dialog>
   )
 }
 
-function BugsView({ bugs, bugDetailLoading, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onLoadTransferCases, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
+function BugListItem({ bug, children, onSelect, selected }: {
+  bug: TestBug
+  children: ReactNode
+  onSelect: (id: number) => void
+  selected: boolean
+}) {
+  return (
+    <button type="button" className={`test-bug-list-item${selected ? ' active' : ''}`} onClick={() => onSelect(bug.id)}>
+      <div className="test-bug-list-meta">
+        <code>BUG-{bug.id}</code>
+        <Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge>
+      </div>
+      <strong>{bug.title}</strong>
+      <div className="test-bug-list-footer">
+        <small>{children}</small>
+        <span className="test-bug-discovery-difficulty"><span>发现难度</span><strong>{bugDiscoveryDifficultyLabels[bug.discoveryDifficulty]}</strong></span>
+      </div>
+    </button>
+  )
+}
+
+function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onLoadTransferCases, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
+  paginationScope: string
   bugs: TestBug[]
   bugDetailLoading: boolean
   busy: boolean
@@ -2674,6 +2737,8 @@ function BugsView({ bugs, bugDetailLoading, busy, data, draftOwnerUserId, filter
   selectedId?: number
 }) {
   const selected = bugs.find((item) => item.id === selectedId)
+  const bugListRef = useRef<HTMLDivElement>(null)
+  const pagination = usePagedSelection(bugs, selectedId, paginationScope, onSelect, bugListRef)
   return (
     <div className="test-module-view test-bugs-module-view">
       <div className="test-module-toolbar">
@@ -2710,8 +2775,15 @@ function BugsView({ bugs, bugDetailLoading, busy, data, draftOwnerUserId, filter
         </div>
       ) : null}
       <div className="test-split-view">
-          <div className="test-record-list">
-            {bugs.length ? bugs.map((bug) => <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => onSelect(bug.id)}><div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div><strong>{bug.title}</strong><small>{formatTimestamp(bug.updatedAt)} · <UserName departedUserIds={data.departedUserIds} name={bug.assigneeName || '未分配'} userId={bug.assigneeUserId} />{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small></button>) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试空间还没有 Bug。'}</div>}
+          <div className="test-record-list-panel paginated-bug-list">
+          <div className="test-record-list" ref={bugListRef} key={`${paginationScope}:${pagination.page}:${pagination.pageSize}`}>
+            {bugs.length ? pagination.items.map((bug) => (
+              <BugListItem key={bug.id} bug={bug} selected={bug.id === selectedId} onSelect={onSelect}>
+                {formatTimestamp(bug.updatedAt)} · <UserName departedUserIds={data.departedUserIds} name={bug.assigneeName || '未分配'} userId={bug.assigneeUserId} />{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}
+              </BugListItem>
+            )) : <div className="test-list-empty">{filterConditions.length > 0 || searchQuery.trim() ? <><FunnelSimple size={24} /><span>没有符合当前条件的 Bug。</span>{filterConditions.length > 0 ? <Button type="button" variant="outline" onClick={onFilterClear}>清除筛选</Button> : null}{searchQuery.trim() ? <Button type="button" variant="outline" onClick={() => onSearchQueryChange('')}>清除搜索</Button> : null}</> : '当前测试空间还没有 Bug。'}</div>}
+        </div>
+          <ListPagination label="Bug 列表分页" {...pagination} total={bugs.length} />
         </div>
         <div className="test-record-detail">
           {selected && selected.detailsLoaded
@@ -2785,6 +2857,7 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
         <span>空间版本 <span className="test-detail-meta-label"><strong>{bug.testSpaceVersionLabel || '未指定'}</strong>{bug.canTransferSpace ? <Button aria-label="迁移到其他测试空间" className="test-detail-meta-copy" disabled={busy} onClick={() => setTransferSpaceOpen(true)} size="icon-xs" title="迁移到其他测试空间" variant="ghost"><PencilSimple /></Button> : null}</span></span>
       <span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span>
       <span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span>
+      <span>发现难度 <strong>{bugDiscoveryDifficultyLabels[bug.discoveryDifficulty]}</strong></span>
       <span>
         <span className="test-detail-meta-label">
           环境{bug.testEnvironmentName ? ` · ${bug.testEnvironmentName}` : ''}
@@ -2794,6 +2867,7 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
       </span>
       <span>更新时间 <strong>{formatTimestamp(bug.updatedAt)}</strong></span>
     </div>
+    <BugDiscoveryReason reason={bug.discoveryDifficultyReason} />
     <DetailBlock title="复现步骤" content={bug.reproductionSteps} /><DetailBlock title="预期结果" content={bug.expectedResult} /><DetailBlock title="实际结果" content={bug.actualResult} />
     <BugVerificationSubmissions bugId={bug.id} submissions={bug.verificationSubmissions} />
     <BugCommentsSection
@@ -3658,7 +3732,7 @@ function BugEvidenceContent({ content, emptyText = '未填写', title = '附件'
   )
 }
 
-function DetailBlock({ content, title }: { content: string; title: string }) {
+export function DetailBlock({ content, title }: { content: string; title: string }) {
   return (
     <section className="test-detail-block">
       <h3>{title}</h3>
@@ -4905,7 +4979,12 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
   </Dialog>
 }
 
-type BugDialogPayload = {
+function BugDiscoveryReason({ reason }: { reason: string }) {
+  if (!reason) return null
+  return <section className="test-detail-block"><h3>发现难度评定依据</h3><p className="whitespace-pre-wrap break-words">{reason}</p></section>
+}
+
+type BugDialogPayload = BugDiscoveryAssessment & {
   actualResult: string
   assigneeUserId?: number
   environment: string
@@ -4929,6 +5008,9 @@ function BugDialog(props: { busy: boolean; editing: boolean; environments: TestE
 function BugDialogForm({ busy, editing, environments, modules, onOpenChange, onSubmit, open, seed, subjects, cases, folders, users }: Parameters<typeof BugDialog>[0]) {
   const [title, setTitle] = useState(seed.title ?? '')
   const [severity, setSeverity] = useState<BugSeverity>(seed.severity ?? 'major')
+  const [discoveryDifficulty, setDiscoveryDifficulty] = useState<BugDiscoveryDifficulty | ''>(editing ? seed.discoveryDifficulty ?? '' : '')
+  const [discoveryDifficultyReason, setDiscoveryDifficultyReason] = useState(editing ? seed.discoveryDifficultyReason ?? '' : '')
+  const discovery = parseBugDiscoveryAssessment({ discoveryDifficulty, discoveryDifficultyReason })
   const [priority, setPriority] = useState<Priority>(seed.priority ?? 'medium')
   const [environment, setEnvironment] = useState(seed.environment ?? '')
   const [testEnvironmentId, setTestEnvironmentId] = useState(() => (
@@ -4972,7 +5054,9 @@ function BugDialogForm({ busy, editing, environments, modules, onOpenChange, onS
           className="test-dialog-form"
           onSubmit={(event) => {
             event.preventDefault()
+            if (busy || evidenceUploading || !title.trim() || !discovery.valid) return
             onSubmit({
+              ...discovery.value,
               actualResult,
               assigneeUserId: assigneeUserId === 'none' ? undefined : Number(assigneeUserId),
               environment,
@@ -5006,6 +5090,15 @@ function BugDialogForm({ busy, editing, environments, modules, onOpenChange, onS
               <Select value={priority} onValueChange={(value) => setPriority(value as Priority)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="high">高</SelectItem><SelectItem value="medium">中</SelectItem><SelectItem value="low">低</SelectItem></SelectContent>
+              </Select>
+            </Label>
+            <Label htmlFor="bug-discovery-difficulty">
+              发现难度（必填）
+              <Select required value={discoveryDifficulty} disabled={busy} onValueChange={(value) => setDiscoveryDifficulty(value as BugDiscoveryDifficulty)}>
+                <SelectTrigger id="bug-discovery-difficulty" aria-describedby="bug-discovery-difficulty-help"><SelectValue placeholder="请选择发现难度" /></SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>{bugDiscoveryDifficulties.map((value) => <SelectItem key={value} value={value}>{bugDiscoveryDifficultyLabels[value]}</SelectItem>)}</SelectGroup>
+                </SelectContent>
               </Select>
             </Label>
             <Label>
@@ -5072,6 +5165,25 @@ function BugDialogForm({ busy, editing, environments, modules, onOpenChange, onS
               ) : <Input aria-label="手工填写测试环境" placeholder="例如：https://staging.example.com" value={environment} onChange={(event) => setEnvironment(event.target.value)} />}
             </Label>
           </div>
+          <p id="bug-discovery-difficulty-help" className="text-sm text-muted-foreground">
+            {discoveryDifficulty ? bugDiscoveryDifficultyDescriptions[discoveryDifficulty] : '评估触发并识别该缺陷的难度，结合必要测试条件和观察手段判断。'}
+          </p>
+          <Label htmlFor="bug-discovery-difficulty-reason">
+            发现难度评定依据{discoveryDifficulty === 'high' ? '（必填）' : '（选填）'}
+            <Textarea
+              id="bug-discovery-difficulty-reason"
+              aria-describedby="bug-discovery-difficulty-reason-help"
+              disabled={busy}
+              maxLength={bugDiscoveryDifficultyReasonMaxLength}
+              required={discoveryDifficulty === 'high'}
+              placeholder="说明必要触发条件或观察手段，可引用复现步骤。"
+              value={discoveryDifficultyReason}
+              onChange={(event) => setDiscoveryDifficultyReason(event.target.value)}
+            />
+          </Label>
+          <p id="bug-discovery-difficulty-reason-help" className="text-sm text-muted-foreground">
+            高难度必须说明评定依据，最多 {bugDiscoveryDifficultyReasonMaxLength} 字。
+          </p>
           <BugEvidenceEditor
             label="复现步骤"
             onChange={setReproductionSteps}
@@ -5095,7 +5207,7 @@ function BugDialogForm({ busy, editing, environments, modules, onOpenChange, onS
           />
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button disabled={busy || evidenceUploading || !title.trim()}>
+            <Button disabled={busy || evidenceUploading || !title.trim() || !discovery.valid}>
               {evidenceUploading ? '附件上传中...' : editing ? '保存修改' : '创建 Bug'}
             </Button>
           </DialogFooter>
@@ -5913,11 +6025,6 @@ export function AssignedTestBugs({
               ? remembered
               : result.bugs[0]?.testSpaceId
           })
-          setSelectedId((current) => (
-            current && result.bugs.some((bug) => bug.id === current)
-              ? current
-              : result.bugs[0]?.id
-          ))
         })
         .catch(() => undefined)
         .then(() => {
@@ -5952,6 +6059,9 @@ export function AssignedTestBugs({
       ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedSearchQuery))
     )
   )), [filterConditions, filterJoin, normalizedSearchQuery, spaceBugs])
+  const paginationScope = JSON.stringify([organizationId, selectedSpaceId, searchQuery, filterJoin, filterConditions])
+  const bugListRef = useRef<HTMLDivElement>(null)
+  const pagination = usePagedSelection(filteredBugs, selectedId, paginationScope, setSelectedId, bugListRef)
   const selected = useMemo(
     () => filteredBugs.find((bug) => bug.id === selectedId),
     [filteredBugs, selectedId],
@@ -5975,14 +6085,6 @@ export function AssignedTestBugs({
   }), [spaceBugs])
 
   useEffect(() => {
-    setSelectedId((current) => (
-      current && filteredBugs.some((bug) => bug.id === current)
-        ? current
-        : filteredBugs[0]?.id
-    ))
-  }, [filteredBugs])
-
-  useEffect(() => {
     if (selected) onBugSeen?.(selected)
   }, [onBugSeen, selected])
 
@@ -6001,11 +6103,6 @@ export function AssignedTestBugs({
       const result = confirmed ? await reconcileAction(operation, () => fetchAssignedTestBugs(organizationId), matches) : await operation()
       if (actionScopeRef.current !== actionScope) return false
       setBugs(result.bugs)
-      setSelectedId((current) => (
-        current && result.bugs.some((bug) => bug.id === current)
-          ? current
-          : result.bugs[0]?.id
-      ))
       onBugsChangeRef.current?.(result.bugs)
       return true
     } catch (mutationError) {
@@ -6082,14 +6179,15 @@ export function AssignedTestBugs({
         </div>
       ) : (
         <div className="test-split-view">
-                <div className="test-record-list">
-            {filteredBugs.map((bug) => (
-              <button key={bug.id} className={bug.id === selectedId ? 'active' : ''} onClick={() => setSelectedId(bug.id)}>
-                <div><code>BUG-{bug.id}</code><Badge className={`test-bug-status ${bug.status}`} variant="outline">{bugStatusLabel[bug.status]}</Badge></div>
-                <strong>{bug.title}</strong>
-                <small>{bug.testSpaceName || '未知测试空间'} · 版本号 {bug.testSpaceVersionLabel || '未指定'} · {formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}</small>
-              </button>
+          <div className="test-record-list-panel paginated-bug-list">
+          <div className="test-record-list" ref={bugListRef} key={`${paginationScope}:${pagination.page}:${pagination.pageSize}`}>
+            {pagination.items.map((bug) => (
+              <BugListItem key={bug.id} bug={bug} selected={bug.id === selectedId} onSelect={setSelectedId}>
+                {bug.testSpaceName || '未知测试空间'} · 版本号 {bug.testSpaceVersionLabel || '未指定'} · {formatTimestamp(bug.updatedAt)} · {bug.assigneeName || '未分配'}{bug.assigneeTransferSource === 'offboarding' ? '（离职转移）' : null}
+              </BugListItem>
             ))}
+          </div>
+            <ListPagination label="我的 Bug 分页" {...pagination} total={filteredBugs.length} />
           </div>
           <div className="test-record-detail">
             {selected ? (
@@ -6147,7 +6245,9 @@ export function AssignedTestBugs({
                   <span>测试空间 <strong>{selected.testSpaceName || '未记录'}</strong></span>
                   <span>版本号 <strong>{selected.testSpaceVersionLabel || '未指定'}</strong></span>
                   <span>严重程度 <strong>{severityLabel[selected.severity]}</strong></span>
+                  <span>发现难度 <strong>{bugDiscoveryDifficultyLabels[selected.discoveryDifficulty]}</strong></span>
                 </div>
+                <BugDiscoveryReason reason={selected.discoveryDifficultyReason} />
                 <DetailBlock title="复现步骤" content={selected.reproductionSteps} />
                 <DetailBlock title="预期结果" content={selected.expectedResult} />
                 <DetailBlock title="实际结果" content={selected.actualResult} />
