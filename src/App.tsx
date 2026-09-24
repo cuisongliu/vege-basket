@@ -43,6 +43,7 @@ import {
   Buildings,
   Bug,
   CalendarBlank,
+  ChartLine,
   Check,
   ChatCircleDots,
   CloudArrowUp,
@@ -52,6 +53,7 @@ import {
   DotsThree,
   CaretDown,
   ClockCounterClockwise,
+  Clock,
   ImageSquare,
   PencilSimple,
   DownloadSimple,
@@ -376,6 +378,8 @@ type View =
   | 'project'
   | 'inbox'
   | 'my_work'
+  | 'my_work_hours'
+  | 'work_hours'
   | 'notifications'
   | 'organization'
   | 'platform'
@@ -610,6 +614,8 @@ const appViews = [
   'project',
   'inbox',
   'my_work',
+  'my_work_hours',
+  'work_hours',
   'notifications',
   'organization',
   'platform',
@@ -719,6 +725,7 @@ function canUseViewForUser(view: View, user: AuthUser) {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
   }
   if (view === 'organization') return canAccessOrganizationManagement(user)
+  if (view === 'work_hours') return canAccessOrganizationManagement(user)
   if (view === 'platform') return user.isSystemAdmin
   return true
 }
@@ -2916,6 +2923,19 @@ function App() {
   const selectedOrganizationName = selectedOrganizationId == null
     ? '个人项目'
     : organizations.find((organization) => organization.id === selectedOrganizationId)?.name ?? '组织项目'
+  const selectedOrganization = selectedOrganizationId == null
+    ? undefined
+    : organizations.find((organization) => organization.id === selectedOrganizationId)
+  const canManageSelectedOrganization = Boolean(
+    authUser &&
+    canAccessOrganizationManagement(authUser) &&
+    selectedOrganization &&
+    (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
+  )
+  useEffect(() => {
+    if (view !== 'work_hours' || selectedOrganizationId === null || canManageSelectedOrganization) return
+    setView('my_work_hours')
+  }, [canManageSelectedOrganization, selectedOrganizationId, view])
   const selectedProjectDraftId = selectedProject?.id
   const activeInvitePassword =
     inviteToken && invitePasswordRequired && invitePasswordVerified
@@ -3647,7 +3667,9 @@ function App() {
         view === 'weekly_report' ||
         view === 'package_market' ||
         view === 'image_sync' ||
-        view === 'organization'
+        view === 'organization' ||
+        view === 'my_work_hours' ||
+        view === 'work_hours'
       )) ||
       (nextOrganizationId !== null && (view === 'inbox' || view === 'ai'))
     ) setView('search')
@@ -3744,6 +3766,17 @@ function App() {
   function openMyWork() {
     setDetailEntrySource('project')
     setView('my_work')
+  }
+
+  function openMyWorkHours() {
+    setDetailEntrySource('project')
+    setView('my_work_hours')
+  }
+
+  function openOrganizationWorkHours() {
+    if (selectedOrganizationId == null) return
+    setDetailEntrySource('project')
+    setView('work_hours')
   }
 
   function changeNewProjectDialogOpen(open: boolean) {
@@ -5398,6 +5431,18 @@ ${packageTimelineText}`
                     </NavButton>
                   </NavGroup>
                 ) : null}
+                {selectedOrganizationId !== null ? (
+                  <NavGroup label="企业工时" id="nav-group-work-hours">
+                    {canManageSelectedOrganization ? (
+                      <NavButton active={view === 'work_hours'} onClick={openOrganizationWorkHours}>
+                        <ChartLine size={18} weight="duotone" /> 工时统计
+                      </NavButton>
+                    ) : null}
+                    <NavButton active={view === 'my_work_hours'} onClick={openMyWorkHours}>
+                      <Clock size={18} weight="duotone" /> 我的工时
+                    </NavButton>
+                  </NavGroup>
+                ) : null}
               </nav>
             </>
           )}
@@ -5807,6 +5852,18 @@ ${packageTimelineText}`
             onMilestoneClick={selectProject}
           />
         )}
+
+        {view === 'my_work_hours' && selectedOrganizationId !== null ? (
+          <WorkHoursWorkbench mode="mine" projects={scopedProjects} />
+        ) : null}
+
+        {view === 'work_hours' && selectedOrganizationId !== null && canManageSelectedOrganization ? (
+          <WorkHoursWorkbench
+            mode="organization"
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
+          />
+        ) : null}
 
         {view === 'notifications' && (
           <NotificationCenterView
@@ -13039,6 +13096,8 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'my_work') return '我的待办'
+  if (view === 'my_work_hours') return '我的工时'
+  if (view === 'work_hours') return '工时统计'
   if (view === 'notifications') return '通知中心'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'

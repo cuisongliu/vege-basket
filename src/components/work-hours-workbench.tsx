@@ -37,6 +37,23 @@ function rangeForPeriod(period: 'week' | 'month') {
   }
 }
 
+function shiftRange(range: { startDate: string; endDate: string }, period: 'week' | 'month', direction: -1 | 1) {
+  const start = new Date(`${range.startDate}T12:00:00`)
+  const end = new Date(`${range.endDate}T12:00:00`)
+  if (period === 'week') {
+    start.setDate(start.getDate() + direction * 7)
+    end.setDate(end.getDate() + direction * 7)
+  } else {
+    start.setMonth(start.getMonth() + direction)
+    end.setMonth(end.getMonth() + direction)
+  }
+  return { startDate: dateInputValue(start), endDate: dateInputValue(end) }
+}
+
+function rangeLabel(range: { startDate: string; endDate: string }) {
+  return `${range.startDate.replaceAll('-', '.')} - ${range.endDate.replaceAll('-', '.')}`
+}
+
 function csvCell(value: string | number) {
   return `"${String(value).replaceAll('"', '""')}"`
 }
@@ -68,6 +85,7 @@ export function WorkHoursWorkbench({
   const [description, setDescription] = useState('')
   const [showRecorder, setShowRecorder] = useState(false)
   const [mineTab, setMineTab] = useState<'records' | 'stats'>('records')
+  const [managementTab, setManagementTab] = useState<'projects' | 'members' | 'trend'>('projects')
   const [period, setPeriod] = useState<'week' | 'month'>('week')
   const [status, setStatus] = useState<'all' | 'pending' | 'confirmed'>('all')
   const [projectFilter, setProjectFilter] = useState<number | 'all'>('all')
@@ -136,8 +154,8 @@ export function WorkHoursWorkbench({
     <section className="work-hours-workbench">
       <div className="work-hours-header">
         <div>
-          <p className="work-hours-eyebrow">{mode === 'mine' ? '我的工时 · 仅本人记录' : mode === 'project' ? '项目工时' : '组织工时统计'}</p>
-          <h3>{mode === 'mine' ? '把每一段投入都记录下来' : mode === 'project' ? project?.name : '企业项目投入总览'}</h3>
+          <p className="work-hours-eyebrow">{mode === 'mine' ? '我的工时 · 仅本人记录' : mode === 'project' ? '项目工时' : '企业工时管理'}</p>
+          <h3>{mode === 'mine' ? '我的工时' : mode === 'project' ? project?.name : '全部项目'}</h3>
         </div>
         {mode === 'mine' ? <div className="work-hours-actions"><Button type="button" variant="outline" onClick={() => { const csv = [['日期', '项目', '任务', '小时', '状态'], ...entries.map((entry) => [entry.workDate, entry.projectName ?? '', entry.todoTitle ?? '', entry.hours, entry.status === 'confirmed' ? '已确认' : '未确认'])].map((row) => row.map(csvCell).join(',')).join('\n'); const url = URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = `我的工时-${startDate}-${endDate}.csv`; link.click(); URL.revokeObjectURL(url) }}><DownloadSimple size={16} /> 导出</Button><Button type="button" onClick={() => setShowRecorder((value) => !value)}><Plus size={16} /> 记录工时</Button></div> : null}
       </div>
@@ -147,8 +165,16 @@ export function WorkHoursWorkbench({
           <button className={mineTab === 'stats' ? 'is-active' : ''} type="button" role="tab" aria-selected={mineTab === 'stats'} onClick={() => setMineTab('stats')}>工时统计</button>
         </div>
       ) : null}
+      {mode !== 'mine' ? (
+        <div className="work-hours-tabs" role="tablist" aria-label={mode === 'project' ? '项目工时视图' : '企业工时视图'}>
+          <button className={managementTab === 'projects' ? 'is-active' : ''} type="button" role="tab" aria-selected={managementTab === 'projects'} onClick={() => setManagementTab('projects')}>{mode === 'project' ? '项目概览' : '全部项目'}</button>
+          <button className={managementTab === 'members' ? 'is-active' : ''} type="button" role="tab" aria-selected={managementTab === 'members'} onClick={() => setManagementTab('members')}>成员投入</button>
+          <button className={managementTab === 'trend' ? 'is-active' : ''} type="button" role="tab" aria-selected={managementTab === 'trend'} onClick={() => setManagementTab('trend')}>周/月趋势</button>
+        </div>
+      ) : null}
       <div className="work-hours-filters">
         <div className="work-hours-period" role="group" aria-label="统计周期"><button className={period === 'week' ? 'is-active' : ''} type="button" onClick={() => setPeriod('week')}>本周</button><button className={period === 'month' ? 'is-active' : ''} type="button" onClick={() => setPeriod('month')}>本月</button></div>
+        <div className="work-hours-date-nav"><button type="button" aria-label="上一个周期" onClick={() => setRange((value) => shiftRange(value, period, -1))}>上一周期</button><strong>{rangeLabel(range)}</strong><button type="button" aria-label="下一个周期" onClick={() => setRange((value) => shiftRange(value, period, 1))}>下一周期</button></div>
         <Label>开始日期<Input type="date" value={range.startDate} onChange={(event) => setRange((value) => ({ ...value, startDate: event.target.value }))} /></Label>
         <Label>结束日期<Input type="date" value={range.endDate} onChange={(event) => setRange((value) => ({ ...value, endDate: event.target.value }))} /></Label>
         {mode === 'mine' ? <Label>项目<select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">全部企业项目</option>{projectOptions.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></Label> : null}
@@ -172,11 +198,15 @@ export function WorkHoursWorkbench({
         <div><TrendUp size={18} /><span>待确认</span><strong>{hours(summary.pendingMinutes)}</strong></div>
         <div><ChartLine size={18} /><span>{mode === 'project' ? '预估工时' : '参与项目'}</span><strong>{mode === 'project' ? hours(summary.estimatedMinutes ?? 0) : summary.projectCount}</strong></div>
       </div> : null}
-      {mode !== 'mine' || mineTab === 'stats' ? <div className="work-hours-grid">
-        <div className="work-hours-card"><h4>投入趋势</h4>{summary.byDate.length === 0 ? <p className="work-hours-empty">暂无记录</p> : summary.byDate.map((item) => <div className="work-hours-bar-row" key={item.date}><span>{item.date.slice(5)}</span><div><i style={{ width: `${Math.min(100, item.minutes / Math.max(...summary.byDate.map((value) => value.minutes), 1) * 100)}%` }} /></div><strong>{hours(item.minutes)}</strong></div>)}</div>
-        <div className="work-hours-card"><h4>{mode === 'mine' ? '项目投入' : '成员投入'}</h4>{mode === 'mine' ? summary.byProject.map((item) => <div className="work-hours-list-row" key={item.projectId}><span>{item.projectName}</span><strong>{hours(item.minutes)}</strong></div>) : summary.byUser.map((item) => <div className="work-hours-list-row" key={item.userId}><span>{item.userName}</span><strong>{hours(item.minutes)}</strong></div>)}</div>
-      </div> : null}
-      {mode !== 'mine' || mineTab === 'records' ? <div className="work-hours-card work-hours-table-card"><h4>工时明细</h4>{loading ? <p className="work-hours-empty">加载中...</p> : entries.length === 0 ? <p className="work-hours-empty">当前周期暂无工时</p> : <div className="work-hours-table">{entries.map((entry) => <div className="work-hours-table-row" key={entry.id}><span>{entry.workDate}</span><span>{entry.projectName ?? '项目'}</span><span>{entry.todoTitle ?? `任务 #${entry.todoId}`}</span><strong>{hours(entry.minutes)}</strong><span className={`work-hours-status is-${entry.status}`}>{entry.status === 'confirmed' ? '已确认' : '未确认'}</span></div>)}</div>}</div> : null}
+      {mode !== 'mine' || mineTab === 'stats' ? (
+        <div className="work-hours-grid">
+          {managementTab === 'trend' || mode === 'mine' ? <div className="work-hours-card"><h4>投入趋势</h4>{summary.byDate.length === 0 ? <p className="work-hours-empty">暂无记录</p> : summary.byDate.map((item) => <div className="work-hours-bar-row" key={item.date}><span>{item.date.slice(5)}</span><div><i style={{ width: `${Math.min(100, item.minutes / Math.max(...summary.byDate.map((value) => value.minutes), 1) * 100)}%` }} /></div><strong>{hours(item.minutes)}</strong></div>)}</div> : null}
+          {managementTab === 'members' || mode === 'mine' ? <div className="work-hours-card"><h4>{mode === 'mine' ? '项目投入' : '成员投入'}</h4>{mode === 'mine' ? summary.byProject.map((item) => <div className="work-hours-list-row" key={item.projectId}><span>{item.projectName}</span><strong>{hours(item.minutes)}</strong></div>) : summary.byUser.map((item) => <div className="work-hours-list-row" key={item.userId}><span>{item.userName}</span><strong>{hours(item.minutes)}</strong></div>)}</div> : null}
+          {managementTab === 'projects' && mode !== 'mine' ? <div className="work-hours-card work-hours-table-card"><h4>{mode === 'project' ? '任务投入' : '项目投入'}</h4>{summary.byProject.length === 0 ? <p className="work-hours-empty">当前周期暂无项目投入</p> : <div className="work-hours-table work-hours-project-table"><div className="work-hours-table-row work-hours-table-heading"><span>项目</span><span>累计投入</span><span>已确认</span><span>待确认</span></div>{summary.byProject.map((item) => <div className="work-hours-table-row" key={item.projectId}><span>{item.projectName}</span><strong>{hours(item.minutes)}</strong><span>{hours(item.confirmedMinutes)}</span><span>{hours(item.pendingMinutes)}</span></div>)}</div>}</div> : null}
+          {managementTab === 'trend' && mode !== 'mine' ? <div className="work-hours-card"><h4>成员投入排行</h4>{summary.byUser.length === 0 ? <p className="work-hours-empty">暂无成员投入</p> : summary.byUser.map((item) => <div className="work-hours-list-row" key={item.userId}><span>{item.userName}</span><strong>{hours(item.minutes)}</strong></div>)}</div> : null}
+        </div>
+      ) : null}
+      {mode !== 'mine' || mineTab === 'records' ? <div className="work-hours-card work-hours-table-card"><h4>{mode === 'mine' ? '工时记录' : '工时明细'}</h4>{loading ? <p className="work-hours-empty">加载中...</p> : entries.length === 0 ? <p className="work-hours-empty">当前周期暂无工时</p> : <div className="work-hours-table">{entries.map((entry) => <div className="work-hours-table-row" key={entry.id}><span>{entry.workDate}</span><span>{entry.projectName ?? '项目'}</span><span>{entry.todoTitle ?? `任务 #${entry.todoId}`}</span><strong>{hours(entry.minutes)}</strong><span className={`work-hours-status is-${entry.status}`}>{entry.status === 'confirmed' ? '已确认' : '未确认'}</span></div>)}</div>}</div> : null}
     </section>
   )
 }

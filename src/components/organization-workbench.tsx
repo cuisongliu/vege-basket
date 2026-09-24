@@ -32,7 +32,6 @@ import {
   Plus,
   Sparkle,
   Target,
-  TrendUp,
   Trash,
   UserSwitch,
   Users,
@@ -131,7 +130,6 @@ import { OrganizationTestSpaces } from './organization-resource-actions'
 import { OrganizationProjectModulesPanel } from './organization-project-modules-panel'
 import './organization-workbench.css'
 import { ProjectSubprojectsPanel } from './project-subprojects-panel'
-import { WorkHoursWorkbench } from './work-hours-workbench'
 
 type OrganizationTab =
   | 'overview'
@@ -141,12 +139,11 @@ type OrganizationTab =
   | 'settings'
   | 'reports'
   | 'packageMarket'
-  | 'workHours'
 
 type OrganizationTabGroup = 'governance' | 'operations'
 
 function organizationSectionForTab(tab: OrganizationTab): OrganizationDetailSection {
-  return tab === 'workHours' ? 'overview' : tab
+  return (tab as string) === 'workHours' ? 'overview' : tab
 }
 
 function mergeOrganizationDetail(current: OrganizationDetail, next: OrganizationDetail) {
@@ -203,7 +200,6 @@ const organizationTabs: Array<{
   { group: 'governance', icon: GearSix, id: 'settings', label: '组织设置' },
   { group: 'operations', icon: Sparkle, id: 'reports', label: '周报' },
   { group: 'operations', icon: PackageIcon, id: 'packageMarket', label: '安装包市场' },
-  { group: 'operations', icon: TrendUp, id: 'workHours', label: '工时统计' },
 ]
 
 const organizationRoleLabel = {
@@ -1734,9 +1730,6 @@ export function OrganizationWorkbench({
             policy={packageMarketPolicyDraft}
             policySaving={packageMarketPolicySaving}
           />
-        ) : null}
-        {tab === 'workHours' && activeDetailSectionLoaded ? (
-          <WorkHoursWorkbench mode="organization" organizationId={detail.id} projects={[]} />
         ) : null}
       </div>
     </div>
