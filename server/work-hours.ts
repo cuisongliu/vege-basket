@@ -74,6 +74,19 @@ type WorkHourRow = QueryResultRow & {
   todo_title?: string
   user_name?: string
   estimated_work_minutes?: number | null
+  project_created_at?: Date | string
+}
+
+type WorkHourTaskRow = QueryResultRow & {
+  id: string
+  title: string
+  assignee_user_id: string | null
+  assignee_name: string | null
+  done: boolean
+  confirmation_status: string
+  estimated_work_minutes: number | null
+  confirmed_minutes: string
+  pending_minutes: string
 }
 
 function sendWorkHoursError(response: express.Response, error: unknown) {
@@ -197,6 +210,7 @@ async function getTodoForWork(client: PoolClient, todoId: number, userId: number
     owner_user_id: string
     assignee_user_id: string | null
     created_by_user_id: string | null
+    project_created_at: Date | string
     done: boolean
     confirmation_status: string
     needs_revision: boolean
@@ -208,6 +222,7 @@ async function getTodoForWork(client: PoolClient, todoId: number, userId: number
     `select t.id, t.project_id, p.organization_id, p.user_id as owner_user_id,
             t.assignee_user_id, t.created_by_user_id, t.done, t.confirmation_status,
             t.needs_revision, t.title, t.due_date, t.priority,
+            (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at,
             ${managedOrganizationReadScopeSql('p.organization_id', '$2')} as creator_is_manager
        from todos t join projects p on p.id = t.project_id
       where t.id = $1 ${lock ? 'for update of t' : ''}`,
@@ -276,9 +291,10 @@ async function loadEntries(userId: number, filters: {
 }
 
 function summary(entries: WorkHourRow[]) {
-  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number }>()
-  const byDate = new Map<string, number>()
-  const byUser = new Map<number, { userId: number; userName: string; minutes: number }>()
+  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; taskCount: number }>()
+  const projectTasks = new Set<string>()
+  const byDate = new Map<string, { minutes: number; pendingMinutes: number; confirmedMinutes: number }>()
+  const byUser = new Map<number, { userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; projects: Set<number>; tasks: Set<string> }>()
   for (const entry of entries) {
     const projectId = Number(entry.project_id)
     const project = byProject.get(projectId) ?? {
@@ -287,16 +303,30 @@ function summary(entries: WorkHourRow[]) {
       minutes: 0,
       pendingMinutes: 0,
       confirmedMinutes: 0,
+      taskCount: 0,
+    }
+    const projectTaskKey = `${projectId}:${entry.todo_id}`
+    if (!projectTasks.has(projectTaskKey)) {
+      projectTasks.add(projectTaskKey)
+      project.taskCount += 1
     }
     project.minutes += Number(entry.minutes)
     if (entry.status === 'pending') project.pendingMinutes += Number(entry.minutes)
     else project.confirmedMinutes += Number(entry.minutes)
     byProject.set(projectId, project)
     const date = formatDate(entry.work_date)
-    byDate.set(date, (byDate.get(date) ?? 0) + Number(entry.minutes))
+    const dateSummary = byDate.get(date) ?? { minutes: 0, pendingMinutes: 0, confirmedMinutes: 0 }
+    dateSummary.minutes += Number(entry.minutes)
+    if (entry.status === 'pending') dateSummary.pendingMinutes += Number(entry.minutes)
+    else dateSummary.confirmedMinutes += Number(entry.minutes)
+    byDate.set(date, dateSummary)
     const userId = Number(entry.user_id)
-    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ?? '未记录', minutes: 0 }
+    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ?? '未记录', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, projects: new Set<number>(), tasks: new Set<string>() }
     user.minutes += Number(entry.minutes)
+    user.projects.add(projectId)
+    user.tasks.add(entry.todo_id)
+    if (entry.status === 'pending') user.pendingMinutes += Number(entry.minutes)
+    else user.confirmedMinutes += Number(entry.minutes)
     byUser.set(userId, user)
   }
   const totalMinutes = entries.reduce((sum, entry) => sum + Number(entry.minutes), 0)
@@ -308,9 +338,95 @@ function summary(entries: WorkHourRow[]) {
     projectCount: byProject.size,
     taskCount: new Set(entries.map((entry) => entry.todo_id)).size,
     byProject: [...byProject.values()].sort((a, b) => b.minutes - a.minutes),
-    byDate: [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, minutes]) => ({ date, minutes, hours: minutes / 60 })),
-    byUser: [...byUser.values()].sort((a, b) => b.minutes - a.minutes),
+    byDate: [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, ...value, hours: value.minutes / 60 })),
+    byUser: [...byUser.values()].sort((a, b) => b.minutes - a.minutes).map(({ projects, tasks, ...user }) => ({ ...user, projectCount: projects.size, taskCount: tasks.size })),
   }
+}
+
+async function loadTaskSummaries(projectId: number, startDate?: string, endDate?: string, status: WorkHourStatus | 'all' = 'all') {
+  const result = await query<WorkHourTaskRow>(
+    `select t.id, t.title, t.assignee_user_id, assignee.display_name as assignee_name,
+            t.done, t.confirmation_status, t.estimated_work_minutes,
+            coalesce(sum(case when e.status = 'confirmed' then e.minutes else 0 end), 0)::bigint as confirmed_minutes,
+            coalesce(sum(case when e.status = 'pending' then e.minutes else 0 end), 0)::bigint as pending_minutes
+       from todos t
+       left join users assignee on assignee.id = t.assignee_user_id
+       left join todo_work_hours e
+         on e.todo_id = t.id
+        and ($2::date is null or e.work_date >= $2::date)
+        and ($3::date is null or e.work_date <= $3::date)
+        and ($4::text = 'all' or e.status = $4::text)
+      where t.project_id = $1
+      group by t.id, assignee.display_name
+      order by t.done asc, t.updated_at desc, t.id desc`,
+    [projectId, startDate ?? null, endDate ?? null, status],
+  )
+  return result.rows.map((row) => {
+    const confirmedMinutes = Number(row.confirmed_minutes)
+    const pendingMinutes = Number(row.pending_minutes)
+    return {
+      taskId: Number(row.id),
+      title: decryptText(row.title),
+      assigneeName: row.assignee_name ?? undefined,
+      assigneeUserId: row.assignee_user_id == null ? null : Number(row.assignee_user_id),
+      done: row.done,
+      confirmationStatus: row.confirmation_status,
+      estimatedMinutes: row.estimated_work_minutes == null ? null : Number(row.estimated_work_minutes),
+      confirmedMinutes,
+      pendingMinutes,
+      totalMinutes: confirmedMinutes + pendingMinutes,
+    }
+  })
+}
+
+async function loadOrganizationProjectSummaries(organizationId: number, startDate?: string, endDate?: string, status: WorkHourStatus | 'all' = 'all') {
+  const result = await query<QueryResultRow & {
+    project_id: string
+    project_name: string
+    task_count: string
+    estimated_minutes: string | null
+    confirmed_minutes: string
+    pending_minutes: string
+  }>(
+    `select p.id as project_id, p.name as project_name,
+            coalesce(tasks.task_count, 0)::int as task_count,
+            tasks.estimated_minutes,
+            coalesce(hours.confirmed_minutes, 0)::bigint as confirmed_minutes,
+            coalesce(hours.pending_minutes, 0)::bigint as pending_minutes
+       from projects p
+       left join lateral (
+         select count(*)::int as task_count,
+                sum(t.estimated_work_minutes)::bigint as estimated_minutes
+           from todos t where t.project_id = p.id
+       ) tasks on true
+       left join lateral (
+         select sum(case when e.status = 'confirmed' then e.minutes else 0 end)::bigint as confirmed_minutes,
+                sum(case when e.status = 'pending' then e.minutes else 0 end)::bigint as pending_minutes
+           from todo_work_hours e
+          where e.project_id = p.id
+            and ($2::date is null or e.work_date >= $2::date)
+            and ($3::date is null or e.work_date <= $3::date)
+            and ($4::text = 'all' or e.status = $4::text)
+       ) hours on true
+      where p.organization_id = $1
+      order by p.name asc, p.id asc`,
+    [organizationId, startDate ?? null, endDate ?? null, status],
+  )
+  return result.rows.map((row) => {
+    const confirmedMinutes = Number(row.confirmed_minutes)
+    const pendingMinutes = Number(row.pending_minutes)
+    const estimatedMinutes = row.estimated_minutes == null ? null : Number(row.estimated_minutes)
+    return {
+      projectId: Number(row.project_id),
+      projectName: row.project_name,
+      minutes: confirmedMinutes + pendingMinutes,
+      pendingMinutes,
+      confirmedMinutes,
+      taskCount: Number(row.task_count),
+      estimatedMinutes,
+      varianceMinutes: estimatedMinutes == null ? null : confirmedMinutes - estimatedMinutes,
+    }
+  })
 }
 
 async function createWorkHour(userId: number, todoId: number, body: Record<string, unknown>) {
@@ -326,6 +442,10 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
     if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
       throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
     }
+    if (!description) throw new WorkHoursError('WORK_DESCRIPTION_REQUIRED', '工作说明不能为空。', 400)
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+    if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
+    if (workDate < formatDate(todo.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
     if (todo.done) throw new WorkHoursError('TODO_COMPLETED', '已完成任务不能新增工时。', 409)
     if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
       throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能为自己负责的任务记录工时。', 403)
@@ -345,7 +465,7 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
       `insert into todo_work_hours (project_id, todo_id, user_id, work_date, minutes, status, description)
        values ($1, $2, $3, $4, $5, 'pending', $6)
        returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
-      [Number(todo.project_id), todoId, userId, workDate, minutes, description ? encryptText(description) : ''],
+      [Number(todo.project_id), todoId, userId, workDate, minutes, encryptText(description)],
     )
     await client.query('commit')
     return serializeEntry(result.rows[0])
@@ -426,7 +546,8 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
       const entries = await loadEntries(userId, { organizationId, startDate, endDate, status, onlyUser: false })
-      response.json({ entries: entries.map(serializeEntry), summary: summary(entries) })
+      const projectRows = await loadOrganizationProjectSummaries(organizationId, startDate, endDate, status)
+      response.json({ entries: entries.map(serializeEntry), summary: { ...summary(entries), byProject: projectRows } })
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }
@@ -445,16 +566,30 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
       const entries = await loadEntries(userId, { projectId, startDate, endDate, status, onlyUser: false })
+      const tasks = await loadTaskSummaries(projectId, startDate, endDate, status)
       const project = await query<{ estimated: string | null }>(
         'select sum(estimated_work_minutes)::bigint as estimated from todos where project_id = $1',
         [projectId],
       )
+      const estimatedMinutes = Number(project.rows[0]?.estimated ?? 0)
+      const projectSummary = summary(entries)
       response.json({
         entries: entries.map(serializeEntry),
         summary: {
-          ...summary(entries),
-          estimatedMinutes: Number(project.rows[0]?.estimated ?? 0),
-          estimatedHours: Number(project.rows[0]?.estimated ?? 0) / 60,
+          ...projectSummary,
+          tasks,
+          byProject: [{
+            projectId,
+            projectName: entries[0]?.project_name ?? '当前项目',
+            minutes: projectSummary.totalMinutes,
+            pendingMinutes: projectSummary.pendingMinutes,
+            confirmedMinutes: projectSummary.confirmedMinutes,
+            taskCount: tasks.length,
+            estimatedMinutes,
+            varianceMinutes: projectSummary.confirmedMinutes - estimatedMinutes,
+          }],
+          estimatedMinutes,
+          estimatedHours: estimatedMinutes / 60,
         },
       })
     } catch (error) {
@@ -476,7 +611,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       try {
         await client.query('begin')
         const existing = await client.query<WorkHourRow>(
-          'select id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at from todo_work_hours where id = $1 for update',
+          "select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date, entry.minutes, entry.status, entry.description, entry.created_at, entry.updated_at, (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at from todo_work_hours entry join projects p on p.id = entry.project_id where entry.id = $1 for update of entry",
           [entryId],
         )
         const row = existing.rows[0]
@@ -485,6 +620,10 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         if (minutes == null && !workDate && typeof request.body.description !== 'string') throw new WorkHoursError('ENTRY_EMPTY', '没有可保存的修改。', 400)
         const targetDate = workDate ?? formatDate(row.work_date)
         const targetMinutes = minutes ?? Number(row.minutes)
+        const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+        if (targetDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
+        if (row.project_created_at && targetDate < formatDate(row.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
+        if (typeof request.body.description === 'string' && !request.body.description.trim()) throw new WorkHoursError('WORK_DESCRIPTION_REQUIRED', '工作说明不能为空。', 400)
         await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [`work-day:${userId}:${targetDate}`])
         const total = await client.query<{ total: string }>(
           'select coalesce(sum(minutes), 0)::bigint as total from todo_work_hours where user_id = $1 and work_date = $2 and id <> $3',

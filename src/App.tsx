@@ -3701,6 +3701,16 @@ function App() {
     setView('project')
   }
 
+  function selectProjectWorkHours(projectId: number) {
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setOrganizationContextForProject(projectId)
+    setSelectedProjectId(projectId)
+    setProjectDetailTab('work_hours')
+    setView('project')
+  }
+
   function selectMyWorkTodo(projectId: number, todoId: number) {
     setDetailEntrySource('my_work')
     setRequestedTodoDetailId(todoId)
@@ -5765,6 +5775,7 @@ ${packageTimelineText}`
             onSaveInstallEvent={saveInstallEvent}
             onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
+            onWorkHoursTodoClick={selectMyWorkTodo}
             onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
@@ -5854,7 +5865,14 @@ ${packageTimelineText}`
         )}
 
         {view === 'my_work_hours' && selectedOrganizationId !== null ? (
-          <WorkHoursWorkbench mode="mine" projects={scopedProjects} />
+          <WorkHoursWorkbench
+            mode="mine"
+            projects={scopedProjects}
+            currentUserId={authUser?.id}
+            currentUserName={authUser?.displayName}
+            onTodoClick={selectMyWorkTodo}
+            onProjectClick={selectProjectWorkHours}
+          />
         ) : null}
 
         {view === 'work_hours' && selectedOrganizationId !== null && canManageSelectedOrganization ? (
@@ -5862,6 +5880,9 @@ ${packageTimelineText}`
             mode="organization"
             organizationId={selectedOrganizationId}
             projects={scopedProjects}
+            currentUserId={authUser?.id}
+            currentUserName={authUser?.displayName}
+            onProjectClick={selectProjectWorkHours}
           />
         ) : null}
 
@@ -5890,6 +5911,7 @@ ${packageTimelineText}`
             onDeleteProject={deleteProject}
             onEditProjectDescription={updateProjectDescription}
             onProjectClick={selectProject}
+            onProjectWorkHours={selectProjectWorkHours}
             onRenameProject={renameProject}
             onSearchChange={setSearch}
             onStatusChange={setStatusFilter}
@@ -6663,6 +6685,7 @@ function ProjectDetail({
   todoSubprojectId,
   onTodoPriorityChange,
   onTodoDetailViewChange,
+  onWorkHoursTodoClick,
   onReturnToNotifications,
   project,
   currentUser,
@@ -6787,6 +6810,7 @@ function ProjectDetail({
   todoSubprojectId: number | null
   onTodoPriorityChange: (value: Priority) => void
   onTodoDetailViewChange?: (active: boolean) => void
+  onWorkHoursTodoClick: (projectId: number, todoId: number) => void
   onReturnToNotifications: () => void
   project: Project
   currentUser: AuthUser | null
@@ -6939,7 +6963,14 @@ function ProjectDetail({
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
         ) : projectDetailTab === 'work_hours' ? (
-          <WorkHoursWorkbench mode="project" project={project} projects={projects} />
+          <WorkHoursWorkbench
+            mode="project"
+            project={project}
+            projects={projects}
+            currentUserId={currentUser?.id}
+            currentUserName={currentUser?.displayName}
+            onTodoClick={onWorkHoursTodoClick}
+          />
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
@@ -9201,6 +9232,7 @@ function SearchView({
   onDeleteProject,
   onEditProjectDescription,
   onProjectClick,
+  onProjectWorkHours,
   onRenameProject,
   onSearchChange,
   onStatusChange,
@@ -9221,6 +9253,7 @@ function SearchView({
   onDeleteProject: (projectId: number) => Promise<boolean>
   onEditProjectDescription: (projectId: number, description: string) => void
   onProjectClick: (id: number) => void
+  onProjectWorkHours: (id: number) => void
   onRenameProject: (projectId: number, name: string) => void
   onSearchChange: (value: string) => void
   onStatusChange: (value: ProjectStatus | 'all') => void
@@ -9445,6 +9478,11 @@ function SearchView({
             </button>
             {(project.canManageSettings ?? project.accessRole === 'owner') && (
               <div className="result-actions">
+                {project.canViewOrganizationWorkHours ? (
+                  <Button type="button" variant="outline" onClick={() => onProjectWorkHours(project.id)}>
+                    项目工时
+                  </Button>
+                ) : null}
                 <div className="project-status-control result-status-control">
                   <span>项目状态</span>
                   <Select

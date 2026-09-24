@@ -140,6 +140,18 @@ export type WorkHourEntry = {
   userName?: string
   estimatedWorkMinutes?: number | null
 }
+export type WorkHourTaskSummary = {
+  taskId: number
+  title: string
+  assigneeName?: string
+  assigneeUserId?: number | null
+  done: boolean
+  confirmationStatus: string
+  estimatedMinutes: number | null
+  confirmedMinutes: number
+  pendingMinutes: number
+  totalMinutes: number
+}
 export type WorkHourSummary = {
   totalMinutes: number
   totalHours: number
@@ -147,9 +159,10 @@ export type WorkHourSummary = {
   pendingMinutes: number
   projectCount: number
   taskCount: number
-  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number }>
-  byDate: Array<{ date: string; minutes: number; hours: number }>
-  byUser: Array<{ userId: number; userName: string; minutes: number }>
+  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
+  byDate: Array<{ date: string; minutes: number; hours: number; pendingMinutes: number; confirmedMinutes: number }>
+  byUser: Array<{ userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; projectCount?: number; taskCount?: number }>
+  tasks?: WorkHourTaskSummary[]
   estimatedMinutes?: number
   estimatedHours?: number
 }

@@ -22,3 +22,38 @@
 .work-hours-table-card { overflow: auto; }.work-hours-table { margin-top: 10px; min-width: 680px; }.work-hours-table-row { border-top: 1px solid var(--border); grid-template-columns: 100px 1.1fr 1.5fr 70px 70px; padding: 8px 0; }.work-hours-project-table .work-hours-table-row { grid-template-columns: 1.5fr repeat(3, minmax(80px, 0.6fr)); }.work-hours-table-heading { color: var(--muted-text); font-size: 12px; }.work-hours-table-row span { color: var(--muted-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.work-hours-status.is-confirmed { color: var(--primary); }.work-hours-status.is-pending { color: #a67739; }
 .work-hours-empty { color: var(--muted-text); font-size: 13px; }
 @media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; } }
+.work-hours-filters select, .work-hours-dialog select, .work-hours-task-filters select, .work-hours-dialog textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; min-height: 36px; padding: 7px 9px; }
+.work-hours-split-bar { display: flex; }
+.work-hours-split-bar i.is-confirmed { background: #2d8468; }
+.work-hours-split-bar i.is-pending { background: #d49a43; }
+.work-hours-project-card { align-items: center; background: transparent; border: 0; border-bottom: 1px solid var(--border); color: var(--text); cursor: pointer; display: grid; gap: 4px 12px; grid-template-columns: 1fr auto; padding: 12px 0; text-align: left; width: 100%; }
+.work-hours-project-card small { color: var(--muted-text); grid-column: 1; }
+.work-hours-project-card strong { grid-column: 2; grid-row: 1 / span 2; }
+.work-hours-project-table .work-hours-table-row, .work-hours-member-table .work-hours-table-row, .work-hours-task-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .6fr)); }
+button.work-hours-table-row { background: transparent; border: 0; border-top: 1px solid var(--border); color: var(--text); cursor: pointer; text-align: left; width: 100%; }
+button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary) 5%, transparent); }
+.work-hours-table-row .is-overrun { color: #b2483e; font-weight: 600; }
+.work-hours-section-heading { align-items: center; display: flex; gap: 16px; justify-content: space-between; }
+.work-hours-task-filters { align-items: center; display: flex; gap: 8px; }
+.work-hours-task-filters > span { align-items: center; display: flex; position: relative; }
+.work-hours-task-filters svg { color: var(--muted-text); left: 9px; position: absolute; }
+.work-hours-task-filters input { padding-left: 30px; width: 220px; }
+.work-hours-record-list { display: grid; gap: 0; margin-top: 8px; }
+.work-hours-record { align-items: start; border-top: 1px solid var(--border); display: grid; gap: 12px; grid-template-columns: 92px minmax(0, 1fr) auto auto; padding: 14px 0; }
+.work-hours-record time, .work-hours-record p, .work-hours-record small { color: var(--muted-text); font-size: 13px; }
+.work-hours-record p { line-height: 1.55; margin: 5px 0; white-space: pre-wrap; }
+.work-hours-record-actions { display: flex; gap: 2px; }
+.work-hours-dialog { width: min(92vw, 520px); }
+.work-hours-dialog-form { display: grid; gap: 14px; }
+.work-hours-dialog-form label { display: grid; font-size: 13px; gap: 6px; }
+.work-hours-dialog-form select, .work-hours-dialog-form textarea { width: 100%; }
+.work-hours-form-grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.work-hours-task-drawer { height: 100dvh; left: auto; max-height: none; right: 0; top: 0; transform: none; width: min(92vw, 520px); }
+.work-hours-drawer-metrics { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
+.work-hours-drawer-metrics > div { background: var(--muted); border-radius: 6px; display: grid; gap: 4px; padding: 12px; }
+.work-hours-drawer-metrics span, .work-hours-drawer-list small { color: var(--muted-text); font-size: 12px; }
+.work-hours-drawer-list { min-height: 0; overflow: auto; }
+.work-hours-drawer-list > div { align-items: start; border-top: 1px solid var(--border); display: grid; gap: 10px; grid-template-columns: 86px 1fr auto; padding: 12px 0; }
+.work-hours-drawer-list span { display: grid; font-size: 13px; gap: 3px; }
+.work-hours-drawer-list p { color: var(--muted-text); margin: 0; white-space: pre-wrap; }
+@media (max-width: 800px) { .work-hours-section-heading { align-items: stretch; flex-direction: column; }.work-hours-task-filters { align-items: stretch; flex-direction: column; }.work-hours-task-filters input { width: 100%; }.work-hours-record { grid-template-columns: 78px minmax(0, 1fr) auto; }.work-hours-record-actions { grid-column: 2 / -1; }.work-hours-form-grid { grid-template-columns: 1fr; } }
