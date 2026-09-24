@@ -124,8 +124,8 @@ function serializeEntry(row: WorkHourRow) {
     description: row.description ? decryptText(row.description) : '',
     createdAt: formatDateTime(row.created_at),
     updatedAt: formatDateTime(row.updated_at),
-    projectName: row.project_name,
-    todoTitle: row.todo_title,
+    projectName: row.project_name ? decryptText(row.project_name) : undefined,
+    todoTitle: row.todo_title ? decryptText(row.todo_title) : undefined,
     userName: row.user_name,
     estimatedWorkMinutes: row.estimated_work_minutes == null ? null : Number(row.estimated_work_minutes),
   }
@@ -418,7 +418,7 @@ async function loadOrganizationProjectSummaries(organizationId: number, startDat
     const estimatedMinutes = row.estimated_minutes == null ? null : Number(row.estimated_minutes)
     return {
       projectId: Number(row.project_id),
-      projectName: row.project_name,
+      projectName: decryptText(row.project_name),
       minutes: confirmedMinutes + pendingMinutes,
       pendingMinutes,
       confirmedMinutes,
@@ -580,7 +580,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           tasks,
           byProject: [{
             projectId,
-            projectName: entries[0]?.project_name ?? '当前项目',
+            projectName: entries[0]?.project_name ? decryptText(entries[0].project_name) : '当前项目',
             minutes: projectSummary.totalMinutes,
             pendingMinutes: projectSummary.pendingMinutes,
             confirmedMinutes: projectSummary.confirmedMinutes,
