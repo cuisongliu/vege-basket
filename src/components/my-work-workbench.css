@@ -1,4 +1,8 @@
 .my-work-panel { --my-work-muted-readable: var(--muted-text); --my-work-positive-readable: oklch(0.43 0.105 164); overflow: hidden; }
+.my-work-heading { align-items: end; display: flex; justify-content: space-between; gap: 16px; padding: 18px 20px 4px; }
+.my-work-heading h3 { font-size: 20px; margin: 0; }
+.my-work-eyebrow { color: var(--my-work-muted-readable); font-size: 11px; letter-spacing: .08em; margin: 0 0 5px; text-transform: uppercase; }
+.my-work-review-hint { color: var(--my-work-muted-readable); font-size: 12px; padding-bottom: 2px; }
 .my-work-tabs { border-bottom: 1px solid var(--border); display: flex; gap: 4px; padding: 12px 16px 0; }
 .my-work-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--my-work-muted-readable); cursor: pointer; font-size: 13px; padding: 8px 12px 10px; }
 .my-work-tabs button.is-active { border-bottom-color: var(--primary); color: var(--primary); font-weight: 600; }

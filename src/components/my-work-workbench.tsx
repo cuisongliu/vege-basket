@@ -81,6 +81,7 @@ function TableFilterMenu({
 }
 
 export function MyWorkWorkbench({
+  mode = 'work',
   scope,
   savedView,
   onViewChange,
@@ -91,6 +92,7 @@ export function MyWorkWorkbench({
   onBugClick,
   onMilestoneClick,
 }: {
+  mode?: 'work' | 'review'
   scope: string
   savedView?: MyWorkViewState
   onViewChange: (view: MyWorkViewState) => void
@@ -101,8 +103,9 @@ export function MyWorkWorkbench({
   onBugClick: (bugId: number) => void
   onMilestoneClick: (projectId: number) => void
 }) {
+  const isReview = mode === 'review'
   const [view, setView] = useState<MyWorkViewState>(() => savedView?.scope === scope ? savedView : {
-    scope, filters: { status: 'open', sort: 'due_desc' }, page: 0, pageSize: 20, scrollTop: 0,
+    scope, filters: isReview ? { review: true, kind: 'todo', status: 'pending_review', sort: 'due_desc' } : { status: 'open', sort: 'due_desc' }, page: 0, pageSize: 20, scrollTop: 0,
   })
   const [result, setResult] = useState<{ data: MyWorkData; view: MyWorkViewState }>()
   const [loading, setLoading] = useState(true)
@@ -112,7 +115,7 @@ export function MyWorkWorkbench({
   const onViewChangeRef = useRef(onViewChange)
   useEffect(() => { onViewChangeRef.current = onViewChange }, [onViewChange])
   const data = result?.data
-  const { kind = 'all', projectId: selectedProjectId, creator = 'all', q: query = '', status = 'open', sort = 'due_desc', due: dueFilter = 'all' } = view.filters
+  const { kind = 'all', projectId: selectedProjectId, creator = 'all', q: query = '', status = isReview ? 'pending_review' : 'open', sort = 'due_desc', due: dueFilter = 'all' } = view.filters
   const projectId = selectedProjectId == null ? 'all' : String(selectedProjectId)
   function changeFilters(patch: Partial<MyWorkFilters>) {
     setView((current) => ({ ...current, filters: { ...current.filters, ...patch }, page: 0, scrollTop: 0 }))
@@ -202,7 +205,14 @@ export function MyWorkWorkbench({
   }
 
   return (
-    <section className="panel my-work-panel">
+    <section className={`panel my-work-panel${isReview ? ' my-work-review-panel' : ''}`}>
+      <div className="my-work-heading">
+        <div>
+          <p className="my-work-eyebrow">{isReview ? '验收队列' : '日常工作'}</p>
+          <h3>{isReview ? '待我验收' : '我的待办'}</h3>
+        </div>
+        {isReview ? <span className="my-work-review-hint">只显示等待你确认的任务</span> : null}
+      </div>
       <div className="my-work-toolbar">
         <label className="my-work-search">
           <MagnifyingGlass size={17} />
@@ -210,17 +220,17 @@ export function MyWorkWorkbench({
         </label>
       </div>
 
-      {loading && !result ? <div className="my-work-empty"><Clock className="spin" size={24} />正在加载我的待办...</div> : null}
+      {loading && !result ? <div className="my-work-empty"><Clock className="spin" size={24} />正在加载{isReview ? '待我验收' : '我的待办'}...</div> : null}
       {error ? <div className="my-work-load-error" role="alert">{error}{result ? ' 列表仍显示上次加载的结果。' : ''}<Button type="button" variant="ghost" disabled={loading} onClick={() => setBackgroundRefreshVersion((version) => version + 1)}>重试</Button></div> : null}
       {result ? (
-        <div className="my-work-table" role="table" aria-label="我的待办列表" aria-busy={loading} ref={tableRef} onScroll={(event) => {
+        <div className="my-work-table" role="table" aria-label={isReview ? '待我验收列表' : '我的待办列表'} aria-busy={loading} ref={tableRef} onScroll={(event) => {
           onViewChange({ ...result.view, scrollTop: event.currentTarget.scrollTop })
         }}>
           <div className="my-work-table-header-group" role="rowgroup">
             <div className="my-work-table-header" role="row">
               <span role="columnheader">事项</span>
               <div role="columnheader"><TableFilterMenu label="项目" value={projectId} onChange={(value) => changeFilters({ projectId: value === 'all' ? undefined : Number(value) })} options={[{ label: '全部项目', value: 'all' }, ...projects.map((project) => ({ label: project.name, value: String(project.id) }))]} /></div>
-              <div role="columnheader"><TableFilterMenu label="类型" value={kind} onChange={(value) => changeFilters({ kind: value === 'all' ? undefined : value as MyWorkKind })} options={[{ label: '全部类型', value: 'all' }, ...Object.entries(kindLabels).map(([value, label]) => ({ label, value }))]} /></div>
+              {!isReview ? <div role="columnheader"><TableFilterMenu label="类型" value={kind} onChange={(value) => changeFilters({ kind: value === 'all' ? undefined : value as MyWorkKind })} options={[{ label: '全部类型', value: 'all' }, ...Object.entries(kindLabels).map(([value, label]) => ({ label, value }))]} /></div> : <span role="columnheader">类型</span>}
               <div role="columnheader"><TableFilterMenu label="状态" value={status} onChange={(value) => changeFilters({ status: value })} options={statusOptions} /></div>
               <div className="my-work-date-heading" role="columnheader">
                 <TableFilterMenu label="截止日期" value={dueFilter} onChange={(value) => changeFilters({ due: value === 'all' ? undefined : value as MyWorkFilters['due'] })} options={[{ label: '全部日期', value: 'all' }, { label: '已逾期', value: 'overdue' }, { label: '今天', value: 'today' }, { label: '本周', value: 'this_week' }, { label: '更晚', value: 'later' }, { label: '未排期', value: 'unscheduled' }]} />
@@ -238,7 +248,7 @@ export function MyWorkWorkbench({
             </div>
           </div>
           <div className="my-work-table-body" role="rowgroup">
-            {visibleItems.length === 0 ? <div className="my-work-table-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={6}><CheckCircle size={28} />当前没有需要你推进的事项</div></div> : null}
+            {visibleItems.length === 0 ? <div className="my-work-table-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={6}><CheckCircle size={28} />{isReview ? '当前没有等待你验收的任务' : '当前没有需要你推进的事项'}</div></div> : null}
             {visibleItems.map((item) => (
               <div className="my-work-table-row" key={item.id} role="row">
                 <div className="my-work-table-cell my-work-main-cell" role="cell">

@@ -45,6 +45,7 @@ import {
   CalendarBlank,
   ChartLine,
   Check,
+  CheckCircle,
   ChatCircleDots,
   CloudArrowUp,
   CopySimple,
@@ -378,6 +379,7 @@ type View =
   | 'project'
   | 'inbox'
   | 'my_work'
+  | 'my_work_review'
   | 'my_work_hours'
   | 'work_hours'
   | 'notifications'
@@ -393,7 +395,7 @@ type View =
   | 'assigned_bugs'
 
 const workspacePollingViews = new Set<View>(['project', 'inbox', 'search', 'ai'])
-type DetailEntrySource = 'project' | 'notifications' | 'my_work'
+type DetailEntrySource = 'project' | 'notifications' | 'my_work' | 'my_work_review'
 type DisplayAiAttachment = {
   id: number | string
   name: string
@@ -573,7 +575,7 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'journal' | 'activity' | 'packages' | 'work_hours'
+type ProjectDetailTab = 'tasks' | 'journal' | 'activity' | 'packages' | 'work_hours'
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -614,6 +616,7 @@ const appViews = [
   'project',
   'inbox',
   'my_work',
+  'my_work_review',
   'my_work_hours',
   'work_hours',
   'notifications',
@@ -1847,6 +1850,7 @@ function App() {
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [openTodoCount, setOpenTodoCount] = useState(0)
+  const [reviewTodoCount, setReviewTodoCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
   const [assignedBugCommentReadAtByBugId, setAssignedBugCommentReadAtByBugId] = useState<Record<number, string>>(() =>
     loadAssignedBugCommentReadAt(authUser?.id),
@@ -1875,7 +1879,7 @@ function App() {
   const { confirmAction, confirmationDialog } = useConfirmAction(confirmationScope)
   const confirmationScopeRef = useRef(confirmationScope)
   useEffect(() => { confirmationScopeRef.current = confirmationScope }, [confirmationScope])
-  const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('journal')
+  const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('tasks')
   const [journalDraft, setJournalDraft] = useState('')
   const [inboxDraft, setInboxDraft] = useState('')
   const [todoDraft, setTodoDraft] = useState('')
@@ -3181,7 +3185,7 @@ function App() {
         setRequestedPackageEventId(null)
         setSelectedProjectId(todo.projectId)
         setJournalDraft('')
-        setProjectDetailTab('journal')
+        setProjectDetailTab('tasks')
         setView('project')
       })
       .catch((error) => {
@@ -3272,10 +3276,12 @@ function App() {
       const result = await fetchNavigationCounts(selectedOrganizationId, { signal })
       if (navigationCountsRequestIdRef.current !== requestId) return
       setOpenTodoCount(result.openTodoCount)
+      setReviewTodoCount(result.reviewTodoCount)
       setAssignedBugCount(canShowDeveloperAssignedBugs ? result.assignedBugCount : 0)
     } catch {
       if (navigationCountsRequestIdRef.current !== requestId || signal?.aborted) return
       setOpenTodoCount(0)
+      setReviewTodoCount(0)
       setAssignedBugCount(0)
     }
   }, [canShowDeveloperAssignedBugs, selectedOrganizationId])
@@ -3284,6 +3290,7 @@ function App() {
     if (!loggedIn || !authUser?.id || !organizationContextReady) {
       navigationCountsRequestIdRef.current += 1
       setOpenTodoCount(0)
+      setReviewTodoCount(0)
       setAssignedBugCount(0)
       return
     }
@@ -3660,7 +3667,7 @@ function App() {
     setRequestedPackageEventId(null)
     setIsProjectTodoDetailActive(false)
     setDetailEntrySource('project')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
     if (
       view === 'project' ||
       (nextOrganizationId === null && (
@@ -3697,7 +3704,7 @@ function App() {
     setOrganizationContextForProject(projectId)
     setSelectedProjectId(projectId)
     setJournalDraft('')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
     setView('project')
   }
 
@@ -3711,14 +3718,14 @@ function App() {
     setView('project')
   }
 
-  function selectMyWorkTodo(projectId: number, todoId: number) {
-    setDetailEntrySource('my_work')
+  function selectMyWorkTodo(projectId: number, todoId: number, source: 'my_work' | 'my_work_review' = 'my_work') {
+    setDetailEntrySource(source)
     setRequestedTodoDetailId(todoId)
     setRequestedPackageEventId(null)
     setOrganizationContextForProject(projectId)
     setSelectedProjectId(projectId)
     setJournalDraft('')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
     setView('project')
   }
 
@@ -3750,6 +3757,14 @@ function App() {
     setView('my_work')
   }
 
+  function returnToMyWorkReview() {
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setIsProjectTodoDetailActive(false)
+    setDetailEntrySource('project')
+    setView('my_work_review')
+  }
+
   async function openNotificationCenter() {
     setDetailEntrySource('project')
     setView('notifications')
@@ -3776,6 +3791,11 @@ function App() {
   function openMyWork() {
     setDetailEntrySource('project')
     setView('my_work')
+  }
+
+  function openMyWorkReview() {
+    setDetailEntrySource('project')
+    setView('my_work_review')
   }
 
   function openMyWorkHours() {
@@ -5388,6 +5408,12 @@ ${packageTimelineText}`
                       <Badge className="nav-badge">{openTodoCount}</Badge>
                     )}
                   </NavButton>
+                  <NavButton active={view === 'my_work_review'} onClick={openMyWorkReview}>
+                    <CheckCircle size={18} weight="duotone" /> 待我验收
+                    {reviewTodoCount > 0 && (
+                      <Badge className="nav-badge">{reviewTodoCount}</Badge>
+                    )}
+                  </NavButton>
                   {selectedOrganizationId === null ? (
                     <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
                       <Tray size={18} weight="duotone" /> 草稿箱
@@ -5561,12 +5587,14 @@ ${packageTimelineText}`
                     size={detailEntrySource !== 'project' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
                       ? '返回消息'
+                      : detailEntrySource === 'my_work_review' ? '返回待我验收'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
-                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回消息'
+                      : detailEntrySource === 'my_work_review' ? '返回待我验收'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
-                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
                         returnToNotifications()
@@ -5576,8 +5604,12 @@ ${packageTimelineText}`
                         returnToMyWork()
                         return
                       }
-                      if (projectDetailTab !== 'journal') {
-                        setProjectDetailTab('journal')
+                      if (detailEntrySource === 'my_work_review') {
+                        returnToMyWorkReview()
+                        return
+                      }
+                      if (projectDetailTab !== 'tasks') {
+                        setProjectDetailTab('tasks')
                         return
                       }
                       setView('search')
@@ -5628,11 +5660,11 @@ ${packageTimelineText}`
                       type="button"
                       variant={projectDetailTab === 'activity' ? 'default' : 'outline'}
                       onClick={() => setProjectDetailTab(
-                        projectDetailTab === 'activity' ? 'journal' : 'activity',
+                        projectDetailTab === 'activity' ? 'tasks' : 'activity',
                       )}
                     >
                       <ClockCounterClockwise size={17} />
-                      {projectDetailTab === 'activity' ? '返回项目日记' : '待办动态'}
+                      {projectDetailTab === 'activity' ? '返回项目待办' : '待办动态'}
                     </Button>
                   )}
                   {view === 'project' && selectedProject && (
@@ -5756,6 +5788,7 @@ ${packageTimelineText}`
             departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
+            onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
             onAddInstallEventComment={addInstallEventComment}
             onReassignInstallEvent={reassignInstallEvent}
@@ -5860,6 +5893,21 @@ ${packageTimelineText}`
               setRequestedAssignedBugId(bugId)
               void changeActiveUserRole('developer', 'assigned_bugs')
             }}
+            onMilestoneClick={selectProject}
+          />
+        )}
+
+        {view === 'my_work_review' && (
+          <MyWorkWorkbench
+            key={`${authUserId}:${selectedOrganizationId}:review`}
+            mode="review"
+            scope={`${authUserId}:${selectedOrganizationId}:review`}
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
+            onViewChange={() => undefined}
+            onTodoClick={(projectId, todoId) => selectMyWorkTodo(projectId, todoId, 'my_work_review')}
+            onDeliveryClick={selectMyWorkPackageEvent}
+            onBugClick={() => undefined}
             onMilestoneClick={selectProject}
           />
         )}
@@ -6703,6 +6751,7 @@ function ProjectDetail({
   todoPriority,
   todoEstimatedWorkHours,
   onTodoEstimatedWorkHoursChange,
+  onProjectDetailTabChange,
 }: {
   departedUserIds: readonly number[]
   initialTodoId?: number | null
@@ -6711,6 +6760,7 @@ function ProjectDetail({
   packageTimeline: ProjectPackageTimeline | null
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
+  onProjectDetailTabChange: (tab: ProjectDetailTab) => void
   onAddTodo: (projectId: number) => void | Promise<void>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
@@ -6934,7 +6984,7 @@ function ProjectDetail({
   }
 
   useEffect(() => {
-    if (projectDetailTab !== 'journal') {
+    if (projectDetailTab !== 'tasks') {
       setIsProjectTodoDetailOpen(false)
       setIsTodoCreateDialogOpen(false)
     }
@@ -6954,11 +7004,21 @@ function ProjectDetail({
           ? 'detail-layout packages-mode'
           : projectDetailTab === 'activity'
             ? 'detail-layout activity-mode'
+          : projectDetailTab === 'tasks'
+            ? isProjectTodoFocusOpen ? 'detail-layout project-tasks-mode todo-detail-focus' : 'detail-layout project-tasks-mode'
+          : projectDetailTab === 'journal'
+            ? 'detail-layout project-journal-mode'
           : isProjectTodoFocusOpen
             ? 'detail-layout todo-detail-focus'
             : 'detail-layout'
       }
     >
+      <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
+        <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button">项目待办</button>
+        <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button">项目日记</button>
+        <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button">交付工作台</button>
+        <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button">项目工时</button>
+      </nav>
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
@@ -6998,7 +7058,7 @@ function ProjectDetail({
             todos={projectTodos}
             timeline={packageTimeline}
           />
-        ) : !isProjectTodoFocusOpen ? (
+        ) : projectDetailTab === 'journal' ? (
           <Card className="panel journal-panel">
             <PanelTitle icon={<FileText size={18} />} title="项目日记" />
             {canWriteProject ? <><Label className="textarea-label journal-entry-label">
@@ -7248,7 +7308,7 @@ function ProjectDetail({
         ) : null}
       </div>
 
-      {projectDetailTab === 'journal' ? (
+      {projectDetailTab === 'tasks' ? (
           <Card className={isProjectTodoFocusOpen ? 'side-panel todo-focus-panel' : 'panel side-panel'}>
             <div className="todo-panel-header">
               {!isProjectTodoFocusOpen ? (
@@ -13134,6 +13194,7 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'my_work') return '我的待办'
+  if (view === 'my_work_review') return '待我验收'
   if (view === 'my_work_hours') return '我的工时'
   if (view === 'work_hours') return '工时统计'
   if (view === 'notifications') return '通知中心'

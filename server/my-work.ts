@@ -159,6 +159,10 @@ export async function getMyWork(
         or work.creator_name = $5::text
       )
       and (
+        $7::boolean = false
+        or (work.kind = 'todo' and work.status = 'pending_review')
+      )
+      and (
         $2::text = 'all'
         or work.status = $2::text
         or concat(work.kind, ':', work.status) = $2::text
@@ -184,6 +188,7 @@ export async function getMyWork(
         filters.sort ?? 'due_desc',
         filters.creator ?? null,
         organizationId,
+        filters.review ?? false,
       ],
     )
 

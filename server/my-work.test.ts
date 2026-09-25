@@ -11,6 +11,7 @@ const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8'
 
 test('parses bounded my work filters', () => {
   assert.deepEqual(parseMyWorkFilters({ kind: 'bug', limit: '999', cursor: '-1' }), {
+    review: false,
     kind: 'bug',
     due: undefined,
     limit: 50,
@@ -31,6 +32,15 @@ test('accepts concrete work statuses and falls back for unknown values', () => {
   assert.equal(parseMyWorkFilters({ status: 'pending_verification' }).status, 'pending_verification')
   assert.equal(parseMyWorkFilters({ status: 'unknown:confirmed' }).status, 'open')
   assert.equal(parseMyWorkFilters({ status: 'not-a-status' }).status, 'open')
+})
+
+test('parses the independent acceptance queue filter', () => {
+  assert.equal(parseMyWorkFilters({ review: 'true' }).review, true)
+  assert.equal(parseMyWorkFilters({ review: '1' }).review, true)
+  assert.equal(parseMyWorkFilters({ review: 'false' }).review, false)
+  assert.match(myWorkSource, /\$7::boolean = false/u)
+  assert.match(myWorkWorkbenchSource, /mode === 'review'/u)
+  assert.match(apiSource, /params\.set\('review', 'true'\)/u)
 })
 
 test('defaults my work sorting to descending due dates', () => {

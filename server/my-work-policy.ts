@@ -24,6 +24,7 @@ export function parseMyWorkFilters(query: Record<string, unknown>): MyWorkFilter
       || (statusKind && kinds.has(statusKind as MyWorkKind) && statusValue && statuses.has(statusValue))
     : false
   return {
+    review: query.review === 'true' || query.review === '1',
     due: typeof query.due === 'string' && ['overdue', 'today', 'this_week', 'later', 'unscheduled'].includes(query.due)
       ? query.due as MyWorkDueFilter : undefined,
     cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? String(cursor) : undefined,

@@ -39,6 +39,7 @@ export type MyWorkData = {
 export type MyWorkDueFilter = 'overdue' | 'today' | 'this_week' | 'later' | 'unscheduled'
 
 export type MyWorkFilters = {
+  review?: boolean
   due?: MyWorkDueFilter
   cursor?: string
   kind?: MyWorkKind

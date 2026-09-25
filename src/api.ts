@@ -119,6 +119,7 @@ export type NotificationResponse = {
 export type NavigationCounts = {
   assignedBugCount: number
   openTodoCount: number
+  reviewTodoCount: number
   organizationId: OrganizationContext
 }
 
@@ -587,6 +588,7 @@ export function markAllNotificationsRead() {
 export function fetchMyWork(organizationId: OrganizationContext, filters: MyWorkFilters = {}) {
   const params = new URLSearchParams()
   params.set('organizationId', serializeOrganizationContext(organizationId))
+  if (filters.review) params.set('review', 'true')
   if (filters.due) params.set('due', filters.due)
   if (filters.cursor) params.set('cursor', filters.cursor)
   if (filters.kind) params.set('kind', filters.kind)

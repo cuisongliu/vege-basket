@@ -21,7 +21,7 @@ test('reads beyond 500 rows in bounded batches and releases the read-only snapsh
     query: async (sql: string, params?: unknown[]) => {
       statements.push(sql)
       if (sql.startsWith('declare')) {
-        assert.deepEqual(params, [7, 'all', null, 'due_desc', null, 1])
+        assert.deepEqual(params, [7, 'all', null, 'due_desc', null, 1, false])
         return { rows: [] }
       }
       if (sql.startsWith('FETCH')) {

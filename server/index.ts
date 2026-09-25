@@ -9616,6 +9616,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
   const result = await query<{
     assigned_bug_count: string
     open_todo_count: string
+    review_todo_count: string
   }>(
     `
     select
@@ -9631,12 +9632,23 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
               t.assignee_user_id = $1::bigint
               and t.confirmation_status <> 'pending_review'
             )
-            or t.reviewer_user_id = $1::bigint
           )
           and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
           and not t.done
           and t.confirmation_status <> 'rejected'
       ) as open_todo_count,
+      (
+        select count(*)
+        from todos t
+        join projects p on p.id = t.project_id
+        left join project_memberships mine
+          on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+        where p.organization_id is not distinct from $2::bigint
+          and t.reviewer_user_id = $1::bigint
+          and t.confirmation_status = 'pending_review'
+          and not t.done
+          and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+      ) as review_todo_count,
       (
         select count(*)
         from test_bugs b
@@ -9657,6 +9669,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
   response.json({
     assignedBugCount: Number(row?.assigned_bug_count ?? 0),
     openTodoCount: Number(row?.open_todo_count ?? 0),
+    reviewTodoCount: Number(row?.review_todo_count ?? 0),
     organizationId,
   })
 }))
