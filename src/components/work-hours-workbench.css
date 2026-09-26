@@ -30,6 +30,7 @@
 .work-hours-project-card small { color: var(--muted-text); grid-column: 1; }
 .work-hours-project-card strong { grid-column: 2; grid-row: 1 / span 2; }
 .work-hours-project-table .work-hours-table-row, .work-hours-member-table .work-hours-table-row, .work-hours-task-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .6fr)); }
+.work-hours-personal-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .7fr)); }
 button.work-hours-table-row { background: transparent; border: 0; border-top: 1px solid var(--border); color: var(--text); cursor: pointer; text-align: left; width: 100%; }
 button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary) 5%, transparent); }
 .work-hours-table-row .is-overrun { color: #b2483e; font-weight: 600; }

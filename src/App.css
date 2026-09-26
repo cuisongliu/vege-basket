@@ -1535,12 +1535,73 @@ textarea:focus {
 
 .todo-list-filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   width: 100%;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+}
+
+.todo-quick-status {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-basis: 100%;
+  gap: 4px;
+  margin: -4px 0 10px;
+  overflow-x: auto;
+  padding-bottom: 7px;
+}
+
+.todo-quick-status button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-text);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+.todo-quick-status button.is-active {
+  border-bottom-color: var(--primary);
+  color: var(--primary);
+  font-weight: 650;
+}
+
+.todo-quick-status span {
+  background: var(--field);
+  border-radius: 999px;
+  font-size: 11px;
+  margin-left: 3px;
+  padding: 2px 5px;
+}
+
+.todo-scope-filter {
+  align-items: center;
+  color: var(--muted-text);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 7px;
+}
+
+.todo-scope-filter select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  min-height: 32px;
+  padding: 5px 8px;
+}
+
+.todo-scope-note {
+  color: var(--muted-text);
+  font-size: 12px;
+  margin-left: auto;
 }
 
 .todo-search-field {

@@ -12393,10 +12393,12 @@ function TodoList({
   const todoListScrollRef = useRef(0)
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
   const [subprojectFilter, setSubprojectFilter] = useState('all')
-	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
-	  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
-	  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
-	  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(
+  const [quickStatus, setQuickStatus] = useState<'all' | 'open' | 'review' | 'done'>('all')
+  const [todoScope, setTodoScope] = useState<'all' | 'mine' | 'review'>('all')
+  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
+  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
+  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
+  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(
     storedTodoFilterPreference?.join ?? defaultTodoFilterState.join,
   )
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>(() =>
@@ -12510,8 +12512,23 @@ function TodoList({
         .join(' ')
         .toLowerCase()
         .includes(query)
+      const matchesQuickStatus = !compact || quickStatus === 'all'
+        || quickStatus === 'done' && todo.done
+        || quickStatus === 'review' && !todo.done && todo.confirmationStatus === 'pending_review'
+        || quickStatus === 'open' && !todo.done && todo.confirmationStatus !== 'pending_review'
+      const isMine = todo.assigneeUserId === currentUserId
+        || (todo.assigneeUserId == null && project.ownerUserId === currentUserId)
+      const isMyReview = todo.confirmationStatus === 'pending_review' && (
+        todo.createdByUserId === currentUserId
+        || (todo.createdByUserId == null && project.ownerUserId === currentUserId)
+      )
+      const matchesScope = !compact || todoScope === 'all'
+        || todoScope === 'mine' && isMine
+        || todoScope === 'review' && isMyReview
       return (
-        (!useDefaultDoneFilter || !todo.done) &&
+        (!useDefaultDoneFilter || compact || !todo.done) &&
+        matchesQuickStatus &&
+        matchesScope &&
         (subprojectFilter === 'all' || (subprojectFilter === 'none'
           ? todo.subprojectId == null
           : String(todo.subprojectId) === subprojectFilter)) &&
@@ -12519,7 +12536,7 @@ function TodoList({
         matchesTodoFilterConditions(todo, todoFilterConditions, todoFilterJoin)
       )
     })
-  }, [sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery, subprojectFilter])
+  }, [compact, currentUserId, project.ownerUserId, quickStatus, sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoScope, todoSearchQuery, subprojectFilter])
   const pageSize = compact ? itemsPerPage : listPageSize
   const totalPages = Math.max(1, Math.ceil(filteredTodos.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
@@ -12864,6 +12881,16 @@ function TodoList({
     <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
       {todoConfirmationDialog}
       <div className="todo-list-filters" aria-label="待办筛选">
+        {compact ? <div className="todo-quick-status" role="tablist" aria-label="待办状态">
+          {([['all', '全部'], ['open', '进行中'], ['review', '待验收'], ['done', '已完成']] as const).map(([value, label]) => {
+            const count = value === 'all' ? todos.length : value === 'done' ? todos.filter((todo) => todo.done).length : value === 'review' ? todos.filter((todo) => !todo.done && todo.confirmationStatus === 'pending_review').length : todos.filter((todo) => !todo.done && todo.confirmationStatus !== 'pending_review').length
+            return <button className={quickStatus === value ? 'is-active' : ''} key={value} onClick={() => { setQuickStatus(value); setPage(0) }} role="tab" aria-selected={quickStatus === value} type="button">{label} <span>{count}</span></button>
+          })}
+        </div> : null}
+        {compact ? <>
+          <label className="todo-scope-filter">待办范围<select aria-label="待办范围" value={todoScope} onChange={(event) => { setTodoScope(event.target.value as typeof todoScope); setPage(0) }}><option value="all">全部待办</option><option value="mine">我负责的</option><option value="review">待我验收</option></select></label>
+          <span className="todo-scope-note">提交后由创建人验收成果与工时</span>
+        </> : null}
         <Select value={subprojectFilter} onValueChange={(value) => { setSubprojectFilter(value); setPage(0) }}>
           <SelectTrigger aria-label="按子项目筛选" style={{ width: 160, flexShrink: 0 }}>
             <SelectValue />

@@ -18,5 +18,5 @@ test('project basket hides completed todos by default while preserving explicit 
   assert.ok(todoListStart >= 0)
   assert.match(todoListSource, /const hasExplicitDoneFilter = todoFilterConditions\.some\(\(condition\) => condition\.field === 'done'\)/u)
   assert.match(todoListSource, /const useDefaultDoneFilter = !todoFilterPersistenceEnabled && !hasExplicitDoneFilter/u)
-  assert.match(todoListSource, /\(!useDefaultDoneFilter \|\| !todo\.done\)/u)
+  assert.match(todoListSource, /\(!useDefaultDoneFilter \|\| compact \|\| !todo\.done\)/u)
 })
