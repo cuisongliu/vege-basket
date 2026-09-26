@@ -15,7 +15,7 @@
 .work-hours-metrics > div { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 5px; padding: 14px 16px; }
 .work-hours-metrics svg { color: var(--primary); }.work-hours-metrics span { color: var(--muted-text); font-size: 12px; }.work-hours-metrics strong { font-size: 24px; font-variant-numeric: tabular-nums; }
 .work-hours-grid { display: grid; gap: 12px; grid-template-columns: 1.25fr 1fr; }
-.work-hours-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-width: 0; padding: 16px; }.work-hours-card h4 { font-size: 15px; }
+.work-hours-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-width: 0; padding: 16px; }.work-hours-card h4 { font-size: 15px; }.work-hours-card-note { color: var(--muted-text); font-size: 12px; margin: 5px 0 12px; }
 .work-hours-bar-row, .work-hours-list-row, .work-hours-table-row { align-items: center; display: grid; gap: 12px; min-height: 38px; }
 .work-hours-bar-row { grid-template-columns: 46px minmax(80px, 1fr) 48px; }.work-hours-bar-row > div { background: var(--muted); border-radius: 999px; height: 7px; overflow: hidden; }.work-hours-bar-row i { background: var(--primary); border-radius: inherit; display: block; height: 100%; }
 .work-hours-list-row { grid-template-columns: 1fr auto; border-bottom: 1px solid var(--border); }.work-hours-list-row:last-child { border-bottom: 0; }

@@ -5667,26 +5667,6 @@ ${packageTimelineText}`
                       {projectDetailTab === 'activity' ? '返回项目待办' : '待办动态'}
                     </Button>
                   )}
-                  {view === 'project' && selectedProject && (
-                    <Button
-                      className="ghost-button"
-                      type="button"
-                      variant="outline"
-                      onClick={() => setProjectDetailTab('packages')}
-                    >
-                      交付工作台
-                    </Button>
-                  )}
-                  {view === 'project' && selectedProject?.canViewOrganizationWorkHours ? (
-                    <Button
-                      className={projectDetailTab === 'work_hours' ? 'solid-button' : 'ghost-button'}
-                      type="button"
-                      variant={projectDetailTab === 'work_hours' ? 'default' : 'outline'}
-                      onClick={() => setProjectDetailTab('work_hours')}
-                    >
-                      项目工时
-                    </Button>
-                  ) : null}
                   {view === 'project' && selectedProject?.accessRole === 'owner' && selectedProject.moduleManagement === 'project' && (
                     <Dialog
                       open={isProjectModulesDialogOpen}
@@ -5959,7 +5939,6 @@ ${packageTimelineText}`
             onDeleteProject={deleteProject}
             onEditProjectDescription={updateProjectDescription}
             onProjectClick={selectProject}
-            onProjectWorkHours={selectProjectWorkHours}
             onRenameProject={renameProject}
             onSearchChange={setSearch}
             onStatusChange={setStatusFilter}
@@ -7014,10 +6993,10 @@ function ProjectDetail({
       }
     >
       <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
-        <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button">项目待办</button>
-        <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button">项目日记</button>
-        <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button">交付工作台</button>
-        <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button">项目工时</button>
+        <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} />项目待办<span className="project-detail-tab-count">{projectTodos.length}</span></button>
+        <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} />项目日记</button>
+        <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} />交付工作台</button>
+        <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} />项目工时</button>
       </nav>
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
@@ -9292,7 +9271,6 @@ function SearchView({
   onDeleteProject,
   onEditProjectDescription,
   onProjectClick,
-  onProjectWorkHours,
   onRenameProject,
   onSearchChange,
   onStatusChange,
@@ -9313,7 +9291,6 @@ function SearchView({
   onDeleteProject: (projectId: number) => Promise<boolean>
   onEditProjectDescription: (projectId: number, description: string) => void
   onProjectClick: (id: number) => void
-  onProjectWorkHours: (id: number) => void
   onRenameProject: (projectId: number, name: string) => void
   onSearchChange: (value: string) => void
   onStatusChange: (value: ProjectStatus | 'all') => void
@@ -9538,11 +9515,6 @@ function SearchView({
             </button>
             {(project.canManageSettings ?? project.accessRole === 'owner') && (
               <div className="result-actions">
-                {project.canViewOrganizationWorkHours ? (
-                  <Button type="button" variant="outline" onClick={() => onProjectWorkHours(project.id)}>
-                    项目工时
-                  </Button>
-                ) : null}
                 <div className="project-status-control result-status-control">
                   <span>项目状态</span>
                   <Select

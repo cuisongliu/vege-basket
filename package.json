@@ -8,6 +8,7 @@
     "dev:api": "tsx watch server/index.ts",
     "db:init": "node server/init-db.ts",
     "db:encrypt-existing": "node server/encrypt-existing.ts",
+    "db:seed-worktime-demo": "node --import tsx server/worktime-demo-seed.ts",
     "platform:config": "node server/platform-config-cli.ts",
     "worker:todo-digest": "node server/todo-digest-worker.ts",
     "test": "node --import tsx --import ./server/test-environment.ts --test server/*.test.ts",
