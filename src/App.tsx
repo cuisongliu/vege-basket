@@ -1869,6 +1869,7 @@ function App() {
   })
   const [requestedWeeklyReport, setRequestedWeeklyReport] = useState(() => parseWeeklyReportDeepLink(window.location.search))
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
+  const [workHourRecorderContext, setWorkHourRecorderContext] = useState<{ projectId: number; todoId: number } | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [requestedAssignedBugId, setRequestedAssignedBugId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
@@ -3730,6 +3731,16 @@ function App() {
     setView('project')
   }
 
+  function selectMyWorkHour(projectId: number, todoId: number) {
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setOrganizationContextForProject(projectId)
+    setSelectedProjectId(projectId)
+    setWorkHourRecorderContext({ projectId, todoId })
+    setView('my_work_hours')
+  }
+
   function selectMyWorkPackageEvent(projectId: number, eventId: number) {
     setDetailEntrySource('my_work')
     setRequestedTodoDetailId(null)
@@ -3801,6 +3812,7 @@ function App() {
 
   function openMyWorkHours() {
     setDetailEntrySource('project')
+    setWorkHourRecorderContext(null)
     setView('my_work_hours')
   }
 
@@ -5807,6 +5819,7 @@ ${packageTimelineText}`
             onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
             onWorkHoursTodoClick={selectMyWorkTodo}
+            onRecordWorkHour={selectMyWorkHour}
             onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
@@ -5916,6 +5929,10 @@ ${packageTimelineText}`
             projects={scopedProjects}
             currentUserId={authUser?.id}
             currentUserName={authUser?.displayName}
+            initialProjectId={workHourRecorderContext?.projectId ?? null}
+            initialTodoId={workHourRecorderContext?.todoId ?? null}
+            autoOpenRecorder={workHourRecorderContext !== null}
+            onRecorderContextConsumed={() => setWorkHourRecorderContext(null)}
             onTodoClick={selectMyWorkTodo}
             onProjectClick={selectProjectWorkHours}
           />
@@ -6731,6 +6748,7 @@ function ProjectDetail({
   onTodoPriorityChange,
   onTodoDetailViewChange,
   onWorkHoursTodoClick,
+  onRecordWorkHour,
   onReturnToNotifications,
   project,
   currentUser,
@@ -6858,6 +6876,7 @@ function ProjectDetail({
   onTodoPriorityChange: (value: Priority) => void
   onTodoDetailViewChange?: (active: boolean) => void
   onWorkHoursTodoClick: (projectId: number, todoId: number) => void
+  onRecordWorkHour: (projectId: number, todoId: number) => void
   onReturnToNotifications: () => void
   project: Project
   currentUser: AuthUser | null
@@ -7328,6 +7347,7 @@ function ProjectDetail({
                   onLoadTodoDetail={onLoadTodoDetail}
                   onDetailModeChange={setIsProjectTodoDetailOpen}
                   onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
+                  onRecordWorkHour={onRecordWorkHour}
                   onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
                   onUpdateTodoNote={canWriteProject ? onUpdateTodoNote : undefined}
                   project={project}
@@ -11816,6 +11836,7 @@ function TodoEditorDialog({
   canEdit = false,
   canEditProperties = canEdit,
   canRespondToTodo = false,
+  canRecordWorkHour = false,
   canShare = false,
   canCreateModule = false,
   clearDisabled = false,
@@ -11841,6 +11862,7 @@ function TodoEditorDialog({
   onOpenChange,
   onPriorityChange,
   onReject,
+  onRecordWorkHour,
   onRequestAcceptance,
   onStartEdit,
   onSubmit,
@@ -11868,6 +11890,7 @@ function TodoEditorDialog({
   canEdit?: boolean
   canEditProperties?: boolean
   canRespondToTodo?: boolean
+  canRecordWorkHour?: boolean
   canShare?: boolean
   canCreateModule?: boolean
   clearDisabled?: boolean
@@ -11893,6 +11916,7 @@ function TodoEditorDialog({
   onOpenChange: (open: boolean) => void
   onPriorityChange: (value: Priority) => void
   onReject?: (reason: string) => Promise<boolean>
+  onRecordWorkHour?: (projectId: number, todoId: number) => void
   onRequestAcceptance?: () => void
   onStartEdit?: () => void
   onSubmit: () => void
@@ -11967,8 +11991,17 @@ function TodoEditorDialog({
               </div>
             </div>
           </div>
-          {todo && canShare ? (
+          {todo && (canRecordWorkHour || canShare) ? (
             <div className="todo-detail-overview-actions">
+              {todo && canRecordWorkHour && onRecordWorkHour ? (
+                <Button
+                  className="todo-detail-work-hour-button"
+                  type="button"
+                  onClick={() => onRecordWorkHour(project.id, todo.id)}
+                >
+                  <Clock size={16} /> 记录工时
+                </Button>
+              ) : null}
               <Button
                 className="todo-detail-share-button"
                 type="button"
@@ -12315,6 +12348,7 @@ function TodoList({
   onDetailBack,
   onDeleteTodo,
   onDetailModeChange,
+  onRecordWorkHour,
   onLoadTodoDetail,
   onUpdateTodoNote,
   onUpdateTodo,
@@ -12334,6 +12368,7 @@ function TodoList({
   onDetailBack?: () => void
   onDeleteTodo?: (id: number) => Promise<boolean>
   onDetailModeChange?: (active: boolean) => void
+  onRecordWorkHour?: (projectId: number, todoId: number) => void
   onLoadTodoDetail?: (id: number) => Promise<Todo | null>
   onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
   onUpdateTodo?: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
@@ -12587,6 +12622,19 @@ function TodoList({
     )
   }
 
+  function canRecordWorkHour(todo: Todo) {
+    return Boolean(
+      onRecordWorkHour &&
+      project.organizationId &&
+      currentUserId != null &&
+      !todo.done &&
+      todo.confirmationStatus !== 'pending_review' &&
+      (todo.assigneeUserId === currentUserId || (
+        todo.assigneeUserId == null && project.ownerUserId === currentUserId
+      )),
+    )
+  }
+
   function canSubmitTodoForReview(todo: Todo) {
     return !todo.done && todo.confirmationStatus !== 'rejected' && canRespondToTodo(todo)
   }
@@ -12804,6 +12852,7 @@ function TodoList({
           canEdit={editingCanManageTodo}
           canEditProperties={editingCanManageTodoFields}
           canRespondToTodo={editingCanRespondToTodo}
+          canRecordWorkHour={canRecordWorkHour(editingTodo)}
           canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
           isEditing={isTodoDetailEditing}
@@ -12827,7 +12876,8 @@ function TodoList({
           onReject={(rejectionReason) => onUpdateTodo ? onUpdateTodo(editingTodo.id, {
               confirmationStatus: 'rejected',
               rejectionReason,
-            }) : Promise.resolve(false)}
+          }) : Promise.resolve(false)}
+          onRecordWorkHour={onRecordWorkHour}
           onRequestAcceptance={() => {
             if (canToggleTodoDone(editingTodo)) setTodoAcceptanceTarget(editingTodo)
           }}

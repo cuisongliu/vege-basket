@@ -19,6 +19,7 @@ const todoEditorDialogSource = appSource.slice(
   appSource.indexOf('function TodoEditorDialog('),
   appSource.indexOf('function TodoList('),
 )
+const todoListSource = appSource.slice(appSource.indexOf('function TodoList('))
 
 test('todo details use the stable shared Markdown editor without a page reload', () => {
   assert.match(
@@ -74,4 +75,21 @@ test('todo notes remain visible when the viewer has no note write callbacks', ()
   assert.match(todoNotesPanelSource, /\{onCreateNote \? \(/u)
   assert.match(todoNotesPanelSource, /<div className="todo-notes-list">/u)
   assert.match(todoNotesPanelSource, /const canEdit = Boolean\(onUpdateNote\)/u)
+})
+
+test('assigned enterprise todos expose the work-hour entry with locked context', () => {
+  assert.match(todoEditorDialogSource, /todo-detail-work-hour-button/u)
+  assert.match(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
+  assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
+  assert.match(todoListSource, /!todo\.done/u)
+  assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
+  assert.match(todoListSource, /todo\.assigneeUserId === currentUserId/u)
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /initialProjectId\?: number \| null[\s\S]*?initialTodoId\?: number \| null[\s\S]*?autoOpenRecorder\?: boolean/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /setSelectedProjectId\(initialProjectId \?\? project\?\.id \?\? null\)/u,
+  )
 })
