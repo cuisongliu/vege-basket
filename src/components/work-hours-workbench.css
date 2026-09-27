@@ -7,6 +7,12 @@
 .work-hours-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted-text); cursor: pointer; padding: 8px 12px; }
 .work-hours-tabs button.is-active { border-bottom-color: var(--primary); color: var(--text); font-weight: 600; }
 .work-hours-filters label, .work-hours-recorder label { color: var(--muted-text); display: grid; font-size: 12px; gap: 5px; }.work-hours-filters input, .work-hours-filters select { min-height: 34px; }.work-hours-period { align-self: end; display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }.work-hours-period button { background: var(--surface); border: 0; color: var(--muted-text); cursor: pointer; min-height: 34px; padding: 0 12px; }.work-hours-period button + button { border-left: 1px solid var(--border); }.work-hours-period button.is-active { background: color-mix(in srgb, var(--primary) 10%, var(--surface)); color: var(--primary); font-weight: 600; }.work-hours-date-nav { align-items: center; display: flex; gap: 8px; min-height: 34px; }.work-hours-date-nav button { background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted-text); cursor: pointer; min-height: 34px; padding: 0 9px; }.work-hours-date-nav button:hover { color: var(--text); border-color: var(--text); }.work-hours-date-nav strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }.work-hours-filter-icon { align-items: center; color: var(--muted-text); display: flex; height: 34px; margin-left: auto; }
+.work-hours-project-picker { align-items: center; display: flex; flex: 1 1 280px; flex-wrap: wrap; gap: 5px; }
+.work-hours-project-picker > button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--muted-text); cursor: pointer; font-size: 12px; min-height: 34px; max-width: 190px; overflow: hidden; padding: 0 10px; text-overflow: ellipsis; white-space: nowrap; }
+.work-hours-project-picker > button.is-active { background: color-mix(in srgb, var(--primary) 10%, var(--surface)); border-color: color-mix(in srgb, var(--primary) 38%, var(--border)); color: var(--primary); font-weight: 600; }
+.work-hours-project-pager { align-items: center; color: var(--muted-text); display: inline-flex; font-size: 12px; gap: 3px; margin-left: auto; }
+.work-hours-project-pager button { background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 20px; line-height: 1; padding: 1px 5px; }
+.work-hours-project-pager button:disabled { cursor: default; opacity: .35; }
 .work-hours-recorder { background: color-mix(in srgb, var(--primary) 5%, var(--surface)); border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--border)); border-radius: 8px; padding: 14px; }
 .work-hours-recorder select, .work-hours-recorder input { min-width: 150px; }
 .work-hours-recorder-description { flex: 1 1 220px; }
@@ -40,7 +46,18 @@
 .work-hours-member-bar-row { grid-template-columns: minmax(74px, .45fr) minmax(0, 1fr) auto; }
 .work-hours-member-bar-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-hours-history-summary { color: var(--muted-text); font-size: 12px; }
-@media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid, .work-hours-overview-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; }.work-hours-overview-chart, .work-hours-overview-members { min-height: 0; } }
+.work-hours-trend-chart { min-height: 188px; padding: 8px 0 0; }
+.work-hours-trend-chart svg { display: block; height: 188px; overflow: visible; width: 100%; }
+.work-hours-trend-chart line { stroke: color-mix(in srgb, var(--border) 85%, transparent); stroke-dasharray: 3 5; stroke-width: 1; }
+.work-hours-trend-chart text { fill: var(--muted-text); font-size: 10px; }
+.work-hours-trend-chart .work-hours-trend-label { font-size: 10px; }
+.work-hours-trend-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.5; }
+.work-hours-trend-line.is-confirmed { stroke: #2d8468; }
+.work-hours-trend-line.is-pending { stroke: #d49a43; stroke-dasharray: 5 4; stroke-width: 2; }
+.work-hours-trend-chart circle { fill: var(--surface); stroke-width: 2; }
+.work-hours-trend-chart circle.is-confirmed { stroke: #2d8468; }
+.work-hours-trend-chart circle.is-pending { stroke: #d49a43; }
+@media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid, .work-hours-overview-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; }.work-hours-overview-chart, .work-hours-overview-members { min-height: 0; }.work-hours-project-picker { flex-basis: 100%; }.work-hours-project-picker > button { max-width: 150px; }.work-hours-project-pager { margin-left: 0; }.work-hours-trend-chart svg { height: 178px; } }
 .work-hours-filters select, .work-hours-dialog select, .work-hours-task-filters select, .work-hours-dialog textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; min-height: 36px; padding: 7px 9px; }
 .work-hours-split-bar { display: flex; }
 .work-hours-split-bar i.is-confirmed { background: #2d8468; }

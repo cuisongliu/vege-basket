@@ -39,6 +39,7 @@ import {
 import {
   Archive,
   At,
+  ArrowClockwise,
   Bell,
   Buildings,
   Bug,
@@ -47,6 +48,7 @@ import {
   Check,
   CheckCircle,
   ChatCircleDots,
+  Circle,
   CloudArrowUp,
   CopySimple,
   CornersIn,
@@ -2938,8 +2940,9 @@ function App() {
     selectedOrganization &&
     (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
   )
+  const canNavigateToReview = canManageSelectedOrganization
   useEffect(() => {
-    if (view !== 'work_hours' || selectedOrganizationId === null || canManageSelectedOrganization) return
+    if ((view !== 'work_hours' && view !== 'my_work_review') || selectedOrganizationId === null || canManageSelectedOrganization) return
     setView('my_work_hours')
   }, [canManageSelectedOrganization, selectedOrganizationId, view])
   const selectedProjectDraftId = selectedProject?.id
@@ -3806,6 +3809,7 @@ function App() {
   }
 
   function openMyWorkReview() {
+    if (!canNavigateToReview) return
     setDetailEntrySource('project')
     setView('my_work_review')
   }
@@ -5421,12 +5425,14 @@ ${packageTimelineText}`
                       <Badge className="nav-badge">{openTodoCount}</Badge>
                     )}
                   </NavButton>
-                  <NavButton active={view === 'my_work_review'} onClick={openMyWorkReview}>
-                    <CheckCircle size={18} weight="duotone" /> 待我验收
-                    {reviewTodoCount > 0 && (
-                      <Badge className="nav-badge">{reviewTodoCount}</Badge>
-                    )}
-                  </NavButton>
+                  {canNavigateToReview ? (
+                    <NavButton active={view === 'my_work_review'} onClick={openMyWorkReview}>
+                      <CheckCircle size={18} weight="duotone" /> 待我验收
+                      {reviewTodoCount > 0 && (
+                        <Badge className="nav-badge">{reviewTodoCount}</Badge>
+                      )}
+                    </NavButton>
+                  ) : null}
                   {selectedOrganizationId === null ? (
                     <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
                       <Tray size={18} weight="duotone" /> 草稿箱
@@ -5636,23 +5642,6 @@ ${packageTimelineText}`
                 {view === 'project' && selectedProject && (
                   <ProjectTags tags={selectedProject.tags} />
                 )}
-                {view === 'project' && selectedProject && detailEntrySource === 'project' && scopedProjects.length > 1 ? (
-                  <label className="project-context-switcher">
-                    <span>当前项目</span>
-                    <select
-                      aria-label="切换项目"
-                      value={selectedProject.id}
-                      onChange={(event) => {
-                        const projectId = Number(event.target.value)
-                        if (Number.isSafeInteger(projectId) && projectId > 0) selectProject(projectId)
-                      }}
-                    >
-                      {scopedProjects.map((item) => (
-                        <option key={item.id} value={item.id}>{item.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
               </div>
             </div>
             <div
@@ -5798,6 +5787,7 @@ ${packageTimelineText}`
             departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
+            canViewProjectWorkHours={canManageSelectedOrganization}
             onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
             onAddInstallEventComment={addInstallEventComment}
@@ -6704,6 +6694,7 @@ function ProjectDetail({
   packageTimeline,
   packageWorkbenchRef,
   projectDetailTab,
+  canViewProjectWorkHours,
   onAddTodo,
   onAddInstallEventComment,
   onReassignInstallEvent,
@@ -6775,6 +6766,7 @@ function ProjectDetail({
   packageTimeline: ProjectPackageTimeline | null
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
+  canViewProjectWorkHours: boolean
   onProjectDetailTabChange: (tab: ProjectDetailTab) => void
   onAddTodo: (projectId: number) => void | Promise<void>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
@@ -6898,6 +6890,8 @@ function ProjectDetail({
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
   const [isJournalComposing, setIsJournalComposing] = useState(false)
+  const [journalPage, setJournalPage] = useState(0)
+  const journalPageSize = 10
   const [isTodoCreateDialogOpen, setIsTodoCreateDialogOpen] = useState(false)
   const initialTodoExists = initialTodoId != null && projectTodos.some((todo) => todo.id === initialTodoId)
   const [isProjectTodoDetailOpen, setIsProjectTodoDetailOpen] = useState(initialTodoExists)
@@ -6913,6 +6907,12 @@ function ProjectDetail({
     return Array.from(grouped, ([date, entries]) => ({ date, entries }))
   }, [project.journals])
   const journalDates = journalGroups.map((group) => group.date)
+  const journalPageCount = Math.max(1, Math.ceil(journalGroups.length / journalPageSize))
+  const safeJournalPage = Math.min(journalPage, journalPageCount - 1)
+  const visibleJournalGroups = journalGroups.slice(
+    safeJournalPage * journalPageSize,
+    (safeJournalPage + 1) * journalPageSize,
+  )
   const projectMembers = getProjectAssignableUsers(project, memberships)
   const projectModules = project.modules
   const canWriteProject = !project.readOnly && (!project.organizationId || Boolean(project.canManageOrganizationTodos))
@@ -6982,11 +6982,19 @@ function ProjectDetail({
   }
 
   useEffect(() => {
+    if (projectDetailTab === 'work_hours' && !canViewProjectWorkHours) {
+      onProjectDetailTabChange('tasks')
+      return
+    }
     if (projectDetailTab !== 'tasks') {
       setIsProjectTodoDetailOpen(false)
       setIsTodoCreateDialogOpen(false)
     }
-  }, [projectDetailTab])
+  }, [canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
+
+  useEffect(() => {
+    setJournalPage((page) => Math.min(page, journalPageCount - 1))
+  }, [journalPageCount])
 
   useEffect(() => {
     onTodoDetailViewChange?.(isProjectTodoFocusOpen)
@@ -7015,12 +7023,12 @@ function ProjectDetail({
         <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} />项目待办<span className="project-detail-tab-count">{projectTodos.length}</span></button>
         <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} />项目日记</button>
         <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} />交付工作台</button>
-        <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} />项目工时</button>
+        {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} />项目工时</button> : null}
       </nav>
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
-        ) : projectDetailTab === 'work_hours' ? (
+        ) : projectDetailTab === 'work_hours' && canViewProjectWorkHours ? (
           <WorkHoursWorkbench
             mode="project"
             project={project}
@@ -7110,7 +7118,7 @@ function ProjectDetail({
 
             <div className="history-list">
               {journalGroups.length > 0 ? (
-                journalGroups.map(({ date, entries }) => (
+                visibleJournalGroups.map(({ date, entries }) => (
                   <section className="journal-date-group" key={date}>
                     <h3>{date}</h3>
                     {entries.map((entry) => {
@@ -7269,6 +7277,13 @@ function ProjectDetail({
             <div className="journal-history-summary">
               共 {project.journals.length} 条日记，覆盖 {journalDates.length} 个日期
             </div>
+            <ListPagination
+              label="项目日记分页"
+              page={safeJournalPage}
+              pageSize={journalPageSize}
+              total={journalGroups.length}
+              onPageChange={setJournalPage}
+            />
           </Card>
         ) : null}
       </div>
@@ -12377,7 +12392,6 @@ function TodoList({
   projects: Project[]
   todos: Todo[]
 }) {
-  const { confirmAction: confirmTodoAction, confirmationDialog: todoConfirmationDialog } = useConfirmAction(`${currentUserId}:${project.id}`)
   const defaultTodoFilterState = useMemo(
     () => getDefaultProjectTodoFilterState(project, currentUserId),
     [currentUserId, project],
@@ -12635,10 +12649,6 @@ function TodoList({
     )
   }
 
-  function canSubmitTodoForReview(todo: Todo) {
-    return !todo.done && todo.confirmationStatus !== 'rejected' && canRespondToTodo(todo)
-  }
-
   function canToggleTodoDone(todo: Todo) {
     const project = projectById.get(todo.projectId)
     const isTodoCreator = currentUserId != null && (
@@ -12650,10 +12660,6 @@ function TodoList({
       ? isTodoCreator
       : isTodoCreator || effectiveReviewerUserId === currentUserId
     return canReview && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
-  }
-
-  function canUseTodoCheckbox(todo: Todo) {
-    return canToggleTodoDone(todo) || canSubmitTodoForReview(todo)
   }
 
   useEffect(() => {
@@ -12679,29 +12685,6 @@ function TodoList({
     todoListScrollRef.current = 0
     if (todoListRef.current) todoListRef.current.scrollTop = 0
   }, [safePage, pageSize, todoSearchQuery, todoFilterConditions, todoFilterJoin, subprojectFilter])
-
-  function handleTodoCheckboxClick(todo: Todo) {
-    if (canToggleTodoDone(todo)) {
-      if (!todo.done && todo.confirmationStatus === 'pending_review') {
-        setTodoAcceptanceTarget(todo)
-        return
-      }
-      if (!todo.done) {
-        void confirmTodoAction({
-          actionKey: `complete-todo:${todo.id}`,
-          title: '确认完成待办？',
-          description: `「${project.name}」的「${todo.title}」将退出未完成列表。可在项目待办的已完成筛选中查看。`,
-          confirmLabel: '确认完成', variant: 'default',
-        }, () => onUpdateTodo ? onUpdateTodo(todo.id, { done: true }) : Promise.resolve(false))
-      } else {
-        void onUpdateTodo?.(todo.id, { done: false })
-      }
-      return
-    }
-    if (canSubmitTodoForReview(todo)) {
-      setTodoPendingReviewTarget(todo)
-    }
-  }
 
   function closeEditDialog() {
     todoDetailRequestIdRef.current += 1
@@ -12896,7 +12879,6 @@ function TodoList({
 
   return (
     <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
-      {todoConfirmationDialog}
       <div className="todo-list-filters" aria-label="待办筛选">
         {compact ? <div className="todo-quick-status" role="tablist" aria-label="待办状态">
           {([['all', '全部'], ['open', '进行中'], ['review', '待验收'], ['done', '已完成']] as const).map(([value, label]) => {
@@ -13006,11 +12988,8 @@ function TodoList({
             const project = projects.find((item) => item.id === todo.projectId)
             const rowCanManageTodo = canManageTodo(todo)
             const rowCanRespondToTodo = canRespondToTodo(todo)
-            const isCheckboxDisabled = !canUseTodoCheckbox(todo)
-            const checkboxLabel = canToggleTodoDone(todo)
-              ? (todo.done ? '标记为未完成' : '标记为已完成')
-              : '提交验收'
             const indicators = getTodoContentIndicators(todo)
+            const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : todo.confirmationStatus === 'rejected' || todo.confirmationStatus === 'acceptance_failed' ? 'returned' : 'open'
             return (
               <article
                 className={[
@@ -13020,24 +12999,9 @@ function TodoList({
                 ].filter(Boolean).join(' ')}
                 key={todo.id}
               >
-                <button
-                  className={[
-                    'checkmark',
-                    'todo-select-checkbox',
-                    todo.done ? 'selected' : '',
-                  ].filter(Boolean).join(' ')}
-                  type="button"
-                  role="checkbox"
-                  aria-checked={todo.done}
-                  disabled={isCheckboxDisabled}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    handleTodoCheckboxClick(todo)
-                  }}
-                  aria-label={checkboxLabel}
-                >
-                  {todo.done ? <Check size={14} /> : null}
-                </button>
+                <span className={`todo-status-marker is-${statusMarker}`} aria-label={`状态：${todoConfirmationCopy[todo.confirmationStatus] ?? (todo.done ? '已完成' : '进行中')}`}>
+                  {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : statusMarker === 'returned' ? <ArrowClockwise size={13} /> : <Circle size={10} weight="fill" />}
+                </span>
                 <button className="todo-main" type="button" onClick={() => openTodoEditDialog(todo)}>
                   <span className="todo-title-row">
                     <code className="todo-code">{todoCode(todo.id)}</code>

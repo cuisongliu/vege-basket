@@ -50,6 +50,54 @@ function csvCell(value: string | number) {
   return `"${String(value).replaceAll('"', '""')}"`
 }
 
+function WorkHoursTrendChart({
+  byDate,
+  period,
+}: {
+  byDate: WorkHourSummary['byDate']
+  period: 'week' | 'month'
+}) {
+  const width = 720
+  const height = 224
+  const padding = { top: 16, right: 18, bottom: 34, left: 38 }
+  const points = byDate.length
+    ? byDate
+    : [{ date: '', minutes: 0, hours: 0, pendingMinutes: 0, confirmedMinutes: 0 }]
+  const max = Math.max(60, Math.ceil(Math.max(...points.map((item) => item.minutes), 60) / 60) * 60)
+  const chartWidth = width - padding.left - padding.right
+  const chartHeight = height - padding.top - padding.bottom
+  const x = (index: number) => padding.left + (points.length === 1 ? chartWidth / 2 : index * chartWidth / (points.length - 1))
+  const y = (minutes: number) => padding.top + chartHeight - minutes / max * chartHeight
+  const line = (key: 'confirmedMinutes' | 'pendingMinutes') => points.map((item, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(item[key])}`).join(' ')
+  const labels = points.length > 10
+    ? points.filter((_, index) => index === 0 || index === points.length - 1 || index % Math.ceil(points.length / 6) === 0)
+    : points
+  return (
+    <div className="work-hours-trend-chart" role="img" aria-label={`${period === 'week' ? '本周' : '本月'}投入趋势图`}>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
+          <g key={ratio}>
+            <line x1={padding.left} x2={width - padding.right} y1={y(max * ratio)} y2={y(max * ratio)} />
+            <text x={padding.left - 8} y={y(max * ratio) + 4} textAnchor="end">{(max * ratio / 60).toFixed(0)}h</text>
+          </g>
+        ))}
+        <path className="work-hours-trend-line is-confirmed" d={line('confirmedMinutes')} />
+        <path className="work-hours-trend-line is-pending" d={line('pendingMinutes')} />
+        {points.map((item, index) => (
+          <g key={`${item.date}-${index}`}>
+            <circle className="is-confirmed" cx={x(index)} cy={y(item.confirmedMinutes)} r="3" />
+            <circle className="is-pending" cx={x(index)} cy={y(item.pendingMinutes)} r="2.5" />
+          </g>
+        ))}
+        {labels.map((item) => {
+          const index = points.indexOf(item)
+          return <text className="work-hours-trend-label" key={`label-${item.date}-${index}`} x={x(index)} y={height - 9} textAnchor="middle">{item.date ? item.date.slice(5).replace('-', '/') : '-'}</text>
+        })}
+      </svg>
+    </div>
+  )
+}
+
 const emptySummary: WorkHourSummary = {
   byDate: [], byProject: [], byUser: [], confirmedMinutes: 0, pendingMinutes: 0,
   projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0,
@@ -84,6 +132,7 @@ export function WorkHoursWorkbench({
   const [managementTab, setManagementTab] = useState<'projects' | 'members' | 'trend' | 'tasks'>('projects')
   const [status, setStatus] = useState<'all' | 'pending' | 'confirmed'>('all')
   const [projectFilter, setProjectFilter] = useState<number | 'all'>('all')
+  const [projectPickerPage, setProjectPickerPage] = useState(0)
   const [taskQuery, setTaskQuery] = useState('')
   const [taskStatus, setTaskStatus] = useState<'all' | 'open' | 'done'>('all')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -104,7 +153,11 @@ export function WorkHoursWorkbench({
   const reload = useCallback(() => {
     setLoading(true)
     setError('')
-    const filters = { startDate: range.startDate, endDate: range.endDate, status }
+    const filters = {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      status: mode === 'mine' && mineTab === 'records' ? status : 'all' as const,
+    }
     const request = mode === 'organization' && organizationId
       ? fetchOrganizationWorkHours(organizationId, filters)
       : mode === 'project' && projectId
@@ -113,7 +166,7 @@ export function WorkHoursWorkbench({
     void request.then((data) => { setEntries(data.entries); setSummary(data.summary) })
       .catch((cause) => setError(cause instanceof Error ? cause.message : '工时加载失败。'))
       .finally(() => setLoading(false))
-  }, [mode, organizationId, projectFilter, projectId, range.endDate, range.startDate, status])
+  }, [mineTab, mode, organizationId, projectFilter, projectId, range.endDate, range.startDate, status])
 
   useEffect(() => { reload() }, [reload])
   useEffect(() => { setRange(rangeForPeriod(period)) }, [period])
@@ -139,6 +192,9 @@ export function WorkHoursWorkbench({
   }, [autoOpenRecorder, initialProjectId, initialTodoId, mode, onRecorderContextConsumed, project?.id])
 
   const projectOptions = useMemo(() => projects.filter((candidate) => candidate.organizationId != null), [projects])
+  const projectPickerSize = 5
+  const projectPickerPages = Math.max(1, Math.ceil(projectOptions.length / projectPickerSize))
+  const visibleProjectOptions = projectOptions.slice(projectPickerPage * projectPickerSize, (projectPickerPage + 1) * projectPickerSize)
   const filteredTasks = useMemo(() => (summary.tasks ?? []).filter((task) => {
     const matchesQuery = !taskQuery.trim() || task.title.toLowerCase().includes(taskQuery.trim().toLowerCase()) || task.assigneeName?.toLowerCase().includes(taskQuery.trim().toLowerCase())
     return matchesQuery && (taskStatus === 'all' || (taskStatus === 'done' ? task.done : !task.done))
@@ -205,10 +261,10 @@ export function WorkHoursWorkbench({
 
   return (
     <section className="work-hours-workbench">
-      <header className="work-hours-header">
-        <div><p className="work-hours-eyebrow">{mode === 'mine' ? `${currentUserName ?? '我'} · 个人工时` : mode === 'project' ? '项目工时台账' : '企业工时管理'}</p><h3>{mode === 'mine' ? '我的工时' : mode === 'project' ? project?.name : '工时统计'}</h3></div>
-        {mode === 'mine' ? <div className="work-hours-actions"><Button type="button" variant="outline" onClick={exportEntries}><DownloadSimple size={16} />导出</Button><Button type="button" onClick={() => openRecorder()}><Plus size={16} />填报工时</Button></div> : null}
-      </header>
+      {mode === 'mine' ? <header className="work-hours-header">
+        <div><p className="work-hours-eyebrow">{currentUserName ?? '我'} · 个人工时</p><h3>我的工时</h3></div>
+        <div className="work-hours-actions"><Button type="button" variant="outline" onClick={exportEntries}><DownloadSimple size={16} />导出</Button><Button type="button" onClick={() => openRecorder()}><Plus size={16} />填报工时</Button></div>
+      </header> : null}
 
       <nav className="work-hours-tabs" aria-label="工时视图">
         {mode === 'mine' ? <><button className={mineTab === 'records' ? 'is-active' : ''} onClick={() => setMineTab('records')} type="button">工时记录</button><button className={mineTab === 'stats' ? 'is-active' : ''} onClick={() => setMineTab('stats')} type="button">工时统计</button></> : <>
@@ -222,20 +278,24 @@ export function WorkHoursWorkbench({
       <div className="work-hours-filters">
         <div className="work-hours-period"><button className={period === 'week' ? 'is-active' : ''} onClick={() => setPeriod('week')} type="button">周</button><button className={period === 'month' ? 'is-active' : ''} onClick={() => setPeriod('month')} type="button">月</button></div>
         <div className="work-hours-date-nav"><button onClick={() => setRange((value) => shiftRange(value, period, -1))} type="button">上一周期</button><strong>{range.startDate.replaceAll('-', '.')} - {range.endDate.replaceAll('-', '.')}</strong><button onClick={() => setRange((value) => shiftRange(value, period, 1))} type="button">下一周期</button></div>
-        {mode === 'mine' ? <Label>项目<select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value === 'all' ? 'all' : Number(event.target.value))}><option value="all">全部企业项目</option>{projectOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Label> : null}
-        <Label>状态<select value={status} onChange={(event) => setStatus(event.target.value as typeof status)}><option value="all">全部</option><option value="confirmed">已确认</option><option value="pending">待确认</option></select></Label>
+        {mode === 'mine' ? <div className="work-hours-project-picker" aria-label="按项目筛选">
+          <button className={projectFilter === 'all' ? 'is-active' : ''} onClick={() => setProjectFilter('all')} type="button">全部项目</button>
+          {visibleProjectOptions.map((item) => <button className={projectFilter === item.id ? 'is-active' : ''} key={item.id} onClick={() => setProjectFilter(item.id)} type="button">{item.name}</button>)}
+          {projectPickerPages > 1 ? <span className="work-hours-project-pager"><button aria-label="上一页项目" disabled={projectPickerPage === 0} onClick={() => setProjectPickerPage((page) => Math.max(0, page - 1))} type="button">‹</button><span>{projectPickerPage + 1}/{projectPickerPages}</span><button aria-label="下一页项目" disabled={projectPickerPage >= projectPickerPages - 1} onClick={() => setProjectPickerPage((page) => Math.min(projectPickerPages - 1, page + 1))} type="button">›</button></span> : null}
+        </div> : null}
+        {mode === 'mine' && mineTab === 'records' ? <Label>状态<select value={status} onChange={(event) => setStatus(event.target.value as typeof status)}><option value="all">全部状态</option><option value="confirmed">已确认</option><option value="pending">待确认</option></select></Label> : null}
       </div>
 
       {error ? <div className="work-hours-error" role="alert">{error}</div> : null}
       {mode !== 'mine' || mineTab === 'stats' ? <>
         <div className="work-hours-metrics">
-          <div><Clock size={18} /><span>{mode === 'mine' ? '本周期已记录' : '累计投入'}</span><strong>{hours(summary.totalMinutes)}</strong></div>
+          <div><Clock size={18} /><span>{mode === 'mine' ? '本周期已记录' : mode === 'organization' ? '任务预估' : '累计投入'}</span><strong>{mode === 'organization' ? hours(estimatedMinutes) : hours(summary.totalMinutes)}</strong></div>
           <div><CheckCircle size={18} /><span>{mode === 'mine' ? '本周期已确认' : '已确认'}</span><strong>{hours(summary.confirmedMinutes)}</strong></div>
-          <div><TrendUp size={18} /><span>{mode === 'mine' ? '本周期未确认' : '待确认'}</span><strong>{hours(summary.pendingMinutes)}</strong></div>
-          <div><ChartLine size={18} /><span>{mode === 'mine' ? '参与项目' : '累计预估'}</span><strong>{mode === 'mine' ? summary.projectCount : hours(estimatedMinutes)}</strong></div>
+          <div><TrendUp size={18} /><span>{mode === 'mine' ? '本周期未确认' : '未确认'}</span><strong>{hours(summary.pendingMinutes)}</strong></div>
+          <div><ChartLine size={18} /><span>{mode === 'mine' ? '参与项目' : mode === 'organization' ? '完结偏差' : '累计预估'}</span><strong>{mode === 'mine' ? summary.projectCount : mode === 'organization' ? hours(summary.byProject.reduce((sum, item) => sum + (item.varianceMinutes ?? 0), 0)) : hours(estimatedMinutes)}</strong></div>
         </div>
         {mode === 'mine' ? <div className="work-hours-grid">
-          <section className="work-hours-card"><h4>投入趋势</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期每日汇总' : '按自然月汇总'}</p>{summary.byDate.length ? summary.byDate.map((item) => <div className="work-hours-bar-row" key={item.date}><span>{item.date.slice(5)}</span><div className="work-hours-split-bar"><i className="is-confirmed" style={{ width: `${item.confirmedMinutes / maxDateMinutes * 100}%` }} /><i className="is-pending" style={{ width: `${item.pendingMinutes / maxDateMinutes * 100}%` }} /></div><strong>{hours(item.minutes)}</strong></div>) : <p className="work-hours-empty">当前周期暂无记录</p>}</section>
+          <section className="work-hours-card"><h4>我的投入趋势</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期每日汇总' : '按自然月分段汇总'}</p>{summary.byDate.length ? <WorkHoursTrendChart byDate={summary.byDate} period={period} /> : <p className="work-hours-empty">当前周期暂无记录</p>}</section>
           <section className="work-hours-card"><h4>项目投入</h4>{summary.byProject.map((item) => <button className="work-hours-project-card" key={item.projectId} onClick={() => onProjectClick?.(item.projectId)} type="button"><span>{item.projectName}</span><small>{item.taskCount ?? 0} 个任务</small><strong>{hours(item.minutes)}</strong></button>)}</section>
         </div> : null}
         {mode === 'mine' ? <section className="work-hours-card work-hours-table-card work-hours-personal-table"><h4>我的项目投入</h4><div className="work-hours-table"><div className="work-hours-table-row work-hours-table-heading"><span>项目</span><span>参与任务</span><span>已确认</span><span>未确认</span><span>已记录</span><span>个人投入占比</span></div>{summary.byProject.map((item) => { const total = summary.totalMinutes || 1; return <button className="work-hours-table-row" key={item.projectId} onClick={() => onProjectClick?.(item.projectId)} type="button"><strong>{item.projectName}</strong><span>{item.taskCount ?? 0}</span><span>{hours(item.confirmedMinutes)}</span><span>{hours(item.pendingMinutes)}</span><span>{hours(item.minutes)}</span><span>{Math.round(item.minutes / total * 100)}%</span></button> })}</div></section> : null}
@@ -245,7 +305,7 @@ export function WorkHoursWorkbench({
         <div className="work-hours-overview-grid">
           <section className="work-hours-card work-hours-overview-chart">
             <div className="work-hours-section-heading"><div><h4>投入趋势</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期汇总' : '按自然月内日期汇总'}</p></div><div className="work-hours-legend"><span><i className="is-confirmed" />已确认</span><span><i className="is-pending" />待确认</span></div></div>
-            {summary.byDate.length ? <div className="work-hours-overview-bars">{summary.byDate.map((item) => <div className="work-hours-overview-bar-row" key={item.date}><time>{item.date.slice(5)}</time><div className="work-hours-overview-bar"><i className="is-confirmed" style={{ width: `${item.confirmedMinutes / maxDateMinutes * 100}%` }} /><i className="is-pending" style={{ width: `${item.pendingMinutes / maxDateMinutes * 100}%` }} /></div><strong>{hours(item.minutes)}</strong></div>)}</div> : <p className="work-hours-empty">当前周期暂无记录</p>}
+            {summary.byDate.length ? <WorkHoursTrendChart byDate={summary.byDate} period={period} /> : <p className="work-hours-empty">当前周期暂无记录</p>}
           </section>
           <section className="work-hours-card work-hours-overview-members">
             <div className="work-hours-section-heading"><div><h4>成员投入</h4><p className="work-hours-card-note">按实际填报人归属</p></div></div>
