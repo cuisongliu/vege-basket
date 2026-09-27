@@ -92,4 +92,8 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
     /setSelectedProjectId\(initialProjectId \?\? project\?\.id \?\? null\)/u,
   )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /recorderContextLocked[\s\S]*?disabled=\{Boolean\(editingEntry\) \|\| recorderContextLocked\}/u,
+  )
 })
