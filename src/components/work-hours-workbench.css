@@ -21,7 +21,26 @@
 .work-hours-list-row { grid-template-columns: 1fr auto; border-bottom: 1px solid var(--border); }.work-hours-list-row:last-child { border-bottom: 0; }
 .work-hours-table-card { overflow: auto; }.work-hours-table { margin-top: 10px; min-width: 680px; }.work-hours-table-row { border-top: 1px solid var(--border); grid-template-columns: 100px 1.1fr 1.5fr 70px 70px; padding: 8px 0; }.work-hours-project-table .work-hours-table-row { grid-template-columns: 1.5fr repeat(3, minmax(80px, 0.6fr)); }.work-hours-table-heading { color: var(--muted-text); font-size: 12px; }.work-hours-table-row span { color: var(--muted-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.work-hours-status.is-confirmed { color: var(--primary); }.work-hours-status.is-pending { color: #a67739; }
 .work-hours-empty { color: var(--muted-text); font-size: 13px; }
-@media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; } }
+.work-hours-overview-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); }
+.work-hours-overview-chart, .work-hours-overview-members { min-height: 220px; }
+.work-hours-overview-bars, .work-hours-member-bars { display: grid; gap: 12px; margin-top: 14px; }
+.work-hours-overview-bar-row, .work-hours-member-bar-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 48px minmax(0, 1fr) auto; min-height: 28px; }
+.work-hours-overview-bar-row time { color: var(--muted-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.work-hours-overview-bar-row strong, .work-hours-member-bar-row span { color: var(--muted-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.work-hours-overview-bar, .work-hours-member-bar-row > div { background: var(--muted); border-radius: 999px; height: 8px; overflow: hidden; }
+.work-hours-overview-bar { display: flex; }
+.work-hours-overview-bar i, .work-hours-member-bar-row i { display: block; height: 100%; }
+.work-hours-overview-bar i.is-confirmed, .work-hours-member-bar-row i { background: var(--primary); }
+.work-hours-overview-bar i.is-pending { background: #d49a43; }
+.work-hours-legend { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted-text); font-size: 11px; }
+.work-hours-legend span { align-items: center; display: inline-flex; gap: 5px; }
+.work-hours-legend i { border-radius: 999px; display: inline-block; height: 7px; width: 7px; }
+.work-hours-legend i.is-confirmed { background: var(--primary); }
+.work-hours-legend i.is-pending { background: #d49a43; }
+.work-hours-member-bar-row { grid-template-columns: minmax(74px, .45fr) minmax(0, 1fr) auto; }
+.work-hours-member-bar-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-hours-history-summary { color: var(--muted-text); font-size: 12px; }
+@media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid, .work-hours-overview-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; }.work-hours-overview-chart, .work-hours-overview-members { min-height: 0; } }
 .work-hours-filters select, .work-hours-dialog select, .work-hours-task-filters select, .work-hours-dialog textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; min-height: 36px; padding: 7px 9px; }
 .work-hours-split-bar { display: flex; }
 .work-hours-split-bar i.is-confirmed { background: #2d8468; }

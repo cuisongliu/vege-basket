@@ -254,6 +254,7 @@ import type {
   AiTurnOutcome,
   AiTurnRunResponse,
   ChangelogEntry,
+  JournalEntry,
   Todo,
   TodoNote,
 } from './types'
@@ -5623,6 +5624,23 @@ ${packageTimelineText}`
                 {view === 'project' && selectedProject && (
                   <ProjectTags tags={selectedProject.tags} />
                 )}
+                {view === 'project' && selectedProject && detailEntrySource === 'project' && scopedProjects.length > 1 ? (
+                  <label className="project-context-switcher">
+                    <span>当前项目</span>
+                    <select
+                      aria-label="切换项目"
+                      value={selectedProject.id}
+                      onChange={(event) => {
+                        const projectId = Number(event.target.value)
+                        if (Number.isSafeInteger(projectId) && projectId > 0) selectProject(projectId)
+                      }}
+                    >
+                      {scopedProjects.map((item) => (
+                        <option key={item.id} value={item.id}>{item.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
               </div>
             </div>
             <div
@@ -6867,31 +6885,15 @@ function ProjectDetail({
   const [pastJournalDialogOpen, setPastJournalDialogOpen] = useState(false)
   const [pastJournalDate, setPastJournalDate] = useState(getPreviousDateStamp())
   const isProjectTodoFocusOpen = isProjectTodoDetailOpen || isTodoCreateDialogOpen
-  const journalDates = useMemo(
-    () =>
-      Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10))))
-        .sort((left, right) => right.localeCompare(left)),
-    [project.journals],
-  )
-  const defaultJournalDate = journalDates.includes(today)
-    ? today
-    : journalDates[0] ?? today
-  const [selectedJournalDate, setSelectedJournalDate] = useState(defaultJournalDate)
-  const activeJournalDate = journalDates.includes(selectedJournalDate)
-    ? selectedJournalDate
-    : defaultJournalDate
-  const visibleJournals = project.journals.filter((entry) =>
-    entry.createdAt.startsWith(activeJournalDate),
-  )
-  const selectedJournalDateIndex = journalDates.indexOf(activeJournalDate)
-  const previousJournalDate =
-    selectedJournalDateIndex >= 0
-      ? journalDates[selectedJournalDateIndex + 1]
-      : undefined
-  const nextJournalDate =
-    selectedJournalDateIndex > 0
-      ? journalDates[selectedJournalDateIndex - 1]
-      : undefined
+  const journalGroups = useMemo(() => {
+    const grouped = new Map<string, JournalEntry[]>()
+    for (const entry of [...project.journals].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
+      const date = entry.createdAt.slice(0, 10)
+      grouped.set(date, [...(grouped.get(date) ?? []), entry])
+    }
+    return Array.from(grouped, ([date, entries]) => ({ date, entries }))
+  }, [project.journals])
+  const journalDates = journalGroups.map((group) => group.date)
   const projectMembers = getProjectAssignableUsers(project, memberships)
   const projectModules = project.modules
   const canWriteProject = !project.readOnly && (!project.organizationId || Boolean(project.canManageOrganizationTodos))
@@ -6940,14 +6942,12 @@ function ProjectDetail({
     if (!journalDraft.trim()) return
     const saved = await onSaveJournal(pastJournalDate)
     if (saved) {
-      setSelectedJournalDate(pastJournalDate)
       setPastJournalDialogOpen(false)
     }
   }
 
   async function saveTodayJournal() {
-    const saved = await onSaveJournal()
-    if (saved) setSelectedJournalDate(today)
+    await onSaveJournal()
   }
 
   function closeTodoCreateDialog() {
@@ -7090,8 +7090,11 @@ function ProjectDetail({
             </Dialog></> : null}
 
             <div className="history-list">
-              {visibleJournals.length > 0 ? (
-                visibleJournals.map((entry) => {
+              {journalGroups.length > 0 ? (
+                journalGroups.map(({ date, entries }) => (
+                  <section className="journal-date-group" key={date}>
+                    <h3>{date}</h3>
+                    {entries.map((entry) => {
                   const canEditEntry = canWriteProject && (
                     entry.authorUserId === currentUser?.id ||
                     (!entry.authorUserId && isOwner)
@@ -7237,51 +7240,15 @@ function ProjectDetail({
                       )}
                     </article>
                   )
-                })
+                    })}
+                  </section>
+                ))
               ) : (
-                <p className="empty-state">这一天还没有日记记录。</p>
+                <p className="empty-state">还没有项目日记。</p>
               )}
             </div>
-            <div className="journal-pagination" aria-label="日记日期选择">
-              <Button
-                className="ghost-button"
-                disabled={!previousJournalDate}
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!previousJournalDate) return
-                  setSelectedJournalDate(previousJournalDate)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              >
-                上一天
-              </Button>
-              <JournalDatePicker
-                key={activeJournalDate}
-                datesWithEntries={journalDates}
-                value={activeJournalDate}
-                onChange={(date) => {
-                  setSelectedJournalDate(date)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              />
-              <span>{visibleJournals.length} 条</span>
-              <Button
-                className="ghost-button"
-                disabled={!nextJournalDate}
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!nextJournalDate) return
-                  setSelectedJournalDate(nextJournalDate)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              >
-                下一天
-              </Button>
+            <div className="journal-history-summary">
+              共 {project.journals.length} 条日记，覆盖 {journalDates.length} 个日期
             </div>
           </Card>
         ) : null}

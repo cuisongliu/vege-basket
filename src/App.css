@@ -921,6 +921,27 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.project-context-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 6px;
+  color: var(--muted-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-context-switcher select {
+  min-width: 180px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--strong);
+  padding: 0 9px;
+  font: inherit;
+}
+
 .detail-back-button {
   width: 34px;
   height: 34px;
@@ -1876,6 +1897,32 @@ textarea:focus {
   padding-right: 2px;
   scrollbar-color: transparent transparent;
   scrollbar-width: thin;
+}
+
+.journal-date-group {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.journal-date-group > h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 7px 2px;
+  background: var(--card);
+  color: var(--strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.journal-history-summary {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted-text);
+  font-size: 12px;
+  text-align: right;
 }
 
 .journal-panel .history-list:hover,
