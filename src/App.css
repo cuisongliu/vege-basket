@@ -3635,6 +3635,12 @@ textarea:focus {
 .todo-status-marker.is-done { background: color-mix(in oklch, var(--brand) 12%, var(--surface)); border-color: color-mix(in oklch, var(--brand) 42%, var(--line)); color: var(--brand); }
 .todo-status-marker.is-returned { background: color-mix(in oklch, #b2483e 10%, var(--surface)); border-color: color-mix(in oklch, #b2483e 38%, var(--line)); color: #b2483e; }
 
+.todo-work-summary {
+  color: var(--muted-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .todo-select-checkbox.selected {
   border-color: color-mix(in oklch, var(--brand) 42%, var(--line));
   background: color-mix(in oklch, var(--brand) 10%, var(--surface));

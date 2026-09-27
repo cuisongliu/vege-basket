@@ -13015,6 +13015,10 @@ function TodoList({
                     {todo.assigneeName && (
                       <span className="todo-assignee-inline">@<UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /></span>
                     )}
+                    <span className="todo-work-summary" aria-label="工时摘要">
+                      预估 {todo.estimatedWorkMinutes == null ? '未设置' : formatInviteDurationLabel(todo.estimatedWorkMinutes)}
+                      {' · '}已记录 {formatInviteDurationLabel(todo.recordedWorkMinutes ?? 0)}
+                    </span>
                     {getTodoWatcherNames(todo).length > 0 && (
                       <span className="todo-watcher-inline">
                         {formatTodoWatcherNames(todo)}

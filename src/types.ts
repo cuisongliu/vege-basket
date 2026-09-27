@@ -89,6 +89,9 @@ export type Todo = {
   completedByName?: string
   confirmationStatus: TodoConfirmationStatus
   estimatedWorkMinutes?: number | null
+  recordedWorkMinutes?: number
+  confirmedWorkMinutes?: number
+  pendingWorkMinutes?: number
   needsRevision?: boolean
   rejectionReason?: string
   linkedToDeliveryEvent: boolean

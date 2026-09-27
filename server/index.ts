@@ -4369,6 +4369,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       completed_by_display_name: string | null
       confirmation_status: TodoConfirmationStatus
       estimated_work_minutes: number | null
+      recorded_work_minutes: number
+      confirmed_work_minutes: number
+      pending_work_minutes: number
       needs_revision: boolean
       rejection_reason: string | null
       linked_to_delivery_event: boolean
@@ -4407,6 +4410,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              t.completed_by_user_id,
              t.confirmation_status,
              t.estimated_work_minutes,
+             coalesce(work_hours.recorded_work_minutes, 0)::int as recorded_work_minutes,
+             coalesce(work_hours.confirmed_work_minutes, 0)::int as confirmed_work_minutes,
+             coalesce(work_hours.pending_work_minutes, 0)::int as pending_work_minutes,
              t.needs_revision,
              t.rejection_reason,
              exists (
@@ -4429,6 +4435,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              watchers.watchers_json,
              t.reviewer_user_id,
              t.assigned_by_user_id,
+             work_hours.recorded_work_minutes,
+             work_hours.confirmed_work_minutes,
+             work_hours.pending_work_minutes,
              (
                select coalesce(nullif(departed_user.display_name, ''), departed_user.email)
                from account_offboarding_asset_transfers transfer
@@ -4453,6 +4462,14 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              completed_by.email as completed_by_email,
              completed_by.display_name as completed_by_display_name
       from todos t
+      left join lateral (
+        select
+          sum(hours.minutes) as recorded_work_minutes,
+          sum(hours.minutes) filter (where hours.status = 'confirmed') as confirmed_work_minutes,
+          sum(hours.minutes) filter (where hours.status = 'pending') as pending_work_minutes
+        from todo_work_hours hours
+        where hours.todo_id = t.id
+      ) work_hours on true
       join projects p on p.id = t.project_id
       left join project_memberships membership
         on membership.project_id = p.id
@@ -4862,6 +4879,9 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
         : undefined,
       confirmationStatus: todo.confirmation_status,
       estimatedWorkMinutes: todo.estimated_work_minutes == null ? null : Number(todo.estimated_work_minutes),
+      recordedWorkMinutes: Number(todo.recorded_work_minutes ?? 0),
+      confirmedWorkMinutes: Number(todo.confirmed_work_minutes ?? 0),
+      pendingWorkMinutes: Number(todo.pending_work_minutes ?? 0),
       needsRevision: todo.needs_revision,
       rejectionReason: todo.rejection_reason ? decryptText(todo.rejection_reason) : undefined,
       linkedToDeliveryEvent: todo.linked_to_delivery_event,
