@@ -299,7 +299,7 @@ function summary(entries: WorkHourRow[]) {
     const projectId = Number(entry.project_id)
     const project = byProject.get(projectId) ?? {
       projectId,
-      projectName: entry.project_name ?? '未命名项目',
+      projectName: entry.project_name ? decryptText(entry.project_name) : '未命名项目',
       minutes: 0,
       pendingMinutes: 0,
       confirmedMinutes: 0,
@@ -321,7 +321,7 @@ function summary(entries: WorkHourRow[]) {
     else dateSummary.confirmedMinutes += Number(entry.minutes)
     byDate.set(date, dateSummary)
     const userId = Number(entry.user_id)
-    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ?? '未记录', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, projects: new Set<number>(), tasks: new Set<string>() }
+    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ? decryptText(entry.user_name) : '未记录', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, projects: new Set<number>(), tasks: new Set<string>() }
     user.minutes += Number(entry.minutes)
     user.projects.add(projectId)
     user.tasks.add(entry.todo_id)

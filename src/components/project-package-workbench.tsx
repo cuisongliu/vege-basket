@@ -102,6 +102,7 @@ import type {
 } from '@/types'
 import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
 import { UserName } from '@/components/user-name'
+import { ListPagination } from '@/components/list-pagination'
 import type {
   PackageMarketRequestContext,
   PackageMarketRulesResponse,
@@ -116,7 +117,7 @@ import {
 type PackageWorkbenchProps = {
   onAddEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
-  onCompleteEvent: (eventId: number) => Promise<boolean>
+  onCompleteEvent: (eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) => Promise<boolean>
   onCreateOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -269,6 +270,10 @@ type PackageMarketBrowserProps = {
 
 function eventTypeLabel(type: ProjectPackageEventType) {
   return type === 'init' ? '初始化安装' : '升级'
+}
+
+function deliveryTodoLinksEnabled() {
+  return false
 }
 
 function eventStatusLabel(status: ProjectPackageEventStatus) {
@@ -1599,6 +1604,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventFilterJoin, setEventFilterJoin] = useState<PackageEventFilterJoin>('and')
   const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
   const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [eventPage, setEventPage] = useState(0)
+  const [deliveryResultDialogOpen, setDeliveryResultDialogOpen] = useState(false)
+  const [deliveryResult, setDeliveryResult] = useState<'success' | 'failed'>('success')
+  const [deliveryFailureReason, setDeliveryFailureReason] = useState('')
+  const [deliveryResultError, setDeliveryResultError] = useState('')
   const [operationDialogOpen, setOperationDialogOpen] = useState(false)
   const [operationEditorReady, setOperationEditorReady] = useState(false)
   const [operationTitle, setOperationTitle] = useState('')
@@ -1752,6 +1762,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     eventSortDirection,
     events,
   ])
+  const eventPageSize = 10
+  const pagedEvents = useMemo(
+    () => visibleEvents.slice(eventPage * eventPageSize, (eventPage + 1) * eventPageSize),
+    [eventPage, visibleEvents],
+  )
+  useEffect(() => {
+    setEventPage((page) => Math.min(page, Math.max(0, Math.ceil(visibleEvents.length / eventPageSize) - 1)))
+  }, [visibleEvents.length])
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
     [todos],
@@ -3147,7 +3165,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   }}
                 />
               </Label>
-              <div className="event-document-todo-link">
+              <div className="event-document-todo-link" hidden>
                 <div className="event-document-todo-link-copy">
                   <div>
                     <strong>关联待办</strong>
@@ -3432,7 +3450,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       ? '暂无指派给你的交付事件。'
                       : '暂无交付事件。'}
                 </p>
-              ) : visibleEvents.map((event) => (
+              ) : pagedEvents.map((event) => (
                 <div
                   className={event.id === selectedEvent?.id ? 'project-event-item active' : 'project-event-item'}
                   key={event.id}
@@ -3449,7 +3467,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         执行负责人：<UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} />
                       </span>
                       <span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>
-                        {eventStatusLabel(eventDisplayStatus(event))}
+                        {event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}
                       </span>
                     </span>
                   </button>
@@ -3493,6 +3511,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </div>
               ))}
             </div>
+            {visibleEvents.length > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={visibleEvents.length} onPageChange={setEventPage} /> : null}
           </aside>
 
           {eventEditorOpen ? (
@@ -3524,7 +3543,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <section className="operation-area">
                   <div className="operation-area-head">
                     <div>
-                      <h4>操作文档</h4>
+                      <h4>变更记录</h4>
                       <p className="operation-area-meta">
                         {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)}
                         <span className="event-progress-pill">
@@ -3535,6 +3554,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         制定：{selectedEvent.createdByName || '未知'} · 发布：{selectedEvent.publishedByName || '未知'} · 执行负责人：{selectedEvent.assigneeName || '未指派'}
                         {selectedEvent.completedAt ? ` · 完成：${selectedEvent.completedByName || '未知'}（${selectedEvent.completedAt}）` : ''}
                         <br />事件发布后，基本信息、安装包和文档保持只读。
+                        {selectedEvent.deliveryResult ? <><br />交付结果：{selectedEvent.deliveryResult === 'success' ? '交付成功' : '交付失败'}{selectedEvent.deliveryFailureReason ? ` · 失败原因：${selectedEvent.deliveryFailureReason}` : ''}</> : null}
                       </p>
                     </div>
                     <div className="operation-actions">
@@ -3552,13 +3572,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           className="solid-button"
                           type="button"
                           disabled={busyAction === `complete-event-${selectedEvent.id}`}
-                          onClick={() => {
-                            void confirmAction({
-                              title: `将“${selectedEvent.title}”标记为已交付？`,
-                              description: '事件将进入已交付状态，可在交付事件列表查看。',
-                              confirmLabel: '标记已交付', variant: 'default',
-                            }, () => onCompleteEvent(selectedEvent.id))
-                          }}
+                          onClick={() => { setDeliveryResult('success'); setDeliveryFailureReason(''); setDeliveryResultError(''); setDeliveryResultDialogOpen(true) }}
                         >
                           <Check size={14} weight="bold" /> 标记已交付
                         </Button>
@@ -3592,7 +3606,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           openOperationDialog({ eventId: selectedEvent.id, operation: null }, 'document')
                         }
                       >
-                        <strong>点击开始编辑操作文档</strong>
+                        <strong>点击开始编辑变更记录</strong>
                         <span>点击这里，直接开始编辑这个事件的文档内容。</span>
                       </button>
                     ) : (
@@ -3622,7 +3636,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                             </div>
                           </button>
                           {renderOperationTodoChips(operation, todosById)}
-                          {canManageLinks ? (
+                          {deliveryTodoLinksEnabled() && canManageLinks ? (
                             <div className="operation-entry-actions">
                               <button
                                 className="icon-button operation-action-button"
@@ -3834,7 +3848,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                   </div>
                                 </button>
                                 {renderOperationTodoChips(operation, todosById)}
-                                {canManageLinks ? (
+                                {deliveryTodoLinksEnabled() && canManageLinks ? (
                                   <div className="operation-entry-actions">
                                     <button
                                       className="icon-button operation-action-button"
@@ -3894,6 +3908,25 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         </div>
       )}
 
+      <Dialog open={deliveryResultDialogOpen} onOpenChange={setDeliveryResultDialogOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>标记交付结果</DialogTitle><DialogDescription>交付失败后需要创建新的交付事件继续处理。</DialogDescription></DialogHeader>
+          <div className="work-hours-dialog-form">
+            <Label>交付状态<select value={deliveryResult} onChange={(event) => setDeliveryResult(event.target.value as 'success' | 'failed')}><option value="success">交付成功</option><option value="failed">交付失败</option></select></Label>
+            {deliveryResult === 'failed' ? <Label>失败原因<textarea rows={4} value={deliveryFailureReason} onChange={(event) => setDeliveryFailureReason(event.target.value)} placeholder="请填写失败原因" /></Label> : null}
+            {deliveryResultError ? <p className="work-hours-error">{deliveryResultError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={() => setDeliveryResultDialogOpen(false)}>取消</Button>
+            <Button type="button" onClick={() => {
+              if (deliveryResult === 'failed' && !deliveryFailureReason.trim()) { setDeliveryResultError('交付失败时必须填写失败原因'); return }
+              setDeliveryResultDialogOpen(false)
+              if (!selectedEvent) return
+              void confirmAction({ title: `确认提交“${selectedEvent.title}”的交付结果？`, description: deliveryResult === 'failed' ? '失败后需要创建新的交付事件。' : '事件将标记为交付成功。', confirmLabel: '确认提交' }, () => onCompleteEvent(selectedEvent.id, { result: deliveryResult, failureReason: deliveryFailureReason.trim() }))
+            }}>确认提交</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={operationDialogOpen} onOpenChange={setOperationDialogOpen}>
         <DialogContent className="package-operation-dialog">
           <DialogHeader className="operation-doc-header">

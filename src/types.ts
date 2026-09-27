@@ -349,6 +349,7 @@ export type TodoProposal = {
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageDeliveryResult = 'success' | 'failed'
 export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 export type PackageMarketChannel = 'release' | 'ci'
@@ -410,6 +411,8 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryResult?: ProjectPackageDeliveryResult
+  deliveryFailureReason?: string
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number

@@ -2787,6 +2787,32 @@ create table if not exists project_delivery_members (
 create index if not exists idx_project_delivery_member_user on project_delivery_members(user_id, organization_id);
 alter table project_package_events add column if not exists completed_by_user_id bigint references users(id) on delete set null;
 alter table project_package_events add column if not exists completed_at timestamptz;
+alter table project_package_events
+  add column if not exists delivery_result text;
+alter table project_package_events
+  add column if not exists delivery_failure_reason text;
+-- Delivery events are independent of todos. Remove legacy links so the old
+-- cascade-like association cannot reappear in the delivery workbench.
+delete from project_package_operation_todos;
+update project_package_events
+set delivery_result = 'success'
+where status = 'delivered' and delivery_result is null;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'project_package_events_delivery_result_check'
+      and conrelid = 'project_package_events'::regclass
+  ) then
+    alter table project_package_events
+      add constraint project_package_events_delivery_result_check
+      check (
+        delivery_result is null
+        or delivery_result = 'success'
+        or (delivery_result = 'failed' and length(btrim(coalesce(delivery_failure_reason, ''))) > 0)
+      );
+  end if;
+end $$;
 
 
 create or replace function revoke_project_delivery_membership() returns trigger language plpgsql as $$

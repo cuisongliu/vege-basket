@@ -45,9 +45,9 @@ test('draft event documents remain openable for editing', () => {
   })
 })
 
-test('published operation documents keep todo management without restoring document mutations', () => {
-  const todoActionPattern = /\{canManageLinks \? \(\s*<div className="operation-entry-actions">[\s\S]*?aria-label="关联待办"[\s\S]*?\{canManageTimeline \? \(\s*<DeleteConfirmDialog/gu
-  assert.equal([...workbenchSource.matchAll(todoActionPattern)].length, 2)
+test('delivery documents no longer expose todo association actions', () => {
+  assert.match(workbenchSource, /function deliveryTodoLinksEnabled\(\) \{\s*return false/u)
+  assert.equal((workbenchSource.match(/aria-label="关联待办"/g) ?? []).length, 2)
   assert.match(
     timelineSource,
     /const operation = await findOperationMeta\([\s\S]*?if \(!operation\)[\s\S]*?if \(operation\.published_at && updates\.length > 0\)[\s\S]*?Published events are read-only/u,
@@ -169,12 +169,13 @@ test('event wizard keeps long package document navigation inside the desktop sid
   )
 })
 
-test('aggregate event save validates and persists document todo links transactionally', () => {
+test('aggregate event save ignores legacy document todo links transactionally', () => {
   assert.match(indexSource, /relatedTodoIds: Array\.isArray\(value\.relatedTodoIds\)/u)
   assert.match(
     timelineSource,
-    /return withTransaction\(async \(client\) => \{\s*await authorizeDelivery\(client, params\.projectId, params\.createdByUserId,[\s\S]*?await requireDeliveryAssignee\([\s\S]*?await ensureProjectTodoIds\([\s\S]*?let eventId = params\.eventId/u,
+    /return withTransaction\(async \(client\) => \{\s*await authorizeDelivery\(client, params\.projectId, params\.createdByUserId,[\s\S]*?await requireDeliveryAssignee\([\s\S]*?let eventId = params\.eventId/u,
   )
+  assert.match(timelineSource, /const relatedTodoIds: number\[\] = \[\]/u)
   assert.match(
     timelineSource,
     /insert into project_package_operations[\s\S]*?returning id[\s\S]*?replaceOperationTodoLinks\(/u,

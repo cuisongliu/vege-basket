@@ -2009,10 +2009,14 @@ export function saveProjectPackageEventDraft(
   )
 }
 
-export function completeProjectPackageEvent(projectId: number, eventId: number) {
+export function completeProjectPackageEvent(
+  projectId: number,
+  eventId: number,
+  payload: { result: 'success' | 'failed'; failureReason?: string },
+) {
   return request<ProjectPackageTimeline>(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/complete`,
-    { method: 'POST' },
+    { method: 'POST', body: JSON.stringify(payload) },
   )
 }
 

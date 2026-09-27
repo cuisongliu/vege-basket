@@ -14,6 +14,7 @@ import { getPackageMarketRulesForConfigRevision } from './platform-package-rules
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageDeliveryResult = 'success' | 'failed'
 export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 
@@ -112,6 +113,8 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryFailureReason?: string
+  deliveryResult?: ProjectPackageDeliveryResult
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
@@ -148,6 +151,8 @@ type EventRow = {
   completer_name: string | null
   completed_by_user_id: string | null
   completed_at: Date | null
+  delivery_failure_reason: string | null
+  delivery_result: ProjectPackageDeliveryResult | null
   assigned_at: Date | null
   assigned_by_user_id: string | null
   assignee_display_name: string | null
@@ -526,7 +531,7 @@ function normalizeProjectPackageDocuments(
     const title = normalizeText(document.title, 120)
     const content = String(document.content ?? '').trim()
     const packageName = scope === 'package' ? normalizeText(document.packageName, 160) : ''
-    const relatedTodoIds = normalizeTodoIds(document.relatedTodoIds)
+    const relatedTodoIds: number[] = []
     if (!allowIncomplete && (!title || !content)) {
       throw new ProjectPackageEventError(`Document ${index + 1} requires title and content`, 400)
     }
@@ -1303,6 +1308,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
              coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
              coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
              e.completed_by_user_id, e.completed_at,
+             e.delivery_result, e.delivery_failure_reason,
              e.type,
              e.status,
              e.title,
@@ -1572,6 +1578,8 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       completedByName: row.completer_name ?? undefined,
       completedByUserId: row.completed_by_user_id ? Number(row.completed_by_user_id) : undefined,
       completedAt: row.completed_at ? formatDateTime(row.completed_at) : undefined,
+      deliveryFailureReason: row.delivery_failure_reason ? decryptText(row.delivery_failure_reason) : undefined,
+      deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : undefined),
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
       assignedByName: row.assigned_by_user_id
         ? displayUserName({
@@ -1649,11 +1657,6 @@ export async function saveProjectPackageEvent(params: {
   return withTransaction(async (client) => {
     await authorizeDelivery(client, params.projectId, params.createdByUserId, 'plan', params.eventId == null ? undefined : { eventId: params.eventId })
     await requireDeliveryAssignee(client, params.projectId, params.assigneeUserId, params.action === 'publish')
-    await ensureProjectTodoIds(
-      params.projectId,
-      documents.flatMap((document) => document.relatedTodoIds),
-      client,
-    )
     await params.validatePackageItems?.(client, items)
 
     let eventId = params.eventId
@@ -1802,12 +1805,9 @@ export async function saveProjectPackageEvent(params: {
         `,
         [persistedEventId, groupId, encryptText(document.title), encryptText(document.content), params.createdByUserId],
       )
-      await replaceOperationTodoLinks(
-        client,
-        Number(insertedDocument.rows[0].id),
-        params.createdByUserId,
-        document.relatedTodoIds,
-      )
+      // Delivery documents are independent records. Legacy todo links remain
+      // readable for old events, but new and edited documents never create them.
+      await replaceOperationTodoLinks(client, Number(insertedDocument.rows[0].id), params.createdByUserId, [])
     }
 
     let published = false
@@ -1836,15 +1836,26 @@ export async function saveProjectPackageEvent(params: {
   })
 }
 
-export async function completeProjectPackageEvent(params: { eventId: number; projectId: number; userId: number }) {
+export async function completeProjectPackageEvent(params: {
+  eventId: number
+  failureReason?: string
+  projectId: number
+  result?: ProjectPackageDeliveryResult
+  userId: number
+}) {
+  const result = params.result === 'failed' ? 'failed' : 'success'
+  const failureReason = String(params.failureReason ?? '').trim()
+  if (result === 'failed' && !failureReason) {
+    throw new ProjectDeliveryError('交付失败时必须填写失败原因', 400)
+  }
   await withTransaction(async (client) => {
     await authorizeDelivery(client, params.projectId, params.userId, 'canComplete', { eventId: params.eventId })
-    const result = await client.query(`update project_package_events set status = 'delivered', completed_by_user_id = $1,
-      completed_at = now(), updated_at = now() where id = $2 and project_id = $3
+    const updated = await client.query(`update project_package_events set status = 'delivered', completed_by_user_id = $1,
+      completed_at = now(), delivery_result = $2, delivery_failure_reason = $3, updated_at = now() where id = $4 and project_id = $5
       and published_at is not null
       and status = 'delivering'`,
-    [params.userId, params.eventId, params.projectId])
-    if (result.rowCount !== 1) throw new ProjectDeliveryError('任务状态已变化，请刷新后重试', 409)
+    [params.userId, result, result === 'failed' ? encryptText(failureReason) : null, params.eventId, params.projectId])
+    if (updated.rowCount !== 1) throw new ProjectDeliveryError('交付事件已结束，请新建事件继续交付', 409)
   })
 }
 
@@ -2075,11 +2086,7 @@ export async function createProjectPackageOperation(params: {
     )
     if (kind === 'event' && !label) throw new Error('Operation label is required')
 
-    const relatedTodoIds = await ensureProjectTodoIds(
-      params.projectId,
-      params.relatedTodoIds ?? [],
-      client,
-    )
+    const relatedTodoIds: number[] = []
     const result = await client.query<{ id: string }>(
       `
       insert into project_package_operations (
@@ -2169,10 +2176,8 @@ export async function updateProjectPackageOperation(params: {
     values.push(ensureProjectPackageOperationStatus(params.status))
     updates.push(`status = $${values.length}`)
   }
-  const shouldUpdateRelatedTodos = params.relatedTodoIds != null
-  const relatedTodoNotes = shouldUpdateRelatedTodos
-    ? normalizeTodoNotes(params.relatedTodoNotes)
-    : {}
+  const shouldUpdateRelatedTodos = false
+  const relatedTodoNotes = {}
 
   if (updates.length === 0 && !shouldUpdateRelatedTodos) {
     throw new Error('No supported fields to update')

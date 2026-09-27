@@ -12483,6 +12483,8 @@ app.post('/api/projects/:projectId/package-timeline/events/:eventId/complete', a
     userId,
     eventId: Number(request.params.eventId),
     projectId,
+    result: request.body.result === 'failed' ? 'failed' : 'success',
+    failureReason: typeof request.body.failureReason === 'string' ? request.body.failureReason : undefined,
   }))
   if (!completed.ok) return
   response.json(await getProjectPackageTimeline(projectId, userId))

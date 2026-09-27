@@ -39,7 +39,6 @@ import {
 import {
   Archive,
   At,
-  ArrowClockwise,
   Bell,
   Buildings,
   Bug,
@@ -726,6 +725,7 @@ function canAccessOrganizationManagement(user: Pick<AuthUser, 'roles'>) {
 }
 
 function canUseViewForUser(view: View, user: AuthUser) {
+  if (view === 'search') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
   if (view === 'testing') return user.activeRole === 'tester'
   if (view === 'assigned_bugs') {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
@@ -1122,10 +1122,10 @@ const priorityCopy: Record<Priority, string> = {
 }
 
 const todoConfirmationCopy: Record<Todo['confirmationStatus'], string> = {
-  confirmed: '已确认',
+  confirmed: '进行中',
   pending_review: '待验收',
-  rejected: '已驳回',
-  acceptance_failed: '验收未通过',
+  rejected: '进行中',
+  acceptance_failed: '进行中',
 }
 
 type TodoAcceptanceDecision = 'passed' | 'failed'
@@ -1228,10 +1228,8 @@ function TodoConfirmSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="confirmed">{todoConfirmationCopy.confirmed}</SelectItem>
+          <SelectItem value="confirmed">进行中</SelectItem>
           <SelectItem value="pending_review">{todoConfirmationCopy.pending_review}</SelectItem>
-          <SelectItem value="rejected">{todoConfirmationCopy.rejected}</SelectItem>
-          <SelectItem value="acceptance_failed">{todoConfirmationCopy.acceptance_failed}</SelectItem>
         </SelectContent>
       </Select>
       {confirmationDialog}
@@ -2006,6 +2004,7 @@ function App() {
     isDeveloperRole || isOrganizationAdmin
   )
   const canNavigateToTestWorkbench = authUser?.activeRole === 'tester'
+  const canNavigateToProjectBasket = Boolean(authUser && (isOrganizationAdmin || authUser.roles.includes('developer') || authUser.roles.includes('tester')))
 
   useEffect(() => {
     setAssignedBugCommentReadAtByBugId(loadAssignedBugCommentReadAt(authUser?.id))
@@ -4184,11 +4183,11 @@ function App() {
     return true
   }
 
-  async function completeInstallEvent(eventId: number) {
+  async function completeInstallEvent(eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) {
     if (!selectedProject) return false
     setWorkspaceError('')
     const timeline = await reconcileAction(
-      () => completeProjectPackageEvent(selectedProject.id, eventId),
+      () => completeProjectPackageEvent(selectedProject.id, eventId, payload),
       () => fetchProjectPackageTimeline(selectedProject.id),
       (data) => data.events.some((event) => event.id === eventId && event.status === 'delivered'),
     )
@@ -5389,7 +5388,7 @@ ${packageTimelineText}`
             <img className="brand-mark" src="/favicon.svg" alt="Veges" />
             <div>
               <p className="eyebrow">Veges</p>
-              <h1>项目篮子</h1>
+              <h1>Veges</h1>
             </div>
             <button className="sidebar-notifications-button" type="button" aria-label="消息" title="消息" onClick={openNotificationCenter}>
               <Bell size={18} weight="duotone" />
@@ -5416,9 +5415,9 @@ ${packageTimelineText}`
               />
               <nav className="nav-list">
                 <NavGroup label="日常工作" id="nav-group-daily">
-                  <NavButton active={view === 'search'} onClick={() => setView('search')}>
+                  {canNavigateToProjectBasket ? <NavButton active={view === 'search'} onClick={() => setView('search')}>
                     <Target size={18} weight="duotone" /> 项目篮子
-                  </NavButton>
+                  </NavButton> : null}
                   <NavButton active={view === 'my_work'} onClick={openMyWork}>
                     <ListChecks size={18} weight="duotone" /> 我的待办
                     {openTodoCount > 0 && (
@@ -6771,7 +6770,7 @@ function ProjectDetail({
   onAddTodo: (projectId: number) => void | Promise<void>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
-  onCompleteInstallEvent: (eventId: number) => Promise<boolean>
+  onCompleteInstallEvent: (eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -11286,8 +11285,7 @@ function TodoFilterBuilderDialog({
           <SelectContent>
             <SelectItem value="confirmed">已确认</SelectItem>
             <SelectItem value="pending_review">待验收</SelectItem>
-            <SelectItem value="rejected">已驳回</SelectItem>
-            <SelectItem value="acceptance_failed">验收未通过</SelectItem>
+            <SelectItem value="rejected">进行中</SelectItem>
           </SelectContent>
         </Select>
       )
@@ -12989,7 +12987,7 @@ function TodoList({
             const rowCanManageTodo = canManageTodo(todo)
             const rowCanRespondToTodo = canRespondToTodo(todo)
             const indicators = getTodoContentIndicators(todo)
-            const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : todo.confirmationStatus === 'rejected' || todo.confirmationStatus === 'acceptance_failed' ? 'returned' : 'open'
+            const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
             return (
               <article
                 className={[
@@ -13000,7 +12998,7 @@ function TodoList({
                 key={todo.id}
               >
                 <span className={`todo-status-marker is-${statusMarker}`} aria-label={`状态：${todoConfirmationCopy[todo.confirmationStatus] ?? (todo.done ? '已完成' : '进行中')}`}>
-                  {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : statusMarker === 'returned' ? <ArrowClockwise size={13} /> : <Circle size={10} weight="fill" />}
+                  {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : <Circle size={10} weight="fill" />}
                 </span>
                 <button className="todo-main" type="button" onClick={() => openTodoEditDialog(todo)}>
                   <span className="todo-title-row">

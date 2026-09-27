@@ -235,14 +235,14 @@ test('todo detail edits compare the locked assignee before confirming assignment
   assert.match(serverSource, /assigneeChanged,\s+nextAssigneeUserId,/)
 })
 
-test('keeps requirement rejection separate from failed acceptance', () => {
+test('maps legacy requirement rejection into the active work state', () => {
   assert.match(serverSource, /requestedConfirmationStatus === 'rejected'/u)
   assert.match(serverSource, /requestedConfirmationStatus === 'acceptance_failed'/u)
   assert.match(serverSource, /requestedAcceptanceNote/u)
   assert.match(schemaSource, /event_type in \([^)]*'rejected', 'acceptance_failed'/u)
-  assert.match(appSource, /rejected: '已驳回'/u)
-  assert.match(appSource, /acceptance_failed: '验收未通过'/u)
-  assert.match(appSource, /<SelectItem value="acceptance_failed">验收未通过<\/SelectItem>/u)
+  assert.match(appSource, /rejected: '进行中'/u)
+  assert.match(appSource, /acceptance_failed: '进行中'/u)
+  assert.doesNotMatch(appSource, /<SelectItem value="acceptance_failed">验收未通过<\/SelectItem>/u)
 })
 
 test('stores failed acceptance notes with a label and notifies the todo assignee', () => {
