@@ -54,6 +54,14 @@ test('delivery documents no longer expose todo association actions', () => {
   )
 })
 
+test('delivery workbench enforces one event-level change record and package-only views', () => {
+  assert.match(timelineSource, /只允许一个事件级变更记录/u)
+  assert.match(timelineSource, /每个交付事件只能有一个变更记录/u)
+  assert.match(timelineSource, /安装包仅展示安装包列表/u)
+  assert.doesNotMatch(workbenchSource, /scope: 'package'/u)
+  assert.match(workbenchSource, /变更记录/u)
+})
+
 test('existing operation todo management opens without a default filter', () => {
   const openTodoDialogSource = workbenchSource.slice(
     workbenchSource.indexOf('function openOperationTodoDialog'),
@@ -109,31 +117,26 @@ test('deleting the edited event closes its editor and advances to the next visib
   assert.match(workbenchSource, /onConfirm=\{\(\) => deleteEventFromList\(event\)\}/u)
 })
 
-test('event wizard keeps optional todo associations scoped to each step-three document', () => {
+test('event wizard has one event-level change record and no todo association controls', () => {
   const stepThreeSource = workbenchSource.slice(
     workbenchSource.indexOf('{eventEditorStep === 3 ? ('),
     workbenchSource.indexOf('<footer className="event-wizard-footer">'),
   )
-  assert.match(stepThreeSource, /<strong>关联待办<\/strong>/u)
-  assert.match(stepThreeSource, /关联结果仅应用于当前文档/u)
-  assert.match(stepThreeSource, /documentTodoFilterSummary/u)
-  assert.match(stepThreeSource, /<TodoFilterBuilderDialog/u)
-  assert.match(stepThreeSource, /conditions=\{documentTodoFilterConditions\}/u)
-  assert.match(
-    workbenchSource,
-    /documentTodoFilterConditions, setDocumentTodoFilterConditions\] = useState<TodoFilterCondition\[\]>\(\[\]\)/u,
-  )
-  assert.match(workbenchSource, /relatedTodoIds: eventDocumentRelatedTodoIds/u)
-  assert.match(workbenchSource, /relatedTodoIds: document\?\.relatedTodoIds \?\? \[\]/u)
+  assert.match(stepThreeSource, /变更记录/u)
+  assert.doesNotMatch(workbenchSource, /relatedTodoIds: eventDocumentRelatedTodoIds/u)
+  assert.match(workbenchSource, /documents: \[\{[\s\S]*?relatedTodoIds: \[\]/u)
+  assert.match(workbenchSource, /const documentScopes = useMemo\(\(\) => \['event'\], \[\]\)/u)
   assert.match(workbenchSource, /event-wizard-footer-actions[\s\S]*event-wizard-navigation[\s\S]*event-wizard-save-actions/u)
 })
 
-test('event wizard document navigation keeps tab semantics and valid scope state', () => {
+test('event wizard document navigation keeps one valid change-record tab', () => {
   const documentNavigationSource = workbenchSource.slice(
     workbenchSource.indexOf('<div className="event-wizard-document-nav"'),
     workbenchSource.indexOf('<Label className="event-document-title-field">'),
   )
   assert.match(documentNavigationSource, /role="tablist"/u)
+  assert.match(documentNavigationSource, /变更记录/u)
+  assert.doesNotMatch(documentNavigationSource, /id=\{`\$\{documentTabsId\}-package-/u)
   assert.match(documentNavigationSource, /aria-controls=\{`\$\{documentTabsId\}-panel`\}/u)
   assert.match(documentNavigationSource, /tabIndex=\{resolvedDocumentScope ===/u)
   assert.match(documentNavigationSource, /onKeyDown=\{\(event\) => handleDocumentTabKeyDown/u)

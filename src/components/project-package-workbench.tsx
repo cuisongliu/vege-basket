@@ -1580,7 +1580,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventEditorEventId, setEventEditorEventId] = useState<number | null>(null)
   const [eventEditorStep, setEventEditorStep] = useState<1 | 2 | 3>(1)
   const [eventEditorDirty, setEventEditorDirty] = useState(false)
-  const [eventDocumentTitle, setEventDocumentTitle] = useState('事件文档')
+  const [eventDocumentTitle, setEventDocumentTitle] = useState('变更记录')
   const [eventDocumentContent, setEventDocumentContent] = useState('')
   const [eventDocumentRelatedTodoIds, setEventDocumentRelatedTodoIds] = useState<number[]>([])
   const [packageDocumentValues, setPackageDocumentValues] = useState<Record<string, EventDocumentDraftValue>>({})
@@ -1921,14 +1921,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectedEventProgress = selectedEvent
     ? getEventCompletionProgress(selectedEvent, todosById)
     : { completed: 0, percent: 0, total: 0 }
-  const draftPackageNames = useMemo(
-    () => Array.from(new Set(cartItems.map((item) => item.packageName))),
-    [cartItems],
-  )
-  const documentScopes = useMemo(
-    () => ['event', ...draftPackageNames.map((packageName) => `package:${packageName}`)],
-    [draftPackageNames],
-  )
+  const documentScopes = useMemo(() => ['event'], [])
   const resolvedDocumentScope = documentScopes.includes(activeDocumentScope)
     ? activeDocumentScope
     : 'event'
@@ -2446,7 +2439,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       ),
     )
     setCartItems([])
-    setEventDocumentTitle('事件文档')
+    setEventDocumentTitle('变更记录')
     setEventDocumentContent('')
     setEventDocumentRelatedTodoIds([])
     setPackageDocumentValues({})
@@ -2516,19 +2509,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   function openDraftEventEditor(event: ProjectPackageEvent) {
     if (event.publishedAt || !confirmDiscardEventChanges()) return
     const eventDocument = event.operations.find((operation) => operation.kind === 'document')
-    const packageDocuments = Object.fromEntries(
-      event.groups.map((group) => {
-        const document = group.operations.find((operation) => operation.kind === 'document')
-        return [
-          group.packageName,
-          {
-            content: document?.content ?? '',
-            relatedTodoIds: document?.relatedTodoIds ?? [],
-            title: document?.title || `${group.packageName} 安装包文档`,
-          },
-        ]
-      }),
-    )
     setEventEditorEventId(event.id)
     setEventEditorStep(1)
     setSelectedEventId(event.id)
@@ -2549,10 +2529,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       sourcePackageName: item.sourcePackageName,
       version: item.version,
     }))))
-    setEventDocumentTitle(eventDocument?.title || `${event.title} 事件文档`)
+    setEventDocumentTitle(eventDocument?.title || `${event.title} 变更记录`)
     setEventDocumentContent(eventDocument?.content ?? '')
     setEventDocumentRelatedTodoIds(eventDocument?.relatedTodoIds ?? [])
-    setPackageDocumentValues(packageDocuments)
+    setPackageDocumentValues({})
     setActiveDocumentScope('event')
     setDocumentTodoPickerOpen(false)
     setDocumentTodoSearch('')
@@ -2725,18 +2705,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }
     setBusyAction('event')
     try {
-      const packageNames = Array.from(new Set(cartItems.map((item) => item.packageName)))
-      const packageDocuments = packageNames.flatMap((packageName) => {
-        const document = packageDocumentValues[packageName]
-        if (action === 'publish' && !document?.content.trim()) return []
-        return [{
-          content: document?.content ?? '',
-          packageName,
-          relatedTodoIds: document?.relatedTodoIds ?? [],
-          scope: 'package' as const,
-          title: document?.title.trim() || `${packageName} 安装包文档`,
-        }]
-      })
       const savedEvent = await onSaveEvent(eventEditorEventId, {
         action,
         assigneeUserId: assigneeUserId || null,
@@ -2745,10 +2713,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         deliveryStartAt: eventDeliveryStartAt,
         documents: [{
           content: eventDocumentContent,
-          relatedTodoIds: eventDocumentRelatedTodoIds,
+          relatedTodoIds: [],
           scope: 'event',
-          title: eventDocumentTitle.trim() || `${eventTitle.trim()} 事件文档`,
-        }, ...packageDocuments],
+          title: eventDocumentTitle.trim() || `${eventTitle.trim()} 变更记录`,
+        }],
         items: cartItems,
         title: eventTitle.trim(),
         type: eventType,
@@ -2965,7 +2933,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               {([
                 { label: '基本信息', step: 1 as const },
                 { label: '选择安装包', step: 2 as const },
-                { label: '填写文档', step: 3 as const },
+                { label: '变更记录', step: 3 as const },
               ]).map((item) => (
                 <div className={item.step === 3 ? 'event-wizard-step-group documents' : 'event-wizard-step-group'} key={item.step}>
                   <button
@@ -2986,7 +2954,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     {item.label}
                   </button>
                   {item.step === 3 && eventEditorStep === 3 ? (
-                    <div className="event-wizard-document-nav" role="tablist" aria-label="填写文档子选项">
+                    <div className="event-wizard-document-nav" role="tablist" aria-label="变更记录">
                       <button
                         aria-controls={`${documentTabsId}-panel`}
                         aria-selected={resolvedDocumentScope === 'event'}
@@ -2998,28 +2966,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         tabIndex={resolvedDocumentScope === 'event' ? 0 : -1}
                         type="button"
                       >
-                        事件文档
+                        变更记录
                       </button>
-                      {draftPackageNames.map((packageName, index) => {
-                        const scope = `package:${packageName}`
-                        return (
-                          <button
-                            aria-controls={`${documentTabsId}-panel`}
-                            aria-selected={resolvedDocumentScope === scope}
-                            className={resolvedDocumentScope === scope ? 'active' : ''}
-                            id={`${documentTabsId}-package-${index}-tab`}
-                            key={packageName}
-                            onKeyDown={(event) => handleDocumentTabKeyDown(event, scope)}
-                            onClick={() => selectDocumentScope(scope)}
-                            role="tab"
-                            tabIndex={resolvedDocumentScope === scope ? 0 : -1}
-                            title={`${packageName} 安装包文档`}
-                            type="button"
-                          >
-                            {packageName}
-                          </button>
-                        )
-                      })}
                     </div>
                   ) : null}
                 </div>
@@ -3144,9 +3092,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
           {eventEditorStep === 3 ? (
             <div
-              aria-labelledby={resolvedDocumentScope === 'event'
-                ? `${documentTabsId}-event-tab`
-                : `${documentTabsId}-package-${draftPackageNames.indexOf(activePackageDocumentName)}-tab`}
+              aria-labelledby={`${documentTabsId}-event-tab`}
               className="event-wizard-documents"
               id={`${documentTabsId}-panel`}
               role="tabpanel"
@@ -3288,7 +3234,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <MarkdownEditorLoadBoundary>
                 <Suspense fallback={<div className="markdown-wysiwyg-loading" role="status">正在加载编辑器…</div>}>
                   <MarkdownWysiwygEditor
-                    ariaLabel={activePackageDocumentName ? `${activePackageDocumentName} 安装包文档内容` : '事件文档内容'}
+                    ariaLabel="变更记录内容"
                     key={`event-wizard-${resolvedDocumentScope}`}
                     onChange={(value) => {
                       if (activePackageDocumentName) {
@@ -3532,8 +3478,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </div>
               <dl className="event-draft-summary-metrics">
                 <div><dt>安装包</dt><dd>{selectedEvent.groups.flatMap((group) => group.items).length}</dd></div>
-                <div><dt>事件文档</dt><dd>{selectedEvent.operations.filter((operation) => operation.kind === 'document').length}</dd></div>
-                <div><dt>安装包文档</dt><dd>{selectedEvent.groups.reduce((total, group) => total + group.operations.filter((operation) => operation.kind === 'document').length, 0)}</dd></div>
+                <div><dt>变更记录</dt><dd>{selectedEvent.operations.some((operation) => operation.kind === 'document') ? 1 : 0}</dd></div>
+                <div><dt>交付状态</dt><dd>{selectedEvent.deliveryResult === 'failed' ? '失败' : selectedEvent.publishedAt ? '执行中' : '草稿'}</dd></div>
               </dl>
             </section>
           ) : selectedEvent ? (
@@ -3543,7 +3489,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <section className="operation-area">
                   <div className="operation-area-head">
                     <div>
-                      <h4>变更记录</h4>
+                      <h4>操作文档</h4>
                       <p className="operation-area-meta">
                         {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)}
                         <span className="event-progress-pill">
@@ -3628,7 +3574,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                             disabled={existingOperationInteraction.disabled}
                           >
                             <span className="operation-entry-kind">
-                              {operation.kind === 'document' ? '文档' : '事件'}
+                              {operation.kind === 'document' ? '变更记录' : '事件'}
                             </span>
                             <div className="operation-entry-headline">
                               <strong>{operationHeading(operation)}</strong>
@@ -3840,7 +3786,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                                   disabled={existingOperationInteraction.disabled}
                                 >
                                   <span className="operation-entry-kind">
-                                    {operation.kind === 'document' ? '文档' : '事件'}
+                                    {operation.kind === 'document' ? '变更记录' : '事件'}
                                   </span>
                                   <div className="operation-entry-headline">
                                     <strong>{operationHeading(operation)}</strong>

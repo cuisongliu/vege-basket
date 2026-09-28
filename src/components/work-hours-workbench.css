@@ -15,6 +15,12 @@
 .work-hours-project-pager button:disabled { cursor: default; opacity: .35; }
 .work-hours-recorder { background: color-mix(in srgb, var(--primary) 5%, var(--surface)); border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--border)); border-radius: 8px; padding: 14px; }
 .work-hours-recorder select, .work-hours-recorder input { min-width: 150px; }
+.work-hours-picker-options { display: grid; gap: 6px; max-height: 154px; min-width: min(100%, 280px); overflow: auto; padding: 2px; }
+.work-hours-picker-options button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; min-height: 34px; overflow: hidden; padding: 7px 10px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.work-hours-picker-options button:hover:not(:disabled) { border-color: var(--primary); }
+.work-hours-picker-options button.is-selected { background: color-mix(in srgb, var(--primary) 10%, var(--surface)); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--primary); font-weight: 600; }
+.work-hours-picker-options button:disabled { cursor: default; opacity: .6; }
+.work-hours-picker-empty, .work-hours-picker-selected { color: var(--muted-text); font-size: 12px; }
 .work-hours-recorder-description { flex: 1 1 220px; }
 .work-hours-error { background: #fff5f2; border: 1px solid #f1c7bc; border-radius: 6px; color: #a63d3d; font-size: 13px; padding: 9px 12px; }
 .work-hours-metrics { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); }

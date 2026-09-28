@@ -6405,6 +6405,20 @@ textarea:focus {
   overflow: hidden;
 }
 
+.todo-work-hour-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.todo-work-hour-preview span { display: grid; gap: 2px; min-width: 76px; }
+.todo-work-hour-preview small { color: var(--muted); font-size: 11px; }
+.todo-work-hour-preview strong { color: var(--text); font-size: 15px; }
+.todo-acceptance-failure-note { margin: 10px 0 0; color: #a33b2e; font-size: 12px; }
+
 .project-events-panel,
 .event-workspace {
   border: 1px solid var(--line);
@@ -7324,6 +7338,16 @@ textarea:focus {
   min-height: min-content;
 }
 
+.event-workspace-body .project-detail-layout {
+  min-width: 0;
+}
+
+.work-hours-drawer-entry-actions {
+  display: inline-flex;
+  margin-left: auto;
+  gap: 2px;
+}
+
 .project-operations-panel {
   grid-column: 2;
   margin-bottom: 0;
@@ -7336,7 +7360,7 @@ textarea:focus {
 }
 
 .event-workspace-body > .project-detail-layout .project-timeline-panel {
-  margin-top: 14px;
+  display: none;
 }
 
 .project-detail-layout {
@@ -11944,6 +11968,7 @@ textarea:focus {
 .package-market-controls {
   grid-template-columns: 1fr;
 }
+
 
 .event-workspace-body {
   grid-template-columns: 1fr;

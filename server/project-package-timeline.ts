@@ -523,30 +523,25 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
 
 function normalizeProjectPackageDocuments(
   documents: ProjectPackageDocumentInput[],
-  packageNames: Set<string>,
+  _packageNames: Set<string>,
   allowIncomplete: boolean,
 ) {
+  if (documents.some((document) => document.scope === 'package')) {
+    throw new ProjectPackageEventError('交付事件只允许一个事件级变更记录，安装包不单独创建文档', 400)
+  }
   const normalized = documents.map((document, index): NormalizedProjectPackageDocument => {
-    const scope = document.scope === 'package' ? 'package' : 'event'
+    const scope = 'event' as const
     const title = normalizeText(document.title, 120)
     const content = String(document.content ?? '').trim()
-    const packageName = scope === 'package' ? normalizeText(document.packageName, 160) : ''
+    const packageName = ''
     const relatedTodoIds: number[] = []
     if (!allowIncomplete && (!title || !content)) {
       throw new ProjectPackageEventError(`Document ${index + 1} requires title and content`, 400)
     }
-    if (scope === 'package' && (!packageName || !packageNames.has(packageName))) {
-      throw new ProjectPackageEventError(`Document ${index + 1} references an unavailable package`, 400)
-    }
     return { content, packageName, relatedTodoIds, scope, title }
   })
 
-  const scopes = new Set<string>()
-  for (const document of normalized) {
-    const key = document.scope === 'event' ? 'event' : `package:${document.packageName}`
-    if (scopes.has(key)) throw new ProjectPackageEventError(`Only one document is allowed for ${key}`, 400)
-    scopes.add(key)
-  }
+  if (normalized.length > 1) throw new ProjectPackageEventError('每个交付事件只能有一个变更记录', 400)
   return normalized
 }
 
@@ -1782,10 +1777,14 @@ export async function saveProjectPackageEvent(params: {
       await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
     }
 
+    await client.query(
+      `delete from project_package_operations
+        where project_package_event_id = $1
+          and project_package_group_id is null
+          and kind = 'document'`,
+      [persistedEventId],
+    )
     for (const document of documents) {
-      const groupId = document.scope === 'package'
-        ? groupIds.get(document.packageName) ?? null
-        : null
       const insertedDocument = await client.query<{ id: string }>(
         `
         insert into project_package_operations (
@@ -1803,7 +1802,7 @@ export async function saveProjectPackageEvent(params: {
         values ($1, $2, 'document', 'pending', $3, '', $4, false, false, $5)
         returning id
         `,
-        [persistedEventId, groupId, encryptText(document.title), encryptText(document.content), params.createdByUserId],
+        [persistedEventId, null, encryptText(document.title), encryptText(document.content), params.createdByUserId],
       )
       // Delivery documents are independent records. Legacy todo links remain
       // readable for old events, but new and edited documents never create them.
@@ -2067,12 +2066,26 @@ export async function createProjectPackageOperation(params: {
 
   if (kind === 'document' && !title) throw new Error('Operation title is required')
   if (kind === 'document' && !content) throw new Error('Operation content is required')
+  if (kind === 'document' && params.groupId != null) {
+    throw new Error('安装包仅展示安装包列表，不单独创建变更记录')
+  }
 
   await withTransaction(async (client) => {
     await authorizeDelivery(client, params.projectId, params.createdByUserId, 'plan', { eventId: params.eventId })
     const event = ensureUnpublishedEvent(
       await findEventMeta(params.eventId, params.projectId, client),
     )
+    if (kind === 'document') {
+      const existingDocument = await client.query<{ id: string }>(
+        `select id from project_package_operations
+          where project_package_event_id = $1
+            and project_package_group_id is null
+            and kind = 'document'
+          limit 1`,
+        [params.eventId],
+      )
+      if (existingDocument.rows[0]) throw new Error('每个交付事件只能有一个变更记录，请编辑现有记录')
+    }
     if (params.groupId) {
       const group = await findGroupMeta(params.groupId, params.projectId, client)
       if (!group || Number(group.event_id) !== params.eventId) {

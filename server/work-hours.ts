@@ -126,7 +126,7 @@ function serializeEntry(row: WorkHourRow) {
     updatedAt: formatDateTime(row.updated_at),
     projectName: row.project_name ? decryptText(row.project_name) : undefined,
     todoTitle: row.todo_title ? decryptText(row.todo_title) : undefined,
-    userName: row.user_name,
+    userName: row.user_name ? decryptText(row.user_name) : undefined,
     estimatedWorkMinutes: row.estimated_work_minutes == null ? null : Number(row.estimated_work_minutes),
   }
 }
@@ -153,6 +153,18 @@ async function requireUser(request: express.Request, response: express.Response,
     return null
   }
   return userId
+}
+
+async function requireWorkHoursRole(userId: number) {
+  const result = await query<{ allowed: boolean }>(
+    `select exists (
+       select 1 from user_roles
+        where user_id = $1
+          and role in ('developer', 'tester', 'organization_admin')
+     ) as allowed`,
+    [userId],
+  )
+  if (!result.rows[0]?.allowed) throw new WorkHoursError('WORK_HOURS_ROLE_REQUIRED', '当前账号没有工时权限。', 403)
 }
 
 async function managedOrganization(userId: number, organizationId: number) {
@@ -367,7 +379,7 @@ async function loadTaskSummaries(projectId: number, startDate?: string, endDate?
     return {
       taskId: Number(row.id),
       title: decryptText(row.title),
-      assigneeName: row.assignee_name ?? undefined,
+      assigneeName: row.assignee_name ? decryptText(row.assignee_name) : undefined,
       assigneeUserId: row.assignee_user_id == null ? null : Number(row.assignee_user_id),
       done: row.done,
       confirmationStatus: row.confirmation_status,
@@ -446,7 +458,7 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
     if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
     if (workDate < formatDate(todo.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
-    if (todo.done) throw new WorkHoursError('TODO_COMPLETED', '已完成任务不能新增工时。', 409)
+    if (todo.done || todo.confirmation_status === 'pending_review') throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能新增工时。', 409)
     if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
       throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能为自己负责的任务记录工时。', 403)
     }
@@ -498,6 +510,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const startDate = request.query.startDate ? parseWorkDate(request.query.startDate) : undefined
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
@@ -513,6 +526,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const todoId = positiveId(request.body?.todoId)
       if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
       response.status(201).json({ entry: await createWorkHour(userId, todoId, request.body ?? {}) })
@@ -525,6 +539,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const todoId = positiveId(request.params.todoId)
       if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
       response.status(201).json({ entry: await createWorkHour(userId, todoId, request.body ?? {}) })
@@ -537,6 +552,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const organizationId = positiveId(request.params.organizationId)
       if (!organizationId || !(await managedOrganization(userId, organizationId))) {
         response.status(403).json({ error: '只有当前组织的组织管理员可以查看组织工时。' })
@@ -557,6 +573,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const projectId = positiveId(request.params.projectId)
       if (!projectId || !(await managedProject(userId, projectId))) {
         response.status(403).json({ error: '只有项目所属组织管理员可以查看项目工时。' })
@@ -601,6 +618,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const entryId = positiveId(request.params.entryId)
       if (!entryId) throw new WorkHoursError('ENTRY_ID_INVALID', '有效的工时记录 ID 是必需的。', 400)
       const minutes = request.body.minutes == null && request.body.hours == null
@@ -652,6 +670,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     try {
       const userId = await requireUser(request, response, options.getUserId)
       if (!userId) return
+      await requireWorkHoursRole(userId)
       const entryId = positiveId(request.params.entryId)
       const result = await query<{ status: WorkHourStatus; user_id: string }>('delete from todo_work_hours where id = $1 and user_id = $2 and status = \'pending\' returning status, user_id', [entryId, userId])
       if (!result.rows[0]) {
@@ -667,6 +686,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
   async function transition(request: express.Request, response: express.Response, action: 'submit' | 'withdraw' | 'accept' | 'return' | 'reopen') {
     const userId = await requireUser(request, response, options.getUserId)
     if (!userId) return
+    await requireWorkHoursRole(userId)
     const todoId = positiveId(request.params.todoId)
     if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
     const client = await pool.connect()

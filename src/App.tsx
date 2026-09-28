@@ -726,6 +726,7 @@ function canAccessOrganizationManagement(user: Pick<AuthUser, 'roles'>) {
 
 function canUseViewForUser(view: View, user: AuthUser) {
   if (view === 'search') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
+  if (view === 'my_work_hours') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
   if (view === 'testing') return user.activeRole === 'tester'
   if (view === 'assigned_bugs') {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
@@ -12002,6 +12003,14 @@ function TodoEditorDialog({
                   ) : null}
                 </div>
               </div>
+              {todo ? (
+                <div className="todo-work-hour-preview" aria-label="工时统计">
+                  <span><small>预估</small><strong>{formatInviteDurationLabel(todo.estimatedWorkMinutes ?? 0)}</strong></span>
+                  <span><small>已确认</small><strong>{formatInviteDurationLabel(todo.confirmedWorkMinutes ?? 0)}</strong></span>
+                  <span><small>未确认</small><strong>{formatInviteDurationLabel(todo.pendingWorkMinutes ?? 0)}</strong></span>
+                </div>
+              ) : null}
+              {todo?.rejectionReason ? <p className="todo-acceptance-failure-note">最近一次验收未通过：{todo.rejectionReason}</p> : null}
             </div>
           </div>
           {todo && (canRecordWorkHour || canShare) ? (

@@ -2791,9 +2791,6 @@ alter table project_package_events
   add column if not exists delivery_result text;
 alter table project_package_events
   add column if not exists delivery_failure_reason text;
--- Delivery events are independent of todos. Remove legacy links so the old
--- cascade-like association cannot reappear in the delivery workbench.
-delete from project_package_operation_todos;
 update project_package_events
 set delivery_result = 'success'
 where status = 'delivered' and delivery_result is null;

@@ -1862,6 +1862,7 @@ async function getTestWorkbench(
       ends_on: string | null
       environment: string
       environment_access_url: string
+      organization_admin_access: boolean
       test_environment_id: string | null
       id: string
       name: string
@@ -1876,6 +1877,14 @@ async function getTestWorkbench(
     }>(
       `
       select p.*
+           , exists (
+             select 1
+             from organization_memberships om
+             join user_roles ur on ur.user_id = om.user_id and ur.role = 'organization_admin'
+             where om.organization_id = space.organization_id
+               and om.user_id = $1
+               and om.status = 'active'
+           ) as organization_admin_access
       from test_plans p
       join test_spaces space on space.id = p.test_space_id
       left join test_space_memberships m
@@ -2635,6 +2644,7 @@ async function getTestWorkbench(
     })),
     plans: plans.rows.map((row) => ({
       canManage: canManageTestPlan(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
+      canDelete: canManageTestPlan(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId) || row.organization_admin_access,
       createdAt: row.created_at.toISOString(),
       createdByUserId: row.created_by_user_id ? Number(row.created_by_user_id) : undefined,
       endsOn: row.ends_on || undefined,

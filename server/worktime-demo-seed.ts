@@ -1,5 +1,5 @@
 import { pool, query } from './db.ts'
-import { encryptJson, encryptText } from './crypto.ts'
+import { decryptText, encryptJson, encryptText } from './crypto.ts'
 
 if (process.env.DEMO_SEED_CONFIRM !== 'YES') {
   throw new Error('Refusing to write demo data. Set DEMO_SEED_CONFIRM=YES explicitly.')
@@ -65,6 +65,17 @@ const assigneeC = memberIds[2] ?? userId
 const client = await pool.connect()
 try {
   await client.query('begin')
+  const demoProjectNames = new Set(['零售后台重构', '门店巡检小程序', '供应链数据看板'])
+  const existingDemoProjects = await client.query<{ id: string; name: string }>(
+    `select id, name from projects where organization_id = $1 and user_id = $2`,
+    [organizationId, userId],
+  )
+  const existingDemoIds = existingDemoProjects.rows
+    .filter((row) => demoProjectNames.has(decryptText(row.name)))
+    .map((row) => Number(row.id))
+  if (existingDemoIds.length > 0) {
+    await client.query('delete from projects where id = any($1::bigint[])', [existingDemoIds])
+  }
   await client.query(
     `delete from projects
       where organization_id = $1
@@ -74,9 +85,9 @@ try {
   )
 
   const projectSeeds = [
-    ['零售后台重构', '收银、库存与售后体验的统一升级', ['核心业务', '交付'], 'on_track'],
-    ['门店巡检小程序', '从现场巡检到异常闭环，让门店协作更轻', ['门店运营'], 'at_risk'],
-    ['供应链数据看板', '打通采购、履约与库存分析', ['数据服务'], 'on_track'],
+    ['零售后台重构', '收银、库存与售后体验的统一升级', ['demo', 'worktime-v5', '核心业务', '交付'], 'on_track'],
+    ['门店巡检小程序', '从现场巡检到异常闭环，让门店协作更轻', ['demo', 'worktime-v5', '门店运营'], 'at_risk'],
+    ['供应链数据看板', '打通采购、履约与库存分析', ['demo', 'worktime-v5', '数据服务'], 'on_track'],
   ] as const
   const projectIds: number[] = []
   for (const [name, description, tags, healthStatus] of projectSeeds) {
@@ -144,6 +155,14 @@ try {
     )
     todoIds.push(Number(result.rows[0].id))
   }
+  await client.query(
+    `update todos
+        set needs_revision = true,
+            rejection_reason = $2,
+            updated_at = now()
+      where id = $1`,
+    [todoIds[1], encryptText('验收未通过：请补充异常重试场景和回归截图后再次提交。')],
+  )
 
   const workSeeds = [
     [0, userId, -20, 270, 'confirmed'], [0, userId, -14, 360, 'confirmed'], [0, userId, -7, 240, 'confirmed'],
@@ -209,8 +228,8 @@ try {
     await client.query(
       `insert into project_package_operations
         (project_package_event_id, project_package_group_id, kind, status, title, label, content, completed, created_by_user_id)
-       values ($1, $2, 'document', 'success', $3, '操作文档', $4, $5, $6)`,
-      [eventId, groupId, encryptText(`${packageName} 安装说明`), encryptText(content), status === 'delivered', managerId],
+       values ($1, null, 'document', 'success', $2, '变更记录', $3, $4, $5)`,
+      [eventId, encryptText(title), encryptText(content), status === 'delivered', managerId],
     )
   }
 

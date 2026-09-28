@@ -40,7 +40,7 @@ export function createPrototypeData() {
     plans: initialPlans.map(plan => ({
       id: plan.id, name: plan.name, status: plan.status === '已完成' ? 'completed' : 'in_progress',
       testSpaceId: 1, testSubjectId: 1, testSubjectIds: subjects.map(s => s.id), projectId: 1,
-      canManage: true, createdByUserId: prototypeUserId, ownerUserId: prototypeUserId, createdAt, updatedAt: createdAt,
+      canDelete: true, canManage: true, createdByUserId: prototypeUserId, ownerUserId: prototypeUserId, createdAt, updatedAt: createdAt,
       environment: plan.environment, environmentAccessUrl: '', testEnvironmentId: plan.id === 24 ? 1 : 2,
       versionLabel: plan.version, startsOn: plan.id === 24 ? '2026-09-16' : '2026-09-14', endsOn: plan.id === 24 ? '2026-09-18' : '2026-09-15',
     })),
