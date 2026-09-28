@@ -4462,6 +4462,7 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              completed_by.email as completed_by_email,
              completed_by.display_name as completed_by_display_name
       from todos t
+      join projects p on p.id = t.project_id
       left join lateral (
         select
           sum(hours.minutes) as recorded_work_minutes,
@@ -4469,8 +4470,12 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
           sum(hours.minutes) filter (where hours.status = 'pending') as pending_work_minutes
         from todo_work_hours hours
         where hours.todo_id = t.id
+          and (
+            hours.user_id = $1
+            or t.created_by_user_id = $1
+            or ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
+          )
       ) work_hours on true
-      join projects p on p.id = t.project_id
       left join project_memberships membership
         on membership.project_id = p.id
        and membership.status = 'active'

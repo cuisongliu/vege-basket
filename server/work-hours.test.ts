@@ -43,8 +43,18 @@ test('todo detail work-hour reads stay scoped to the authorized todo and paginat
   assert.match(source, /router\.get\('\/todos\/:todoId\/work-hours'/u)
   assert.match(source, /await projectMember\(client, Number\(todo\.project_id\), userId\)/u)
   assert.match(source, /await managedProject\(userId, Number\(todo\.project_id\), client\)/u)
+  assert.match(source, /canReadAll = Boolean\(todo && \(managed \|\| Number\(todo\.created_by_user_id\) === userId\)\)/u)
+  assert.match(source, /onlyUser: !canReadAll/u)
+  assert.match(source, /const todo = await getTodoForWork\(client, Number\(row\.todo_id\), userId\)/u)
+  assert.match(source, /TODO_NOT_ACCESSIBLE.*projectMember\(client, Number\(todo\.project_id\), userId\)/su)
   assert.match(source, /filters\.todoId \? `entry\.todo_id =/u)
   assert.match(source, /pagination: \{ offset, limit, total: filteredEntries\.length \}/u)
+})
+
+test('workspace todo aggregates join the project before filtering managed visibility', () => {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+  assert.match(source, /from todos t\s+join projects p on p\.id = t\.project_id\s+left join lateral \(/u)
+  assert.match(source, /hours\.user_id = \$1\s+or t\.created_by_user_id = \$1\s+or \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}/u)
 })
 
 test('demo review queue assigns 崔金睿 as the explicit reviewer', () => {
