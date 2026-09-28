@@ -26,6 +26,12 @@ function formatHours(minutes: number | null | undefined) {
   return `${(value / 60).toFixed(value % 60 === 0 ? 0 : 1)}h`
 }
 
+function formatVariance(actualMinutes: number, estimatedMinutes: number | null | undefined) {
+  if (estimatedMinutes == null) return '未预估'
+  const variance = actualMinutes - estimatedMinutes
+  return `${variance > 0 ? '+' : ''}${formatHours(variance)}`
+}
+
 function todoStatus(todo: Todo) {
   if (todo.done) return '已完成'
   if (todo.confirmationStatus === 'pending_review') return '待验收'
@@ -212,10 +218,10 @@ export function TodoWorkHoursPanel({
           <DialogHeader><DialogTitle>工时验收</DialogTitle><DialogDescription>核对任务投入后提交验收或确认通过。</DialogDescription></DialogHeader>
           <div className="todo-work-hours-acceptance-summary">
             <div><span>预估工时</span><strong>{formatHours(todo.estimatedWorkMinutes)}</strong></div>
-            <div><span>实际累计</span><strong>{formatHours(summary.totalMinutes)}</strong></div>
+            <div><span>实际工时</span><strong>{formatHours(summary.totalMinutes)}</strong></div>
             <div><span>已确认</span><strong>{formatHours(summary.confirmedMinutes)}</strong></div>
             <div><span>未确认</span><strong>{formatHours(summary.pendingMinutes)}</strong></div>
-            <div><span>历史日期工时</span><strong>{formatHours(historicalEntries.reduce((sum, entry) => sum + entry.minutes, 0))}</strong></div>
+            <div className={todo.estimatedWorkMinutes != null && summary.totalMinutes > todo.estimatedWorkMinutes ? 'is-over' : ''}><span>工时偏差</span><strong>{formatVariance(summary.totalMinutes, todo.estimatedWorkMinutes)}</strong></div>
           </div>
           {historicalEntries.length ? <section className="todo-work-hours-history-records"><h4>历史日期记录</h4>{historicalEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}</span><p>{entry.description}</p><strong>{formatHours(entry.minutes)}</strong></div>)}</section> : null}
           <DialogFooter>

@@ -3501,6 +3501,176 @@ textarea:focus {
   display: none;
 }
 
+/* V5 task surface: keep long copy readable while short properties share a row. */
+.todo-create-dialog .todo-editor-form.is-create-mode {
+  gap: 18px;
+}
+
+.todo-create-dialog .todo-editor-main {
+  display: grid;
+  gap: 16px;
+}
+
+.todo-create-dialog .todo-editor-main > label:first-child,
+.todo-create-dialog .todo-editor-detail-field {
+  grid-column: 1 / -1;
+}
+
+.todo-editor-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  align-items: start;
+}
+
+.todo-editor-inline-grid > label,
+.todo-editor-inline-grid > .todo-editor-field,
+.todo-editor-inline-grid > .todo-created-date-row {
+  min-width: 0;
+}
+
+.todo-editor-inline-grid .field-hint {
+  margin-top: 2px;
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.todo-workflow-table {
+  min-width: 860px;
+  border-top: 1px solid var(--line);
+}
+
+.todo-workflow-table-header,
+.todo-workflow-table-row {
+  grid-template-columns: minmax(300px, 2.2fr) minmax(120px, 1fr) 92px 92px 92px 92px;
+  gap: 16px;
+}
+
+.todo-workflow-table-header {
+  min-height: 40px;
+  color: var(--muted-text);
+  font-size: 11px;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
+.todo-workflow-table-row {
+  min-height: 62px;
+  padding: 9px 0;
+}
+
+.todo-workflow-number,
+.todo-workflow-table-header > :nth-child(3),
+.todo-workflow-table-header > :nth-child(4),
+.todo-workflow-table-header > :nth-child(5) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-workflow-status {
+  justify-content: flex-start;
+}
+
+.todo-detail-page-title {
+  font-size: clamp(22px, 2vw, 30px);
+  letter-spacing: 0;
+}
+
+.todo-detail-surface {
+  border-radius: 8px;
+  padding: clamp(18px, 2vw, 28px);
+}
+
+.todo-detail-overview {
+  padding-bottom: 4px;
+}
+
+.todo-detail-page-badges {
+  gap: 6px;
+}
+
+.todo-work-hours-acceptance-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-width: min(820px, calc(100vw - 32px));
+}
+
+.todo-work-hours-acceptance-dialog .todo-work-hours-acceptance-summary {
+  gap: 12px;
+}
+
+.todo-work-hours-acceptance-dialog .todo-work-hours-acceptance-summary > div {
+  min-height: 72px;
+  justify-content: space-between;
+  padding: 14px;
+}
+
+.event-workspace {
+  align-self: start;
+  height: auto;
+  min-height: 100%;
+  padding: 0 18px 24px;
+}
+
+.event-wizard {
+  box-shadow: none;
+  border-radius: 8px;
+}
+
+.project-package-list,
+.project-timeline-panel,
+.operation-area {
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+@media (max-width: 720px) {
+  .todo-editor-inline-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .todo-workflow-table {
+    min-width: 0;
+  }
+
+  .todo-workflow-table-header {
+    display: none;
+  }
+
+  .todo-workflow-table-row {
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+    min-height: 0;
+    padding: 13px 0;
+  }
+
+  .todo-workflow-title {
+    grid-column: 1 / -1;
+  }
+
+  .todo-workflow-assignee {
+    grid-column: 1;
+  }
+
+  .todo-workflow-number,
+  .todo-workflow-status,
+  .todo-workflow-actions {
+    grid-column: 2;
+    justify-self: end;
+  }
+
+  .todo-workflow-number::before,
+  .todo-workflow-status::before {
+    margin-right: 6px;
+    color: var(--muted-text);
+    font-size: 11px;
+  }
+
+  .todo-workflow-number:nth-child(3)::before { content: '预估'; }
+  .todo-workflow-number:nth-child(4)::before { content: '已记录'; }
+  .todo-workflow-status::before { content: '状态'; }
+}
+
 .todo-form-meta {
   display: grid;
   grid-template-columns: minmax(140px, 150px) minmax(0, 1fr);

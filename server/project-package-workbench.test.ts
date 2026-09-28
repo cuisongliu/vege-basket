@@ -278,3 +278,12 @@ test('delivery event and package lists keep searchable paginated surfaces with t
   assert.doesNotMatch(appSource, /const hideSidebar/u)
   assert.match(appSource, /<aside className="sidebar"/u)
 })
+
+test('delivery timeline API accepts bounded search pagination and reports totals', () => {
+  assert.match(indexSource, /request\.query\.limit/u)
+  assert.match(indexSource, /request\.query\.offset/u)
+  assert.match(indexSource, /request\.query\.q/u)
+  assert.match(timelineSource, /const normalizedQuery = options\.q\?\.trim()/u)
+  assert.match(timelineSource, /Math\.min\(100/u)
+  assert.match(timelineSource, /pagination: \{ limit, offset, total \}/u)
+})

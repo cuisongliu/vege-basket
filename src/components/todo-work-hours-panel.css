@@ -132,6 +132,7 @@
 .todo-work-hours-acceptance-summary > div { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 7px; padding: 10px; }
 .todo-work-hours-acceptance-summary span { color: var(--muted-text); font-size: 11px; }
 .todo-work-hours-acceptance-summary strong { font-variant-numeric: tabular-nums; }
+.todo-work-hours-acceptance-summary .is-over strong { color: var(--destructive); }
 .todo-work-hours-history-records { display: grid; gap: 0; max-height: 240px; overflow: auto; }
 .todo-work-hours-history-records h4 { margin: 0 0 6px; font-size: 13px; }
 .todo-work-hours-history-records > div { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 10px; border-top: 1px solid var(--line); padding: 9px 0; }

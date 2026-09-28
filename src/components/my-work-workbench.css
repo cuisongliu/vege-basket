@@ -32,6 +32,8 @@
 .my-work-group-heading { align-items: center; display: flex; gap: 8px; padding: 12px 0 8px; }.my-work-group-heading h4 { font-size: 14px; margin: 0; }.my-work-group-heading span { color: var(--my-work-muted-readable); font-size: 12px; }
 .my-work-list { border-top: 1px solid var(--border); }.my-work-row { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 18px; min-height: 72px; padding: 12px 0; }
 .my-work-row-main { align-items: center; background: none; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1; gap: 12px; min-width: 0; padding: 0; text-align: left; }.my-work-row-main:hover strong { color: var(--primary); }
+.my-work-main-cell { align-items: center; display: flex; gap: 9px; }
+.my-work-main-cell > input { accent-color: var(--primary); flex: 0 0 auto; height: 15px; width: 15px; }
 .my-work-kind-icon { align-items: center; border-radius: 7px; display: inline-flex; flex: 0 0 32px; height: 32px; justify-content: center; }.my-work-kind-icon.is-todo { background: #edf6f2; color: #237d6b; }.my-work-kind-icon.is-delivery { background: #eef4fa; color: #477aa6; }.my-work-kind-icon.is-bug { background: #fbefef; color: #b34b4b; }.my-work-kind-icon.is-milestone { background: #f7f1e8; color: #a67739; }
 .my-work-row-copy { display: flex; flex-direction: column; gap: 5px; min-width: 0; }.my-work-item-title { align-items: center; display: flex; gap: 8px; min-width: 0; }.my-work-item-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.my-work-offboarding-badge { background: color-mix(in srgb, #1f6f60 12%, var(--surface)); border-color: color-mix(in srgb, #1f6f60 35%, var(--line)); color: #1f6f60; flex: 0 0 auto; font-size: 11px; line-height: 1.25; padding: 2px 7px; }
 .my-work-due { align-items: center; color: var(--my-work-muted-readable); display: flex; flex: 0 0 112px; font-size: 13px; gap: 6px; }
@@ -42,3 +44,26 @@
 .my-work-table-header-group { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 .my-work-load-error { display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: var(--destructive); font-size: 13px; }
 .my-work-row-main:disabled { cursor: wait; }
+
+/* Keep review rows quiet and aligned with the V5 task table. */
+.my-work-table-header,
+.my-work-table-row {
+  grid-template-columns: minmax(280px, 2.2fr) minmax(150px, 1.25fr) 92px 110px 128px 120px;
+  gap: 14px;
+}
+
+.my-work-table-header > :nth-child(4),
+.my-work-table-header > :nth-child(5),
+.my-work-table-row > :nth-child(4),
+.my-work-table-row > :nth-child(5) {
+  text-align: right;
+}
+
+.my-work-table-row {
+  min-height: 64px;
+  padding-block: 8px;
+}
+
+.my-work-table-cell {
+  line-height: 1.45;
+}

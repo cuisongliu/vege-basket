@@ -65,7 +65,7 @@ test('shared Markdown editor tolerates an unready Tiptap instance', () => {
 
 test('opening a todo keeps creation bound to the project that rendered the editor', () => {
   assert.match(appSource, /onAddTodo\(project\.id\)/u)
-  assert.match(appSource, /onAddTodo: \(projectId: number\) => void \| Promise<void>/u)
+  assert.match(appSource, /onAddTodo: \(projectId: number\) => Promise<boolean>/u)
 })
 
 test('todo details remove the standalone note editor while preserving legacy history', () => {

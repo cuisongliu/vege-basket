@@ -471,6 +471,7 @@ export type ProjectPackageTimeline = {
   departedUserIds: number[]
   projectId: number
   events: ProjectPackageEvent[]
+  pagination?: { limit: number; offset: number; total: number }
   mentionableMembers: Array<{ id: number; name: string }>
 }
 

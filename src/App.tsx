@@ -634,6 +634,7 @@ const appViews = [
 type TodoCreateDraftSnapshot = {
   subprojectId: number | null
   assigneeUserId: number | null
+  estimatedWorkHours: string
   watcherUserIds: number[]
   reviewerUserId: number | null
   createdAt: string
@@ -780,6 +781,7 @@ const todoNotesReadStoragePrefix = 'veges.todoNotesReadAt.v1'
 function getDefaultTodoCreateDraft(): TodoCreateDraftSnapshot {
   return {
     assigneeUserId: null,
+    estimatedWorkHours: '',
     watcherUserIds: [],
     reviewerUserId: null,
     createdAt: '',
@@ -846,6 +848,7 @@ function loadTodoCreateDraft(projectId: number, userId?: number) {
     const legacyWatcherUserId = normalizeNullableNumber((parsed as { watcherUserId?: unknown }).watcherUserId)
     return {
       assigneeUserId: normalizeNullableNumber(parsed.assigneeUserId),
+      estimatedWorkHours: typeof parsed.estimatedWorkHours === 'string' ? parsed.estimatedWorkHours : '',
       watcherUserIds: normalizeNumberArray(
         parsed.watcherUserIds ?? (legacyWatcherUserId == null ? [] : [legacyWatcherUserId]),
       ),
@@ -871,6 +874,7 @@ function isTodoCreateDraftEmpty(draft: TodoCreateDraftSnapshot) {
     draft.dueDate === today &&
     draft.priority === 'medium' &&
     draft.assigneeUserId == null &&
+    !draft.estimatedWorkHours &&
     draft.watcherUserIds.length === 0 &&
     draft.reviewerUserId == null &&
     draft.subprojectId == null &&
@@ -3019,6 +3023,7 @@ function App() {
     setTodoDueDate(draft.dueDate)
     setTodoCreatedAt(draft.createdAt)
     setTodoPriority(draft.priority)
+    setTodoEstimatedWorkHours(draft.estimatedWorkHours)
     setTodoAssigneeUserId(draft.assigneeUserId)
     setTodoWatcherUserIds(draft.watcherUserIds)
     setTodoReviewerUserId(draft.reviewerUserId)
@@ -3034,6 +3039,7 @@ function App() {
     }
     saveTodoCreateDraft(selectedProjectDraftId, authUser?.id, {
       assigneeUserId: todoAssigneeUserId,
+      estimatedWorkHours: todoEstimatedWorkHours,
       watcherUserIds: todoWatcherUserIds,
       reviewerUserId: todoReviewerUserId,
       createdAt: todoCreatedAt,
@@ -3048,6 +3054,7 @@ function App() {
     authUser?.id,
     selectedProjectDraftId,
     todoAssigneeUserId,
+    todoEstimatedWorkHours,
     todoWatcherUserIds,
     todoReviewerUserId,
     todoCreatedAt,
@@ -4005,10 +4012,10 @@ function App() {
       (data) => !data.inbox.some((item) => item.id === itemId))
   }
 
-  async function addTodo(projectId?: number) {
+  async function addTodo(projectId?: number): Promise<boolean> {
     const targetProjectId = projectId ?? selectedProject?.id
     const title = stripTodoMentions(todoDraft, getProjectMentionOptions(targetProjectId, scopedProjects, memberships)).trim()
-    if (!title || !targetProjectId) return
+    if (!title || !targetProjectId) return false
     const data = await runMutation(() =>
       createTodo({
         assigneeUserId: todoAssigneeUserId ?? undefined,
@@ -4025,7 +4032,7 @@ function App() {
         estimatedWorkMinutes: todoEstimatedWorkHours ? Math.round(Number(todoEstimatedWorkHours) * 60) : undefined,
       }),
     )
-    if (!data) return
+    if (!data) return false
     clearTodoCreateDraft(projectId ?? targetProjectId, authUser?.id)
     setTodoSubprojectId(null)
     setTodoDraft('')
@@ -4038,6 +4045,7 @@ function App() {
     setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
     setTodoModuleId(null)
+    return true
   }
 
   function clearTodoCreateDraftState(projectId?: number) {
@@ -4065,6 +4073,18 @@ function App() {
         (payload.confirmationStatus === undefined || todo.confirmationStatus === payload.confirmationStatus)))
     }
     return Boolean(await runMutation(() => updateTodo(todoId, payload)))
+  }
+
+  async function acceptSelectedMyWorkTodos(todoIds: number[]) {
+    if (todoIds.length === 0) return false
+    for (const todoId of todoIds) {
+      const saved = await runMutation(() => updateTodo(todoId, {
+        done: true,
+        confirmationStatus: 'confirmed',
+      }))
+      if (!saved) return false
+    }
+    return true
   }
 
   const loadTodoDetails = useCallback(async (todoId: number) => {
@@ -5802,7 +5822,11 @@ ${packageTimelineText}`
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
             onWorkHoursTodoClick={selectMyWorkTodo}
             onRecordWorkHour={selectMyWorkHour}
-            onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
+            onReturnToNotifications={detailEntrySource === 'my_work'
+              ? returnToMyWork
+              : detailEntrySource === 'my_work_review'
+                ? returnToMyWorkReview
+                : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
             onDeleteJournalEntry={deleteJournalEntry}
@@ -5901,6 +5925,7 @@ ${packageTimelineText}`
             onDeliveryClick={selectMyWorkPackageEvent}
             onBugClick={() => undefined}
             onMilestoneClick={selectProject}
+            onAcceptTodos={acceptSelectedMyWorkTodos}
           />
         )}
 
@@ -6760,7 +6785,7 @@ function ProjectDetail({
   workHourRecorderContext: WorkHourRecorderContext | null
   canViewProjectWorkHours: boolean
   onProjectDetailTabChange: (tab: ProjectDetailTab) => void
-  onAddTodo: (projectId: number) => void | Promise<void>
+  onAddTodo: (projectId: number) => Promise<boolean>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
   onCompleteInstallEvent: (eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) => Promise<boolean>
@@ -6976,9 +7001,8 @@ function ProjectDetail({
   }
 
   async function handleAddTodo() {
-    const hasDraft = Boolean(todoDraft.trim())
-    await Promise.resolve(onAddTodo(project.id))
-    if (hasDraft) {
+    const saved = await onAddTodo(project.id)
+    if (saved) {
       closeTodoCreateDialog()
     }
   }
@@ -11710,7 +11734,7 @@ function TodoEditorDialog({
         {isCreateMode ? (
           <>
             <Label>
-              <span className="todo-form-label">待办标题 <em className="field-required">必填</em></span>
+              <span className="todo-form-label">待办标题 <em aria-label="必填" className="field-required">*</em></span>
               <div className="todo-title-input-wrap">
                 <MentionInput
                   autoFocus
@@ -11748,7 +11772,7 @@ function TodoEditorDialog({
                 </Select>
               </Label>
               <Label className="todo-inline-field-half">
-                <span className="todo-form-label">预估工时（小时） <em className="field-required">必填</em></span>
+                <span className="todo-form-label">预估工时（小时） <em aria-label="必填" className="field-required">*</em></span>
                 <Input
                   aria-label="预估工时"
                   min="1"
@@ -11805,7 +11829,7 @@ function TodoEditorDialog({
                 />
               </div>
               <Label className="todo-inline-field-half">
-                <span className="todo-form-label">负责人 <em className="field-required">必填</em></span>
+                <span className="todo-form-label">负责人 <em aria-label="必填" className="field-required">*</em></span>
                 <ProjectMemberPicker
                   members={members}
                   value={assigneeUserId}

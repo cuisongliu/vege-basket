@@ -90,6 +90,13 @@ test('renders My Work grid rows with valid table descendants', () => {
   assert.doesNotMatch(myWorkWorkbenchSource, /role="row">\s*<button/u)
 })
 
+test('review queue supports selecting a subset of todos for acceptance', () => {
+  assert.match(myWorkWorkbenchSource, /selectedTodoIds/u)
+  assert.match(myWorkWorkbenchSource, /onAcceptTodos/u)
+  assert.match(myWorkWorkbenchSource, /验收所选/u)
+  assert.match(myWorkWorkbenchSource, /ConfirmActionDialog/u)
+})
+
 test('renders My Work secondary text with the readable workbench token', () => {
   assert.match(myWorkWorkbenchCss, /--my-work-muted-readable:\s*var\(--muted-text\)/u)
   assert.match(myWorkWorkbenchCss, /--my-work-positive-readable:/u)

@@ -10,6 +10,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { ListPagination } from './list-pagination'
+import { ConfirmActionDialog } from './confirm-action-dialog'
 import './my-work-workbench.css'
 
 const kindLabels: Record<MyWorkKind, string> = {
@@ -91,6 +92,7 @@ export function MyWorkWorkbench({
   onDeliveryClick,
   onBugClick,
   onMilestoneClick,
+  onAcceptTodos,
 }: {
   mode?: 'work' | 'review'
   scope: string
@@ -102,6 +104,7 @@ export function MyWorkWorkbench({
   onDeliveryClick: (projectId: number, eventId: number) => void
   onBugClick: (bugId: number) => void
   onMilestoneClick: (projectId: number) => void
+  onAcceptTodos?: (todoIds: number[]) => Promise<boolean>
 }) {
   const isReview = mode === 'review'
   const [view, setView] = useState<MyWorkViewState>(() => savedView?.scope === scope ? savedView : {
@@ -111,6 +114,7 @@ export function MyWorkWorkbench({
   const [loading, setLoading] = useState(true)
   const [backgroundRefreshVersion, setBackgroundRefreshVersion] = useState(0)
   const [error, setError] = useState('')
+  const [selectedTodoIds, setSelectedTodoIds] = useState<number[]>([])
   const tableRef = useRef<HTMLDivElement>(null)
   const onViewChangeRef = useRef(onViewChange)
   useEffect(() => { onViewChangeRef.current = onViewChange }, [onViewChange])
@@ -175,6 +179,9 @@ export function MyWorkWorkbench({
   }, [result])
 
   const visibleItems = data?.items ?? []
+  const reviewTodoIds = visibleItems.filter((item) => isReview && item.kind === 'todo').map((item) => item.sourceId)
+  const selectedReviewTodoIds = selectedTodoIds.filter((id) => reviewTodoIds.includes(id))
+  const toggleTodo = (todoId: number) => setSelectedTodoIds((current) => current.includes(todoId) ? current.filter((id) => id !== todoId) : [...current, todoId])
   const statusOptions = useMemo(() => {
     const concreteStatuses = (data?.filterOptions.statuses ?? []).map((value) => {
       const [kind, status] = value.split(':')
@@ -217,6 +224,22 @@ export function MyWorkWorkbench({
           <MagnifyingGlass size={17} />
           <Input value={query} onChange={(event) => changeFilters({ q: event.target.value })} placeholder="搜索事项、项目或状态" />
         </label>
+        {isReview && onAcceptTodos ? (
+          <ConfirmActionDialog
+            actionKey={`review-selected-todos:${organizationId}:${selectedReviewTodoIds.join(',')}`}
+            title="确认验收选中的待办？"
+            description={`将验收 ${selectedReviewTodoIds.length} 项任务，未选中的任务保持待验收。`}
+            confirmLabel="确认验收"
+            variant="default"
+            onConfirm={async () => {
+              const saved = await onAcceptTodos(selectedReviewTodoIds)
+              if (saved) setSelectedTodoIds([])
+              return saved
+            }}
+            confirmDisabled={selectedReviewTodoIds.length === 0}
+            trigger={<Button type="button" disabled={selectedReviewTodoIds.length === 0}><CheckCircle size={15} />验收所选</Button>}
+          />
+        ) : null}
       </div>
 
       {loading && !result ? <div className="my-work-empty"><Clock className="spin" size={24} />正在加载{isReview ? '待我验收' : '我的待办'}...</div> : null}
@@ -262,6 +285,7 @@ export function MyWorkWorkbench({
                       </span>
                     </span>
                   </button>
+                  {isReview && item.kind === 'todo' ? <input aria-label={`选择 ${item.title}`} checked={selectedReviewTodoIds.includes(item.sourceId)} onChange={() => toggleTodo(item.sourceId)} type="checkbox" /> : null}
                 </div>
                 <span className="my-work-table-cell" role="cell">{item.projectName ?? item.contextName ?? '未关联项目'}</span>
                 <span className="my-work-table-cell" role="cell"><Badge variant="outline">{kindLabels[item.kind]}</Badge></span>

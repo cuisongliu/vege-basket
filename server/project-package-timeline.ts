@@ -141,8 +141,15 @@ export type ProjectPackageTimeline = {
   deliveryMembers: ProjectDeliveryMember[]
   departedUserIds: number[]
   events: ProjectPackageEvent[]
+  pagination?: { limit: number; offset: number; total: number }
   mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
+}
+
+export type ProjectPackageTimelineQuery = {
+  limit?: number
+  offset?: number
+  q?: string
 }
 
 type EventRow = {
@@ -1286,7 +1293,7 @@ function buildProjectPackageEventMarkdown(
   return lines
 }
 
-export async function getProjectPackageTimeline(projectId: number, userId = 0) {
+export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
   const [
     eventsResult,
     groupsResult,
@@ -1561,12 +1568,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
 
   const access = await deliveryAccess(projectId, userId)
   const deliveryMembers = await listDeliveryMembers(projectId)
-  return {
-    canPlanDelivery: access.canPlan,
-    deliveryMembers,
-    departedUserIds: await getDepartedUserIds(),
-    projectId,
-    events: eventsResult.rows.map((row) => ({
+  const allEvents = eventsResult.rows.map((row) => ({
       capabilities: deliveryCapabilities(access, { published: Boolean(row.published_at), delivered: row.status === 'delivered', assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : null }, userId),
       createdByName: row.creator_name ?? undefined,
       publishedByName: row.publisher_name ?? undefined,
@@ -1577,17 +1579,11 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : undefined),
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
       assignedByName: row.assigned_by_user_id
-        ? displayUserName({
-            email: row.assigner_email,
-            display_name: row.assigner_display_name,
-          })
+        ? displayUserName({ email: row.assigner_email, display_name: row.assigner_display_name })
         : undefined,
       assignedByUserId: row.assigned_by_user_id ? Number(row.assigned_by_user_id) : undefined,
       assigneeName: row.assignee_user_id
-        ? displayUserName({
-            email: row.assignee_email,
-            display_name: row.assignee_display_name,
-          })
+        ? displayUserName({ email: row.assignee_email, display_name: row.assignee_display_name })
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       comments: commentsByEvent.get(Number(row.id)) ?? [],
@@ -1604,7 +1600,24 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
-    })),
+    }))
+  const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
+  const filteredEvents = normalizedQuery
+    ? allEvents.filter((event) => [event.title, event.type, event.status, event.assigneeName ?? ''].join(' ').toLocaleLowerCase('zh-CN').includes(normalizedQuery))
+    : allEvents
+  const total = filteredEvents.length
+  const limit = Math.min(100, Math.max(1, Math.floor(options.limit ?? (total || 1))))
+  const offset = Math.max(0, Math.floor(options.offset ?? 0))
+  const events = options.limit == null && options.offset == null && !normalizedQuery
+    ? filteredEvents
+    : filteredEvents.slice(offset, offset + limit)
+  return {
+    canPlanDelivery: access.canPlan,
+    deliveryMembers,
+    departedUserIds: await getDepartedUserIds(),
+    projectId,
+    events,
+    pagination: { limit, offset, total },
     mentionableMembers,
   } satisfies ProjectPackageTimeline
 }

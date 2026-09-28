@@ -12412,7 +12412,13 @@ app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request
     response.status(404).json({ error: 'Project not found' })
     return
   }
-  response.json(await getProjectPackageTimeline(projectId, userId))
+  const rawLimit = Number(request.query.limit)
+  const rawOffset = Number(request.query.offset)
+  response.json(await getProjectPackageTimeline(projectId, userId, {
+    limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
+    offset: Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,
+    q: typeof request.query.q === 'string' ? request.query.q : undefined,
+  }))
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {

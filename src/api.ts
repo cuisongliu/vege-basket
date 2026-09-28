@@ -1995,8 +1995,13 @@ export function deleteAiConversation(conversationId: string) {
   )
 }
 
-export function fetchProjectPackageTimeline(projectId: number) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline`)
+export function fetchProjectPackageTimeline(projectId: number, options: { limit?: number; offset?: number; q?: string } = {}) {
+  const params = new URLSearchParams()
+  if (options.limit != null) params.set('limit', String(options.limit))
+  if (options.offset != null) params.set('offset', String(options.offset))
+  if (options.q?.trim()) params.set('q', options.q.trim())
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline${query}`)
 }
 
 export function createProjectPackageEvent(
