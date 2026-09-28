@@ -1,5 +1,5 @@
 import { pool, query } from './db.ts'
-import { decryptText, encryptJson, encryptText } from './crypto.ts'
+import { encryptJson, encryptText } from './crypto.ts'
 
 if (process.env.DEMO_SEED_CONFIRM !== 'YES') {
   throw new Error('Refusing to write demo data. Set DEMO_SEED_CONFIRM=YES explicitly.')
@@ -65,17 +65,6 @@ const assigneeC = memberIds[2] ?? userId
 const client = await pool.connect()
 try {
   await client.query('begin')
-  const demoProjectNames = new Set(['零售后台重构', '门店巡检小程序', '供应链数据看板'])
-  const existingDemoProjects = await client.query<{ id: string; name: string }>(
-    `select id, name from projects where organization_id = $1 and user_id = $2`,
-    [organizationId, userId],
-  )
-  const existingDemoIds = existingDemoProjects.rows
-    .filter((row) => demoProjectNames.has(decryptText(row.name)))
-    .map((row) => Number(row.id))
-  if (existingDemoIds.length > 0) {
-    await client.query('delete from projects where id = any($1::bigint[])', [existingDemoIds])
-  }
   await client.query(
     `delete from projects
       where organization_id = $1
