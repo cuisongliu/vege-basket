@@ -11,10 +11,6 @@ const todoDetailEditorSource = appSource.slice(
   appSource.indexOf('function TodoDetailEditor('),
   appSource.indexOf('function TodoDetailViewer('),
 )
-const todoNotesPanelSource = appSource.slice(
-  appSource.indexOf('function TodoNotesPanel('),
-  appSource.indexOf('function TodoPropertiesPanel('),
-)
 const todoEditorDialogSource = appSource.slice(
   appSource.indexOf('function TodoEditorDialog('),
   appSource.indexOf('function TodoList('),
@@ -22,6 +18,10 @@ const todoEditorDialogSource = appSource.slice(
 const todoListSource = appSource.slice(appSource.indexOf('function TodoList('))
 const todoWorkHoursPanelSource = readFileSync(
   new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
+  'utf8',
+)
+const workHoursCssSource = readFileSync(
+  new URL('../src/components/work-hours-workbench.css', import.meta.url),
   'utf8',
 )
 
@@ -68,17 +68,30 @@ test('opening a todo keeps creation bound to the project that rendered the edito
   assert.match(appSource, /onAddTodo: \(projectId: number\) => void \| Promise<void>/u)
 })
 
-test('todo notes remain visible when the viewer has no note write callbacks', () => {
-  assert.match(todoEditorDialogSource, /const showNotesSidebar = Boolean\(isDetailMode && todo\)/u)
-  assert.doesNotMatch(
-    todoEditorDialogSource,
-    /const showNotesSidebar[\s\S]{0,160}onCreateTodoNote[\s\S]{0,80}onUpdateTodoNote/u,
+test('todo details remove the standalone note editor while preserving legacy history', () => {
+  assert.match(todoEditorDialogSource, /const showNotesSidebar = false/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onCreateNote=\{onCreateTodoNote\}/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onUpdateNote=\{onUpdateTodoNote\}/u)
+  assert.match(todoEditorDialogSource, /历史补充信息/u)
+  assert.match(todoEditorDialogSource, /TodoNoteContent value=\{note\.content\}/u)
+})
+
+test('todo creation uses a modal and status filtering has one merged field', () => {
+  assert.match(appSource, /<Dialog open onOpenChange=\{\(open\) => \{ if \(!open\) closeTodoCreateDialog\(\) \}\}>/u)
+  assert.match(appSource, /className="todo-create-dialog"/u)
+  assert.match(appSource, /field === 'status'/u)
+  assert.doesNotMatch(appSource, /field === 'confirmationStatus'/u)
+  assert.doesNotMatch(appSource, /field === 'done'/u)
+})
+
+test('project work-hour layout grows with content instead of forcing a fixed panel height', () => {
+  assert.match(appSource, /detail-layout work-hours-mode/u)
+  assert.match(
+    readFileSync(new URL('../src/App.css', import.meta.url), 'utf8'),
+    /detail-layout\.work-hours-mode[\s\S]*?height: auto;[\s\S]*?overflow: visible/u,
   )
-  assert.match(todoNotesPanelSource, /onCreateNote\?: \(todoId: number, content: string\)/u)
-  assert.match(todoNotesPanelSource, /onUpdateNote\?: \(todoId: number, noteId: number, content: string\)/u)
-  assert.match(todoNotesPanelSource, /\{onCreateNote \? \(/u)
-  assert.match(todoNotesPanelSource, /<div className="todo-notes-list">/u)
-  assert.match(todoNotesPanelSource, /const canEdit = Boolean\(onUpdateNote\)/u)
+  assert.match(workHoursCssSource, /work-hours-workbench\.mode-project[^}]*height: auto/u)
+  assert.match(workHoursCssSource, /work-hours-overview-chart, \.work-hours-overview-members \{ min-height: 0; \}/u)
 })
 
 test('assigned enterprise todos expose the work-hour entry with locked context', () => {

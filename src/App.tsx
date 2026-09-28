@@ -12,7 +12,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ClipboardEvent,
   type CSSProperties,
   type ComponentProps,
   type Dispatch,
@@ -140,7 +139,6 @@ import {
   createAiTurnDocument,
   createSummary,
   createTodo,
-  createTodoNote,
   declineProjectInvitation,
   exportProjectPackageTimeline,
   fetchPackageMarketBaseDetail,
@@ -203,7 +201,6 @@ import {
   updateProjectPackageOperation,
   updateProject,
   updateTodo,
-  updateTodoNote,
   uploadTodoImage,
   setAuthToken,
   classifyAiConversationTurnIntent,
@@ -257,7 +254,6 @@ import type {
   ChangelogEntry,
   JournalEntry,
   Todo,
-  TodoNote,
 } from './types'
 import { TodoActivityPanel } from './components/todo-activity-panel'
 import { UserName } from './components/user-name'
@@ -587,8 +583,7 @@ type TodoFilterField =
   | 'watcher'
   | 'creator'
   | 'priority'
-  | 'done'
-  | 'confirmationStatus'
+  | 'status'
   | 'dueDate'
   | 'createdAt'
 type TodoFilterOperator =
@@ -1273,8 +1268,7 @@ const todoFilterFieldLabels: Record<TodoFilterField, string> = {
   watcher: '关注人',
   creator: '创建人',
   priority: '优先级',
-  done: '完成状态',
-  confirmationStatus: '确认状态',
+  status: '状态',
   dueDate: '截止日期',
   createdAt: '创建日期',
 }
@@ -1298,8 +1292,7 @@ const todoFilterFields: TodoFilterField[] = [
   'watcher',
   'creator',
   'priority',
-  'done',
-  'confirmationStatus',
+  'status',
   'dueDate',
   'createdAt',
 ]
@@ -1311,13 +1304,12 @@ const todoFilterOperatorsByField: Record<TodoFilterField, TodoFilterOperator[]> 
   watcher: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   creator: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   priority: ['equals', 'not_equals'],
-  done: ['equals', 'not_equals'],
-  confirmationStatus: ['equals', 'not_equals'],
+  status: ['equals', 'not_equals'],
   dueDate: ['equals', 'not_equals', 'before', 'after', 'between'],
   createdAt: ['equals', 'not_equals', 'before', 'after', 'between'],
 }
 
-function createTodoFilterCondition(field: TodoFilterField = 'done'): TodoFilterCondition {
+function createTodoFilterCondition(field: TodoFilterField = 'status'): TodoFilterCondition {
   const operator = todoFilterOperatorsByField[field][0]
   return {
     field,
@@ -1333,8 +1325,7 @@ function getDefaultTodoFilterValue(field: TodoFilterField, operator: TodoFilterO
     return `${today}..${today}`
   }
   if (field === 'priority') return 'medium'
-  if (field === 'done') return 'open'
-  if (field === 'confirmationStatus') return 'confirmed'
+  if (field === 'status') return 'open'
   if (field === 'dueDate' || field === 'createdAt') return today
   return ''
 }
@@ -1434,8 +1425,7 @@ function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
   if (field === 'watcher') return getTodoWatcherUserIds(todo).join(',')
   if (field === 'creator') return todo.createdByUserId ? String(todo.createdByUserId) : ''
   if (field === 'priority') return todo.priority
-  if (field === 'done') return todo.done ? 'done' : 'open'
-  if (field === 'confirmationStatus') return todo.confirmationStatus
+  if (field === 'status') return todo.done ? 'completed' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
   if (field === 'dueDate') return todo.dueDate
   return todo.createdAt.slice(0, 10)
 }
@@ -4084,14 +4074,6 @@ function App() {
     }
   }, [applyWorkspace])
 
-  async function addTodoNote(todoId: number, content: string) {
-    await runMutation(() => createTodoNote(todoId, { content }))
-  }
-
-  async function editTodoNote(todoId: number, noteId: number, content: string) {
-    await runMutation(() => updateTodoNote(todoId, noteId, { content }))
-  }
-
   async function acceptInvitation(membershipId: number) {
     try {
       const result = await acceptProjectInvitation(membershipId)
@@ -5815,11 +5797,9 @@ ${packageTimelineText}`
             onToggleJournalRisk={toggleJournalRisk}
             onUpdateJournalVisibility={updateJournalVisibility}
             onDeleteTodo={deleteTodo}
-            onCreateTodoNote={addTodoNote}
             onCreateTodoModule={createModule}
             onLoadTodoDetail={loadTodoDetails}
             onUpdateTodo={updateTodoDetails}
-            onUpdateTodoNote={editTodoNote}
             onTodoCreateDraftClear={clearTodoCreateDraftState}
             onTodoAssigneeChange={setTodoAssigneeUserId}
             onTodoWatcherChange={setTodoWatcherUserIds}
@@ -6716,12 +6696,10 @@ function ProjectDetail({
   onEditJournalEntry,
   onToggleJournalRisk,
   onUpdateJournalVisibility,
-  onCreateTodoNote,
   onCreateTodoModule,
   onDeleteTodo,
   onLoadTodoDetail,
   onUpdateTodo,
-  onUpdateTodoNote,
   onTodoCreateDraftClear,
   onTodoAssigneeChange,
   onTodoWatcherChange,
@@ -6845,12 +6823,10 @@ function ProjectDetail({
     entryId: number,
     visibility: JournalVisibility,
   ) => void
-  onCreateTodoNote: (todoId: number, content: string) => void
   onCreateTodoModule: (projectId: number, name: string) => Promise<ProjectModule | null>
   onDeleteTodo: (todoId: number) => Promise<boolean>
   onLoadTodoDetail: (todoId: number) => Promise<Todo | null>
   onUpdateTodo: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
-  onUpdateTodoNote: (todoId: number, noteId: number, content: string) => void
   onTodoCreateDraftClear: (projectId?: number) => void
   onTodoAssigneeChange: (id: number | null) => void
   onTodoWatcherChange: (ids: number[]) => void
@@ -7024,6 +7000,8 @@ function ProjectDetail({
             ? isProjectTodoFocusOpen ? 'detail-layout project-tasks-mode todo-detail-focus' : 'detail-layout project-tasks-mode'
           : projectDetailTab === 'journal'
             ? 'detail-layout project-journal-mode'
+          : projectDetailTab === 'work_hours'
+            ? 'detail-layout work-hours-mode'
           : isProjectTodoFocusOpen
             ? 'detail-layout todo-detail-focus'
             : 'detail-layout'
@@ -7320,8 +7298,13 @@ function ProjectDetail({
             </div>
             <div className="side-panel-scroll-area">
               {isTodoCreateDialogOpen ? (
-                <TodoEditorDialog
-                  departedUserIds={departedUserIds}
+                <Dialog open onOpenChange={(open) => { if (!open) closeTodoCreateDialog() }}>
+                  <DialogContent className="todo-create-dialog" showCloseButton>
+                    <DialogHeader>
+                      <DialogTitle>添加待办</DialogTitle>
+                      <DialogDescription>填写待办标题、详情和负责人，保存后会立即加入当前项目。</DialogDescription>
+                    </DialogHeader>
+                    <TodoEditorDialog
                   assigneeUserId={todoAssigneeUserId}
                   watcherUserIds={todoWatcherUserIds}
                   reviewerUserId={todoReviewerUserId}
@@ -7357,8 +7340,10 @@ function ProjectDetail({
                   }}
                   onPriorityChange={onTodoPriorityChange}
                   onSubmit={handleAddTodo}
-                  onTitleChange={onTodoDraftChange}
-                />
+                      onTitleChange={onTodoDraftChange}
+                    />
+                  </DialogContent>
+                </Dialog>
               ) : (
                 <TodoList
                   canManageOrganizationTodos={project.canManageOrganizationTodos}
@@ -7369,14 +7354,12 @@ function ProjectDetail({
                   detailBackLabel={notificationDetailActive ? '返回' : undefined}
                   initialTodoId={initialTodoId}
                   memberships={memberships}
-                  onCreateTodoNote={canWriteProject ? onCreateTodoNote : undefined}
                   onDeleteTodo={canWriteProject || project.canManageOrganizationTodos ? onDeleteTodo : undefined}
                   onLoadTodoDetail={onLoadTodoDetail}
                   onDetailModeChange={setIsProjectTodoDetailOpen}
                   onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
                   onRecordWorkHour={onRecordWorkHour}
                   onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
-                  onUpdateTodoNote={canWriteProject ? onUpdateTodoNote : undefined}
                   project={project}
                   projects={projects}
                   todos={projectTodos}
@@ -8264,34 +8247,6 @@ async function uploadImagesIntoTodoDetail(
   }
 }
 
-async function pasteImagesIntoTodoDetail(
-  event: ClipboardEvent<HTMLTextAreaElement>,
-  getCurrentValue: () => string,
-  onChange: (value: string) => void,
-  setUploadingImageSrcs?: Dispatch<SetStateAction<string[]>>,
-) {
-  const imageFiles = Array.from(event.clipboardData.items)
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
-  if (imageFiles.length === 0) return
-
-  event.preventDefault()
-  const textarea = event.currentTarget
-  const selectionStart = textarea.selectionStart ?? textarea.value.length
-  const upload = uploadImagesIntoTodoDetail(
-    imageFiles,
-    getCurrentValue,
-    onChange,
-    setUploadingImageSrcs,
-  )
-  window.requestAnimationFrame(() => {
-    textarea.focus()
-    textarea.setSelectionRange(selectionStart, selectionStart)
-  })
-  await upload
-}
-
 function TodoDetailEditor({
   onChange,
   value,
@@ -8451,140 +8406,6 @@ function TodoDetailViewer({
           ))}
         </div>
       ) : null}
-      <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
-        if (!open) setPreviewImageIndex(null)
-      }}>
-        <DialogContent className="todo-detail-image-preview-dialog" showCloseButton={false}>
-          <DialogTitle className="todo-detail-image-preview-title">图片预览</DialogTitle>
-          {previewImage ? (
-            <div className="todo-detail-image-preview-shell">
-              <img
-                className="todo-detail-image-preview"
-                src={previewImage.src}
-                alt={previewImage.alt}
-              />
-              <button
-                aria-label="关闭图片预览"
-                className="todo-detail-image-preview-close"
-                type="button"
-                onClick={() => setPreviewImageIndex(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
-}
-
-function TodoNoteComposer({
-  action,
-  members,
-  onChange,
-  placeholder,
-  value,
-}: {
-  action?: ReactNode
-  members?: Array<{ id: number; name: string }>
-  onChange: (value: string) => void
-  placeholder?: string
-  value: string
-}) {
-  const { images, text } = useMemo(() => parseTodoDetailContent(value), [value])
-  const [textDraft, setTextDraft] = useState(text)
-  const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
-  const [uploadingImageSrcs, setUploadingImageSrcs] = useState<string[]>([])
-  const lastSerializedValueRef = useRef<string | null>(null)
-  const latestValueRef = useRef(value)
-  const previewImage = previewImageIndex == null ? null : images[previewImageIndex] ?? null
-  const uploadingImageSrcSet = useMemo(() => new Set(uploadingImageSrcs), [uploadingImageSrcs])
-
-  useEffect(() => {
-    latestValueRef.current = value
-  }, [value])
-
-  useEffect(() => {
-    if (lastSerializedValueRef.current === value) return
-    setTextDraft(text)
-  }, [text, value])
-
-  useEffect(() => {
-    if (previewImageIndex != null && !images[previewImageIndex]) {
-      setPreviewImageIndex(null)
-    }
-  }, [images, previewImageIndex])
-
-  function commitValue(nextValue: string) {
-    latestValueRef.current = nextValue
-    lastSerializedValueRef.current = nextValue
-    onChange(nextValue)
-  }
-
-  function updateNoteContent(nextText: string, nextImages: TodoDetailImageAttachment[]) {
-    commitValue(serializeTodoDetailContent(nextText, nextImages))
-  }
-
-  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    await pasteImagesIntoTodoDetail(
-      event,
-      () => latestValueRef.current,
-      commitValue,
-      setUploadingImageSrcs,
-    )
-  }
-
-  return (
-    <div className={images.length > 0 ? 'todo-note-composer has-images' : 'todo-note-composer'}>
-      <div className="todo-detail-composer todo-note-composer-surface">
-        {images.length > 0 ? (
-          <div className="todo-detail-attachments" aria-label={`已插入 ${images.length} 张图片`}>
-            {images.map((image, index) => {
-              const uploading = uploadingImageSrcSet.has(image.src)
-              return (
-                <figure className="todo-detail-attachment" key={`${image.src.slice(0, 48)}-${index}`}>
-                  <button
-                    aria-label={`查看图片 ${index + 1}`}
-                    className={uploading ? 'todo-detail-attachment-preview uploading' : 'todo-detail-attachment-preview'}
-                    type="button"
-                    disabled={uploading}
-                    onClick={() => setPreviewImageIndex(index)}
-                  >
-                    <img src={image.src} alt={image.alt} loading="lazy" />
-                    {uploading ? <span>上传中</span> : null}
-                  </button>
-                  <button
-                    aria-label={`删除图片 ${index + 1}`}
-                    className="todo-detail-attachment-remove"
-                    type="button"
-                    onClick={() => updateNoteContent(
-                      textDraft,
-                      images.filter((_, imageIndex) => imageIndex !== index),
-                    )}
-                  >
-                    <X size={13} />
-                  </button>
-                </figure>
-              )
-            })}
-          </div>
-        ) : null}
-        <MentionTextarea
-          className="todo-note-composer-textarea"
-          members={members}
-          placeholder={placeholder}
-          value={textDraft}
-          onChange={(nextText) => {
-            setTextDraft(nextText)
-            updateNoteContent(nextText, images)
-          }}
-          onPaste={(event) => {
-            void handlePaste(event)
-          }}
-        />
-        {action}
-      </div>
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
         if (!open) setPreviewImageIndex(null)
       }}>
@@ -11269,36 +11090,19 @@ function TodoFilterBuilderDialog({
       )
     }
 
-    if (condition.field === 'done') {
+    if (condition.field === 'status') {
       return (
         <Select
           value={condition.value}
           onValueChange={(value) => updateCondition(condition.id, { value })}
         >
-          <SelectTrigger aria-label="筛选完成状态" className="todo-filter-condition-select">
+          <SelectTrigger aria-label="筛选状态" className="todo-filter-condition-select">
             <SelectValue placeholder="选择状态" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="open">未完成</SelectItem>
-            <SelectItem value="done">已完成</SelectItem>
-          </SelectContent>
-        </Select>
-      )
-    }
-
-    if (condition.field === 'confirmationStatus') {
-      return (
-        <Select
-          value={condition.value}
-          onValueChange={(value) => updateCondition(condition.id, { value })}
-        >
-          <SelectTrigger aria-label="筛选确认状态" className="todo-filter-condition-select">
-            <SelectValue placeholder="选择状态" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="confirmed">已确认</SelectItem>
-            <SelectItem value="pending_review">待验收</SelectItem>
-            <SelectItem value="rejected">进行中</SelectItem>
+            <SelectItem value="open">进行中</SelectItem>
+            <SelectItem value="review">待验收</SelectItem>
+            <SelectItem value="completed">已完成</SelectItem>
           </SelectContent>
         </Select>
       )
@@ -11482,151 +11286,6 @@ function TodoFilterBuilderDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function TodoNotesPanel({
-  departedUserIds,
-  currentUserId,
-  members,
-  onCreateNote,
-  onUpdateNote,
-  todo,
-}: {
-  departedUserIds: readonly number[]
-  currentUserId?: number
-  members?: Array<{ id: number; name: string }>
-  onCreateNote?: (todoId: number, content: string) => void
-  onUpdateNote?: (todoId: number, noteId: number, content: string) => void
-  todo: Todo
-}) {
-  const [draft, setDraft] = useState('')
-  const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
-  const [editingDrafts, setEditingDrafts] = useState<Record<number, string>>({})
-  const notes = useMemo(
-    () => [...todo.notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
-    [todo.notes],
-  )
-
-  useEffect(() => {
-    setDraft('')
-    setEditingNoteId(null)
-    setEditingDrafts({})
-  }, [todo.id])
-
-  function saveNewNote() {
-    const content = draft.trim()
-    if (!content || !onCreateNote) return
-    onCreateNote(todo.id, content)
-    setDraft('')
-  }
-
-  function saveExistingNote(note: TodoNote) {
-    const nextContent = String(editingDrafts[note.id] ?? note.content).trim()
-    if (!nextContent || !onUpdateNote) return
-    onUpdateNote(todo.id, note.id, nextContent)
-    setEditingNoteId(null)
-  }
-
-  return (
-    <section className="todo-notes-panel" aria-label="待办备注">
-      <div className="todo-notes-panel-header">
-        <div>
-          <strong>待办备注</strong>
-        </div>
-        <span className="todo-notes-panel-count">{notes.length} 条</span>
-      </div>
-      {onCreateNote ? (
-        <div className="todo-note-composer-pane">
-          <div className="todo-note-create">
-            <TodoNoteComposer
-              action={(
-                <Button
-                  className="todo-note-submit"
-                  type="button"
-                  disabled={!draft.trim()}
-                  onClick={saveNewNote}
-                >
-                  添加备注
-                </Button>
-              )}
-              members={members}
-              placeholder="记录确认结果、未完成原因或其他补充说明..."
-              value={draft}
-              onChange={setDraft}
-            />
-          </div>
-        </div>
-      ) : null}
-      <div className="todo-notes-list">
-        {notes.length === 0 ? (
-          <div className="todo-notes-empty">还没有备注，直接写第一条即可。</div>
-        ) : (
-          notes.map((note) => {
-            const canEdit = Boolean(onUpdateNote) && currentUserId != null && (
-              note.authorUserId === currentUserId || note.sourceOperationId != null
-            )
-            const isEditing = editingNoteId === note.id
-            return (
-              <article className="todo-note-card" key={note.id}>
-                <header className="todo-note-card-header">
-                  <div className="todo-note-card-meta">
-                    <div className="todo-note-card-heading">
-                      <UserName departedUserIds={departedUserIds} name={note.authorName} userId={note.authorUserId} />
-                      <span>{note.createdAt}</span>
-                      {note.kind === 'acceptance' ? (
-                        <span className="todo-note-kind acceptance">验收备注</span>
-                      ) : null}
-                    </div>
-                  </div>
-                  {canEdit ? (
-                    <Button
-                      className="todo-note-inline-edit"
-                      variant="ghost"
-                      size="sm"
-                      type="button"
-                      onClick={() => {
-                        setEditingNoteId(note.id)
-                        setEditingDrafts((current) => ({
-                          ...current,
-                          [note.id]: note.content,
-                        }))
-                      }}
-                    >
-                      编辑
-                    </Button>
-                  ) : null}
-                </header>
-                {isEditing ? (
-                  <div className="todo-note-editor">
-                    <TodoNoteComposer
-                      members={members}
-                      value={editingDrafts[note.id] ?? note.content}
-                      onChange={(value) =>
-                        setEditingDrafts((current) => ({
-                          ...current,
-                          [note.id]: value,
-                        }))
-                      }
-                    />
-                    <div className="todo-note-editor-actions">
-                      <Button variant="outline" type="button" onClick={() => setEditingNoteId(null)}>
-                        取消
-                      </Button>
-                      <Button type="button" onClick={() => saveExistingNote(note)}>
-                        保存
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <TodoNoteContent value={note.content} />
-                )}
-              </article>
-            )
-          })
-        )}
-      </div>
-    </section>
   )
 }
 
@@ -11837,7 +11496,6 @@ function TodoEditorDialog({
   subprojectId,
   onSubprojectIdChange,
   assigneeUserId,
-  departedUserIds,
   watcherUserIds,
   reviewerUserId,
   backLabel = '返回待办列表',
@@ -11861,7 +11519,6 @@ function TodoEditorDialog({
   onBack,
   onCancelEdit,
   onClear,
-  onCreateTodoNote,
   onCreateModule,
   onCreatedAtChange,
   onDetailChange,
@@ -11873,7 +11530,6 @@ function TodoEditorDialog({
   onStartEdit,
   onSubmit,
   onTitleChange,
-  onUpdateTodoNote,
   onInlineUpdate,
   open,
   priority,
@@ -11889,7 +11545,6 @@ function TodoEditorDialog({
   subprojectId?: number | null
   onSubprojectIdChange?: (id: number | null) => void
   assigneeUserId: number | null
-  departedUserIds: readonly number[]
   watcherUserIds: number[]
   reviewerUserId: number | null
   backLabel?: string
@@ -11913,7 +11568,6 @@ function TodoEditorDialog({
   onBack?: () => void
   onCancelEdit?: () => void
   onClear?: () => void
-  onCreateTodoNote?: (todoId: number, content: string) => void
   onCreateModule?: (name: string) => Promise<ProjectModule | null>
   onCreatedAtChange: (value: string) => void
   onDetailChange: (value: string) => void
@@ -11925,7 +11579,6 @@ function TodoEditorDialog({
   onStartEdit?: () => void
   onSubmit: () => void
   onTitleChange: (value: string) => void
-  onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
   onInlineUpdate?: (payload: TodoUpdatePayload) => Promise<boolean>
   open: boolean
   priority: Priority
@@ -11943,7 +11596,7 @@ function TodoEditorDialog({
   const editing = isCreateMode || isEditing
   const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
-  const showNotesSidebar = Boolean(isDetailMode && todo)
+  const showNotesSidebar = false
   const statusLabel = todo?.done
     ? '已完成'
     : todo?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'
@@ -12201,16 +11854,6 @@ function TodoEditorDialog({
                 />
               </div>
             </section>
-            {showNotesSidebar && todo ? (
-              <TodoNotesPanel
-                currentUserId={currentUserId}
-                departedUserIds={departedUserIds}
-                members={members}
-                onCreateNote={onCreateTodoNote}
-                onUpdateNote={onUpdateTodoNote}
-                todo={todo}
-              />
-            ) : null}
           </>
         ) : (
           <>
@@ -12236,15 +11879,21 @@ function TodoEditorDialog({
                 <div className="todo-detail-empty">暂无详情</div>
               )}
             </section>
-            {showNotesSidebar && todo ? (
-              <TodoNotesPanel
-                currentUserId={currentUserId}
-                departedUserIds={departedUserIds}
-                members={members}
-                onCreateNote={onCreateTodoNote}
-                onUpdateNote={onUpdateTodoNote}
-                todo={todo}
-              />
+            {showDetailOverview && todo?.notes.length ? (
+              <section className="todo-detail-history" aria-label="历史补充信息">
+                <div className="todo-detail-section-header">
+                  <span className="todo-detail-section-label">历史补充信息</span>
+                  <small>{todo.notes.length} 条</small>
+                </div>
+                <div className="todo-detail-history-list">
+                  {[...todo.notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map((note) => (
+                    <article key={note.id} className="todo-detail-history-item">
+                      <header><strong>{note.authorName}</strong><span>{note.createdAt}</span>{note.kind === 'acceptance' ? <em>验收记录</em> : null}</header>
+                      <TodoNoteContent value={note.content} />
+                    </article>
+                  ))}
+                </div>
+              </section>
             ) : null}
           </>
         )}
@@ -12373,13 +12022,11 @@ function TodoList({
   departedUserIds,
   detailBackLabel,
   initialTodoId,
-  onCreateTodoNote,
   onDetailBack,
   onDeleteTodo,
   onDetailModeChange,
   onRecordWorkHour,
   onLoadTodoDetail,
-  onUpdateTodoNote,
   onUpdateTodo,
   memberships,
   project,
@@ -12393,13 +12040,11 @@ function TodoList({
   departedUserIds: readonly number[]
   detailBackLabel?: string
   initialTodoId?: number | null
-  onCreateTodoNote?: (todoId: number, content: string) => void
   onDetailBack?: () => void
   onDeleteTodo?: (id: number) => Promise<boolean>
   onDetailModeChange?: (active: boolean) => void
   onRecordWorkHour?: (projectId: number, todoId: number) => void
   onLoadTodoDetail?: (id: number) => Promise<Todo | null>
-  onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
   onUpdateTodo?: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
   memberships: ProjectMembership[]
   project: Project
@@ -12521,8 +12166,8 @@ function TodoList({
   )
   const filteredTodos = useMemo(() => {
     const query = todoSearchQuery.trim().toLowerCase()
-    const hasExplicitDoneFilter = todoFilterConditions.some((condition) => condition.field === 'done')
-    const useDefaultDoneFilter = !todoFilterPersistenceEnabled && !hasExplicitDoneFilter
+    const hasExplicitStatusFilter = todoFilterConditions.some((condition) => condition.field === 'status')
+    const useDefaultOpenFilter = !todoFilterPersistenceEnabled && !hasExplicitStatusFilter
     return sortedTodos.filter((todo) => {
       const matchesSearch = !query || [
         todo.title,
@@ -12537,7 +12182,7 @@ function TodoList({
         todo.dueDate,
         todo.createdAt,
         `${todoConfirmationCopy[todo.confirmationStatus]} ${todo.confirmationStatus}`,
-        todo.done ? '已完成 完成 done' : '未完成 待办 open',
+        todo.done ? '已完成 完成 completed' : todo.confirmationStatus === 'pending_review' ? '待验收 review' : '进行中 open',
       ]
         .join(' ')
         .toLowerCase()
@@ -12556,7 +12201,7 @@ function TodoList({
         || todoScope === 'mine' && isMine
         || todoScope === 'review' && isMyReview
       return (
-        (!useDefaultDoneFilter || compact || !todo.done) &&
+        (!useDefaultOpenFilter || compact || !todo.done) &&
         matchesQuickStatus &&
         matchesScope &&
         (subprojectFilter === 'all' || (subprojectFilter === 'none'
@@ -12831,7 +12476,6 @@ function TodoList({
           }}
         />
         <TodoEditorDialog
-          departedUserIds={departedUserIds}
           assigneeUserId={todoEditAssigneeUserId}
           watcherUserIds={todoEditWatcherUserIds}
           reviewerUserId={todoEditReviewerUserId}
@@ -12861,7 +12505,6 @@ function TodoList({
           onReviewerUserIdChange={setTodoEditReviewerUserId}
           onBack={onDetailBack}
           onCancelEdit={cancelTodoEdit}
-          onCreateTodoNote={onCreateTodoNote}
           onCreatedAtChange={setTodoEditCreatedAt}
           onDetailChange={setTodoEditDetail}
           onDueDateChange={setTodoEditDueDate}
@@ -12878,7 +12521,6 @@ function TodoList({
             if ((!editingCanManageTodoFields && !editingCanRespondToTodo) || !onUpdateTodo) return Promise.resolve(false)
             return onUpdateTodo(editingTodo.id, payload)
           }}
-          onUpdateTodoNote={onUpdateTodoNote}
         />
       </div>
     )
@@ -12997,7 +12639,7 @@ function TodoList({
               <span role="columnheader">负责人</span>
               <span role="columnheader">预估时间</span>
               <span role="columnheader">已记录</span>
-              <span role="columnheader">状态</span>
+        <span role="columnheader">状态</span>
               <span role="columnheader">操作</span>
             </div>
           ) : null}

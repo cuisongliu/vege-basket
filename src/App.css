@@ -2443,6 +2443,53 @@ textarea:focus {
   font-size: 12px;
 }
 
+.todo-detail-history {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.todo-detail-history .todo-detail-section-header {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.todo-detail-history .todo-detail-section-header small {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.todo-detail-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.todo-detail-history-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.todo-detail-history-item > header {
+  align-items: center;
+  color: var(--muted-text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.todo-detail-history-item > header strong { color: var(--strong); }
+.todo-detail-history-item > header em {
+  background: color-mix(in oklch, var(--primary) 12%, var(--surface));
+  border-radius: 999px;
+  color: var(--primary);
+  font-style: normal;
+  padding: 2px 7px;
+}
+
 .todo-properties-panel {
   display: grid;
   gap: 16px;
@@ -5930,6 +5977,38 @@ textarea:focus {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
+}
+
+.detail-layout.work-hours-mode {
+  height: auto;
+  min-height: 0;
+  align-items: start;
+}
+
+.detail-layout.work-hours-mode .project-detail-main {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.todo-create-dialog {
+  width: min(94vw, 860px);
+  max-height: min(92dvh, 900px);
+  overflow: auto;
+}
+
+.todo-create-dialog .todo-detail-page-header {
+  display: none;
+}
+
+.todo-create-dialog .todo-detail-surface,
+.todo-create-dialog .todo-editor-form {
+  height: auto;
+  min-height: 0;
+}
+
+.todo-create-dialog .todo-editor-form {
+  overflow: visible;
 }
 
 .cockpit-workspace .detail-layout {
