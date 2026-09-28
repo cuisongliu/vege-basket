@@ -120,10 +120,10 @@ try {
     const storedConfirmationStatus = confirmationStatus === 'pending_review' ? 'pending_review' : 'confirmed'
     const result = await client.query<{ id: string }>(
       `insert into todos (
-         project_id, title, detail, due_date, priority, done, created_by_user_id,
-         assignee_user_id, assigned_by_user_id, assigned_at, estimated_work_minutes,
+       project_id, title, detail, due_date, priority, done, created_by_user_id,
+         reviewer_user_id, assignee_user_id, assigned_by_user_id, assigned_at, estimated_work_minutes,
          confirmation_status, submitted_at, accepted_at, accepted_by_user_id, completed_at, completed_by_user_id
-       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $7, now(), $9, $10, $11, $12, $13, $14, $13)
+       ) values ($1, $2, $3, $4, $5, $6, $7, $7, $8, $7, now(), $9, $10, $11, $12, $13, $14, $13)
        returning id`,
       [
         projectId,

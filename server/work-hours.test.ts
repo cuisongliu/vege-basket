@@ -36,3 +36,19 @@ test('work-hour schema preserves task-project identity and bounded states', () =
   assert.match(schema, /foreign key \(todo_id, project_id\) references todos\(id, project_id\)/u)
   assert.match(schema, /minutes > 0 and minutes <= 1440 and minutes % 15 = 0/u)
 })
+
+test('todo detail work-hour reads stay scoped to the authorized todo and paginate results', () => {
+  const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /router\.get\('\/todos\/:todoId\/work-hours'/u)
+  assert.match(source, /await projectMember\(client, Number\(todo\.project_id\), userId\)/u)
+  assert.match(source, /await managedProject\(userId, Number\(todo\.project_id\), client\)/u)
+  assert.match(source, /filters\.todoId \? `entry\.todo_id =/u)
+  assert.match(source, /pagination: \{ offset, limit, total: filteredEntries\.length \}/u)
+})
+
+test('demo review queue assigns 崔金睿 as the explicit reviewer', () => {
+  const source = readFileSync(new URL('./worktime-demo-seed.ts', import.meta.url), 'utf8')
+  assert.match(source, /created_by_user_id,\s*reviewer_user_id, assignee_user_id/u)
+  assert.match(source, /\$7, \$7, \$8, \$7/u)
+})

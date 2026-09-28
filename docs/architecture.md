@@ -754,6 +754,14 @@ every future table, constraint, or index change must also add a forward-only fil
 `server/migrations/`. There is no automatic down migration. Starting the API can mutate the
 database and is not a read-only smoke test.
 
+### 企业待办工时明细
+
+企业待办详情通过 `GET /api/todos/:todoId/work-hours` 读取工时记录和预估、已确认、未确认汇总。
+服务端先按当前用户重新校验工作台角色、项目成员或组织管理员范围，再读取待办所属项目；
+浏览器传入的待办 ID 不会扩大项目访问权限。明细支持关键词和游标分页，工时创建、编辑、删除及
+提交验收、通过验收、退回修改继续复用工时事务与待办状态锁。组织管理员可以查看授权项目成员的
+记录，普通开发/测试账号只能在自己可访问的项目中记录和查看符合权限的明细。
+
 Platform maintenance state is stored independently from configuration history. Manual maintenance,
 an incomplete or failed database migration, or a missing platform configuration blocks ordinary
 API routes with `503 PLATFORM_MAINTENANCE`. Health/status remain public; after migration, the

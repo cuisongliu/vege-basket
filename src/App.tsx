@@ -328,6 +328,7 @@ import {
 } from './components/weekly-report-workbench'
 import { MyWorkWorkbench } from './components/my-work-workbench'
 import { WorkHoursWorkbench } from './components/work-hours-workbench'
+import { TodoWorkHoursPanel } from './components/todo-work-hours-panel'
 import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import { UserRoleSelectionDialog } from './components/user-role-dialogs'
 import {
@@ -5376,15 +5377,12 @@ ${packageTimelineText}`
     )
   }
 
-  const hideSidebar = view === 'project' && projectDetailTab === 'packages'
-
   return (
-    <main className={hideSidebar ? 'app-shell sidebar-hidden' : 'app-shell'}>
+    <main className="app-shell">
       {confirmationDialog}
       {roleSelectionDialog}
       {changelogAnnouncementDialog}
-      {!hideSidebar && (
-        <aside className="sidebar" aria-label="主导航">
+      <aside className="sidebar" aria-label="主导航">
           <div className="brand-block">
             <img className="brand-mark" src="/favicon.svg" alt="Veges" />
             <div>
@@ -5514,8 +5512,7 @@ ${packageTimelineText}`
             onSignOut={signOut}
             onToggleTheme={toggleThemeMode}
           />
-        </aside>
-      )}
+      </aside>
 
       <Dialog
         open={Boolean(loggedIn && inviteToken && invitePasswordRequired && !invitePasswordVerified)}
@@ -6891,6 +6888,7 @@ function ProjectDetail({
   const [journalEditDraft, setJournalEditDraft] = useState('')
   const [isJournalComposing, setIsJournalComposing] = useState(false)
   const [journalPage, setJournalPage] = useState(0)
+  const [journalQuery, setJournalQuery] = useState('')
   const journalPageSize = 10
   const [isTodoCreateDialogOpen, setIsTodoCreateDialogOpen] = useState(false)
   const initialTodoExists = initialTodoId != null && projectTodos.some((todo) => todo.id === initialTodoId)
@@ -6901,12 +6899,22 @@ function ProjectDetail({
   const journalGroups = useMemo(() => {
     const grouped = new Map<string, JournalEntry[]>()
     for (const entry of [...project.journals].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
+      const normalizedQuery = journalQuery.trim().toLocaleLowerCase('zh-CN')
+      if (normalizedQuery && ![entry.content, entry.speakerName, entry.createdAt]
+        .join(' ')
+        .toLocaleLowerCase('zh-CN')
+        .includes(normalizedQuery)) continue
       const date = entry.createdAt.slice(0, 10)
       grouped.set(date, [...(grouped.get(date) ?? []), entry])
     }
     return Array.from(grouped, ([date, entries]) => ({ date, entries }))
-  }, [project.journals])
+  }, [journalQuery, project.journals])
   const journalDates = journalGroups.map((group) => group.date)
+  const allJournalDates = useMemo(
+    () => [...new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10)))].sort().reverse(),
+    [project.journals],
+  )
+  const filteredJournalCount = journalGroups.reduce((count, group) => count + group.entries.length, 0)
   const journalPageCount = Math.max(1, Math.ceil(journalGroups.length / journalPageSize))
   const safeJournalPage = Math.min(journalPage, journalPageCount - 1)
   const visibleJournalGroups = journalGroups.slice(
@@ -6996,6 +7004,8 @@ function ProjectDetail({
     setJournalPage((page) => Math.min(page, journalPageCount - 1))
   }, [journalPageCount])
 
+  useEffect(() => { setJournalPage(0) }, [journalQuery])
+
   useEffect(() => {
     onTodoDetailViewChange?.(isProjectTodoFocusOpen)
     return () => {
@@ -7066,7 +7076,6 @@ function ProjectDetail({
           />
         ) : projectDetailTab === 'journal' ? (
           <Card className="panel journal-panel">
-            <PanelTitle icon={<FileText size={18} />} title="项目日记" />
             {canWriteProject ? <><Label className="textarea-label journal-entry-label">
               <MentionTextarea
                 members={projectMembers}
@@ -7099,7 +7108,7 @@ function ProjectDetail({
                   <JournalDatePicker
                     ariaLabel="选择既往日记日期"
                     className="past-journal-date-trigger"
-                    datesWithEntries={journalDates}
+                    datesWithEntries={allJournalDates}
                     maxDate={getPreviousDateStamp()}
                     value={pastJournalDate}
                     onChange={setPastJournalDate}
@@ -7116,6 +7125,10 @@ function ProjectDetail({
               </DialogContent>
             </Dialog></> : null}
 
+            <label className="journal-search-field">
+              <MagnifyingGlass size={15} />
+              <Input aria-label="搜索项目日记" placeholder="搜索内容、记录人或日期" value={journalQuery} onChange={(event) => setJournalQuery(event.target.value)} />
+            </label>
             <div className="history-list">
               {journalGroups.length > 0 ? (
                 visibleJournalGroups.map(({ date, entries }) => (
@@ -7271,11 +7284,11 @@ function ProjectDetail({
                   </section>
                 ))
               ) : (
-                <p className="empty-state">还没有项目日记。</p>
+                <p className="empty-state">{journalQuery.trim() ? '没有符合搜索条件的项目日记。' : '还没有项目日记。'}</p>
               )}
             </div>
             <div className="journal-history-summary">
-              共 {project.journals.length} 条日记，覆盖 {journalDates.length} 个日期
+              {journalQuery.trim() ? `找到 ${filteredJournalCount} 条日记，覆盖 ${journalDates.length} 个日期` : `共 ${project.journals.length} 条日记，覆盖 ${allJournalDates.length} 个日期`}
             </div>
             <ListPagination
               label="项目日记分页"
@@ -7293,7 +7306,6 @@ function ProjectDetail({
             <div className="todo-panel-header">
               {!isProjectTodoFocusOpen ? (
                 <>
-                  <PanelTitle icon={<Check size={18} />} title="项目待办" />
                   {canWriteProject ? <div className="project-todo-header-actions">
                     <Button
                       className="todo-create-trigger"
@@ -11621,7 +11633,6 @@ function TodoNotesPanel({
 function TodoPropertiesPanel({
   assigneeUserId,
   canEdit,
-  canRespondToTodo,
   createdAt,
   dueDate,
   members,
@@ -11633,8 +11644,6 @@ function TodoPropertiesPanel({
   onInlineUpdate,
   onModuleIdChange,
   onPriorityChange,
-  onReject,
-  onRequestAcceptance,
   onReviewerUserIdChange,
   onWatcherUserIdsChange,
   priority,
@@ -11645,7 +11654,6 @@ function TodoPropertiesPanel({
 }: {
   assigneeUserId: number | null
   canEdit: boolean
-  canRespondToTodo: boolean
   createdAt: string
   dueDate: string
   members: Array<{ id: number; name: string }>
@@ -11657,8 +11665,6 @@ function TodoPropertiesPanel({
   onInlineUpdate: (payload: TodoUpdatePayload) => Promise<boolean>
   onModuleIdChange: (value: number | null) => void
   onPriorityChange: (value: Priority) => void
-  onReject: (reason: string) => Promise<boolean>
-  onRequestAcceptance: () => void
   onReviewerUserIdChange: (value: number | null) => void
   onWatcherUserIdsChange: (value: number[]) => void
   priority: Priority
@@ -11731,7 +11737,7 @@ function TodoPropertiesPanel({
         </div>
         <div className="todo-property-row">
           <span>状态</span>
-          <strong>{todo.done ? '已完成' : '未完成'}</strong>
+          <strong>{todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</strong>
         </div>
         <div className="todo-property-row">
           <span>截止日期</span>
@@ -11816,18 +11822,6 @@ function TodoPropertiesPanel({
             />
           ) : <strong>{createdAt}</strong>}
         </div>
-        <div className="todo-property-row">
-          <span>验收状态</span>
-          <TodoConfirmSelect
-            title={todo.title}
-            done={todo.done}
-            status={todo.confirmationStatus}
-            disabled={!canRespondToTodo}
-            onChange={(confirmationStatus) => onInlineUpdate({ confirmationStatus })}
-            onReject={onReject}
-            onRequestAcceptance={onRequestAcceptance}
-          />
-        </div>
         {todo.done && todo.completedAt ? (
           <div className="todo-property-row">
             <span>完成信息</span>
@@ -11875,9 +11869,7 @@ function TodoEditorDialog({
   onModuleIdChange,
   onOpenChange,
   onPriorityChange,
-  onReject,
   onRecordWorkHour,
-  onRequestAcceptance,
   onStartEdit,
   onSubmit,
   onTitleChange,
@@ -11929,9 +11921,7 @@ function TodoEditorDialog({
   onModuleIdChange: (value: number | null) => void
   onOpenChange: (open: boolean) => void
   onPriorityChange: (value: Priority) => void
-  onReject?: (reason: string) => Promise<boolean>
   onRecordWorkHour?: (projectId: number, todoId: number) => void
-  onRequestAcceptance?: () => void
   onStartEdit?: () => void
   onSubmit: () => void
   onTitleChange: (value: string) => void
@@ -11954,7 +11944,9 @@ function TodoEditorDialog({
   const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
   const showNotesSidebar = Boolean(isDetailMode && todo)
-  const statusLabel = todo?.done ? '已完成' : '未完成'
+  const statusLabel = todo?.done
+    ? '已完成'
+    : todo?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
   const titleCharacterCount = Array.from(title).length
@@ -12256,13 +12248,30 @@ function TodoEditorDialog({
             ) : null}
           </>
         )}
+        {showDetailOverview && todo && project.organizationId ? (
+          <TodoWorkHoursPanel
+            canRecord={canRecordWorkHour}
+            canReview={Boolean(
+              canRespondToTodo &&
+              currentUserId != null &&
+              (project.organizationId
+                ? (todo.createdByUserId ?? project.ownerUserId) === currentUserId
+                : (todo.reviewerUserId ?? todo.createdByUserId ?? project.ownerUserId) === currentUserId),
+            )}
+            currentUserId={currentUserId}
+            todo={todo}
+            onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
+            onSubmitReview={() => onInlineUpdate?.({ confirmationStatus: 'pending_review' }) ?? Promise.resolve(false)}
+            onAccept={() => onInlineUpdate?.({ done: true, confirmationStatus: 'confirmed' }) ?? Promise.resolve(false)}
+            onReturn={(reason) => onInlineUpdate?.({ confirmationStatus: 'acceptance_failed', acceptanceNote: reason }) ?? Promise.resolve(false)}
+          />
+        ) : null}
       </div>
       {isDetailMode && todo ? (
         <div className="todo-editor-sidebar">
           <TodoPropertiesPanel
             assigneeUserId={assigneeUserId}
             canEdit={canEditProperties}
-            canRespondToTodo={canRespondToTodo}
             createdAt={createdAt}
             dueDate={dueDate}
             members={members}
@@ -12274,8 +12283,6 @@ function TodoEditorDialog({
             onInlineUpdate={onInlineUpdate ?? (() => Promise.resolve(false))}
             onModuleIdChange={onModuleIdChange}
             onPriorityChange={onPriorityChange}
-            onReject={onReject ?? (() => Promise.resolve(false))}
-            onRequestAcceptance={onRequestAcceptance ?? (() => undefined)}
             onReviewerUserIdChange={onReviewerUserIdChange}
             onWatcherUserIdsChange={onWatcherUserIdsChange}
             priority={priority}
@@ -12863,14 +12870,7 @@ function TodoList({
             if (!open) closeEditDialog()
           }}
           onPriorityChange={setTodoEditPriority}
-          onReject={(rejectionReason) => onUpdateTodo ? onUpdateTodo(editingTodo.id, {
-              confirmationStatus: 'rejected',
-              rejectionReason,
-          }) : Promise.resolve(false)}
           onRecordWorkHour={onRecordWorkHour}
-          onRequestAcceptance={() => {
-            if (canToggleTodoDone(editingTodo)) setTodoAcceptanceTarget(editingTodo)
-          }}
           onStartEdit={() => setIsTodoDetailEditing(true)}
           onSubmit={saveTodoEdit}
           onTitleChange={setTodoEditDraft}
@@ -12990,13 +12990,57 @@ function TodoList({
       ) : filteredTodos.length === 0 ? (
         <p className="empty-state">没有符合筛选条件的待办。</p>
       ) : (
-        <div className={compact ? 'todo-list compact' : 'todo-list paginated-todo-list'} ref={todoListRef}>
+        <div className={compact ? 'todo-list compact todo-workflow-table' : 'todo-list paginated-todo-list'} ref={todoListRef} role={compact ? 'table' : undefined} aria-label={compact ? '项目待办列表' : undefined}>
+          {compact ? (
+            <div className="todo-workflow-table-header" role="row">
+              <span role="columnheader">待办标题</span>
+              <span role="columnheader">负责人</span>
+              <span role="columnheader">预估时间</span>
+              <span role="columnheader">已记录</span>
+              <span role="columnheader">状态</span>
+              <span role="columnheader">操作</span>
+            </div>
+          ) : null}
           {visibleTodos.map((todo) => {
             const project = projects.find((item) => item.id === todo.projectId)
             const rowCanManageTodo = canManageTodo(todo)
             const rowCanRespondToTodo = canRespondToTodo(todo)
             const indicators = getTodoContentIndicators(todo)
             const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
+            const statusLabel = todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'
+            if (compact) return (
+              <div className={`todo-workflow-table-row is-${statusMarker}`} key={todo.id} role="row">
+                <button className="todo-workflow-title" type="button" role="cell" onClick={() => openTodoEditDialog(todo)}>
+                  <span className={`todo-status-marker is-${statusMarker}`} aria-label={`状态：${statusLabel}`}>
+                    {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : <Circle size={10} weight="fill" />}
+                  </span>
+                  <span>
+                    <strong>{todo.title}</strong>
+                    <small><code>{todoCode(todo.id)}</code>{todo.moduleName ? ` · ${todo.moduleName}` : ''}{todo.subprojectName ? ` · ${todo.subprojectName}` : ''}</small>
+                  </span>
+                </button>
+                <span className="todo-workflow-assignee" role="cell">{todo.assigneeName ? <UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /> : '未分配'}</span>
+                <span className="todo-workflow-number" role="cell">{todo.estimatedWorkMinutes == null ? '-' : formatInviteDurationLabel(todo.estimatedWorkMinutes)}</span>
+                <span className="todo-workflow-number" role="cell">{formatInviteDurationLabel(todo.recordedWorkMinutes ?? 0)}</span>
+                <span role="cell"><span className={`todo-workflow-status is-${statusMarker}`}>{statusLabel}</span></span>
+                <span className="todo-workflow-actions" role="cell" onClick={(event) => event.stopPropagation()}>
+                  <Button aria-label={`查看 ${todo.title}`} title="查看详情" size="icon" variant="ghost" type="button" onClick={() => openTodoEditDialog(todo)}><FileText size={15} /></Button>
+                  {canRecordWorkHour(todo) ? <Button aria-label={`记录 ${todo.title} 的工时`} title="记录工时" size="icon" variant="ghost" type="button" onClick={() => onRecordWorkHour?.(todo.projectId, todo.id)}><Clock size={15} /></Button> : null}
+                  {canRecordWorkHour(todo) ? <Button aria-label={`提交 ${todo.title} 验收`} title="提交验收" size="icon" variant="ghost" type="button" onClick={() => setTodoPendingReviewTarget(todo)}><PaperPlaneTilt size={15} /></Button> : null}
+                  {todo.confirmationStatus === 'pending_review' && canToggleTodoDone(todo) ? <Button aria-label={`验收 ${todo.title}`} title="验收" size="icon" variant="ghost" type="button" onClick={() => setTodoAcceptanceTarget(todo)}><CheckCircle size={15} /></Button> : null}
+                  {rowCanManageTodo ? (
+                    <ConfirmDialog
+                      actionKey={`delete-todo:${todo.id}`}
+                      confirmLabel="删除待办"
+                      description={`删除「${todo.title}」后，这条待办将从当前项目移除。`}
+                      onConfirm={() => onDeleteTodo ? onDeleteTodo(todo.id) : Promise.resolve(false)}
+                      title="确认删除这条待办？"
+                      trigger={<Button aria-label={`删除 ${todo.title}`} title="删除待办" size="icon" variant="ghost" type="button"><Trash size={14} /></Button>}
+                    />
+                  ) : null}
+                </span>
+              </div>
+            )
             return (
               <article
                 className={[

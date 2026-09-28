@@ -268,3 +268,13 @@ test('delivery workbench offers a feedback drawer next to the delivered action',
   assert.match(appCssSource, /\.mention-menu-floating:hover[\s\S]*?scrollbar-color:/u)
   assert.match(appCssSource, /\.mention-menu-floating:hover::-webkit-scrollbar-thumb[\s\S]*?background:/u)
 })
+
+test('delivery event and package lists keep searchable paginated surfaces with the global menu', () => {
+  assert.match(workbenchSource, /const \[packageQuery, setPackageQuery\]/u)
+  assert.match(workbenchSource, /visiblePackageGroups/u)
+  assert.match(workbenchSource, /ListPagination label="交付事件分页"/u)
+  assert.match(workbenchSource, /ListPagination label="安装包列表分页"/u)
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(appSource, /const hideSidebar/u)
+  assert.match(appSource, /<aside className="sidebar"/u)
+})

@@ -265,6 +265,7 @@ async function insertWorkHoursActivityEvent(client: PoolClient, todo: Awaited<Re
 async function loadEntries(userId: number, filters: {
   organizationId?: number
   projectId?: number
+  todoId?: number
   startDate?: string
   endDate?: string
   status?: WorkHourStatus | 'all'
@@ -277,6 +278,7 @@ async function loadEntries(userId: number, filters: {
       : 'entry.user_id = $1',
     filters.organizationId ? `p.organization_id = $${values.push(filters.organizationId)}` : 'true',
     filters.projectId ? `entry.project_id = $${values.push(filters.projectId)}` : 'true',
+    filters.todoId ? `entry.todo_id = $${values.push(filters.todoId)}` : 'true',
     filters.startDate ? `entry.work_date >= $${values.push(filters.startDate)}::date` : 'true',
     filters.endDate ? `entry.work_date <= $${values.push(filters.endDate)}::date` : 'true',
     filters.status && filters.status !== 'all' ? `entry.status = $${values.push(filters.status)}` : 'true',
@@ -543,6 +545,50 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const todoId = positiveId(request.params.todoId)
       if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
       response.status(201).json({ entry: await createWorkHour(userId, todoId, request.body ?? {}) })
+    } catch (error) {
+      if (!sendWorkHoursError(response, error)) throw error
+    }
+  })
+
+  router.get('/todos/:todoId/work-hours', async (request, response) => {
+    try {
+      const userId = await requireUser(request, response, options.getUserId)
+      if (!userId) return
+      await requireWorkHoursRole(userId)
+      const todoId = positiveId(request.params.todoId)
+      if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
+      const client = await pool.connect()
+      try {
+        const todo = await getTodoForWork(client, todoId, userId)
+        const canRead = todo && (
+          await projectMember(client, Number(todo.project_id), userId) ||
+          await managedProject(userId, Number(todo.project_id), client)
+        )
+        if (!todo || !todo.organization_id || !canRead) {
+          throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
+        }
+      } finally {
+        client.release()
+      }
+      const startDate = request.query.startDate ? parseWorkDate(request.query.startDate) : undefined
+      const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
+      const entries = await loadEntries(userId, { todoId, startDate, endDate, status: 'all', onlyUser: false })
+      const queryText = typeof request.query.q === 'string' ? request.query.q.trim().toLocaleLowerCase('zh-CN') : ''
+      const filteredEntries = queryText
+        ? entries.filter((entry) => [
+          entry.description ? decryptText(entry.description) : '',
+          entry.user_name ? decryptText(entry.user_name) : '',
+          formatDate(entry.work_date),
+          entry.status === 'confirmed' ? '已确认' : '未确认',
+        ].join(' ').toLocaleLowerCase('zh-CN').includes(queryText))
+        : entries
+      const offset = Math.max(0, Number.isSafeInteger(Number(request.query.cursor)) ? Number(request.query.cursor) : 0)
+      const limit = Math.min(50, Math.max(1, Number.isSafeInteger(Number(request.query.limit)) ? Number(request.query.limit) : 10))
+      response.json({
+        entries: filteredEntries.slice(offset, offset + limit).map(serializeEntry),
+        pagination: { offset, limit, total: filteredEntries.length },
+        summary: summary(entries),
+      })
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }

@@ -28,6 +28,7 @@ import {
   EyeSlash,
   FunnelSimple,
   LinkSimple,
+  MagnifyingGlass,
   Package,
   PencilSimple,
   Plus,
@@ -1605,6 +1606,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
   const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
   const [eventPage, setEventPage] = useState(0)
+  const [packageQuery, setPackageQuery] = useState('')
+  const [packagePage, setPackagePage] = useState(0)
   const [deliveryResultDialogOpen, setDeliveryResultDialogOpen] = useState(false)
   const [deliveryResult, setDeliveryResult] = useState<'success' | 'failed'>('success')
   const [deliveryFailureReason, setDeliveryFailureReason] = useState('')
@@ -1770,6 +1773,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   useEffect(() => {
     setEventPage((page) => Math.min(page, Math.max(0, Math.ceil(visibleEvents.length / eventPageSize) - 1)))
   }, [visibleEvents.length])
+  useEffect(() => {
+    setEventPage(0)
+  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventSortDirection])
+  const packagePageSize = 10
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
     [todos],
@@ -1886,6 +1893,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   const selectedEvent =
     visibleEvents.find((event) => event.id === selectedEventId) ?? visibleEvents[0] ?? null
+  const selectedEventGroups = selectedEvent?.groups ?? []
+  const filteredPackageGroups = (() => {
+    const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
+    const groups = selectedEventGroups
+    if (!query) return groups
+    return groups.filter((group) => [
+      group.packageName,
+      ...group.items.flatMap((item) => [item.sourcePackageName, item.version, item.arch, item.channelLabel, packageItemFileName(item)]),
+    ].join(' ').toLocaleLowerCase('zh-CN').includes(query))
+  })()
+  const visiblePackageGroups = filteredPackageGroups.slice(packagePage * packagePageSize, (packagePage + 1) * packagePageSize)
+  useEffect(() => {
+    setPackagePage((page) => Math.min(page, Math.max(0, Math.ceil(filteredPackageGroups.length / packagePageSize) - 1)))
+  }, [filteredPackageGroups.length])
+  useEffect(() => { setPackagePage(0) }, [packageQuery, selectedEventId])
   const canManageTimeline = selectedEvent?.capabilities?.canEditPlan === true
   const canManageLinks = selectedEvent?.capabilities?.canExecute === true || canManageTimeline
   const existingOperationInteraction = resolveExistingOperationInteraction(canManageTimeline)
@@ -3627,8 +3649,13 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       </div>
                     </div>
 
+                    <label className="project-package-search">
+                      <MagnifyingGlass size={15} />
+                      <Input aria-label="搜索安装包" placeholder="搜索名称、版本、架构或渠道" value={packageQuery} onChange={(event) => setPackageQuery(event.target.value)} />
+                    </label>
+
                     <div className="project-package-items">
-                      {selectedEvent.groups.map((group) => (
+                      {visiblePackageGroups.map((group) => (
                         <div
                           className={group.id === selectedGroup?.id ? 'project-package-item active' : 'project-package-item'}
                           key={group.id}
@@ -3704,7 +3731,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           ) : null}
                         </div>
                       ))}
+                      {visiblePackageGroups.length === 0 ? <p className="operation-empty">没有符合条件的安装包。</p> : null}
                     </div>
+                    {filteredPackageGroups.length > packagePageSize ? <ListPagination label="安装包列表分页" page={packagePage} pageSize={packagePageSize} total={filteredPackageGroups.length} onPageChange={setPackagePage} /> : null}
                   </aside>
 
                   <section className="project-timeline-panel">

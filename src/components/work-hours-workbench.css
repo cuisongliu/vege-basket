@@ -1,4 +1,7 @@
 .work-hours-workbench { display: grid; gap: 18px; padding: 24px 28px 36px; color: var(--text); }
+.work-hours-workbench.mode-project { gap: 14px; padding: 14px 18px 24px; }
+.work-hours-workbench.mode-project .work-hours-card { padding: 14px; }
+.work-hours-list-search { align-items: center; color: var(--muted-text); display: flex; gap: 8px; margin: 12px 0; max-width: 420px; }
 .work-hours-header { align-items: center; display: flex; justify-content: space-between; gap: 16px; }
 .work-hours-header h3, .work-hours-card h4 { margin: 0; }.work-hours-header h3 { font-size: 24px; letter-spacing: 0; }
 .work-hours-eyebrow { color: var(--muted-text); font-size: 12px; margin: 0 0 5px; }
@@ -32,6 +35,7 @@
 .work-hours-bar-row { grid-template-columns: 46px minmax(80px, 1fr) 48px; }.work-hours-bar-row > div { background: var(--muted); border-radius: 999px; height: 7px; overflow: hidden; }.work-hours-bar-row i { background: var(--primary); border-radius: inherit; display: block; height: 100%; }
 .work-hours-list-row { grid-template-columns: 1fr auto; border-bottom: 1px solid var(--border); }.work-hours-list-row:last-child { border-bottom: 0; }
 .work-hours-table-card { overflow: auto; }.work-hours-table { margin-top: 10px; min-width: 680px; }.work-hours-table-row { border-top: 1px solid var(--border); grid-template-columns: 100px 1.1fr 1.5fr 70px 70px; padding: 8px 0; }.work-hours-project-table .work-hours-table-row { grid-template-columns: 1.5fr repeat(3, minmax(80px, 0.6fr)); }.work-hours-table-heading { color: var(--muted-text); font-size: 12px; }.work-hours-table-row span { color: var(--muted-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.work-hours-status.is-confirmed { color: var(--primary); }.work-hours-status.is-pending { color: #a67739; }
+.work-hours-table-row > span:not(:first-child), .work-hours-table-row > strong:not(:first-child) { font-variant-numeric: tabular-nums; }
 .work-hours-empty { color: var(--muted-text); font-size: 13px; }
 .work-hours-overview-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); }
 .work-hours-overview-chart, .work-hours-overview-members { min-height: 220px; }

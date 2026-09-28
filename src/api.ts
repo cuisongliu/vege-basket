@@ -167,7 +167,11 @@ export type WorkHourSummary = {
   estimatedMinutes?: number
   estimatedHours?: number
 }
-export type WorkHoursResponse = { entries: WorkHourEntry[]; summary: WorkHourSummary }
+export type WorkHoursResponse = {
+  entries: WorkHourEntry[]
+  pagination?: { offset: number; limit: number; total: number }
+  summary: WorkHourSummary
+}
 
 export type PackageMarketRulesResponse = {
   expireMinutes: number
@@ -631,6 +635,15 @@ export function createWorkHour(payload: {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function fetchTodoWorkHours(todoId: number, filters: { cursor?: number; limit?: number; q?: string } = {}) {
+  const params = new URLSearchParams()
+  if (filters.cursor) params.set('cursor', String(filters.cursor))
+  if (filters.limit) params.set('limit', String(filters.limit))
+  if (filters.q?.trim()) params.set('q', filters.q.trim())
+  const queryString = params.toString()
+  return request<WorkHoursResponse>(`/api/todos/${todoId}/work-hours${queryString ? `?${queryString}` : ''}`)
 }
 
 export function updateWorkHour(entryId: number, payload: Partial<Pick<WorkHourEntry, 'description' | 'minutes' | 'workDate'>>) {

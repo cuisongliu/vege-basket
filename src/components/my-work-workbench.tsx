@@ -209,7 +209,6 @@ export function MyWorkWorkbench({
       <div className="my-work-heading">
         <div>
           <p className="my-work-eyebrow">{isReview ? '验收队列' : '日常工作'}</p>
-          <h3>{isReview ? '待我验收' : '我的待办'}</h3>
         </div>
         {isReview ? <span className="my-work-review-hint">只显示等待你确认的任务</span> : null}
       </div>

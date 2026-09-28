@@ -20,6 +20,10 @@ const todoEditorDialogSource = appSource.slice(
   appSource.indexOf('function TodoList('),
 )
 const todoListSource = appSource.slice(appSource.indexOf('function TodoList('))
+const todoWorkHoursPanelSource = readFileSync(
+  new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
+  'utf8',
+)
 
 test('todo details use the stable shared Markdown editor without a page reload', () => {
   assert.match(
@@ -96,4 +100,19 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
     /recorderContextLocked[\s\S]*?disabled=\{Boolean\(editingEntry\) \|\| recorderContextLocked\}/u,
   )
+})
+
+test('todo details expose paginated work-hour review controls without a manual checkbox status', () => {
+  assert.match(appSource, /<TodoWorkHoursPanel/u)
+  assert.match(appSource, /待办标题[\s\S]*负责人[\s\S]*预估时间[\s\S]*已记录[\s\S]*状态[\s\S]*操作/u)
+  const compactTodoSource = todoListSource.slice(
+    todoListSource.indexOf("className={compact ? 'todo-list compact todo-workflow-table'"),
+    todoListSource.indexOf('            return (', todoListSource.indexOf("className={compact ? 'todo-list compact todo-workflow-table'")),
+  )
+  assert.doesNotMatch(compactTodoSource, /TodoConfirmSelect/u)
+  assert.match(todoWorkHoursPanelSource, /fetchTodoWorkHours\(todo\.id/u)
+  assert.match(todoWorkHoursPanelSource, /ListPagination label="待办工时明细分页"/u)
+  assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
+  assert.match(todoWorkHoursPanelSource, /确认提交验收/u)
+  assert.match(todoWorkHoursPanelSource, /确认验收通过/u)
 })
