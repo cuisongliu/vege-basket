@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ChartLine, CheckCircle, Clock, DownloadSimple, MagnifyingGlass, PencilSimple, Plus, Trash, TrendUp } from '@phosphor-icons/react'
 import {
-  createWorkHour, fetchMyWorkHours, fetchOrganizationWorkHours, fetchProjectTodos,
+  createWorkHour, fetchMyWorkHours, fetchOrganizationWorkHours, fetchProjectTodos, fetchTodoWorkHours,
   fetchProjectWorkHours, removeWorkHour, updateWorkHour,
   type WorkHourEntry, type WorkHourSummary,
 } from '../api'
@@ -114,7 +114,10 @@ type Props = {
   initialProjectId?: number | null
   initialTodoId?: number | null
   autoOpenRecorder?: boolean
+  recorderOnly?: boolean
+  recorderRequest?: { projectId: number; todoId: number } | null
   onRecorderContextConsumed?: () => void
+  onRecorderDismiss?: () => void
   onTodoClick?: (projectId: number, todoId: number) => void
   onProjectClick?: (projectId: number) => void
 }
@@ -122,7 +125,7 @@ type Props = {
 export function WorkHoursWorkbench({
   mode, organizationId, project, projects, currentUserId,
   initialProjectId = null, initialTodoId = null, autoOpenRecorder = false, onRecorderContextConsumed,
-  onTodoClick, onProjectClick,
+  recorderOnly = false, recorderRequest = null, onRecorderDismiss, onTodoClick, onProjectClick,
 }: Props) {
   const [period, setPeriod] = useState<'week' | 'month'>('month')
   const [range, setRange] = useState(() => rangeForPeriod('month'))
@@ -144,6 +147,10 @@ export function WorkHoursWorkbench({
   const [editingEntry, setEditingEntry] = useState<WorkHourEntry | null>(null)
   const [deletingEntry, setDeletingEntry] = useState<WorkHourEntry | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
+  const [selectedTaskEntries, setSelectedTaskEntries] = useState<WorkHourEntry[]>([])
+  const [selectedTaskEntryTotal, setSelectedTaskEntryTotal] = useState(0)
+  const [selectedTaskEntryPage, setSelectedTaskEntryPage] = useState(0)
+  const [selectedTaskEntriesVersion, setSelectedTaskEntriesVersion] = useState(0)
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(initialProjectId ?? project?.id ?? null)
   const [selectedTodoId, setSelectedTodoId] = useState<number | null>(initialTodoId)
   const [recorderContextLocked, setRecorderContextLocked] = useState(initialTodoId != null)
@@ -195,6 +202,37 @@ export function WorkHoursWorkbench({
     setDialogOpen(true)
     onRecorderContextConsumed?.()
   }, [autoOpenRecorder, initialProjectId, initialTodoId, mode, onRecorderContextConsumed, project?.id])
+
+  useEffect(() => {
+    if (mode !== 'mine' || !recorderRequest) return
+    openRecorderForTodo(recorderRequest.todoId, recorderRequest.projectId)
+  }, [mode, recorderRequest])
+
+  useEffect(() => {
+    setSelectedTaskEntryPage(0)
+  }, [selectedTaskId])
+
+  useEffect(() => {
+    if (selectedTaskId == null) {
+      setSelectedTaskEntries([])
+      setSelectedTaskEntryTotal(0)
+      return
+    }
+    let active = true
+    void fetchTodoWorkHours(selectedTaskId, {
+      cursor: selectedTaskEntryPage * 10,
+      limit: 10,
+    }).then((response) => {
+      if (!active) return
+      setSelectedTaskEntries(response.entries)
+      setSelectedTaskEntryTotal(response.pagination?.total ?? response.entries.length)
+    }).catch(() => {
+      if (!active) return
+      setSelectedTaskEntries([])
+      setSelectedTaskEntryTotal(0)
+    })
+    return () => { active = false }
+  }, [selectedTaskEntriesVersion, selectedTaskEntryPage, selectedTaskId])
 
   const projectOptions = useMemo(() => projects.filter((candidate) => candidate.organizationId != null), [projects])
   const filteredProjectOptions = useMemo(() => projectOptions.filter((candidate) => !projectQuery.trim() || candidate.name.toLowerCase().includes(projectQuery.trim().toLowerCase())), [projectOptions, projectQuery])
@@ -261,6 +299,8 @@ export function WorkHoursWorkbench({
       if (editingEntry) await updateWorkHour(editingEntry.id, { minutes: amount, workDate, description: description.trim() })
       else await createWorkHour({ todoId: selectedTodoId, minutes: amount, workDate, description: description.trim() })
       setDialogOpen(false)
+      onRecorderDismiss?.()
+      setSelectedTaskEntriesVersion((version) => version + 1)
       reload()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '工时保存失败。')
@@ -282,7 +322,6 @@ export function WorkHoursWorkbench({
   const maxMemberMinutes = Math.max(...summary.byUser.map((item) => item.minutes), 1)
   const estimatedMinutes = summary.estimatedMinutes ?? summary.byProject.reduce((sum, item) => sum + (item.estimatedMinutes ?? 0), 0)
   const selectedTask = summary.tasks?.find((task) => task.taskId === selectedTaskId)
-  const selectedTaskEntries = entries.filter((entry) => entry.todoId === selectedTaskId)
   const selectedProjectName = projects.find((candidate) => candidate.id === selectedProjectId)?.name
   const tablePageSize = 10
   const normalizedTableQuery = tableQuery.trim().toLocaleLowerCase('zh-CN')
@@ -326,7 +365,7 @@ export function WorkHoursWorkbench({
   </div>
 
   return (
-    <section className={`work-hours-workbench mode-${mode}`}>
+    <section className={`work-hours-workbench mode-${mode}${recorderOnly ? ' is-recorder-only' : ''}`}>
       {mode === 'mine' ? <div className="work-hours-actions work-hours-actions-only"><Button type="button" variant="outline" onClick={exportEntries}><DownloadSimple size={16} />导出</Button><Button type="button" onClick={() => openRecorder()}><Plus size={16} />填报工时</Button></div> : null}
 
       <nav className="work-hours-tabs" aria-label="工时视图">
@@ -386,9 +425,9 @@ export function WorkHoursWorkbench({
 
       {mode === 'mine' && mineTab === 'records' ? <section className="work-hours-card work-hours-records"><h4>工时记录</h4>{tableTools('搜索项目、任务、说明或日期', '搜索工时记录', filteredEntries.length)}{loading ? <p className="work-hours-empty">加载中...</p> : filteredEntries.length === 0 ? <p className="work-hours-empty">当前周期暂无匹配工时</p> : <div className="work-hours-record-list">{visibleEntries.map((entry) => <article className="work-hours-record" key={entry.id}><time>{entry.workDate}</time><div><strong>{entry.projectName ?? '项目'} · {entry.todoTitle ?? `任务 #${entry.todoId}`}</strong><p>{entry.description}</p><small>{entry.userName ? `${entry.userName} · ` : ''}{entry.status === 'confirmed' ? '已确认' : '待确认'}</small></div><b>{hours(entry.minutes)}</b>{entry.status === 'pending' ? <div className="work-hours-record-actions"><Button aria-label="编辑工时" size="icon" variant="ghost" onClick={() => openRecorder(entry)}><PencilSimple size={16} /></Button><Button aria-label="删除工时" size="icon" variant="ghost" onClick={() => setDeletingEntry(entry)}><Trash size={16} /></Button></div> : null}</article>)}</div>}</section> : null}
 
-      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) setDialogOpen(open) }}><DialogContent className="work-hours-dialog"><DialogHeader><DialogTitle>{editingEntry ? '编辑工时' : '填报工时'}</DialogTitle><DialogDescription>{recorderContextLocked && !editingEntry ? '已从待办带入项目和任务，请填写本次实际完成的工作。' : '选择本人负责的进行中任务，记录实际完成的工作。'}</DialogDescription></DialogHeader><div className="work-hours-dialog-form"><Label>项目{recorderProjectPicker}</Label><Label>任务{recorderTaskPicker}</Label><div className="work-hours-form-grid"><Label>日期<Input max={dateInputValue(new Date())} type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} /></Label><Label>时长（小时）<Input min="0.25" max="24" step="0.25" type="number" value={String(Number(minutes) / 60)} onChange={(event) => setMinutes(String(Math.round(Number(event.target.value) * 60)))} /></Label></div><Label>工作说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明本次完成的工作和结果" rows={4} /></Label>{error ? <div className="work-hours-error">{error}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)} type="button">取消</Button><Button disabled={saving || !selectedTodoId || !description.trim()} onClick={() => void saveRecord()} type="button">{saving ? '保存中...' : '保存记录'}</Button></DialogFooter></DialogContent></Dialog>
-      <Dialog open={Boolean(selectedTask)} onOpenChange={(open) => { if (!open) setSelectedTaskId(null) }}><DialogContent className="work-hours-task-drawer"><DialogHeader><DialogTitle>{selectedTask?.title}</DialogTitle><DialogDescription>{selectedTask?.assigneeName ?? '未分配负责人'} · {selectedTask?.done ? '已完成' : selectedTask?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</DialogDescription></DialogHeader>{selectedTask ? <><div className="work-hours-drawer-metrics"><div><span>预估</span><strong>{hours(selectedTask.estimatedMinutes)}</strong></div><div><span>已确认</span><strong>{hours(selectedTask.confirmedMinutes)}</strong></div><div><span>待确认</span><strong>{hours(selectedTask.pendingMinutes)}</strong></div></div><div className="work-hours-drawer-list"><h4>工时记录</h4>{selectedTaskEntries.length ? selectedTaskEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}<small>{entry.userName ?? ''}</small></span><p>{entry.description}</p><strong>{hours(entry.minutes)}</strong>{entry.status === 'pending' && entry.userId === currentUserId ? <span className="work-hours-drawer-entry-actions"><Button aria-label="编辑工时" size="icon" variant="ghost" onClick={() => openRecorder(entry)}><PencilSimple size={14} /></Button><Button aria-label="删除工时" size="icon" variant="ghost" onClick={() => setDeletingEntry(entry)}><Trash size={14} /></Button></span> : null}</div>) : <p className="work-hours-empty">当前周期暂无工时记录</p>}</div>{projectId && selectedTask && (selectedTask.assigneeUserId === currentUserId || (selectedTask.assigneeUserId == null && project?.ownerUserId === currentUserId)) && !selectedTask.done && selectedTask.confirmationStatus !== 'pending_review' ? <DialogFooter><Button type="button" onClick={() => { setSelectedTaskId(null); openRecorderForTodo(selectedTask.taskId, projectId) }}>记录工时</Button>{onTodoClick ? <Button type="button" variant="outline" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button> : null}</DialogFooter> : projectId && onTodoClick ? <DialogFooter><Button type="button" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button></DialogFooter> : null}</> : null}</DialogContent></Dialog>
-      <ConfirmActionDialog actionKey={`delete-work-hour:${deletingEntry?.id ?? 0}`} open={Boolean(deletingEntry)} onOpenChange={(open) => { if (!open) setDeletingEntry(null) }} title="删除工时记录" description="删除后无法恢复，统计数据会立即更新。" confirmLabel="删除记录" onConfirm={async () => { if (!deletingEntry) return false; await removeWorkHour(deletingEntry.id); setDeletingEntry(null); reload(); return true }} />
+      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) { setDialogOpen(open); if (!open) onRecorderDismiss?.() } }}><DialogContent className="work-hours-dialog"><DialogHeader><DialogTitle>{editingEntry ? '编辑工时' : '填报工时'}</DialogTitle><DialogDescription>{recorderContextLocked && !editingEntry ? '已从待办带入项目和任务，请填写本次实际完成的工作。' : '选择本人负责的进行中任务，记录实际完成的工作。'}</DialogDescription></DialogHeader><div className="work-hours-dialog-form"><Label>项目{recorderProjectPicker}</Label><Label>任务{recorderTaskPicker}</Label><div className="work-hours-form-grid"><Label>日期<Input max={dateInputValue(new Date())} type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} /></Label><Label>时长（小时）<Input min="0.25" max="24" step="0.25" type="number" value={String(Number(minutes) / 60)} onChange={(event) => setMinutes(String(Math.round(Number(event.target.value) * 60)))} /></Label></div><Label>工作说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明本次完成的工作和结果" rows={4} /></Label>{error ? <div className="work-hours-error">{error}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)} type="button">取消</Button><Button disabled={saving || !selectedTodoId || !description.trim()} onClick={() => void saveRecord()} type="button">{saving ? '保存中...' : '保存记录'}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={Boolean(selectedTask)} onOpenChange={(open) => { if (!open) setSelectedTaskId(null) }}><DialogContent className="work-hours-task-drawer"><DialogHeader><DialogTitle>{selectedTask?.title}</DialogTitle><DialogDescription>{selectedTask?.assigneeName ?? '未分配负责人'} · {selectedTask?.done ? '已完成' : selectedTask?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</DialogDescription></DialogHeader>{selectedTask ? <><div className="work-hours-drawer-metrics"><div><span>预估</span><strong>{hours(selectedTask.estimatedMinutes)}</strong></div><div><span>已确认</span><strong>{hours(selectedTask.confirmedMinutes)}</strong></div><div><span>待确认</span><strong>{hours(selectedTask.pendingMinutes)}</strong></div></div><div className="work-hours-drawer-list"><h4>工时记录</h4>{selectedTaskEntries.length ? selectedTaskEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}<small>{entry.userName ?? ''}</small></span><p>{entry.description}</p><strong>{hours(entry.minutes)}</strong>{entry.status === 'pending' && entry.userId === currentUserId ? <span className="work-hours-drawer-entry-actions"><Button aria-label="编辑工时" size="icon" variant="ghost" onClick={() => openRecorder(entry)}><PencilSimple size={14} /></Button><Button aria-label="删除工时" size="icon" variant="ghost" onClick={() => setDeletingEntry(entry)}><Trash size={14} /></Button></span> : null}</div>) : <p className="work-hours-empty">当前任务暂无工时记录</p>}</div>{selectedTaskEntryTotal > 10 ? <ListPagination label="任务投入明细分页" page={selectedTaskEntryPage} pageSize={10} total={selectedTaskEntryTotal} onPageChange={setSelectedTaskEntryPage} /> : null}{projectId && selectedTask && (selectedTask.assigneeUserId === currentUserId || (selectedTask.assigneeUserId == null && project?.ownerUserId === currentUserId)) && !selectedTask.done && selectedTask.confirmationStatus !== 'pending_review' ? <DialogFooter><Button type="button" onClick={() => { setSelectedTaskId(null); openRecorderForTodo(selectedTask.taskId, projectId) }}>记录工时</Button>{onTodoClick ? <Button type="button" variant="outline" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button> : null}</DialogFooter> : projectId && onTodoClick ? <DialogFooter><Button type="button" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button></DialogFooter> : null}</> : null}</DialogContent></Dialog>
+      <ConfirmActionDialog actionKey={`delete-work-hour:${deletingEntry?.id ?? 0}`} open={Boolean(deletingEntry)} onOpenChange={(open) => { if (!open) setDeletingEntry(null) }} title="删除工时记录" description="删除后无法恢复，统计数据会立即更新。" confirmLabel="删除记录" onConfirm={async () => { if (!deletingEntry) return false; await removeWorkHour(deletingEntry.id); setDeletingEntry(null); setSelectedTaskEntriesVersion((version) => version + 1); reload(); return true }} />
     </section>
   )
 }

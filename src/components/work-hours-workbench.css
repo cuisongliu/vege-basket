@@ -1,4 +1,5 @@
 .work-hours-workbench { display: grid; gap: 18px; padding: 24px 28px 36px; color: var(--text); min-height: 0; }
+.work-hours-workbench.is-recorder-only { display: none; }
 .work-hours-workbench.mode-project { gap: 18px; padding: 18px 22px 30px; height: auto; }
 .work-hours-workbench.mode-project .work-hours-card { padding: 18px; }
 .work-hours-list-search { align-items: center; color: var(--muted-text); display: flex; gap: 8px; margin: 12px 0; max-width: 420px; }
@@ -96,11 +97,14 @@ button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary
 .work-hours-dialog-form label { display: grid; font-size: 13px; gap: 6px; }
 .work-hours-dialog-form select, .work-hours-dialog-form textarea { width: 100%; }
 .work-hours-form-grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
-.work-hours-task-drawer { height: 100dvh; left: auto; max-height: none; right: 0; top: 0; transform: none; width: min(92vw, 520px); }
+.work-hours-task-drawer { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; left: auto; max-height: none; right: 0; top: 0; transform: none; width: min(92vw, 520px); overflow: hidden; }
 .work-hours-drawer-metrics { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
 .work-hours-drawer-metrics > div { background: var(--muted); border-radius: 6px; display: grid; gap: 4px; padding: 12px; }
 .work-hours-drawer-metrics span, .work-hours-drawer-list small { color: var(--muted-text); font-size: 12px; }
-.work-hours-drawer-list { min-height: 0; overflow: auto; }
+.work-hours-drawer-list { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 8px; scrollbar-color: color-mix(in srgb, var(--foreground) 28%, transparent) transparent; scrollbar-width: thin; }
+.work-hours-drawer-list::-webkit-scrollbar { width: 6px; }
+.work-hours-drawer-list::-webkit-scrollbar-track { background: transparent; }
+.work-hours-drawer-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--foreground) 28%, transparent); border-radius: 999px; }
 .work-hours-drawer-list > div { align-items: start; border-top: 1px solid var(--border); display: grid; gap: 10px; grid-template-columns: 86px 1fr auto; padding: 12px 0; }
 .work-hours-drawer-list span { display: grid; font-size: 13px; gap: 3px; }
 .work-hours-drawer-list p { color: var(--muted-text); margin: 0; white-space: pre-wrap; }

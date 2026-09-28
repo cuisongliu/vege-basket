@@ -575,6 +575,7 @@ type MentionOption = {
   role: string
 }
 type ProjectDetailTab = 'tasks' | 'journal' | 'activity' | 'packages' | 'work_hours'
+type WorkHourRecorderContext = { projectId: number; todoId: number }
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -1861,7 +1862,7 @@ function App() {
   })
   const [requestedWeeklyReport, setRequestedWeeklyReport] = useState(() => parseWeeklyReportDeepLink(window.location.search))
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
-  const [workHourRecorderContext, setWorkHourRecorderContext] = useState<{ projectId: number; todoId: number } | null>(null)
+  const [workHourRecorderContext, setWorkHourRecorderContext] = useState<WorkHourRecorderContext | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [requestedAssignedBugId, setRequestedAssignedBugId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
@@ -3732,7 +3733,8 @@ function App() {
     setOrganizationContextForProject(projectId)
     setSelectedProjectId(projectId)
     setWorkHourRecorderContext({ projectId, todoId })
-    setView('my_work_hours')
+    setProjectDetailTab('tasks')
+    setView('project')
   }
 
   function selectMyWorkPackageEvent(projectId: number, eventId: number) {
@@ -5766,6 +5768,7 @@ ${packageTimelineText}`
             departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
+            workHourRecorderContext={workHourRecorderContext}
             canViewProjectWorkHours={canManageSelectedOrganization}
             onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
@@ -5828,6 +5831,7 @@ ${packageTimelineText}`
             todoPriority={todoPriority}
             todoEstimatedWorkHours={todoEstimatedWorkHours}
             onTodoEstimatedWorkHoursChange={setTodoEstimatedWorkHours}
+            onWorkHourRecorderDismiss={() => setWorkHourRecorderContext(null)}
           />
         )}
 
@@ -6671,6 +6675,7 @@ function ProjectDetail({
   packageTimeline,
   packageWorkbenchRef,
   projectDetailTab,
+  workHourRecorderContext,
   canViewProjectWorkHours,
   onAddTodo,
   onAddInstallEventComment,
@@ -6732,6 +6737,7 @@ function ProjectDetail({
   todoPriority,
   todoEstimatedWorkHours,
   onTodoEstimatedWorkHoursChange,
+  onWorkHourRecorderDismiss,
   onProjectDetailTabChange,
 }: {
   departedUserIds: readonly number[]
@@ -6741,6 +6747,7 @@ function ProjectDetail({
   packageTimeline: ProjectPackageTimeline | null
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
+  workHourRecorderContext: WorkHourRecorderContext | null
   canViewProjectWorkHours: boolean
   onProjectDetailTabChange: (tab: ProjectDetailTab) => void
   onAddTodo: (projectId: number) => void | Promise<void>
@@ -6859,6 +6866,7 @@ function ProjectDetail({
   todoPriority: Priority
   todoEstimatedWorkHours: string
   onTodoEstimatedWorkHoursChange: (value: string) => void
+  onWorkHourRecorderDismiss: () => void
 }) {
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
@@ -7007,12 +7015,21 @@ function ProjectDetail({
             : 'detail-layout'
       }
     >
-      <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
-        <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} />项目待办<span className="project-detail-tab-count">{projectTodos.length}</span></button>
-        <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} />项目日记</button>
-        <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} />交付工作台</button>
-        {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} />项目工时</button> : null}
-      </nav>
+      <div className="project-detail-tabbar">
+        <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
+          <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} /><span>项目待办</span><span className="project-detail-tab-count">{projectTodos.length}</span></button>
+          <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} /><span>项目日记</span></button>
+          <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} /><span>交付工作台</span></button>
+          {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} /><span>项目工时</span></button> : null}
+        </nav>
+        {projectDetailTab === 'tasks' && canWriteProject && !isProjectTodoFocusOpen ? (
+          <div className="project-detail-tab-actions">
+            <Button className="todo-create-trigger" type="button" onClick={() => setIsTodoCreateDialogOpen(true)}>
+              <Plus size={16} /><span>添加待办</span>
+            </Button>
+          </div>
+        ) : null}
+      </div>
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
@@ -7281,21 +7298,6 @@ function ProjectDetail({
 
       {projectDetailTab === 'tasks' ? (
           <Card className={isProjectTodoFocusOpen ? 'side-panel todo-focus-panel' : 'panel side-panel'}>
-            <div className="todo-panel-header">
-              {!isProjectTodoFocusOpen ? (
-                <>
-                  {canWriteProject ? <div className="project-todo-header-actions">
-                    <Button
-                      className="todo-create-trigger"
-                      type="button"
-                      onClick={() => setIsTodoCreateDialogOpen(true)}
-                    >
-                      <Plus size={16} /> 添加待办
-                    </Button>
-                  </div> : null}
-                </>
-              ) : null}
-            </div>
             <div className="side-panel-scroll-area">
               {isTodoCreateDialogOpen ? (
                 <Dialog open onOpenChange={(open) => { if (!open) closeTodoCreateDialog() }}>
@@ -7368,6 +7370,18 @@ function ProjectDetail({
               )}
             </div>
           </Card>
+      ) : null}
+
+      {workHourRecorderContext ? (
+        <WorkHoursWorkbench
+          mode="mine"
+          projects={projects}
+          currentUserId={currentUser?.id}
+          currentUserName={currentUser?.displayName}
+          recorderOnly
+          recorderRequest={workHourRecorderContext}
+          onRecorderDismiss={onWorkHourRecorderDismiss}
+        />
       ) : null}
     </div>
   )
@@ -11684,7 +11698,7 @@ function TodoEditorDialog({
         {isCreateMode ? (
           <>
             <Label>
-              待办标题
+              <span className="todo-form-label">待办标题 <em className="field-required">必填</em></span>
               <div className="todo-title-input-wrap">
                 <MentionInput
                   autoFocus
@@ -11705,9 +11719,25 @@ function TodoEditorDialog({
               </div>
             </Label>
             <div className="todo-editor-inline-grid">
+              <Label>
+                优先级
+                <Select
+                  value={priority}
+                  onValueChange={(value) => onPriorityChange(value as Priority)}
+                >
+                  <SelectTrigger aria-label="待办优先级" className="todo-form-field">
+                    <SelectValue placeholder="优先级" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="high">高优先级</SelectItem>
+                    <SelectItem value="medium">中优先级</SelectItem>
+                    <SelectItem value="low">低优先级</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
               {project.organizationId ? (
                 <Label className="todo-inline-field-half">
-                  预估工时（小时）
+                  <span className="todo-form-label">预估工时（小时） <em className="field-required">必填</em></span>
                   <Input
                     aria-label="预估工时"
                     min="0.25"
@@ -11753,22 +11783,6 @@ function TodoEditorDialog({
                   />
                 </div>
               </div>
-              <Label>
-                优先级
-                <Select
-                  value={priority}
-                  onValueChange={(value) => onPriorityChange(value as Priority)}
-                >
-                  <SelectTrigger aria-label="待办优先级" className="todo-form-field">
-                    <SelectValue placeholder="优先级" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="high">高优先级</SelectItem>
-                    <SelectItem value="medium">中优先级</SelectItem>
-                    <SelectItem value="low">低优先级</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Label>
               <div className="todo-editor-field todo-inline-field-half">
                 <span>所属模块</span>
                 <ProjectModulePicker

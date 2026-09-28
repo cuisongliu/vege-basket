@@ -2032,6 +2032,19 @@ textarea:focus {
   line-height: 1;
 }
 
+.todo-form-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.field-required {
+  color: var(--destructive);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
 .todo-create-dialog {
   max-width: min(680px, calc(100vw - 32px));
 }
@@ -5881,12 +5894,20 @@ textarea:focus {
   align-items: stretch;
 }
 
-.project-detail-tabs {
+.project-detail-tabbar {
   align-items: center;
   border-bottom: 1px solid var(--border);
   display: flex;
-  gap: 4px;
+  gap: 12px;
   grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.project-detail-tabs {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
   min-width: 0;
   overflow-x: auto;
   padding: 0 4px;
@@ -5929,6 +5950,18 @@ textarea:focus {
 .project-detail-tabs button.is-active {
   border-bottom-color: var(--primary);
   color: var(--primary);
+}
+
+.project-detail-tab-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding-right: 4px;
+}
+
+.project-detail-tab-actions .todo-create-trigger {
+  min-height: 32px;
+  white-space: nowrap;
 }
 
 .detail-layout.project-tasks-mode,
@@ -12520,6 +12553,12 @@ textarea:focus {
     align-items: stretch;
   }
 
+  .project-detail-tabbar {
+    gap: 8px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
   .project-detail-tabs {
     width: 100%;
     justify-content: flex-start;
@@ -12528,6 +12567,10 @@ textarea:focus {
 
   .project-detail-tabs button {
     padding-inline: 10px;
+  }
+
+  .project-detail-tab-actions .todo-create-trigger span {
+    display: none;
   }
 
   .detail-layout:not(.packages-mode) .side-panel {

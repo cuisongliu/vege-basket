@@ -82,6 +82,33 @@ test('todo creation uses a modal and status filtering has one merged field', () 
   assert.match(appSource, /field === 'status'/u)
   assert.doesNotMatch(appSource, /field === 'confirmationStatus'/u)
   assert.doesNotMatch(appSource, /field === 'done'/u)
+  assert.match(todoEditorDialogSource, /待办标题[\s\S]*field-required[\s\S]*优先级/u)
+  assert.match(todoEditorDialogSource, /预估工时（小时）[\s\S]*field-required/u)
+})
+
+test('project basket keeps work-hour recording in the current project surface', () => {
+  assert.match(appSource, /function selectMyWorkHour\(projectId: number, todoId: number\)[\s\S]*?setProjectDetailTab\('tasks'\)[\s\S]*?setView\('project'\)/u)
+  assert.match(appSource, /recorderOnly[\s\S]*recorderRequest=\{workHourRecorderContext\}/u)
+  const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+  assert.match(workHoursSource, /recorderRequest\?: .*projectId: number; todoId: number.*null/u)
+  assert.match(workHoursSource, /onRecorderDismiss\?: \(\) => void/u)
+  assert.match(workHoursSource, /openRecorderForTodo\(recorderRequest.todoId, recorderRequest.projectId\)/u)
+})
+
+test('task work-hour details have an independent paginated scroll surface', () => {
+  const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+  assert.match(workHoursSource, /fetchTodoWorkHours\(selectedTaskId, \{[\s\S]*?cursor: selectedTaskEntryPage \* 10[\s\S]*?limit: 10/u)
+  assert.match(workHoursSource, /任务投入明细分页/u)
+  assert.match(workHoursCssSource, /work-hours-drawer-list \{[^}]*overflow-y: auto/u)
+})
+
+test('project detail keeps tabs and task actions in one aligned bar', () => {
+  assert.match(appSource, /className="project-detail-tabbar"/u)
+  assert.match(appSource, /className="project-detail-tab-actions"/u)
+  assert.match(
+    readFileSync(new URL('../src/App.css', import.meta.url), 'utf8'),
+    /project-detail-tabbar[\s\S]*display: flex[\s\S]*project-detail-tabs[\s\S]*flex: 1 1 auto/u,
+  )
 })
 
 test('project work-hour layout grows with content instead of forcing a fixed panel height', () => {
