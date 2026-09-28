@@ -317,7 +317,7 @@ export type TodoActivityEvent = {
   id: number
   todoId?: number
   projectId: number
-  eventType: 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed'
+  eventType: 'created' | 'updated' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
   todoTitle: string
   actorUserId?: number
   actorName: string

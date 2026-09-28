@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { UserName } from '@/components/user-name'
 
-export function TodoActivityPanel({ departedUserIds = [], projectId }: { departedUserIds?: readonly number[]; projectId: number }) {
+export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: { departedUserIds?: readonly number[]; projectId: number; todoId?: number }) {
   const [events, setEvents] = useState<TodoActivityEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -26,7 +26,7 @@ export function TodoActivityPanel({ departedUserIds = [], projectId }: { departe
     setLoading(true)
     setError('')
     try {
-      const result = await fetchTodoActivity(projectId)
+      const result = await fetchTodoActivity(projectId, todoId)
       setEvents(result.events)
     } catch (loadError) {
       setError(
@@ -37,7 +37,7 @@ export function TodoActivityPanel({ departedUserIds = [], projectId }: { departe
     } finally {
       setLoading(false)
     }
-  }, [projectId])
+  }, [projectId, todoId])
 
   useEffect(() => {
     void load()
@@ -50,8 +50,8 @@ export function TodoActivityPanel({ departedUserIds = [], projectId }: { departe
           <span className="todo-activity-eyebrow">
             <ClockCounterClockwise size={15} weight="bold" /> 待办事实流
           </span>
-          <h3>待办动态</h3>
-          <p>按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。</p>
+          <h3>{todoId ? '任务动态' : '待办动态'}</h3>
+          <p>{todoId ? '按时间记录当前任务的创建、编辑、工时和验收变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。'}</p>
         </div>
         <Button
           aria-label="刷新待办动态"
@@ -116,6 +116,12 @@ export function TodoActivityPanel({ departedUserIds = [], projectId }: { departe
                 icon: <PlusCircle size={18} weight="fill" />,
                 label: '已创建',
               },
+              updated: {
+                className: 'is-assigned',
+                description: '编辑了这项待办',
+                icon: <ArrowClockwise size={18} weight="bold" />,
+                label: '已编辑',
+              },
               rejected: {
                 className: 'is-rejected',
                 description: '驳回了这项待办',
@@ -127,6 +133,30 @@ export function TodoActivityPanel({ departedUserIds = [], projectId }: { departe
                 description: '验收未通过这项待办',
                 icon: <XCircle size={18} weight="fill" />,
                 label: '验收未通过',
+              },
+              work_hours_added: {
+                className: 'is-created',
+                description: '新增了工时记录',
+                icon: <PlusCircle size={18} weight="fill" />,
+                label: '新增工时',
+              },
+              work_hours_updated: {
+                className: 'is-assigned',
+                description: '修改了工时记录',
+                icon: <ArrowClockwise size={18} weight="bold" />,
+                label: '修改工时',
+              },
+              work_hours_deleted: {
+                className: 'is-rejected',
+                description: '删除了工时记录',
+                icon: <XCircle size={18} weight="fill" />,
+                label: '删除工时',
+              },
+              work_hours_submitted: {
+                className: 'is-confirmed',
+                description: '提交了工时验收',
+                icon: <PaperPlaneTilt size={18} weight="fill" />,
+                label: '工时验收',
               },
               reopened: {
                 className: 'is-reopened',

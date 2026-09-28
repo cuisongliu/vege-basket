@@ -5,7 +5,7 @@ import { decryptText, encryptText } from './crypto.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 
 export const WORK_MINUTES_DAY_LIMIT = 24 * 60
-export const WORK_MINUTES_STEP = 15
+export const WORK_MINUTES_STEP = 60
 
 export type WorkHourStatus = 'pending' | 'confirmed'
 
@@ -17,10 +17,10 @@ export function parseWorkMinutes(value: unknown, options: { required?: boolean }
   }
   const minutes = typeof value === 'number' ? value : Number(value)
   if (!Number.isSafeInteger(minutes) || minutes <= 0 || minutes > WORK_MINUTES_DAY_LIMIT) {
-    throw new WorkHoursError('WORK_MINUTES_INVALID', '工时必须是 15 分钟到 24 小时之间的整数分钟。', 400)
+    throw new WorkHoursError('WORK_MINUTES_INVALID', '工时必须是 1 小时到 24 小时之间的整数小时。', 400)
   }
   if (minutes % WORK_MINUTES_STEP !== 0) {
-    throw new WorkHoursError('WORK_MINUTES_STEP', '工时必须按 0.25 小时递增。', 400)
+    throw new WorkHoursError('WORK_MINUTES_STEP', '工时必须按整数小时填写。', 400)
   }
   return minutes
 }
@@ -243,7 +243,7 @@ async function getTodoForWork(client: PoolClient, todoId: number, userId: number
   return result.rows[0] ?? null
 }
 
-async function insertWorkHoursActivityEvent(client: PoolClient, todo: Awaited<ReturnType<typeof getTodoForWork>>, actorUserId: number, eventType: 'completed' | 'reopened' | 'rejected') {
+async function insertWorkHoursActivityEvent(client: PoolClient, todo: Awaited<ReturnType<typeof getTodoForWork>>, actorUserId: number, eventType: 'completed' | 'reopened' | 'rejected' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted') {
   if (!todo) return
   await client.query(
     `insert into todo_activity_events (
@@ -481,6 +481,7 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
        returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
       [Number(todo.project_id), todoId, userId, workDate, minutes, encryptText(description)],
     )
+    await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_added')
     await client.query('commit')
     return serializeEntry(result.rows[0])
   } catch (error) {
@@ -699,6 +700,8 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
              where id = $4 returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
           [targetDate, targetMinutes, typeof request.body.description === 'string' ? (request.body.description.trim() ? encryptText(request.body.description.trim()) : '') : row.description, entryId],
         )
+        const todo = await getTodoForWork(client, Number(row.todo_id), userId)
+        await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_updated')
         await client.query('commit')
         response.json({ entry: serializeEntry(updated.rows[0]) })
       } catch (error) {
@@ -718,12 +721,28 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       if (!userId) return
       await requireWorkHoursRole(userId)
       const entryId = positiveId(request.params.entryId)
-      const result = await query<{ status: WorkHourStatus; user_id: string }>('delete from todo_work_hours where id = $1 and user_id = $2 and status = \'pending\' returning status, user_id', [entryId, userId])
-      if (!result.rows[0]) {
-        response.status(409).json({ error: '工时不存在、已确认或不属于当前用户。' })
-        return
+      const client = await pool.connect()
+      try {
+        await client.query('begin')
+        const entry = await client.query<{ todo_id: string; status: WorkHourStatus; user_id: string }>(
+          'select todo_id, status, user_id from todo_work_hours where id = $1 for update',
+          [entryId],
+        )
+        const row = entry.rows[0]
+        if (!row || Number(row.user_id) !== userId || row.status !== 'pending') {
+          throw new WorkHoursError('ENTRY_NOT_FOUND', '工时不存在、已确认或不属于当前用户。', 409)
+        }
+        const todo = await getTodoForWork(client, Number(row.todo_id), userId)
+        await client.query('delete from todo_work_hours where id = $1', [entryId])
+        await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_deleted')
+        await client.query('commit')
+        response.json({ ok: true })
+      } catch (error) {
+        await client.query('rollback')
+        throw error
+      } finally {
+        client.release()
       }
-      response.json({ ok: true })
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }
@@ -746,6 +765,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       if (action === 'submit') {
         if (todo.done || (assigneeId != null && assigneeId !== userId) || (assigneeId == null && Number(todo.owner_user_id) !== userId)) throw new WorkHoursError('TODO_SUBMIT_FORBIDDEN', '只有负责人可以提交自己的进行中任务。', 403)
         await client.query(`update todos set confirmation_status = 'pending_review', needs_revision = false, rejection_reason = null, submitted_at = now(), updated_at = now() where id = $1`, [todoId])
+        await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_submitted')
       } else if (action === 'withdraw') {
         if (todo.confirmation_status !== 'pending_review' || (assigneeId != null ? assigneeId !== userId : Number(todo.owner_user_id) !== userId)) throw new WorkHoursError('TODO_WITHDRAW_FORBIDDEN', '只有负责人可以撤回待验收任务。', 403)
         await client.query(`update todos set submitted_at = null, confirmation_status = 'confirmed', needs_revision = false, updated_at = now() where id = $1`, [todoId])

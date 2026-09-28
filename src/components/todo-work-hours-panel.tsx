@@ -67,7 +67,10 @@ export function TodoWorkHoursPanel({
   const [deletingEntry, setDeletingEntry] = useState<WorkHourEntry | null>(null)
   const [returnOpen, setReturnOpen] = useState(false)
   const [returnReason, setReturnReason] = useState('')
+  const [acceptanceOpen, setAcceptanceOpen] = useState(false)
+  const [acceptanceEntries, setAcceptanceEntries] = useState<WorkHourEntry[]>([])
   const pageSize = 10
+  const historicalEntries = acceptanceEntries.filter((entry) => entry.workDate < entry.createdAt.slice(0, 10))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -92,6 +95,10 @@ export function TodoWorkHoursPanel({
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { setPage(0) }, [query, todo.id])
+  useEffect(() => {
+    if (!acceptanceOpen) return
+    void fetchTodoWorkHours(todo.id, { limit: 50 }).then((response) => setAcceptanceEntries(response.entries)).catch(() => setAcceptanceEntries(entries))
+  }, [acceptanceOpen, entries, todo.id])
 
   function beginEdit(entry: WorkHourEntry) {
     setEditingEntry(entry)
@@ -104,8 +111,8 @@ export function TodoWorkHoursPanel({
   async function saveEdit() {
     if (!editingEntry) return
     const minutes = Math.round(Number(editHours) * 60)
-    if (!editDescription.trim() || !Number.isInteger(minutes) || minutes <= 0 || minutes > 1440 || minutes % 15 !== 0) {
-      setError('请填写工作说明，工时须按 0.25 小时递增且不超过 24 小时。')
+    if (!editDescription.trim() || !Number.isInteger(minutes) || minutes < 60 || minutes > 1440 || minutes % 60 !== 0) {
+      setError('请填写工作说明，工时须按整数小时填写且不超过 24 小时。')
       return
     }
     setSaving(true)
@@ -139,29 +146,11 @@ export function TodoWorkHoursPanel({
         </div>
         <div className="todo-work-hours-actions">
           {canRecord ? <Button type="button" variant="outline" onClick={onRecord}><Plus size={15} />记录工时</Button> : null}
-          {canRecord && !todo.done && todo.confirmationStatus !== 'pending_review' ? (
-            <ConfirmActionDialog
-              actionKey={`todo-submit-review:${todo.id}`}
-              title="确认提交验收？"
-              description="提交后工时将等待创建人确认，任务状态变为待验收。"
-              confirmLabel="提交验收"
-              variant="default"
-              onConfirm={() => runWorkflow(onSubmitReview, '待办已提交验收。')}
-              trigger={<Button type="button">提交验收</Button>}
-            />
-          ) : null}
+          {canRecord && !todo.done && todo.confirmationStatus !== 'pending_review' ? <Button type="button" onClick={() => setAcceptanceOpen(true)}>工时验收</Button> : null}
           {canReview && todo.confirmationStatus === 'pending_review' ? (
             <>
               <Button type="button" variant="outline" onClick={() => setReturnOpen(true)}>退回修改</Button>
-              <ConfirmActionDialog
-                actionKey={`todo-accept:${todo.id}`}
-                title="确认验收通过？"
-                description="任务将标记为已完成，所有未确认工时将一并确认。"
-                confirmLabel="验收通过"
-                variant="default"
-                onConfirm={() => runWorkflow(onAccept, '验收已通过，工时已确认。')}
-                trigger={<Button type="button"><CheckCircle size={15} />验收通过</Button>}
-              />
+              <Button type="button" onClick={() => setAcceptanceOpen(true)}><CheckCircle size={15} />工时验收</Button>
             </>
           ) : null}
         </div>
@@ -205,7 +194,7 @@ export function TodoWorkHoursPanel({
           <DialogHeader><DialogTitle>编辑工时</DialogTitle><DialogDescription>只能修改本人尚未确认的工时记录。</DialogDescription></DialogHeader>
           <div className="todo-work-hours-edit-form">
             <Label>日期<Input type="date" value={editDate} onChange={(event) => setEditDate(event.target.value)} /></Label>
-            <Label>时长（小时）<Input min="0.25" max="24" step="0.25" type="number" value={editHours} onChange={(event) => setEditHours(event.target.value)} /></Label>
+          <Label>时长（小时）<Input min="1" max="24" step="1" type="number" value={editHours} onChange={(event) => setEditHours(event.target.value)} /></Label>
             <Label>工作说明<textarea rows={4} value={editDescription} onChange={(event) => setEditDescription(event.target.value)} /></Label>
           </div>
           <DialogFooter><Button type="button" variant="outline" onClick={() => setEditingEntry(null)}>取消</Button><Button type="button" disabled={saving || !editDescription.trim()} onClick={() => void saveEdit()}>{saving ? '保存中...' : '保存修改'}</Button></DialogFooter>
@@ -216,6 +205,24 @@ export function TodoWorkHoursPanel({
           <DialogHeader><DialogTitle>退回待办</DialogTitle><DialogDescription>说明未通过原因，负责人修改后需要重新提交验收。</DialogDescription></DialogHeader>
           <Label>退回原因<textarea rows={4} value={returnReason} onChange={(event) => setReturnReason(event.target.value)} placeholder="请说明需要补充或修改的内容" /></Label>
           <DialogFooter><Button type="button" variant="outline" onClick={() => setReturnOpen(false)}>取消</Button><Button type="button" variant="destructive" disabled={!returnReason.trim()} onClick={() => void runWorkflow(() => onReturn(returnReason.trim()), '待办已退回修改。').then((saved) => { if (saved) { setReturnOpen(false); setReturnReason('') } })}>确认退回</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={acceptanceOpen} onOpenChange={(open) => { if (!saving) setAcceptanceOpen(open) }}>
+        <DialogContent className="todo-work-hours-acceptance-dialog">
+          <DialogHeader><DialogTitle>工时验收</DialogTitle><DialogDescription>核对任务投入后提交验收或确认通过。</DialogDescription></DialogHeader>
+          <div className="todo-work-hours-acceptance-summary">
+            <div><span>预估工时</span><strong>{formatHours(todo.estimatedWorkMinutes)}</strong></div>
+            <div><span>实际累计</span><strong>{formatHours(summary.totalMinutes)}</strong></div>
+            <div><span>已确认</span><strong>{formatHours(summary.confirmedMinutes)}</strong></div>
+            <div><span>未确认</span><strong>{formatHours(summary.pendingMinutes)}</strong></div>
+            <div><span>历史日期工时</span><strong>{formatHours(historicalEntries.reduce((sum, entry) => sum + entry.minutes, 0))}</strong></div>
+          </div>
+          {historicalEntries.length ? <section className="todo-work-hours-history-records"><h4>历史日期记录</h4>{historicalEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}</span><p>{entry.description}</p><strong>{formatHours(entry.minutes)}</strong></div>)}</section> : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAcceptanceOpen(false)}>取消</Button>
+            {canRecord && !todo.done && todo.confirmationStatus !== 'pending_review' ? <Button type="button" onClick={() => void runWorkflow(onSubmitReview, '待办已提交工时验收。').then((saved) => { if (saved) setAcceptanceOpen(false) })}>提交工时验收</Button> : null}
+            {canReview && todo.confirmationStatus === 'pending_review' ? <Button type="button" onClick={() => void runWorkflow(onAccept, '工时验收已通过。').then((saved) => { if (saved) setAcceptanceOpen(false) })}>验收通过</Button> : null}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <ConfirmActionDialog

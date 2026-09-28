@@ -413,7 +413,7 @@ type ProjectModuleRow = {
   name: string
   created_at: Date
 }
-type TodoActivityEventType = 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed'
+type TodoActivityEventType = 'created' | 'updated' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
 type TodoNoteRow = {
   id: string
   todo_id: string
@@ -5546,6 +5546,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const projectId = Number(request.params.projectId)
+  const todoId = request.query.todoId == null ? null : Number(request.query.todoId)
   const access = await getProjectReadAccess(projectId, userId)
   if (!access) {
     response.status(404).json({ error: 'Project not found' })
@@ -5585,10 +5586,11 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     left join users actor on actor.id = event.actor_user_id
     left join users assignee on assignee.id = event.assignee_user_id
     where event.project_id = $1
+      and ($2::bigint is null or event.todo_id = $2)
     order by event.occurred_at desc, event.id desc
     limit 200
     `,
-    [projectId],
+    [projectId, todoId != null && Number.isSafeInteger(todoId) && todoId > 0 ? todoId : null],
   )
 
   response.json({
@@ -11209,16 +11211,20 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     [projectId, userId],
   )
   const projectOrganization = projectScope.rows[0]
-  let estimatedWorkMinutes: number | null = null
+  let estimatedWorkMinutes: number
   if (projectOrganization?.organization_id) {
     if (!projectOrganization.organization_admin_access) {
       response.status(403).json({ error: '只有目标组织的组织管理员可以创建企业待办。' })
       return
     }
+  }
+  {
     try {
-      estimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: true })
+      const parsedEstimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: true })
+      if (parsedEstimatedWorkMinutes == null) throw new Error('预估工时必须填写整数小时，最少 1 小时。')
+      estimatedWorkMinutes = parsedEstimatedWorkMinutes
     } catch (error) {
-      response.status(400).json({ error: error instanceof Error ? error.message : '企业待办必须填写预估工时。' })
+      response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须填写整数小时，最少 1 小时。' })
       return
     }
   }
@@ -11227,6 +11233,10 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     projectId,
     access.ownerUserId,
   )
+  if (!assigneeUserId) {
+    response.status(400).json({ error: '负责人是必填项，且必须是当前项目成员。' })
+    return
+  }
   const watcherInput = Array.isArray(request.body.watcherUserIds)
     ? request.body.watcherUserIds
     : request.body.watcherUserId == null || request.body.watcherUserId === ''
@@ -11529,6 +11539,19 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     'assigneeUserId' in request.body
       ? await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
       : undefined
+  if (canManageTodoFields && 'assigneeUserId' in request.body && !nextAssigneeUserId) {
+    response.status(400).json({ error: '负责人是必填项，且必须是当前项目成员。' })
+    return
+  }
+  let nextEstimatedWorkMinutes: number | undefined
+  if (canManageTodoFields && 'estimatedWorkMinutes' in request.body) {
+    try {
+      nextEstimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: true }) ?? undefined
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须是至少 1 小时的整数。' })
+      return
+    }
+  }
   const moduleFieldRequested = canManageTodoFields && 'moduleId' in request.body
   const requestedModuleId = moduleFieldRequested ? parseProjectModuleId(request.body.moduleId) : undefined
   const subprojectFieldRequested = canManageTodoFields && 'subprojectId' in request.body
@@ -11589,6 +11612,18 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   const nextDetailMentionedUserIds = nextDetail != null
     ? (await resolveTodoNoteMentionUserIds(projectId, nextDetail)).filter((id) => id !== userId)
     : null
+  const todoFieldsUpdated = canManageTodo && (
+    typeof request.body.title === 'string' ||
+    typeof request.body.detail === 'string' ||
+    'dueDate' in request.body ||
+    'priority' in request.body ||
+    'createdAt' in request.body
+  ) || canManageTodoFields && (
+    'estimatedWorkMinutes' in request.body ||
+    'moduleId' in request.body ||
+    'subprojectId' in request.body ||
+    'reviewerUserId' in request.body
+  )
   const rejectionMentionedUserIds = requestedConfirmationStatus === 'rejected'
     ? await resolveTodoNoteMentionUserIds(projectId, requestedRejectionReason)
     : []
@@ -11774,6 +11809,12 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     )
     const updatedTodo = updatedTodoResult.rows[0]
     if (!updatedTodo) throw new Error('Todo update failed')
+    if (nextEstimatedWorkMinutes != null) {
+      await client.query(
+        'update todos set estimated_work_minutes = $2, updated_at = now() where id = $1 and project_id = $3',
+        [todoId, nextEstimatedWorkMinutes, projectId],
+      )
+    }
     if (requestedConfirmationStatus === 'pending_review') {
       await client.query(
         `update todos
@@ -11822,6 +11863,9 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     }
     if (assigneeChanged) {
       await insertTodoActivityEvent(client, { ...activitySnapshot, eventType: 'assigned' })
+    }
+    if (todoFieldsUpdated) {
+      await insertTodoActivityEvent(client, { ...activitySnapshot, eventType: 'updated' })
     }
     if (
       (canRespondToAssignment || isAcceptanceDecisionUpdate) &&
@@ -13688,7 +13732,7 @@ async function confirmAiTodoProposalBatch(
         const policy = projectPolicy.rows[0]
         if (!policy) throw new AiConversationStoreError('AI_PROJECT_NOT_FOUND', 'Project not found', 404)
         if (policy.organization_id && (!policy.can_manage || proposal.estimatedWorkMinutes == null)) {
-          throw new AiConversationStoreError('AI_TODO_ESTIMATE_REQUIRED', '企业待办必须由组织管理员确认并填写预估工时（15 分钟递增）。', 400)
+          throw new AiConversationStoreError('AI_TODO_ESTIMATE_REQUIRED', '企业待办必须由组织管理员确认并填写至少 1 小时的整数预估工时。', 400)
         }
         const insertQuery = buildConfirmedTodoInsertQuery({
           assigneeUserId: proposal.assigneeUserId,

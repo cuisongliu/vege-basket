@@ -97,6 +97,10 @@ button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary
 .work-hours-dialog-form label { display: grid; font-size: 13px; gap: 6px; }
 .work-hours-dialog-form select, .work-hours-dialog-form textarea { width: 100%; }
 .work-hours-form-grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.work-hours-locked-context { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+.work-hours-locked-context > div { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 9px 10px; background: color-mix(in srgb, var(--primary) 5%, var(--surface)); }
+.work-hours-locked-context span { color: var(--muted-text); font-size: 12px; }
+.work-hours-locked-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-hours-task-drawer { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; left: auto; max-height: none; right: 0; top: 0; transform: none; width: min(92vw, 520px); overflow: hidden; }
 .work-hours-drawer-metrics { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
 .work-hours-drawer-metrics > div { background: var(--muted); border-radius: 6px; display: grid; gap: 4px; padding: 12px; }

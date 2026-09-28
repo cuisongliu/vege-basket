@@ -158,6 +158,6 @@ test('todo details expose paginated work-hour review controls without a manual c
   assert.match(todoWorkHoursPanelSource, /fetchTodoWorkHours\(todo\.id/u)
   assert.match(todoWorkHoursPanelSource, /ListPagination label="待办工时明细分页"/u)
   assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
-  assert.match(todoWorkHoursPanelSource, /确认提交验收/u)
-  assert.match(todoWorkHoursPanelSource, /确认验收通过/u)
+  assert.match(todoWorkHoursPanelSource, /工时验收/u)
+  assert.match(todoWorkHoursPanelSource, /提交工时验收/u)
 })

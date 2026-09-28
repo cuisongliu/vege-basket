@@ -39,7 +39,7 @@ export type AiTodoProposalValidationOptions = {
 }
 
 export const AI_TODO_PROPOSAL_SYSTEM_PROMPT = `你是 Veges 的待办候选提取助手。根据自然语言指令或 Markdown 内容识别可执行事项，并从权限目录中推断项目、模块和负责人。
-只返回一个 JSON 对象，结构必须是 {"proposals":[...]}。每项必须且只能包含 projectId、moduleId、assigneeUserId、title、detail、dueDate、priority、confidence、sourceExcerpt；如果明确推断出企业项目工时，可额外包含 estimatedWorkMinutes（15 分钟的正整数倍），否则不要包含该字段。
+只返回一个 JSON 对象，结构必须是 {"proposals":[...]}。每项必须且只能包含 projectId、moduleId、assigneeUserId、title、detail、dueDate、priority、confidence、sourceExcerpt；如果明确推断出企业项目工时，可额外包含 estimatedWorkMinutes（整数小时，至少 1 小时），否则不要包含该字段。
 projectId、moduleId 和 assigneeUserId 应优先从权限目录推断；无法判断时使用 null。非空 projectId 必须来自权限目录，非空 moduleId 和 assigneeUserId 必须属于该项目。用户修正项目后，如果原模块或负责人不属于新项目，对应字段必须改为 null。dueDate 使用 YYYY-MM-DD，无法判断时使用 null。priority 只能是 high、medium、low。confidence 是 0 到 1 的数字。sourceExcerpt 必须原样摘自输入内容。不要创建输入中没有依据的事项。`
 
 const proposalKeys = [
@@ -189,8 +189,8 @@ function parseProposal(
   }
   if (hasEstimate) {
     const minutes = value.estimatedWorkMinutes
-    if (!Number.isSafeInteger(minutes) || Number(minutes) <= 0 || Number(minutes) > 1440 || Number(minutes) % 15 !== 0) {
-      throw new AiTodoProposalValidationError(`proposals[${index}].estimatedWorkMinutes must be a positive multiple of 15 minutes`)
+    if (!Number.isSafeInteger(minutes) || Number(minutes) < 60 || Number(minutes) > 1440 || Number(minutes) % 60 !== 0) {
+      throw new AiTodoProposalValidationError(`proposals[${index}].estimatedWorkMinutes must be a positive integer hour`)
     }
     result.estimatedWorkMinutes = Number(minutes)
   }

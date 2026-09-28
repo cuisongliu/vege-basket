@@ -7333,7 +7333,7 @@ function ProjectDetail({
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
-                  submitDisabled={!todoDraft.trim() || Boolean(project.organizationId && !todoEstimatedWorkHours)}
+                  submitDisabled={!todoDraft.trim() || !todoAssigneeUserId || !todoEstimatedWorkHours || !Number.isInteger(Number(todoEstimatedWorkHours)) || Number(todoEstimatedWorkHours) < 1}
                   title={todoDraft}
                   onAssigneeUserIdChange={onTodoAssigneeChange}
                   onWatcherUserIdsChange={onTodoWatcherChange}
@@ -11532,6 +11532,7 @@ function TodoEditorDialog({
   clearDisabled = false,
   createdAt,
   currentUserId,
+  departedUserIds = [],
   detail,
   members,
   mode,
@@ -11581,6 +11582,7 @@ function TodoEditorDialog({
   clearDisabled?: boolean
   createdAt: string
   currentUserId?: number
+  departedUserIds?: readonly number[]
   detail: string
   members: Array<{ id: number; name: string }>
   mode: 'create' | 'detail'
@@ -11745,21 +11747,19 @@ function TodoEditorDialog({
                   </SelectContent>
                 </Select>
               </Label>
-              {project.organizationId ? (
-                <Label className="todo-inline-field-half">
-                  <span className="todo-form-label">预估工时（小时） <em className="field-required">必填</em></span>
-                  <Input
-                    aria-label="预估工时"
-                    min="0.25"
-                    step="0.25"
-                    type="number"
-                    value={estimatedWorkHours ?? ''}
-                    onChange={(event) => onEstimatedWorkHoursChange?.(event.target.value)}
-                    placeholder="例如 8"
-                  />
-                  <span className="field-hint">企业待办必填，按 0.25 小时递增</span>
-                </Label>
-              ) : null}
+              <Label className="todo-inline-field-half">
+                <span className="todo-form-label">预估工时（小时） <em className="field-required">必填</em></span>
+                <Input
+                  aria-label="预估工时"
+                  min="1"
+                  step="1"
+                  type="number"
+                  value={estimatedWorkHours ?? ''}
+                  onChange={(event) => onEstimatedWorkHoursChange?.(event.target.value)}
+                  placeholder="例如 8"
+                />
+                <span className="field-hint">请输入整数小时，最少 1 小时</span>
+              </Label>
               <Label>
                 所属子项目
                 <Select value={String(subprojectId ?? 'none')} onValueChange={(value) => onSubprojectIdChange?.(value === 'none' ? null : Number(value))}>
@@ -11805,7 +11805,7 @@ function TodoEditorDialog({
                 />
               </div>
               <Label className="todo-inline-field-half">
-                负责人
+                <span className="todo-form-label">负责人 <em className="field-required">必填</em></span>
                 <ProjectMemberPicker
                   members={members}
                   value={assigneeUserId}
@@ -11921,6 +11921,9 @@ function TodoEditorDialog({
             ) : null}
           </>
         )}
+        {showDetailOverview && todo ? (
+          <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} todoId={todo.id} />
+        ) : null}
         {showDetailOverview && todo && project.organizationId ? (
           <TodoWorkHoursPanel
             canRecord={canRecordWorkHour}
@@ -12518,6 +12521,7 @@ function TodoList({
           canEditProperties={editingCanManageTodoFields}
           canRespondToTodo={editingCanRespondToTodo}
           canRecordWorkHour={canRecordWorkHour(editingTodo)}
+          departedUserIds={departedUserIds}
           canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
           isEditing={isTodoDetailEditing}
@@ -12691,9 +12695,6 @@ function TodoList({
                 <span role="cell"><span className={`todo-workflow-status is-${statusMarker}`}>{statusLabel}</span></span>
                 <span className="todo-workflow-actions" role="cell" onClick={(event) => event.stopPropagation()}>
                   <Button aria-label={`查看 ${todo.title}`} title="查看详情" size="icon" variant="ghost" type="button" onClick={() => openTodoEditDialog(todo)}><FileText size={15} /></Button>
-                  {canRecordWorkHour(todo) ? <Button aria-label={`记录 ${todo.title} 的工时`} title="记录工时" size="icon" variant="ghost" type="button" onClick={() => onRecordWorkHour?.(todo.projectId, todo.id)}><Clock size={15} /></Button> : null}
-                  {canRecordWorkHour(todo) ? <Button aria-label={`提交 ${todo.title} 验收`} title="提交验收" size="icon" variant="ghost" type="button" onClick={() => setTodoPendingReviewTarget(todo)}><PaperPlaneTilt size={15} /></Button> : null}
-                  {todo.confirmationStatus === 'pending_review' && canToggleTodoDone(todo) ? <Button aria-label={`验收 ${todo.title}`} title="验收" size="icon" variant="ghost" type="button" onClick={() => setTodoAcceptanceTarget(todo)}><CheckCircle size={15} /></Button> : null}
                   {rowCanManageTodo ? (
                     <ConfirmDialog
                       actionKey={`delete-todo:${todo.id}`}

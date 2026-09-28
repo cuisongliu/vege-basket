@@ -51,54 +51,6 @@ function csvCell(value: string | number) {
   return `"${String(value).replaceAll('"', '""')}"`
 }
 
-function WorkHoursTrendChart({
-  byDate,
-  period,
-}: {
-  byDate: WorkHourSummary['byDate']
-  period: 'week' | 'month'
-}) {
-  const width = 720
-  const height = 224
-  const padding = { top: 16, right: 18, bottom: 34, left: 38 }
-  const points = byDate.length
-    ? byDate
-    : [{ date: '', minutes: 0, hours: 0, pendingMinutes: 0, confirmedMinutes: 0 }]
-  const max = Math.max(60, Math.ceil(Math.max(...points.map((item) => item.minutes), 60) / 60) * 60)
-  const chartWidth = width - padding.left - padding.right
-  const chartHeight = height - padding.top - padding.bottom
-  const x = (index: number) => padding.left + (points.length === 1 ? chartWidth / 2 : index * chartWidth / (points.length - 1))
-  const y = (minutes: number) => padding.top + chartHeight - minutes / max * chartHeight
-  const line = (key: 'confirmedMinutes' | 'pendingMinutes') => points.map((item, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(item[key])}`).join(' ')
-  const labels = points.length > 10
-    ? points.filter((_, index) => index === 0 || index === points.length - 1 || index % Math.ceil(points.length / 6) === 0)
-    : points
-  return (
-    <div className="work-hours-trend-chart" role="img" aria-label={`${period === 'week' ? '本周' : '本月'}投入趋势图`}>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-          <g key={ratio}>
-            <line x1={padding.left} x2={width - padding.right} y1={y(max * ratio)} y2={y(max * ratio)} />
-            <text x={padding.left - 8} y={y(max * ratio) + 4} textAnchor="end">{(max * ratio / 60).toFixed(0)}h</text>
-          </g>
-        ))}
-        <path className="work-hours-trend-line is-confirmed" d={line('confirmedMinutes')} />
-        <path className="work-hours-trend-line is-pending" d={line('pendingMinutes')} />
-        {points.map((item, index) => (
-          <g key={`${item.date}-${index}`}>
-            <circle className="is-confirmed" cx={x(index)} cy={y(item.confirmedMinutes)} r="3" />
-            <circle className="is-pending" cx={x(index)} cy={y(item.pendingMinutes)} r="2.5" />
-          </g>
-        ))}
-        {labels.map((item) => {
-          const index = points.indexOf(item)
-          return <text className="work-hours-trend-label" key={`label-${item.date}-${index}`} x={x(index)} y={height - 9} textAnchor="middle">{item.date ? item.date.slice(5).replace('-', '/') : '-'}</text>
-        })}
-      </svg>
-    </div>
-  )
-}
-
 const emptySummary: WorkHourSummary = {
   byDate: [], byProject: [], byUser: [], confirmedMinutes: 0, pendingMinutes: 0,
   projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0,
@@ -292,8 +244,8 @@ export function WorkHoursWorkbench({
   async function saveRecord() {
     const amount = Number(minutes)
     if (!description.trim()) { setError('请填写本次工作的说明。'); return }
-    if (!selectedTodoId || !Number.isInteger(amount) || amount < 15 || amount > 1440 || amount % 15 !== 0) {
-      setError('请选择任务；工时须按 15 分钟递增，且不超过 24 小时。')
+    if (!selectedTodoId || !Number.isInteger(amount) || amount < 60 || amount > 1440 || amount % 60 !== 0) {
+      setError('请选择任务；工时须按整数小时填写，且不超过 24 小时。')
       return
     }
     setSaving(true)
@@ -400,16 +352,16 @@ export function WorkHoursWorkbench({
           <div><ChartLine size={18} /><span>{mode === 'mine' ? '参与项目' : mode === 'organization' ? '完结偏差' : '累计预估'}</span><strong>{mode === 'mine' ? summary.projectCount : mode === 'organization' ? hours(summary.byProject.reduce((sum, item) => sum + (item.varianceMinutes ?? 0), 0)) : hours(estimatedMinutes)}</strong></div>
         </div>
         {mode === 'mine' ? <div className="work-hours-grid">
-          <section className="work-hours-card"><h4>我的投入趋势</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期每日汇总' : '按自然月分段汇总'}</p>{summary.byDate.length ? <WorkHoursTrendChart byDate={summary.byDate} period={period} /> : <p className="work-hours-empty">当前周期暂无记录</p>}</section>
+          <section className="work-hours-card work-hours-table-card"><h4>我的投入明细</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期每日汇总' : '按自然月日期汇总'}</p>{summary.byDate.length ? <div className="work-hours-table work-hours-date-table"><div className="work-hours-table-row work-hours-table-heading"><span>日期</span><span>总投入</span><span>已确认</span><span>待确认</span></div>{summary.byDate.map((item) => <div className="work-hours-table-row" key={item.date}><strong>{item.date}</strong><span>{hours(item.minutes)}</span><span>{hours(item.confirmedMinutes)}</span><span>{hours(item.pendingMinutes)}</span></div>)}</div> : <p className="work-hours-empty">当前周期暂无记录</p>}</section>
           <section className="work-hours-card"><h4>项目投入</h4>{tableTools('搜索项目', '搜索我的项目投入', filteredProjects.length)}{visibleProjects.map((item) => <button className="work-hours-project-card" key={item.projectId} onClick={() => onProjectClick?.(item.projectId)} type="button"><span>{item.projectName}</span><small>{item.taskCount ?? 0} 个任务</small><strong>{hours(item.minutes)}</strong></button>)}</section>
         </div> : null}
       </> : null}
 
       {mode !== 'mine' && managementTab === 'projects' ? <>
         <div className="work-hours-overview-grid">
-          <section className="work-hours-card work-hours-overview-chart">
-            <div className="work-hours-section-heading"><div><h4>投入趋势</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期汇总' : '按自然月内日期汇总'}</p></div><div className="work-hours-legend"><span><i className="is-confirmed" />已确认</span><span><i className="is-pending" />待确认</span></div></div>
-            {summary.byDate.length ? <WorkHoursTrendChart byDate={summary.byDate} period={period} /> : <p className="work-hours-empty">当前周期暂无记录</p>}
+          <section className="work-hours-card work-hours-table-card">
+            <div className="work-hours-section-heading"><div><h4>投入日期明细</h4><p className="work-hours-card-note">{period === 'week' ? '按工作日期汇总' : '按自然月日期汇总'}</p></div><span className="work-hours-history-summary">{summary.byDate.length} 个工作日</span></div>
+            {summary.byDate.length ? <div className="work-hours-table work-hours-date-table"><div className="work-hours-table-row work-hours-table-heading"><span>日期</span><span>总投入</span><span>已确认</span><span>待确认</span></div>{summary.byDate.map((item) => <div className="work-hours-table-row" key={item.date}><strong>{item.date}</strong><span>{hours(item.minutes)}</span><span>{hours(item.confirmedMinutes)}</span><span>{hours(item.pendingMinutes)}</span></div>)}</div> : <p className="work-hours-empty">当前周期暂无记录</p>}
           </section>
           <section className="work-hours-card work-hours-overview-members">
             <div className="work-hours-section-heading"><div><h4>成员投入</h4><p className="work-hours-card-note">按实际填报人归属</p></div></div>
@@ -427,7 +379,7 @@ export function WorkHoursWorkbench({
 
       {mode === 'mine' && mineTab === 'records' ? <section className="work-hours-card work-hours-records"><h4>工时记录</h4>{tableTools('搜索项目、任务、说明或日期', '搜索工时记录', filteredEntries.length)}{loading ? <p className="work-hours-empty">加载中...</p> : filteredEntries.length === 0 ? <p className="work-hours-empty">当前周期暂无匹配工时</p> : <div className="work-hours-record-list">{visibleEntries.map((entry) => <article className="work-hours-record" key={entry.id}><time>{entry.workDate}</time><div><strong>{entry.projectName ?? '项目'} · {entry.todoTitle ?? `任务 #${entry.todoId}`}</strong><p>{entry.description}</p><small>{entry.userName ? `${entry.userName} · ` : ''}{entry.status === 'confirmed' ? '已确认' : '待确认'}</small></div><b>{hours(entry.minutes)}</b>{entry.status === 'pending' ? <div className="work-hours-record-actions"><Button aria-label="编辑工时" size="icon" variant="ghost" onClick={() => openRecorder(entry)}><PencilSimple size={16} /></Button><Button aria-label="删除工时" size="icon" variant="ghost" onClick={() => setDeletingEntry(entry)}><Trash size={16} /></Button></div> : null}</article>)}</div>}</section> : null}
 
-      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) { setDialogOpen(open); if (!open) onRecorderDismiss?.() } }}><DialogContent className="work-hours-dialog"><DialogHeader><DialogTitle>{editingEntry ? '编辑工时' : '填报工时'}</DialogTitle><DialogDescription>{recorderContextLocked && !editingEntry ? '已从待办带入项目和任务，请填写本次实际完成的工作。' : '选择本人负责的进行中任务，记录实际完成的工作。'}</DialogDescription></DialogHeader><div className="work-hours-dialog-form"><Label>项目{recorderProjectPicker}</Label><Label>任务{recorderTaskPicker}</Label><div className="work-hours-form-grid"><Label>日期<Input max={dateInputValue(new Date())} type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} /></Label><Label>时长（小时）<Input min="0.25" max="24" step="0.25" type="number" value={String(Number(minutes) / 60)} onChange={(event) => setMinutes(String(Math.round(Number(event.target.value) * 60)))} /></Label></div><Label>工作说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明本次完成的工作和结果" rows={4} /></Label>{error ? <div className="work-hours-error">{error}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)} type="button">取消</Button><Button disabled={saving || !selectedTodoId || !description.trim()} onClick={() => void saveRecord()} type="button">{saving ? '保存中...' : '保存记录'}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!saving) { setDialogOpen(open); if (!open) onRecorderDismiss?.() } }}><DialogContent className="work-hours-dialog"><DialogHeader><DialogTitle>{editingEntry ? '编辑工时' : '填报工时'}</DialogTitle><DialogDescription>{recorderContextLocked && !editingEntry ? '已从待办带入项目和任务，请填写本次实际完成的工作。' : '选择本人负责的进行中任务，记录实际完成的工作。'}</DialogDescription></DialogHeader><div className="work-hours-dialog-form">{recorderContextLocked && !editingEntry ? <div className="work-hours-locked-context" aria-label="已选择的项目和任务"><div><span>项目</span><strong>{selectedProjectName ?? '当前项目'}</strong></div><div><span>任务</span><strong>{todos.find((todo) => todo.id === selectedTodoId)?.title ?? `任务 #${selectedTodoId}`}</strong></div></div> : <><Label>项目{recorderProjectPicker}</Label><Label>任务{recorderTaskPicker}</Label></>}<div className="work-hours-form-grid"><Label>日期<Input max={dateInputValue(new Date())} type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} /></Label><Label>时长（小时）<Input min="1" max="24" step="1" type="number" value={String(Number(minutes) / 60)} onChange={(event) => setMinutes(String(Math.round(Number(event.target.value) * 60)))} /></Label></div><Label>工作说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明本次完成的工作和结果" rows={4} /></Label>{error ? <div className="work-hours-error">{error}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)} type="button">取消</Button><Button disabled={saving || !selectedTodoId || !description.trim()} onClick={() => void saveRecord()} type="button">{saving ? '保存中...' : '保存记录'}</Button></DialogFooter></DialogContent></Dialog>
       <Dialog open={Boolean(selectedTask)} onOpenChange={(open) => { if (!open) setSelectedTaskId(null) }}><DialogContent className="work-hours-task-drawer"><DialogHeader><DialogTitle>{selectedTask?.title}</DialogTitle><DialogDescription>{selectedTask?.assigneeName ?? '未分配负责人'} · {selectedTask?.done ? '已完成' : selectedTask?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</DialogDescription></DialogHeader>{selectedTask ? <><div className="work-hours-drawer-metrics"><div><span>预估</span><strong>{hours(selectedTask.estimatedMinutes)}</strong></div><div><span>已确认</span><strong>{hours(selectedTask.confirmedMinutes)}</strong></div><div><span>待确认</span><strong>{hours(selectedTask.pendingMinutes)}</strong></div></div><div className="work-hours-drawer-list"><h4>工时记录</h4>{selectedTaskEntries.length ? selectedTaskEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}<small>{entry.userName ?? ''}</small></span><p>{entry.description}</p><strong>{hours(entry.minutes)}</strong>{entry.status === 'pending' && entry.userId === currentUserId ? <span className="work-hours-drawer-entry-actions"><Button aria-label="编辑工时" size="icon" variant="ghost" onClick={() => openRecorder(entry)}><PencilSimple size={14} /></Button><Button aria-label="删除工时" size="icon" variant="ghost" onClick={() => setDeletingEntry(entry)}><Trash size={14} /></Button></span> : null}</div>) : <p className="work-hours-empty">当前任务暂无工时记录</p>}</div>{selectedTaskEntryTotal > 10 ? <ListPagination label="任务投入明细分页" page={selectedTaskEntryPage} pageSize={10} total={selectedTaskEntryTotal} onPageChange={setSelectedTaskEntryPage} /> : null}{projectId && selectedTask && (selectedTask.assigneeUserId === currentUserId || (selectedTask.assigneeUserId == null && project?.ownerUserId === currentUserId)) && !selectedTask.done && selectedTask.confirmationStatus !== 'pending_review' ? <DialogFooter><Button type="button" onClick={() => { setSelectedTaskId(null); openRecorderForTodo(selectedTask.taskId, projectId) }}>记录工时</Button>{onTodoClick ? <Button type="button" variant="outline" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button> : null}</DialogFooter> : projectId && onTodoClick ? <DialogFooter><Button type="button" onClick={() => onTodoClick(projectId, selectedTask.taskId)}>打开任务详情</Button></DialogFooter> : null}</> : null}</DialogContent></Dialog>
       <ConfirmActionDialog actionKey={`delete-work-hour:${deletingEntry?.id ?? 0}`} open={Boolean(deletingEntry)} onOpenChange={(open) => { if (!open) setDeletingEntry(null) }} title="删除工时记录" description="删除后无法恢复，统计数据会立即更新。" confirmLabel="删除记录" onConfirm={async () => { if (!deletingEntry) return false; await removeWorkHour(deletingEntry.id); setDeletingEntry(null); setSelectedTaskEntriesVersion((version) => version + 1); reload(); return true }} />
     </section>

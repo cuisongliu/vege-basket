@@ -1830,8 +1830,9 @@ export function createAiTurnDocument(conversationId: string, turnId: string) {
   )
 }
 
-export function fetchTodoActivity(projectId: number) {
-  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
+export function fetchTodoActivity(projectId: number, todoId?: number) {
+  const query = todoId == null ? '' : `?todoId=${encodeURIComponent(todoId)}`
+  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity${query}`)
 }
 
 export function fetchNotificationSubscription() {

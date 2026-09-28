@@ -135,7 +135,7 @@ export const TodoProposalWorkflow = forwardRef<
     () => proposals.find((proposal) => selectedIds.has(proposal.clientId) && (
       !proposal.projectId || !proposal.title.trim() || !proposal.dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(proposal.dueDate) ||
       (projects.find((project) => project.id === proposal.projectId)?.organizationId != null &&
-        (!proposal.estimatedWorkMinutes || proposal.estimatedWorkMinutes <= 0 || proposal.estimatedWorkMinutes % 15 !== 0))
+        (!proposal.estimatedWorkMinutes || proposal.estimatedWorkMinutes < 60 || proposal.estimatedWorkMinutes % 60 !== 0))
     )),
     [projects, proposals, selectedIds],
   )
@@ -390,15 +390,15 @@ export const TodoProposalWorkflow = forwardRef<
                     </Label>
                     {project?.organizationId ? (
                       <Label>
-                        预估工时（分钟）
+                        预估工时（小时）
                         <Input
                           disabled={confirming || readOnly}
-                          min="15"
-                          step="15"
+                          min="1"
+                          step="1"
                           type="number"
-                          value={proposal.estimatedWorkMinutes ?? ''}
+                          value={proposal.estimatedWorkMinutes == null ? '' : proposal.estimatedWorkMinutes / 60}
                           onChange={(event) => updateProposal(proposal.clientId, {
-                            estimatedWorkMinutes: event.target.value ? Number(event.target.value) : null,
+                            estimatedWorkMinutes: event.target.value ? Number(event.target.value) * 60 : null,
                           })}
                         />
                       </Label>
