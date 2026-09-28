@@ -108,10 +108,12 @@ test('task work-hour details have an independent paginated scroll surface', () =
 test('project detail keeps tabs and task actions in one aligned bar', () => {
   assert.match(appSource, /className="project-detail-tabbar"/u)
   assert.match(appSource, /className="project-detail-tab-actions"/u)
+  const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
   assert.match(
-    readFileSync(new URL('../src/App.css', import.meta.url), 'utf8'),
+    appCssSource,
     /project-detail-tabbar[\s\S]*display: flex[\s\S]*project-detail-tabs[\s\S]*flex: 1 1 auto/u,
   )
+  assert.match(appCssSource, /detail-layout\.packages-mode \.project-detail-main \{\s*grid-column: 1 \/ -1;/u)
 })
 
 test('project work-hour layout grows with content instead of forcing a fixed panel height', () => {
