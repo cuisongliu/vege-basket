@@ -225,7 +225,9 @@ export function WorkHoursWorkbench({
     }).then((response) => {
       if (!active) return
       setSelectedTaskEntries(response.entries)
-      setSelectedTaskEntryTotal(response.pagination?.total ?? response.entries.length)
+      const total = response.pagination?.total ?? response.entries.length
+      setSelectedTaskEntryTotal(total)
+      setSelectedTaskEntryPage((page) => Math.min(page, Math.max(0, Math.ceil(total / 10) - 1)))
     }).catch(() => {
       if (!active) return
       setSelectedTaskEntries([])

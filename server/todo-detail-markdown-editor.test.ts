@@ -93,12 +93,15 @@ test('project basket keeps work-hour recording in the current project surface', 
   assert.match(workHoursSource, /recorderRequest\?: .*projectId: number; todoId: number.*null/u)
   assert.match(workHoursSource, /onRecorderDismiss\?: \(\) => void/u)
   assert.match(workHoursSource, /openRecorderForTodo\(recorderRequest.todoId, recorderRequest.projectId\)/u)
+  assert.match(appSource, /workHourRecorderContext &&[\s\S]*view !== 'project'[\s\S]*selectedProjectId !== workHourRecorderContext.projectId/u)
+  assert.match(appSource, /workHourRecorderContext\?\.projectId === selectedProject.id/u)
 })
 
 test('task work-hour details have an independent paginated scroll surface', () => {
   const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
   assert.match(workHoursSource, /fetchTodoWorkHours\(selectedTaskId, \{[\s\S]*?cursor: selectedTaskEntryPage \* 10[\s\S]*?limit: 10/u)
   assert.match(workHoursSource, /任务投入明细分页/u)
+  assert.match(workHoursSource, /setSelectedTaskEntryPage\(\(page\) => Math.min\(page, Math.max\(0, Math.ceil\(total \/ 10\) - 1\)\)\)/u)
   assert.match(workHoursCssSource, /work-hours-drawer-list \{[^}]*overflow-y: auto/u)
 })
 

@@ -1875,6 +1875,14 @@ function App() {
   const confirmationScopeRef = useRef(confirmationScope)
   useEffect(() => { confirmationScopeRef.current = confirmationScope }, [confirmationScope])
   const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('tasks')
+  useEffect(() => {
+    if (
+      workHourRecorderContext &&
+      (view !== 'project' || selectedProjectId !== workHourRecorderContext.projectId)
+    ) {
+      setWorkHourRecorderContext(null)
+    }
+  }, [selectedProjectId, view, workHourRecorderContext])
   const [journalDraft, setJournalDraft] = useState('')
   const [inboxDraft, setInboxDraft] = useState('')
   const [todoDraft, setTodoDraft] = useState('')
@@ -5768,7 +5776,9 @@ ${packageTimelineText}`
             departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
-            workHourRecorderContext={workHourRecorderContext}
+            workHourRecorderContext={workHourRecorderContext?.projectId === selectedProject.id
+              ? workHourRecorderContext
+              : null}
             canViewProjectWorkHours={canManageSelectedOrganization}
             onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
