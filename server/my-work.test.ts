@@ -7,6 +7,7 @@ const myWorkSource = readFileSync(new URL('./my-work.ts', import.meta.url), 'utf
 const myWorkWorkbenchSource = readFileSync(new URL('../src/components/my-work-workbench.tsx', import.meta.url), 'utf8')
 const myWorkWorkbenchCss = readFileSync(new URL('../src/components/my-work-workbench.css', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
 const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
@@ -125,6 +126,15 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.match(appSource, /> 工时确认/u)
   assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canManageSelectedOrganization\)/u)
   assert.match(serverSource, /workHourConfirmationCount/u)
+})
+
+test('aligns grid headings with icon-offset titles and matching cell content', () => {
+  assert.match(myWorkWorkbenchCss, /\.my-work-table-header > :first-child \{ padding-inline-start: 41px; \}/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-action-heading \{\s*text-align: right;/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-action \{[\s\S]*?justify-content: flex-end;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :first-child \{\s*padding-inline-start: 30px;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :nth-child\(5\) \{\s*padding-inline-start: 7px;\s*text-align: left;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :last-child \{\s*text-align: right;/u)
 })
 
 test('renders My Work secondary text with the readable workbench token', () => {
