@@ -302,3 +302,19 @@ test('delivery event summaries use database pagination and hydrate one selected 
   assert.match(workbenchSource, /eventId: selectedEventDetailId, includeDetails: true/u)
   assert.match(workbenchSource, /project-event-counts/u)
 })
+
+test('delivery workbench uses a full-width event list and a responsive detail drawer', () => {
+  assert.match(workbenchSource, /delivery-workbench-shell/u)
+  assert.match(workbenchSource, /delivery-workbench-heading/u)
+  assert.match(workbenchSource, /delivery-event-stats/u)
+  assert.match(workbenchSource, /project-event-table-head/u)
+  assert.match(workbenchSource, /project-package-event-drawer/u)
+  assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)
+  const workbenchCss = readFileSync(
+    new URL('../src/components/project-package-workbench.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(860px/u)
+  assert.match(workbenchCss, /@media \(max-width: 680px\)[\s\S]*\.project-package-event-drawer[\s\S]*width: 100vw/u)
+  assert.match(workbenchCss, /prefers-reduced-motion/u)
+})

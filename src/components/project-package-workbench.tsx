@@ -114,6 +114,7 @@ import {
   organizationPackageMarketPolicyHasVisibleChannel,
   packageMarketDependencyChannel,
 } from '../../shared/organization-package-market'
+import './project-package-workbench.css'
 
 type PackageWorkbenchProps = {
   onLoadTimeline: (options: ProjectPackageTimelineQuery) => Promise<ProjectPackageTimeline>
@@ -1577,6 +1578,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   timeline,
 }, ref) {
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
+  const [eventDetailOpen, setEventDetailOpen] = useState(false)
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [commentsDrawerOpen, setCommentsDrawerOpen] = useState(false)
   const [eventEditorOpen, setEventEditorOpen] = useState(false)
@@ -1754,6 +1756,13 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const eventPageSize = 10
   const pagedEvents = visibleEvents
   const eventTotal = timeline?.pagination?.total ?? visibleEvents.length
+  const eventStats = useMemo(() => ({
+    active: visibleEvents.filter((event) => event.publishedAt && eventDisplayStatus(event) === 'delivering').length,
+    completed: visibleEvents.filter((event) => eventDisplayStatus(event) === 'delivered').length,
+    mine: currentUserId
+      ? visibleEvents.filter((event) => event.assigneeUserId === currentUserId).length
+      : 0,
+  }), [currentUserId, visibleEvents])
   useEffect(() => {
     const requestId = ++timelineRequestIdRef.current
     const timer = window.setTimeout(() => {
@@ -2509,6 +2518,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setDocumentTodoFilterConditions([])
     setEventEditorReady(false)
     setEventEditorDirty(false)
+    setEventDetailOpen(false)
     setEventEditorOpen(true)
   }
 
@@ -2599,6 +2609,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setDocumentTodoFilterConditions([])
     setEventEditorReady(false)
     setEventEditorDirty(false)
+    setEventDetailOpen(false)
     setEventEditorOpen(true)
   }
 
@@ -2608,6 +2619,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setEventEditorDirty(false)
     setSelectedEventId(event.id)
     setSelectedGroupId(event.groups[0]?.id ?? null)
+    setEventDetailOpen(true)
   }
 
   async function deleteEventFromList(event: ProjectPackageEvent) {
@@ -2959,6 +2971,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       setEventFilterJoin('and')
       setSelectedEventId(eventId)
       setSelectedGroupId(targetEvent?.groups[0]?.id ?? null)
+      setEventDetailOpen(true)
       setEventEditorOpen(false)
       setEventEditorDirty(false)
     },
@@ -3381,11 +3394,23 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </div>
         </section>
       ) : (
-        <div className="project-event-layout">
-          <aside className="project-events-panel">
+        <div className="delivery-workbench-shell">
+          <section className="project-events-panel delivery-event-list-panel">
+            <div className="delivery-workbench-heading">
+              <div>
+                <span className="delivery-workbench-eyebrow">项目交付</span>
+                <h2>交付工作台</h2>
+                <p>管理当前项目的交付事件、安装包和执行记录。</p>
+              </div>
+              {canManageProject ? (
+                <Button className="solid-button" type="button" onClick={openCreateEventEditor}>
+                  <Plus size={17} /> 新增事件
+                </Button>
+              ) : null}
+            </div>
             <div className="project-events-head">
               <div className="project-events-title-row">
-                <h3>交付事件</h3>
+                <h3>事件列表</h3>
                 <Button
                   aria-label={activeEventFilterCount > 0
                     ? `筛选交付事件，已应用 ${activeEventFilterCount} 个条件`
@@ -3405,11 +3430,13 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <FunnelSimple size={14} />
                 </Button>
               </div>
-              {canManageProject ? (
-                <Button className="solid-button" type="button" onClick={openCreateEventEditor}>
-                  <Plus size={17} /> 新增事件
-                </Button>
-              ) : null}
+            </div>
+            <div className="delivery-event-stats" aria-label="交付事件概览">
+              <div><span>总事件</span><strong>{eventTotal}</strong></div>
+              <div><span>当前页</span><strong>{visibleEvents.length}</strong></div>
+              <div><span>进行中</span><strong>{eventStats.active}</strong></div>
+              <div><span>已完成</span><strong>{eventStats.completed}</strong></div>
+              <div><span>我的事件</span><strong>{eventStats.mine}</strong></div>
             </div>
             <PackageEventFilterBuilderDialog
               assigneeOptions={memberOptions}
@@ -3461,9 +3488,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Button>
             </div>
             {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
-            <div className="project-event-items">
+            <div className="project-event-table-head" aria-hidden="true">
+              <span>事件</span><span>类型</span><span>状态</span><span>交付时间</span><span>执行负责人</span><span>最近更新</span><span />
+            </div>
+            <div className="project-event-items project-event-table">
               {timelineLoading && visibleEvents.length === 0 ? (
-                <p className="project-events-empty">正在加载交付事件...</p>
+                <div className="delivery-event-skeletons" role="status" aria-label="正在加载交付事件">
+                  {[1, 2, 3, 4].map((row) => <div className="delivery-event-skeleton" key={row} />)}
+                </div>
               ) : visibleEvents.length === 0 ? (
                 <p className="project-events-empty">
                   {activeEventFilterCount > 0
@@ -3478,23 +3510,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   key={event.id}
                 >
                   <button
-                    className="project-event-tab-button"
+                    className="project-event-tab-button project-event-row"
                     type="button"
                     onClick={() => selectEventFromList(event)}
                   >
-                    <strong>{event.title}</strong>
-                    <span>{eventTypeLabel(event.type)} · {formatEventDeliveryWindow(event)}</span>
-                    <span className="project-event-badges">
-                      <span className="project-event-counts" aria-label="事件内容摘要">
-                        包 {event.packageCount ?? 0} · 操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}
-                      </span>
-                      <span className="project-event-assignee">
-                        执行负责人：<UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} />
-                      </span>
-                      <span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>
-                        {event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}
-                      </span>
-                    </span>
+                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">包 {event.packageCount ?? 0} · 操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
+                    <span className="project-event-cell">{eventTypeLabel(event.type)}</span>
+                    <span className="project-event-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
+                    <span className="project-event-cell">{formatEventDeliveryWindow(event)}</span>
+                    <span className="project-event-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
+                    <span className="project-event-cell">{event.updatedAt}</span>
                   </button>
                   {event.capabilities?.canEditPlan ? (
                     <div className="project-event-item-actions">
@@ -3537,15 +3562,22 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               ))}
             </div>
             {eventTotal > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} /> : null}
-          </aside>
+          </section>
 
+          {eventEditorOpen ? renderEventEditor() : (
+          <Dialog open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
+            <DialogContent className="project-package-event-drawer">
+              <DialogHeader className="delivery-drawer-header">
+                <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
+                <DialogDescription>
+                  {selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · ${formatEventDeliveryWindow(selectedEvent)}` : '查看事件的执行记录、安装包和反馈。'}
+                </DialogDescription>
+              </DialogHeader>
           {eventDetailsLoading && selectedEvent ? (
             <section className="event-workspace event-details-loading" aria-live="polite">
               <div className="event-details-loading-bar" />
               <p>正在加载事件详情...</p>
             </section>
-          ) : eventEditorOpen ? (
-            renderEventEditor()
           ) : selectedEvent && !selectedEvent.publishedAt ? (
             <section className="event-workspace event-draft-summary">
               <div className="event-draft-summary-head">
@@ -3941,6 +3973,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 )}
               </div>
             </section>
+          )}
+            </DialogContent>
+          </Dialog>
           )}
         </div>
       )}
