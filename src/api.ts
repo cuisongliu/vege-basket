@@ -119,7 +119,7 @@ export type NotificationResponse = {
 export type NavigationCounts = {
   assignedBugCount: number
   openTodoCount: number
-  reviewTodoCount: number
+  workHourConfirmationCount: number
   organizationId: OrganizationContext
 }
 
@@ -666,6 +666,13 @@ export function submitWorkHours(todoId: number, entryIds: number[]) {
 
 export function acceptWorkHours(todoId: number, entryIds: number[]) {
   return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/accept`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function returnWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/return`, {
     method: 'POST',
     body: JSON.stringify({ entryIds }),
   })

@@ -35,11 +35,12 @@ test('accepts concrete work statuses and falls back for unknown values', () => {
   assert.equal(parseMyWorkFilters({ status: 'not-a-status' }).status, 'open')
 })
 
-test('parses the independent acceptance queue filter', () => {
+test('parses the independent work-hour confirmation queue filter', () => {
   assert.equal(parseMyWorkFilters({ review: 'true' }).review, true)
   assert.equal(parseMyWorkFilters({ review: '1' }).review, true)
   assert.equal(parseMyWorkFilters({ review: 'false' }).review, false)
   assert.match(myWorkSource, /\$7::boolean = false/u)
+  assert.match(myWorkSource, /work\.submitted_work_minutes > 0/u)
   assert.match(myWorkWorkbenchSource, /mode === 'review'/u)
   assert.match(apiSource, /params\.set\('review', 'true'\)/u)
 })
@@ -69,10 +70,10 @@ test('moves submitted todos from the assignee list to the effective reviewer', (
   assert.doesNotMatch(myWorkSource, /coalesce\(t\.reviewer_user_id, t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
-test('does not treat a todo creator or project owner as responsible without an explicit assignment', () => {
+test('keeps ordinary responsibility separate from the creator-only work-hour confirmation queue', () => {
   assert.match(myWorkSource, /t\.assignee_user_id = \$1\s+and t\.confirmation_status <> 'pending_review'/u)
-  assert.match(myWorkSource, /or t\.reviewer_user_id = \$1/u)
-  assert.doesNotMatch(myWorkSource, /coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
+  assert.match(myWorkSource, /\$7::boolean = false\s+and \([\s\S]*?or t\.reviewer_user_id = \$1\s+\)/u)
+  assert.match(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1\s+and work_hours\.submitted_minutes > 0/u)
 })
 
 test('renders failed acceptance status in Chinese', () => {
@@ -91,13 +92,24 @@ test('renders My Work grid rows with valid table descendants', () => {
   assert.doesNotMatch(myWorkWorkbenchSource, /role="row">\s*<button/u)
 })
 
-test('review queue supports selecting a subset of todos for acceptance', () => {
-  assert.match(myWorkWorkbenchSource, /selectedTodoIds/u)
-  assert.match(myWorkWorkbenchSource, /onAcceptTodos/u)
-  assert.match(myWorkWorkbenchSource, /验收所选/u)
-  assert.match(myWorkWorkbenchSource, /ConfirmActionDialog/u)
-  assert.match(appSource, /acceptTodo\(todoId\)/u)
-  assert.match(appSource, /return fetchWorkspace\(\)/u)
+test('work-hour confirmation shows aligned totals and reviews selected entries in the detail dialog', () => {
+  assert.match(myWorkSource, /sum\(hours\.minutes\).*cumulative_minutes/u)
+  assert.match(myWorkSource, /hours\.status = 'submitted'/u)
+  assert.match(myWorkWorkbenchSource, /预估[\s\S]*累计[\s\S]*待确认[\s\S]*查看工时/u)
+  assert.match(myWorkWorkbenchSource, /fetchTodoDetail\(todoId\)/u)
+  assert.match(myWorkWorkbenchSource, /fetchTodoWorkHours\(todoId/u)
+  assert.match(myWorkWorkbenchSource, /selectedEntryIds/u)
+  assert.match(myWorkWorkbenchSource, /MAX_SELECTED_WORK_HOURS = 100/u)
+  assert.match(myWorkWorkbenchSource, /returnWorkHours\(todoId, entryIds\)/u)
+  assert.match(myWorkWorkbenchSource, /acceptWorkHours\(todoId, entryIds\)/u)
+  assert.match(myWorkWorkbenchSource, /退回修改/u)
+  assert.match(myWorkWorkbenchSource, /确认工时/u)
+  assert.doesNotMatch(myWorkWorkbenchSource, /验收所选/u)
+  assert.doesNotMatch(myWorkWorkbenchSource, /onAcceptTodos/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-row[\s\S]*grid-template-columns/u)
+  assert.match(appSource, /> 工时确认/u)
+  assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canNavigateToProjectBasket\)/u)
+  assert.match(serverSource, /workHourConfirmationCount/u)
 })
 
 test('renders My Work secondary text with the readable workbench token', () => {

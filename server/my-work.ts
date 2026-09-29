@@ -19,6 +19,9 @@ type MyWorkRow = {
   title: string
   status: string
   priority: 'high' | 'medium' | 'low' | null
+  estimated_work_minutes: number | null
+  cumulative_work_minutes: string | null
+  submitted_work_minutes: string | null
   offboarding_transferred_from_name: string | null
   due_at: string | null
   updated_at: Date
@@ -90,29 +93,52 @@ export async function getMyWork(
             and transfer.action = 'transferred'
           order by transfer.created_at desc, transfer.id desc
           limit 1
-        ) as offboarding_transferred_from_name
+        ) as offboarding_transferred_from_name,
+        t.estimated_work_minutes,
+        coalesce(work_hours.cumulative_minutes, 0)::bigint as cumulative_work_minutes,
+        coalesce(work_hours.submitted_minutes, 0)::bigint as submitted_work_minutes
       from todos t
       join projects p on p.id = t.project_id
       left join project_subprojects subproject on subproject.id = t.subproject_id and subproject.project_id = t.project_id
       left join users todo_creator on todo_creator.id = t.created_by_user_id
       left join project_memberships mine
         on mine.project_id = p.id and mine.invited_user_id = $1 and mine.status = 'active'
+      left join lateral (
+        select coalesce(sum(hours.minutes), 0)::bigint as cumulative_minutes,
+               coalesce(sum(hours.minutes) filter (where hours.status = 'submitted'), 0)::bigint as submitted_minutes
+          from todo_work_hours hours
+         where $7::boolean = true
+           and hours.todo_id = t.id and hours.project_id = t.project_id
+      ) work_hours on true
       where (
           (
-            t.assignee_user_id = $1
-            and t.confirmation_status <> 'pending_review'
+            $7::boolean = false
+            and (
+              (
+                t.assignee_user_id = $1
+                and t.confirmation_status <> 'pending_review'
+              )
+              or t.reviewer_user_id = $1
+            )
           )
-          or t.reviewer_user_id = $1
+          or (
+            $7::boolean = true
+            and coalesce(t.created_by_user_id, p.user_id) = $1
+            and work_hours.submitted_minutes > 0
+          )
         )
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
-        and t.confirmation_status <> 'rejected'
+        and ($7::boolean = true or t.confirmation_status <> 'rejected')
       union all
       select 'delivery'::text, e.id, e.project_id, p.organization_id, p.name, null::text, null::text,
         coalesce(nullif(delivery_creator.display_name, ''), delivery_creator.email)::text,
         null::boolean,
         e.title,
         e.status, null::text, e.delivery_date::text, e.updated_at, 'assignee'::text,
-        null::text as offboarding_transferred_from_name
+        null::text as offboarding_transferred_from_name,
+        null::integer as estimated_work_minutes,
+        null::bigint as cumulative_work_minutes,
+        null::bigint as submitted_work_minutes
       from project_package_events e
       join projects p on p.id = e.project_id
       left join users delivery_creator on delivery_creator.id = e.created_by_user_id
@@ -126,7 +152,10 @@ export async function getMyWork(
         null::boolean,
         m.title,
         m.status, null::text, m.target_date::text, m.updated_at, 'responsible'::text,
-        null::text as offboarding_transferred_from_name
+        null::text as offboarding_transferred_from_name,
+        null::integer as estimated_work_minutes,
+        null::bigint as cumulative_work_minutes,
+        null::bigint as submitted_work_minutes
       from project_milestones m
       join projects p on p.id = m.project_id
       left join users milestone_creator on milestone_creator.id = m.created_by_user_id
@@ -140,7 +169,10 @@ export async function getMyWork(
         null::boolean,
         b.title,
         b.status, b.priority, null::text, b.updated_at, 'assignee'::text,
-        null::text as offboarding_transferred_from_name
+        null::text as offboarding_transferred_from_name,
+        null::integer as estimated_work_minutes,
+        null::bigint as cumulative_work_minutes,
+        null::bigint as submitted_work_minutes
       from test_bugs b
       join test_spaces space on space.id = b.test_space_id
       left join test_plans bug_plan
@@ -160,7 +192,7 @@ export async function getMyWork(
       )
       and (
         $7::boolean = false
-        or (work.kind = 'todo' and work.status = 'pending_review')
+        or (work.kind = 'todo' and work.submitted_work_minutes > 0)
       )
       and (
         $2::text = 'all'
@@ -216,6 +248,9 @@ export async function getMyWork(
           title: decryptText(row.title),
           status: row.status,
           priority: row.priority ?? undefined,
+          estimatedWorkMinutes: row.estimated_work_minutes,
+          cumulativeWorkMinutes: row.cumulative_work_minutes == null ? undefined : Number(row.cumulative_work_minutes),
+          submittedWorkMinutes: row.submitted_work_minutes == null ? undefined : Number(row.submitted_work_minutes),
           offboardingTransferredFromName: row.offboarding_transferred_from_name ?? undefined,
           dueAt: row.due_at ?? undefined,
           updatedAt: row.updated_at.toISOString(),
