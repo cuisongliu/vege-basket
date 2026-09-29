@@ -2946,7 +2946,7 @@ function App() {
     selectedOrganization &&
     (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
   )
-  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canNavigateToProjectBasket)
+  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canManageSelectedOrganization)
   useEffect(() => {
     if (view === 'work_hours' && (selectedOrganizationId === null || !canManageSelectedOrganization)) {
       setView('my_work_hours')
@@ -6011,6 +6011,7 @@ ${packageTimelineText}`
         {view === 'platform' && authUser?.isSystemAdmin ? (
           <PlatformManagementWorkbench
             currentUserId={authUser.id}
+            canCreateOrganizations={isOrganizationAdmin}
             sidebarNavigationHost={platformSidebarHost}
             topbarActionHost={platformTopbarHost}
             onAuthorizationLost={() => {

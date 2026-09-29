@@ -118,6 +118,16 @@ test('new organization owners are provisioned as organization administrators', (
   assert.match(schemaSource, /select owner_user_id, 'organization_admin'[\s\S]+from organizations/u)
 })
 
+test('creating an organization requires the actor organization-administrator role', () => {
+  const routeStart = platformOrganizationsSource.indexOf('export async function createPlatformOrganization')
+  const routeEnd = platformOrganizationsSource.indexOf('export async function deletePlatformOrganization', routeStart)
+  const routeSource = platformOrganizationsSource.slice(routeStart, routeEnd)
+
+  assert.match(routeSource, /where user_id = \$1 and role = 'organization_admin'/u)
+  assert.match(routeSource, /ORGANIZATION_ADMIN_REQUIRED/u)
+  assert.match(routeSource, /只有组织管理员可以创建组织/u)
+})
+
 test('weekly report collection management only requires organization administrator role', () => {
   assert.equal(canManageOrganizationWeeklyReports('member', ['organization_admin']), true)
   assert.equal(canManageOrganizationWeeklyReports('owner', ['organization_admin']), true)

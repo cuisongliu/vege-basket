@@ -178,6 +178,16 @@ export async function createPlatformOrganization(input: {
     await client.query('begin')
     await lockPlatformAdministration(client)
     await requirePlatformAdminWithClient(client, input.actorUserId)
+    const organizationAdmin = await client.query<{ allowed: boolean }>(
+      `select exists(
+         select 1 from user_roles
+          where user_id = $1 and role = 'organization_admin'
+       ) as allowed`,
+      [input.actorUserId],
+    )
+    if (!organizationAdmin.rows[0]?.allowed) {
+      throw new PlatformOrganizationError('ORGANIZATION_ADMIN_REQUIRED', '只有组织管理员可以创建组织。', 403)
+    }
     const receipt = await client.query<{ request_digest: string; result_encrypted: string }>(
       `select request_digest, result_encrypted
          from platform_organization_mutation_receipts

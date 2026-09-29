@@ -9598,6 +9598,7 @@ app.get('/api/my-work', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
   const organizationId = parseOrganizationContext(request.query.organizationId)
+  const filters = parseMyWorkFilters(request.query as Record<string, unknown>)
   if (organizationId === undefined) {
     response.status(400).json({ error: '有效的组织上下文是必填项' })
     return
@@ -9613,10 +9614,30 @@ app.get('/api/my-work', asyncHandler(async (request, response) => {
       return
     }
   }
+  if (filters.review) {
+    const reviewAccess = organizationId === null ? null : await query<{ allowed: boolean }>(
+      `select exists(
+         select 1
+           from organization_memberships membership
+           join user_roles role
+             on role.user_id = membership.user_id
+            and role.role = 'organization_admin'
+          where membership.organization_id = $1
+            and membership.user_id = $2
+            and membership.status = 'active'
+            and membership.access_role in ('owner', 'admin')
+       ) as allowed`,
+      [organizationId, userId],
+    )
+    if (!reviewAccess?.rows[0]?.allowed) {
+      response.status(403).json({ error: '只有当前组织的组织管理员可以查看工时确认。' })
+      return
+    }
+  }
   response.json(await getMyWork(
     userId,
     organizationId,
-    parseMyWorkFilters(request.query as Record<string, unknown>),
+    filters,
   ))
 }))
 
@@ -9671,8 +9692,8 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
         left join project_memberships mine
           on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
         where p.organization_id is not distinct from $2::bigint
-          and coalesce(t.created_by_user_id, p.user_id) = $1::bigint
           and not t.done
+          and ${managedOrganizationReadScopeSql('p.organization_id', '$1::bigint')}
           and exists (
             select 1
               from todo_work_hours hours

@@ -70,10 +70,11 @@ test('moves submitted todos from the assignee list to the effective reviewer', (
   assert.doesNotMatch(myWorkSource, /coalesce\(t\.reviewer_user_id, t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
-test('keeps ordinary responsibility separate from the creator-only work-hour confirmation queue', () => {
+test('keeps ordinary responsibility separate from the organization-admin work-hour confirmation queue', () => {
   assert.match(myWorkSource, /t\.assignee_user_id = \$1\s+and t\.confirmation_status <> 'pending_review'/u)
   assert.match(myWorkSource, /\$7::boolean = false\s+and \([\s\S]*?or t\.reviewer_user_id = \$1\s+\)/u)
-  assert.match(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1\s+and not t\.done[\s\S]*?work_hours\.submitted_minutes > 0 or work_hours\.confirmed_minutes > 0/u)
+  assert.match(myWorkSource, /\$7::boolean = true\s+and \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}\s+and not t\.done\s+and work_hours\.submitted_minutes > 0/u)
+  assert.doesNotMatch(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
 test('navigation count matches the actionable work-hour confirmation queue', () => {
@@ -122,7 +123,7 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-content[\s\S]*overflow-y: auto/u)
   assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-entry[\s\S]*min-height: 54px/u)
   assert.match(appSource, /> 工时确认/u)
-  assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canNavigateToProjectBasket\)/u)
+  assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canManageSelectedOrganization\)/u)
   assert.match(serverSource, /workHourConfirmationCount/u)
 })
 
@@ -151,6 +152,16 @@ test('scopes my work to the requested organization context', () => {
   assert.match(apiSource, /params\.set\('organizationId', serializeOrganizationContext\(organizationId\)\)/u)
   assert.match(serverSource, /app\.get\('\/api\/my-work'/u)
   assert.match(serverSource, /parseOrganizationContext\(request\.query\.organizationId\)/u)
+})
+
+test('work-hour confirmation reads require an organization administrator', () => {
+  const routeStart = serverSource.indexOf("app.get('/api/my-work'")
+  const routeEnd = serverSource.indexOf("app.get('/api/navigation-counts'", routeStart)
+  const routeSource = serverSource.slice(routeStart, routeEnd)
+  assert.match(routeSource, /if \(filters\.review\)/u)
+  assert.match(routeSource, /role\.role = 'organization_admin'/u)
+  assert.match(routeSource, /membership\.access_role in \('owner', 'admin'\)/u)
+  assert.match(routeSource, /只有当前组织的组织管理员可以查看工时确认/u)
 })
 
 test('filters dates across all records before paging and counts the complete match', () => {

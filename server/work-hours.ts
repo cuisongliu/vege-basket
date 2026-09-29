@@ -668,22 +668,24 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const organization = await lockTodoOrganization(client, todoId, userId)
       await lockWorkHoursRole(client, userId)
       const todo = await getTodoForWork(client, todoId, userId, true)
+      const isProjectMember = todo
+        ? await projectMember(client, Number(todo.project_id), userId)
+        : false
       if (
         !todo ||
         !todo.organization_id ||
         !organization ||
         Number(todo.organization_id) !== organization.organizationId ||
-        !(await projectMember(client, Number(todo.project_id), userId))
+        (action === 'submit' ? !isProjectMember : !organization.isManager)
       ) {
         throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
       }
-      const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
       const assigneeId = todo.assignee_user_id ? Number(todo.assignee_user_id) : Number(todo.owner_user_id)
       if (action === 'submit' && (todo.done || assigneeId !== userId)) {
         throw new WorkHoursError('WORK_HOUR_SUBMIT_FORBIDDEN', '只有负责人可以提交自己进行中任务的工时。', 403)
       }
-      if (action !== 'submit' && creatorId !== userId) {
-        throw new WorkHoursError('WORK_HOUR_REVIEW_FORBIDDEN', '只有任务创建人可以确认或退回工时。', 403)
+      if (action !== 'submit' && !organization?.isManager) {
+        throw new WorkHoursError('WORK_HOUR_REVIEW_FORBIDDEN', '只有组织管理员可以确认或退回工时。', 403)
       }
       const expectedStatus: WorkHourStatus = action === 'submit' ? 'pending' : 'submitted'
       const selectedOwnerId = action === 'submit' ? userId : null
@@ -783,13 +785,12 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           !todo.organization_id ||
           !organization ||
           Number(todo.organization_id) !== organization.organizationId ||
-          !(await projectMember(client, Number(todo.project_id), userId))
+          !organization.isManager
         ) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
-        const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
-        if (creatorId !== userId) {
-          throw new WorkHoursError('WORK_HOUR_COMPLETE_FORBIDDEN', '只有任务创建人可以完成任务。', 403)
+        if (!organization?.isManager) {
+          throw new WorkHoursError('WORK_HOUR_COMPLETE_FORBIDDEN', '只有组织管理员可以完成任务。', 403)
         }
         if (todo.done) {
           await client.query('commit')
