@@ -76,6 +76,14 @@ test('keeps ordinary responsibility separate from the creator-only work-hour con
   assert.match(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1\s+and not t\.done[\s\S]*?work_hours\.submitted_minutes > 0 or work_hours\.confirmed_minutes > 0/u)
 })
 
+test('navigation count matches the actionable work-hour confirmation queue', () => {
+  const confirmationCountQuery = serverSource.match(
+    /\) as open_todo_count,[\s\S]*?\(\s*select count\(\*\)[\s\S]*?\) as work_hour_confirmation_count/u,
+  )?.[0] ?? ''
+  assert.match(confirmationCountQuery, /hours\.status = 'submitted'/u)
+  assert.doesNotMatch(confirmationCountQuery, /hours\.status in \('submitted', 'confirmed'\)/u)
+})
+
 test('renders failed acceptance status in Chinese', () => {
   assert.match(myWorkWorkbenchSource, /acceptance_failed: '验收未通过'/u)
 })
