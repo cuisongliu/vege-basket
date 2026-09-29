@@ -6919,7 +6919,7 @@ function ProjectDetail({
   const [isProjectTodoDetailOpen, setIsProjectTodoDetailOpen] = useState(initialTodoExists)
   const [pastJournalDialogOpen, setPastJournalDialogOpen] = useState(false)
   const [pastJournalDate, setPastJournalDate] = useState(getPreviousDateStamp())
-  const isProjectTodoFocusOpen = isProjectTodoDetailOpen || isTodoCreateDialogOpen
+  const isProjectTodoFocusOpen = isProjectTodoDetailOpen
   const journalGroups = useMemo(() => {
     const grouped = new Map<string, JournalEntry[]>()
     for (const entry of [...project.journals].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
@@ -7338,6 +7338,26 @@ function ProjectDetail({
       {projectDetailTab === 'tasks' ? (
           <Card className={isProjectTodoFocusOpen ? 'side-panel todo-focus-panel' : 'panel side-panel'}>
             <div className="side-panel-scroll-area">
+              <TodoList
+                canManageOrganizationTodos={project.canManageOrganizationTodos}
+                canUpdateOrganizationTodoFields={project.canUpdateOrganizationTodoFields}
+                departedUserIds={departedUserIds}
+                key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
+                currentUserId={currentUser?.id}
+                detailBackLabel={notificationDetailActive ? '返回' : undefined}
+                initialTodoId={initialTodoId}
+                memberships={memberships}
+                onDeleteTodo={canWriteProject || project.canManageOrganizationTodos ? onDeleteTodo : undefined}
+                onLoadTodoDetail={onLoadTodoDetail}
+                onDetailModeChange={setIsProjectTodoDetailOpen}
+                onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
+                onRecordWorkHour={onRecordWorkHour}
+                onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
+                project={project}
+                projects={projects}
+                todos={projectTodos}
+                compact
+              />
               {isTodoCreateDialogOpen ? (
                 <Dialog open onOpenChange={(open) => { if (!open) closeTodoCreateDialog() }}>
                   <DialogContent className="todo-create-dialog" showCloseButton>
@@ -7385,28 +7405,7 @@ function ProjectDetail({
                     />
                   </DialogContent>
                 </Dialog>
-              ) : (
-                <TodoList
-                  canManageOrganizationTodos={project.canManageOrganizationTodos}
-                  canUpdateOrganizationTodoFields={project.canUpdateOrganizationTodoFields}
-                  departedUserIds={departedUserIds}
-                  key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
-                  currentUserId={currentUser?.id}
-                  detailBackLabel={notificationDetailActive ? '返回' : undefined}
-                  initialTodoId={initialTodoId}
-                  memberships={memberships}
-                  onDeleteTodo={canWriteProject || project.canManageOrganizationTodos ? onDeleteTodo : undefined}
-                  onLoadTodoDetail={onLoadTodoDetail}
-                  onDetailModeChange={setIsProjectTodoDetailOpen}
-                  onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
-                  onRecordWorkHour={onRecordWorkHour}
-                  onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
-                  project={project}
-                  projects={projects}
-                  todos={projectTodos}
-                  compact
-                />
-              )}
+              ) : null}
             </div>
           </Card>
       ) : null}

@@ -15,6 +15,10 @@ const todoEditorDialogSource = appSource.slice(
   appSource.indexOf('function TodoEditorDialog('),
   appSource.indexOf('function TodoList('),
 )
+const projectDetailSource = appSource.slice(
+  appSource.indexOf('function ProjectDetail('),
+  appSource.indexOf('function formatInviteDurationLabel('),
+)
 const todoListSource = appSource.slice(appSource.indexOf('function TodoList('))
 const todoWorkHoursPanelSource = readFileSync(
   new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
@@ -79,6 +83,13 @@ test('todo details remove the standalone note editor while preserving legacy his
 test('todo creation uses a modal and status filtering has one merged field', () => {
   assert.match(appSource, /<Dialog open onOpenChange=\{\(open\) => \{ if \(!open\) closeTodoCreateDialog\(\) \}\}>/u)
   assert.match(appSource, /className="todo-create-dialog"/u)
+  assert.match(projectDetailSource, /const isProjectTodoFocusOpen = isProjectTodoDetailOpen/u)
+  assert.doesNotMatch(projectDetailSource, /isProjectTodoDetailOpen \|\| isTodoCreateDialogOpen/u)
+  assert.ok(
+    projectDetailSource.indexOf('<TodoList') <
+      projectDetailSource.indexOf('{isTodoCreateDialogOpen ? ('),
+    'the todo list must remain mounted behind the create dialog',
+  )
   assert.match(appSource, /field === 'status'/u)
   assert.doesNotMatch(appSource, /field === 'confirmationStatus'/u)
   assert.doesNotMatch(appSource, /field === 'done'/u)
