@@ -42,6 +42,7 @@ export function TodoWorkHoursPanel({
   canRecord,
   canReview,
   currentUserId,
+  recordButtonClassName,
   onAccept,
   onRecord,
   onReturn,
@@ -51,6 +52,7 @@ export function TodoWorkHoursPanel({
   canRecord: boolean
   canReview: boolean
   currentUserId?: number
+  recordButtonClassName?: string
   onAccept: () => Promise<boolean>
   onRecord: () => void
   onReturn: (reason: string) => Promise<boolean>
@@ -151,7 +153,7 @@ export function TodoWorkHoursPanel({
           <strong>{todoStatus(todo)}</strong>
         </div>
         <div className="todo-work-hours-actions">
-          {canRecord ? <Button type="button" variant="outline" onClick={onRecord}><Plus size={15} />记录工时</Button> : null}
+          {canRecord ? <Button className={recordButtonClassName} type="button" variant="outline" onClick={onRecord}><Plus size={15} />记录工时</Button> : null}
           {canRecord && !todo.done && todo.confirmationStatus !== 'pending_review' ? <Button type="button" onClick={() => setAcceptanceOpen(true)}>工时验收</Button> : null}
           {canReview && todo.confirmationStatus === 'pending_review' ? (
             <>

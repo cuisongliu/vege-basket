@@ -20,6 +20,10 @@ const todoWorkHoursPanelSource = readFileSync(
   new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
   'utf8',
 )
+const todoActivityPanelSource = readFileSync(
+  new URL('../src/components/todo-activity-panel.tsx', import.meta.url),
+  'utf8',
+)
 const workHoursCssSource = readFileSync(
   new URL('../src/components/work-hours-workbench.css', import.meta.url),
   'utf8',
@@ -160,4 +164,12 @@ test('todo details expose paginated work-hour review controls without a manual c
   assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
   assert.match(todoWorkHoursPanelSource, /工时验收/u)
   assert.match(todoWorkHoursPanelSource, /提交工时验收/u)
+})
+
+test('todo detail shows five recent activity entries before expanding the complete history', () => {
+  assert.match(todoEditorDialogSource, /<TodoActivityPanel[\s\S]*?previewLimit=\{5\}/u)
+  assert.match(todoActivityPanelSource, /previewLimit == null \|\| expanded[\s\S]*?events\.slice\(0, previewLimit\)/u)
+  assert.match(todoActivityPanelSource, /const canExpand = previewLimit != null && events\.length > previewLimit/u)
+  assert.match(todoActivityPanelSource, /展开全部动态/u)
+  assert.match(todoActivityPanelSource, /收起动态/u)
 })

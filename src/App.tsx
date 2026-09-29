@@ -11448,10 +11448,6 @@ function TodoPropertiesPanel({
           <strong>{project.name}</strong>
         </div>
         <div className="todo-property-row">
-          <span>状态</span>
-          <strong>{todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</strong>
-        </div>
-        <div className="todo-property-row">
           <span>截止日期</span>
           <JournalDatePicker
             ariaLabel="待办截止日期"
@@ -11704,34 +11700,37 @@ function TodoEditorDialog({
                   ) : null}
                 </div>
               </div>
-              {todo ? (
-                <div className="todo-work-hour-preview" aria-label="工时统计">
-                  <span><small>预估</small><strong>{formatInviteDurationLabel(todo.estimatedWorkMinutes ?? 0)}</strong></span>
-                  <span><small>已确认</small><strong>{formatInviteDurationLabel(todo.confirmedWorkMinutes ?? 0)}</strong></span>
-                  <span><small>未确认</small><strong>{formatInviteDurationLabel(todo.pendingWorkMinutes ?? 0)}</strong></span>
-                </div>
-              ) : null}
               {todo?.rejectionReason ? <p className="todo-acceptance-failure-note">最近一次验收未通过：{todo.rejectionReason}</p> : null}
             </div>
           </div>
-          {todo && (canRecordWorkHour || canShare) ? (
+          {todo && (canEdit || canShare) ? (
             <div className="todo-detail-overview-actions">
-              {todo && canRecordWorkHour && onRecordWorkHour ? (
-                <Button
-                  className="todo-detail-work-hour-button"
-                  type="button"
-                  onClick={() => onRecordWorkHour(project.id, todo.id)}
-                >
-                  <Clock size={16} /> 记录工时
+              {canEdit ? (
+                <Button className="todo-detail-primary-edit" type="button" variant="outline" onClick={onStartEdit}>
+                  <PencilSimple size={16} /> 编辑
                 </Button>
               ) : null}
-              <Button
-                className="todo-detail-share-button"
-                type="button"
-                onClick={() => setShareOpen(true)}
-              >
-                <LinkSimple size={16} /> 分享待办
-              </Button>
+              {canShare ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      aria-label="更多待办操作"
+                      className="todo-detail-more-button"
+                      size="icon"
+                      title="更多待办操作"
+                      type="button"
+                      variant="outline"
+                    >
+                      <DotsThree size={20} weight="bold" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="todo-detail-more-menu">
+                    <DropdownMenuItem onSelect={() => setShareOpen(true)}>
+                      <LinkSimple size={16} /> 分享待办
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -11914,16 +11913,6 @@ function TodoEditorDialog({
             <section className="todo-detail-block">
               <div className="todo-detail-section-header">
                 <span className="todo-detail-section-label">待办详情</span>
-                {canEdit ? (
-                  <Button
-                    className="ghost-button todo-detail-inline-edit"
-                    type="button"
-                    variant="outline"
-                    onClick={onStartEdit}
-                  >
-                    编辑
-                  </Button>
-                ) : null}
               </div>
               {detail.trim() ? (
                 <div className="todo-detail-rendered">
@@ -11951,9 +11940,6 @@ function TodoEditorDialog({
             ) : null}
           </>
         )}
-        {showDetailOverview && todo ? (
-          <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} todoId={todo.id} />
-        ) : null}
         {showDetailOverview && todo && project.organizationId ? (
           <TodoWorkHoursPanel
             canRecord={canRecordWorkHour}
@@ -11965,12 +11951,16 @@ function TodoEditorDialog({
                 : (todo.reviewerUserId ?? todo.createdByUserId ?? project.ownerUserId) === currentUserId),
             )}
             currentUserId={currentUserId}
+            recordButtonClassName="todo-detail-work-hour-button"
             todo={todo}
-            onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
+            onRecord={() => { if (onRecordWorkHour) onRecordWorkHour(project.id, todo.id) }}
             onSubmitReview={() => onInlineUpdate?.({ confirmationStatus: 'pending_review' }) ?? Promise.resolve(false)}
             onAccept={() => onInlineUpdate?.({ done: true, confirmationStatus: 'confirmed' }) ?? Promise.resolve(false)}
             onReturn={(reason) => onInlineUpdate?.({ confirmationStatus: 'acceptance_failed', acceptanceNote: reason }) ?? Promise.resolve(false)}
           />
+        ) : null}
+        {showDetailOverview && todo ? (
+          <TodoActivityPanel departedUserIds={departedUserIds} previewLimit={5} projectId={project.id} todoId={todo.id} />
         ) : null}
       </div>
       {isDetailMode && todo ? (

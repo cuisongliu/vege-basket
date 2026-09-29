@@ -13221,6 +13221,210 @@ textarea:focus {
   }
 }
 
+/* Todo detail refresh: keep the task readable first and move secondary records below it. */
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-surface {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-form {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 312px);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0 26px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-overview {
+  grid-column: 1 / -1;
+  padding: 2px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-overview-actions {
+  align-items: flex-start;
+}
+
+.todo-detail-more-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--muted-text);
+}
+
+.todo-detail-primary-edit {
+  min-height: 36px;
+  padding-inline: 13px;
+}
+
+.todo-detail-more-button:hover,
+.todo-detail-more-button:focus-visible {
+  color: var(--strong);
+  border-color: var(--line);
+  background: var(--muted);
+}
+
+.todo-detail-more-menu {
+  min-width: 148px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-main {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 18px 28px 0;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-block {
+  flex: 0 0 auto;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 24px 0 26px;
+  background: transparent;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-block:first-child {
+  padding-top: 22px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-rendered,
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-empty {
+  height: auto;
+  min-height: 76px;
+  overflow: visible;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-rendered .markdown-preview {
+  max-width: 760px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-history {
+  flex: 0 0 auto;
+  border-top: 0;
+  padding: 24px 0 26px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-history-item {
+  background: color-mix(in oklch, var(--surface) 74%, var(--field));
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-sidebar {
+  grid-column: 2;
+  grid-row: 2;
+  height: 100%;
+  min-height: 0;
+  padding: 22px 0 28px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-properties-panel {
+  height: auto;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-properties-heading {
+  padding-bottom: 14px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-work-hours-panel {
+  flex: 0 0 auto;
+  margin-top: 0;
+  border-top: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 24px 0 26px;
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-activity-panel {
+  flex: 0 0 auto;
+  min-height: 0;
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 24px 0 12px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.todo-activity-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.todo-activity-toggle {
+  min-height: 32px;
+  padding-inline: 8px;
+  color: var(--brand);
+  font-size: 12px;
+}
+
+.todo-activity-toggle:hover,
+.todo-activity-toggle:focus-visible {
+  background: color-mix(in oklch, var(--brand) 8%, transparent);
+  color: var(--brand);
+}
+
+.todo-detail-page.is-detail-mode:not(.is-editing) .todo-activity-list {
+  max-height: none;
+  overflow: visible;
+}
+
+@media (max-width: 960px) {
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-form {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    gap: 0;
+  }
+
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-main,
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-sidebar {
+    grid-column: 1;
+  }
+
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-main {
+    grid-row: 2;
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-editor-sidebar {
+    grid-row: 3;
+    height: auto;
+    padding: 24px 0 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-overview {
+    padding-bottom: 16px;
+  }
+
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-overview-actions {
+    align-self: start;
+  }
+
+  .todo-detail-page.is-detail-mode:not(.is-editing) .todo-detail-page-title {
+    font-size: 25px;
+  }
+
+  .todo-activity-header-actions {
+    align-self: flex-start;
+  }
+}
+
 /* Veges AI single-chat surface. */
 .veges-ai-layout {
   --ai-canvas: color-mix(in oklch, var(--line) 28%, var(--surface));

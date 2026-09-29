@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowClockwise,
   ArrowCounterClockwise,
@@ -17,10 +17,21 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { UserName } from '@/components/user-name'
 
-export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: { departedUserIds?: readonly number[]; projectId: number; todoId?: number }) {
+export function TodoActivityPanel({
+  departedUserIds = [],
+  previewLimit,
+  projectId,
+  todoId,
+}: {
+  departedUserIds?: readonly number[]
+  previewLimit?: number
+  projectId: number
+  todoId?: number
+}) {
   const [events, setEvents] = useState<TodoActivityEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [expanded, setExpanded] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -40,8 +51,15 @@ export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: {
   }, [projectId, todoId])
 
   useEffect(() => {
+    setExpanded(false)
     void load()
   }, [load])
+
+  const visibleEvents = useMemo(
+    () => (previewLimit == null || expanded ? events : events.slice(0, previewLimit)),
+    [events, expanded, previewLimit],
+  )
+  const canExpand = previewLimit != null && events.length > previewLimit
 
   return (
     <Card className="panel todo-activity-panel">
@@ -51,20 +69,31 @@ export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: {
             <ClockCounterClockwise size={15} weight="bold" /> 待办事实流
           </span>
           <h3>{todoId ? '任务动态' : '待办动态'}</h3>
-          <p>{todoId ? '按时间记录当前任务的创建、编辑、工时和验收变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。'}</p>
+          <p>{previewLimit == null
+            ? (todoId ? '按时间记录当前任务的创建、编辑、工时和验收变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。')
+            : events.length
+              ? (expanded ? `已展开全部 ${events.length} 条` : `最近 ${Math.min(events.length, previewLimit)} 条${canExpand ? `，共 ${events.length} 条` : ''}`)
+              : '记录任务的创建、编辑、工时和验收变化。'}</p>
         </div>
-        <Button
-          aria-label="刷新待办动态"
-          className="ghost-button todo-activity-refresh"
-          disabled={loading}
-          size="icon"
-          title="刷新待办动态"
-          type="button"
-          variant="outline"
-          onClick={() => void load()}
-        >
-          <ArrowClockwise className={loading ? 'is-spinning' : ''} size={16} />
-        </Button>
+        <div className="todo-activity-header-actions">
+          {canExpand ? (
+            <Button className="todo-activity-toggle" type="button" variant="ghost" onClick={() => setExpanded((current) => !current)}>
+              {expanded ? '收起动态' : '展开全部动态'}
+            </Button>
+          ) : null}
+          <Button
+            aria-label="刷新待办动态"
+            className="ghost-button todo-activity-refresh"
+            disabled={loading}
+            size="icon"
+            title="刷新待办动态"
+            type="button"
+            variant="outline"
+            onClick={() => void load()}
+          >
+            <ArrowClockwise className={loading ? 'is-spinning' : ''} size={16} />
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -90,7 +119,7 @@ export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: {
         </div>
       ) : (
         <ol className="todo-activity-list">
-          {events.map((event) => {
+          {visibleEvents.map((event) => {
             const eventMeta = {
               assigned: {
                 className: 'is-assigned',
