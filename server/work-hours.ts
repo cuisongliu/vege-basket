@@ -167,6 +167,50 @@ async function requireWorkHoursRole(userId: number) {
   if (!result.rows[0]?.allowed) throw new WorkHoursError('WORK_HOURS_ROLE_REQUIRED', '当前账号没有工时权限。', 403)
 }
 
+async function lockWorkHoursRole(client: PoolClient, userId: number) {
+  const result = await client.query<{ role: string }>(
+    `select role
+       from user_roles
+      where user_id = $1
+        and role in ('developer', 'tester', 'organization_admin')
+      for update`,
+    [userId],
+  )
+  if (result.rows.length === 0) {
+    throw new WorkHoursError('WORK_HOURS_ROLE_REQUIRED', '当前账号没有工时权限。', 403)
+  }
+  return result.rows.map((row) => row.role)
+}
+
+async function lockTodoOrganization(client: PoolClient, todoId: number, userId: number) {
+  const organizationResult = await client.query<{ organization_id: string | null }>(
+    `select p.organization_id
+       from todos t
+       join projects p on p.id = t.project_id
+      where t.id = $1`,
+    [todoId],
+  )
+  const organizationId = organizationResult.rows[0]?.organization_id
+    ? Number(organizationResult.rows[0].organization_id)
+    : null
+  if (!organizationId) return null
+  await client.query('select id from organizations where id = $1 for update', [organizationId])
+  const managerResult = await client.query<{ membership_id: string; role_user_id: string }>(
+    `select membership.id as membership_id, role.user_id as role_user_id
+       from organization_memberships membership
+       join user_roles role
+         on role.user_id = membership.user_id
+        and role.role = 'organization_admin'
+      where membership.organization_id = $1
+        and membership.user_id = $2
+        and membership.status = 'active'
+        and membership.access_role in ('owner', 'admin')
+      for update of membership, role`,
+    [organizationId, userId],
+  )
+  return { organizationId, isManager: managerResult.rows.length > 0 }
+}
+
 async function managedOrganization(userId: number, organizationId: number) {
   const result = await query<{ id: string }>(
     `select organization.id
@@ -789,15 +833,16 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
   async function transition(request: express.Request, response: express.Response, action: 'submit' | 'withdraw' | 'accept' | 'return' | 'reopen') {
     const userId = await requireUser(request, response, options.getUserId)
     if (!userId) return
-    await requireWorkHoursRole(userId)
     const todoId = positiveId(request.params.todoId)
     if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
     const client = await pool.connect()
     try {
       await client.query('begin')
+      await lockWorkHoursRole(client, userId)
+      const organization = await lockTodoOrganization(client, todoId, userId)
       const todo = await getTodoForWork(client, todoId, userId, true)
       if (!todo || !todo.organization_id) throw new WorkHoursError('TODO_NOT_FOUND', '企业待办不存在。', 404)
-      const manager = Boolean(todo.creator_is_manager)
+      const manager = Boolean(organization?.isManager)
       const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
       const assigneeId = todo.assignee_user_id ? Number(todo.assignee_user_id) : null
       if (action === 'submit') {

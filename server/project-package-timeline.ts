@@ -178,6 +178,7 @@ type EventRow = {
   title: string
   type: ProjectPackageEventType
   updated_at: Date
+  total_count?: string
 }
 
 type GroupRow = {
@@ -1294,6 +1295,24 @@ function buildProjectPackageEventMarkdown(
 }
 
 export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
+  const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
+  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 100)))
+  const requestedOffset = Math.max(0, Math.floor(options.offset ?? 0))
+  const databasePageRequested = !normalizedQuery && (options.limit != null || options.offset != null)
+  let selectedEventIds: number[] | null = null
+  if (databasePageRequested) {
+    const pageResult = await query<{ id: string }>(
+      `select id
+         from project_package_events
+        where project_id = $1
+        order by created_at asc, id asc
+        limit $2 offset $3`,
+      [projectId, requestedLimit, requestedOffset],
+    )
+    selectedEventIds = pageResult.rows.map((row) => Number(row.id))
+  }
+  const eventScope = selectedEventIds ? 'and e.id = any($2::bigint[])' : ''
+  const scopedValues = selectedEventIds ? [projectId, selectedEventIds] : [projectId]
   const [
     eventsResult,
     groupsResult,
@@ -1335,9 +1354,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       left join users assignee on assignee.id = e.assignee_user_id
       left join users assigner on assigner.id = e.assigned_by_user_id
       where e.project_id = $1
+        ${eventScope}
       order by e.created_at asc, e.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<GroupRow>(
       `
@@ -1345,9 +1365,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       from project_package_groups g
       join project_package_events e on e.id = g.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by g.created_at asc, g.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<ItemRow>(
       `
@@ -1368,9 +1389,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       join project_package_groups g on g.id = i.project_package_group_id
       join project_package_events e on e.id = g.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by i.created_at asc, i.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<OperationRow>(
       `
@@ -1389,6 +1411,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       from project_package_operations o
       join project_package_events e on e.id = o.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
         and (
           o.project_package_group_id is null
           or exists (
@@ -1400,7 +1423,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         )
       order by o.created_at asc, o.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<OperationTodoRow>(
       `
@@ -1411,9 +1434,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       join project_package_operations o on o.id = t.project_package_operation_id
       join project_package_events e on e.id = o.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by t.created_at asc, t.todo_id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<PackageEventCommentRow>(
       `
@@ -1429,9 +1453,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       join project_package_events e on e.id = c.project_package_event_id
       left join users author on author.id = c.author_user_id
       where e.project_id = $1
+        ${eventScope}
       order by c.created_at asc, c.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<MentionableMemberRow>(
       `
@@ -1601,14 +1626,17 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
     }))
-  const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
   const filteredEvents = normalizedQuery
     ? allEvents.filter((event) => [event.title, event.type, event.status, event.assigneeName ?? ''].join(' ').toLocaleLowerCase('zh-CN').includes(normalizedQuery))
     : allEvents
-  const total = filteredEvents.length
-  const limit = Math.min(100, Math.max(1, Math.floor(options.limit ?? (total || 1))))
-  const offset = Math.max(0, Math.floor(options.offset ?? 0))
-  const events = options.limit == null && options.offset == null && !normalizedQuery
+  const total = databasePageRequested
+    ? Number((await query<{ count: string }>('select count(*)::bigint as count from project_package_events where project_id = $1', [projectId])).rows[0]?.count ?? 0)
+    : filteredEvents.length
+  const limit = requestedLimit
+  const offset = requestedOffset
+  const events = databasePageRequested
+    ? allEvents
+    : options.limit == null && options.offset == null && !normalizedQuery
     ? filteredEvents
     : filteredEvents.slice(offset, offset + limit)
   return {

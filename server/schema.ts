@@ -786,6 +786,7 @@ alter table todos
 -- estimate and review lifecycle below.
 alter table todos
   add column if not exists estimated_work_minutes integer,
+  add column if not exists legacy_estimated_work_minutes boolean not null default false,
   add column if not exists needs_revision boolean not null default false,
   add column if not exists rejection_reason text,
   add column if not exists submitted_at timestamptz,
@@ -795,12 +796,12 @@ alter table todos
 
 alter table todos drop constraint if exists todos_estimated_work_minutes_check;
 update todos
-   set estimated_work_minutes = ceil(estimated_work_minutes::numeric / 60)::integer * 60
+   set legacy_estimated_work_minutes = true
  where estimated_work_minutes is not null
    and estimated_work_minutes > 0
    and estimated_work_minutes % 60 <> 0;
 alter table todos add constraint todos_estimated_work_minutes_check
-  check (estimated_work_minutes is null or (estimated_work_minutes > 0 and estimated_work_minutes <= 525600 and estimated_work_minutes % 60 = 0));
+  check (estimated_work_minutes is null or (estimated_work_minutes > 0 and estimated_work_minutes <= 525600 and (legacy_estimated_work_minutes or estimated_work_minutes % 60 = 0)));
 
 create unique index if not exists idx_todos_id_project_id_unique
   on todos(id, project_id);

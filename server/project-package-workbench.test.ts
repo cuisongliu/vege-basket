@@ -284,6 +284,6 @@ test('delivery timeline API accepts bounded search pagination and reports totals
   assert.match(indexSource, /request\.query\.offset/u)
   assert.match(indexSource, /request\.query\.q/u)
   assert.match(timelineSource, /const normalizedQuery = options\.q\?\.trim()/u)
-  assert.match(timelineSource, /Math\.min\(100/u)
+  assert.match(timelineSource, /Math\.min\(500/u)
   assert.match(timelineSource, /pagination: \{ limit, offset, total \}/u)
 })

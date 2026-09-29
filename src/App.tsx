@@ -3078,7 +3078,7 @@ function App() {
 
     const refreshTimeline = async () => {
       try {
-        const timeline = await fetchProjectPackageTimeline(packageTimelineProjectId)
+        const timeline = await fetchProjectPackageTimeline(packageTimelineProjectId, { limit: 500, offset: 0 })
         setProjectPackageTimelines((current) => ({
           ...current,
           [packageTimelineProjectId]: timeline,
@@ -4193,7 +4193,7 @@ function App() {
     if (!selectedProject) return false
     const timeline = await reconcileAction(
       () => reassignProjectPackageEvent(selectedProject.id, eventId, payload),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       data => data.events.some(event => event.id === eventId && event.assigneeUserId === payload.assigneeUserId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
@@ -4207,7 +4207,7 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => completeProjectPackageEvent(selectedProject.id, eventId, payload),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       (data) => data.events.some((event) => event.id === eventId && event.status === 'delivered'),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
@@ -4255,7 +4255,7 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => deletePackageEventComment(selectedProject.id, eventId, commentId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       (data) => data.events.some((event) => event.id === eventId && !event.comments.some((comment) => comment.id === commentId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
@@ -4271,7 +4271,7 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageEvent(selectedProject.id, eventId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       (data) => !data.events.some((event) => event.id === eventId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
@@ -4299,7 +4299,7 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageGroup(selectedProject.id, groupId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       (data) => !data.events.some((event) => event.groups.some((group) => group.id === groupId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
@@ -4364,7 +4364,7 @@ function App() {
     try {
       const timeline = await reconcileAction(
         () => updateProjectPackageOperation(selectedProject.id, operationId, payload),
-        () => fetchProjectPackageTimeline(selectedProject.id),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
         (data) => {
           const operation = data.events.flatMap((event) => [...event.operations, ...event.groups.flatMap((group) => group.operations)]).find((item) => item.id === operationId)
           return Boolean(operation && Object.entries(payload).every(([key, value]) => JSON.stringify(operation[key as keyof typeof operation]) === JSON.stringify(value)))
@@ -4398,7 +4398,7 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageOperation(selectedProject.id, operationId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
       (data) => !data.events.some((event) => event.operations.some((operation) => operation.id === operationId) || event.groups.some((group) => group.operations.some((operation) => operation.id === operationId))),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
