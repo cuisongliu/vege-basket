@@ -675,6 +675,19 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const client = await pool.connect()
       try {
         await client.query('begin')
+        const entryReference = await client.query<{ todo_id: string; user_id: string }>(
+          'select todo_id, user_id from todo_work_hours where id = $1',
+          [entryId],
+        )
+        const reference = entryReference.rows[0]
+        if (!reference || Number(reference.user_id) !== userId) throw new WorkHoursError('ENTRY_NOT_FOUND', '工时记录不存在。', 404)
+        const todo = await getTodoForWork(client, Number(reference.todo_id), userId, true)
+        if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
+          throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
+        }
+        if (todo.done || todo.confirmation_status === 'pending_review') {
+          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能修改工时。', 409)
+        }
         const existing = await client.query<WorkHourRow>(
           "select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date, entry.minutes, entry.status, entry.description, entry.created_at, entry.updated_at, (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at from todo_work_hours entry join projects p on p.id = entry.project_id where entry.id = $1 for update of entry",
           [entryId],
@@ -682,13 +695,6 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         const row = existing.rows[0]
         if (!row || Number(row.user_id) !== userId) throw new WorkHoursError('ENTRY_NOT_FOUND', '工时记录不存在。', 404)
         if (row.status !== 'pending') throw new WorkHoursError('ENTRY_CONFIRMED', '已确认工时不能修改。', 409)
-        const todo = await getTodoForWork(client, Number(row.todo_id), userId)
-        if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
-          throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
-        }
-        if (todo.done || todo.confirmation_status === 'pending_review') {
-          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能修改工时。', 409)
-        }
         if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
           throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能修改自己负责任务的工时。', 403)
         }
@@ -736,20 +742,28 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const client = await pool.connect()
       try {
         await client.query('begin')
-        const entry = await client.query<{ todo_id: string; status: WorkHourStatus; user_id: string }>(
-          'select todo_id, status, user_id from todo_work_hours where id = $1 for update',
+        const entryReference = await client.query<{ todo_id: string; user_id: string }>(
+          'select todo_id, user_id from todo_work_hours where id = $1',
           [entryId],
         )
-        const row = entry.rows[0]
-        if (!row || Number(row.user_id) !== userId || row.status !== 'pending') {
+        const reference = entryReference.rows[0]
+        if (!reference || Number(reference.user_id) !== userId) {
           throw new WorkHoursError('ENTRY_NOT_FOUND', '工时不存在、已确认或不属于当前用户。', 409)
         }
-        const todo = await getTodoForWork(client, Number(row.todo_id), userId)
+        const todo = await getTodoForWork(client, Number(reference.todo_id), userId, true)
         if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
         if (todo.done || todo.confirmation_status === 'pending_review') {
           throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能删除工时。', 409)
+        }
+        const entry = await client.query<{ status: WorkHourStatus; user_id: string }>(
+          'select status, user_id from todo_work_hours where id = $1 for update',
+          [entryId],
+        )
+        const row = entry.rows[0]
+        if (!row || Number(row.user_id) !== userId || row.status !== 'pending') {
+          throw new WorkHoursError('ENTRY_NOT_FOUND', '工时不存在、已确认或不属于当前用户。', 409)
         }
         if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
           throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能删除自己负责任务的工时。', 403)

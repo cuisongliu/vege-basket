@@ -6,9 +6,11 @@ update todos
    and estimated_work_minutes > 0
    and estimated_work_minutes % 60 <> 0;
 
+alter table todo_work_hours
+  add column if not exists legacy_minutes boolean not null default false;
+
 update todo_work_hours
-   set minutes = ceil(minutes::numeric / 60)::integer * 60,
-       updated_at = now()
+   set legacy_minutes = true
  where minutes > 0
    and minutes % 60 <> 0;
 
@@ -18,7 +20,7 @@ alter table todos add constraint todos_estimated_work_minutes_check
 
 alter table todo_work_hours drop constraint if exists todo_work_hours_minutes_check;
 alter table todo_work_hours add constraint todo_work_hours_minutes_check
-  check (minutes > 0 and minutes <= 1440 and minutes % 60 = 0);
+  check (minutes > 0 and minutes <= 1440 and (legacy_minutes or minutes % 60 = 0));
 
 alter table todo_activity_events drop constraint if exists todo_activity_events_event_type_check;
 alter table todo_activity_events add constraint todo_activity_events_event_type_check

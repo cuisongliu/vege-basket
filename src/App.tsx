@@ -125,6 +125,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import {
   acknowledgeChangelogAnnouncement,
+  acceptTodo,
   acceptOrganizationInviteLink,
   acceptProjectInvitation,
   archiveDraft,
@@ -4078,10 +4079,14 @@ function App() {
   async function acceptSelectedMyWorkTodos(todoIds: number[]) {
     if (todoIds.length === 0) return false
     for (const todoId of todoIds) {
-      const saved = await runMutation(() => updateTodo(todoId, {
-        done: true,
-        confirmationStatus: 'confirmed',
-      }))
+      const saved = await runConfirmedMutation(
+        async () => {
+          await acceptTodo(todoId)
+          return fetchWorkspace()
+        },
+        (data) => data.todos.some((todo) =>
+          todo.id === todoId && todo.done && todo.confirmationStatus === 'confirmed'),
+      )
       if (!saved) return false
     }
     return true
@@ -7357,7 +7362,7 @@ function ProjectDetail({
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
-                  submitDisabled={!todoDraft.trim() || !todoAssigneeUserId || !todoEstimatedWorkHours || !Number.isInteger(Number(todoEstimatedWorkHours)) || Number(todoEstimatedWorkHours) < 1}
+                  submitDisabled={!todoDraft.trim() || (Boolean(project.organizationId) && (!todoAssigneeUserId || !todoEstimatedWorkHours || !Number.isInteger(Number(todoEstimatedWorkHours)) || Number(todoEstimatedWorkHours) < 1))}
                   title={todoDraft}
                   onAssigneeUserIdChange={onTodoAssigneeChange}
                   onWatcherUserIdsChange={onTodoWatcherChange}
@@ -11643,6 +11648,7 @@ function TodoEditorDialog({
 }) {
   const isCreateMode = mode === 'create'
   const isDetailMode = mode === 'detail'
+  const requiresEnterpriseTodoFields = Boolean(project.organizationId)
   const editing = isCreateMode || isEditing
   const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
@@ -11772,7 +11778,7 @@ function TodoEditorDialog({
                 </Select>
               </Label>
               <Label className="todo-inline-field-half">
-                <span className="todo-form-label">预估工时（小时） <em aria-label="必填" className="field-required">*</em></span>
+                <span className="todo-form-label">预估工时（小时） {requiresEnterpriseTodoFields ? <em aria-label="必填" className="field-required">*</em> : null}</span>
                 <Input
                   aria-label="预估工时"
                   min="1"
@@ -11829,7 +11835,7 @@ function TodoEditorDialog({
                 />
               </div>
               <Label className="todo-inline-field-half">
-                <span className="todo-form-label">负责人 <em aria-label="必填" className="field-required">*</em></span>
+                <span className="todo-form-label">负责人 {requiresEnterpriseTodoFields ? <em aria-label="必填" className="field-required">*</em> : null}</span>
                 <ProjectMemberPicker
                   members={members}
                   value={assigneeUserId}

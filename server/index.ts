@@ -11216,14 +11216,12 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     [projectId, userId],
   )
   const projectOrganization = projectScope.rows[0]
-  let estimatedWorkMinutes: number
+  let estimatedWorkMinutes: number | null = null
   if (projectOrganization?.organization_id) {
     if (!projectOrganization.organization_admin_access) {
       response.status(403).json({ error: '只有目标组织的组织管理员可以创建企业待办。' })
       return
     }
-  }
-  {
     try {
       const parsedEstimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: true })
       if (parsedEstimatedWorkMinutes == null) throw new Error('预估工时必须填写整数小时，最少 1 小时。')
@@ -11232,13 +11230,20 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
       response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须填写整数小时，最少 1 小时。' })
       return
     }
+  } else if (request.body.estimatedWorkMinutes != null && request.body.estimatedWorkMinutes !== '') {
+    try {
+      estimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: false })
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须是整数小时。' })
+      return
+    }
   }
   const assigneeUserId = await ensureProjectMemberUserId(
     request.body.assigneeUserId,
     projectId,
     access.ownerUserId,
   )
-  if (!assigneeUserId) {
+  if (projectOrganization?.organization_id && !assigneeUserId) {
     response.status(400).json({ error: '负责人是必填项，且必须是当前项目成员。' })
     return
   }
@@ -11281,6 +11286,19 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
   let createdTodoMentionIds: number[]
   try {
     await client.query('begin')
+    if (projectOrganization?.organization_id) {
+      const organizationId = Number(projectOrganization.organization_id)
+      const lockedProject = await lockResourceManager(client, 'project', projectId, userId)
+      if (
+        !lockedProject ||
+        lockedProject.organizationId !== organizationId ||
+        !await lockOrganizationResourceManager(client, organizationId, userId)
+      ) {
+        await client.query('rollback')
+        response.status(403).json({ error: '只有目标组织的组织管理员可以创建企业待办。' })
+        return
+      }
+    }
     await lockProjectModules(client, projectId)
     const moduleId = await resolveProjectModuleId(client, projectId, requestedModuleId)
     const subprojectId = await resolveProjectSubprojectId(client, projectId, requestedSubprojectId)
@@ -11639,6 +11657,19 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
   let acceptanceNoteId: number | null = null
   try {
     await client.query('begin')
+    if (organizationAdminTodoAccess && existingTodo.rows[0].organization_id != null) {
+      const organizationId = Number(existingTodo.rows[0].organization_id)
+      const lockedProject = await lockResourceManager(client, 'project', projectId, userId)
+      if (
+        !lockedProject ||
+        lockedProject.organizationId !== organizationId ||
+        !await lockOrganizationResourceManager(client, organizationId, userId)
+      ) {
+        await client.query('rollback')
+        response.status(403).json({ error: '组织管理员权限已失效，请刷新后重试。' })
+        return
+      }
+    }
     await lockProjectModules(client, projectId)
     const lockedTodoResult = await client.query<{
       assignee_user_id: string | null

@@ -6,6 +6,7 @@ import { paginateMyWork, parseMyWorkFilters, workBucket, workItemKey } from './m
 const myWorkSource = readFileSync(new URL('./my-work.ts', import.meta.url), 'utf8')
 const myWorkWorkbenchSource = readFileSync(new URL('../src/components/my-work-workbench.tsx', import.meta.url), 'utf8')
 const myWorkWorkbenchCss = readFileSync(new URL('../src/components/my-work-workbench.css', import.meta.url), 'utf8')
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
 const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
@@ -95,6 +96,8 @@ test('review queue supports selecting a subset of todos for acceptance', () => {
   assert.match(myWorkWorkbenchSource, /onAcceptTodos/u)
   assert.match(myWorkWorkbenchSource, /验收所选/u)
   assert.match(myWorkWorkbenchSource, /ConfirmActionDialog/u)
+  assert.match(appSource, /acceptTodo\(todoId\)/u)
+  assert.match(appSource, /return fetchWorkspace\(\)/u)
 })
 
 test('renders My Work secondary text with the readable workbench token', () => {
