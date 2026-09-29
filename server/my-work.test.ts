@@ -7,6 +7,7 @@ const myWorkSource = readFileSync(new URL('./my-work.ts', import.meta.url), 'utf
 const myWorkWorkbenchSource = readFileSync(new URL('../src/components/my-work-workbench.tsx', import.meta.url), 'utf8')
 const myWorkWorkbenchCss = readFileSync(new URL('../src/components/my-work-workbench.css', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
 const serverSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
@@ -35,11 +36,12 @@ test('accepts concrete work statuses and falls back for unknown values', () => {
   assert.equal(parseMyWorkFilters({ status: 'not-a-status' }).status, 'open')
 })
 
-test('parses the independent acceptance queue filter', () => {
+test('parses the independent work-hour confirmation queue filter', () => {
   assert.equal(parseMyWorkFilters({ review: 'true' }).review, true)
   assert.equal(parseMyWorkFilters({ review: '1' }).review, true)
   assert.equal(parseMyWorkFilters({ review: 'false' }).review, false)
   assert.match(myWorkSource, /\$7::boolean = false/u)
+  assert.match(myWorkSource, /work\.submitted_work_minutes > 0/u)
   assert.match(myWorkWorkbenchSource, /mode === 'review'/u)
   assert.match(apiSource, /params\.set\('review', 'true'\)/u)
 })
@@ -69,10 +71,19 @@ test('moves submitted todos from the assignee list to the effective reviewer', (
   assert.doesNotMatch(myWorkSource, /coalesce\(t\.reviewer_user_id, t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
-test('does not treat a todo creator or project owner as responsible without an explicit assignment', () => {
+test('keeps ordinary responsibility separate from the organization-admin work-hour confirmation queue', () => {
   assert.match(myWorkSource, /t\.assignee_user_id = \$1\s+and t\.confirmation_status <> 'pending_review'/u)
-  assert.match(myWorkSource, /or t\.reviewer_user_id = \$1/u)
-  assert.doesNotMatch(myWorkSource, /coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
+  assert.match(myWorkSource, /\$7::boolean = false\s+and \([\s\S]*?or t\.reviewer_user_id = \$1\s+\)/u)
+  assert.match(myWorkSource, /\$7::boolean = true\s+and \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}\s+and not t\.done\s+and work_hours\.submitted_minutes > 0/u)
+  assert.doesNotMatch(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
+})
+
+test('navigation count matches the actionable work-hour confirmation queue', () => {
+  const confirmationCountQuery = serverSource.match(
+    /\) as open_todo_count,[\s\S]*?\(\s*select count\(\*\)[\s\S]*?\) as work_hour_confirmation_count/u,
+  )?.[0] ?? ''
+  assert.match(confirmationCountQuery, /hours\.status = 'submitted'/u)
+  assert.doesNotMatch(confirmationCountQuery, /hours\.status in \('submitted', 'confirmed'\)/u)
 })
 
 test('renders failed acceptance status in Chinese', () => {
@@ -91,13 +102,39 @@ test('renders My Work grid rows with valid table descendants', () => {
   assert.doesNotMatch(myWorkWorkbenchSource, /role="row">\s*<button/u)
 })
 
-test('review queue supports selecting a subset of todos for acceptance', () => {
-  assert.match(myWorkWorkbenchSource, /selectedTodoIds/u)
-  assert.match(myWorkWorkbenchSource, /onAcceptTodos/u)
-  assert.match(myWorkWorkbenchSource, /验收所选/u)
-  assert.match(myWorkWorkbenchSource, /ConfirmActionDialog/u)
-  assert.match(appSource, /acceptTodo\(todoId\)/u)
-  assert.match(appSource, /return fetchWorkspace\(\)/u)
+test('work-hour confirmation shows aligned totals and reviews selected entries in the detail drawer', () => {
+  assert.match(myWorkSource, /sum\(hours\.minutes\).*cumulative_minutes/u)
+  assert.match(myWorkSource, /hours\.status = 'submitted'/u)
+  assert.match(myWorkWorkbenchSource, /预估[\s\S]*累计[\s\S]*待确认[\s\S]*查看工时/u)
+  assert.match(myWorkWorkbenchSource, /<span role="columnheader">状态<\/span>/u)
+  assert.match(myWorkWorkbenchSource, /completeTodoFromWorkHours/u)
+  assert.match(myWorkWorkbenchSource, /当前仍有 \$\{pendingCount\} 条未提交工时/u)
+  assert.match(myWorkWorkbenchSource, /fetchTodoDetail\(todoId\)/u)
+  assert.match(myWorkWorkbenchSource, /fetchTodoWorkHours\(todoId/u)
+  assert.match(myWorkWorkbenchSource, /selectedEntryIds/u)
+  assert.match(myWorkWorkbenchSource, /MAX_SELECTED_WORK_HOURS = 100/u)
+  assert.match(myWorkWorkbenchSource, /returnWorkHours\(todoId, entryIds\)/u)
+  assert.match(myWorkWorkbenchSource, /acceptWorkHours\(todoId, entryIds\)/u)
+  assert.match(myWorkWorkbenchSource, /退回修改/u)
+  assert.match(myWorkWorkbenchSource, /确认工时/u)
+  assert.doesNotMatch(myWorkWorkbenchSource, /验收所选/u)
+  assert.doesNotMatch(myWorkWorkbenchSource, /onAcceptTodos/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-row[\s\S]*grid-template-columns/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-dialog[\s\S]*right: 0[\s\S]*width: min\(820px/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-content[\s\S]*overflow-y: auto/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-entry[\s\S]*min-height: 54px/u)
+  assert.match(appSource, /> 工时确认/u)
+  assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canManageSelectedOrganization\)/u)
+  assert.match(serverSource, /workHourConfirmationCount/u)
+})
+
+test('aligns grid headings with icon-offset titles and matching cell content', () => {
+  assert.match(myWorkWorkbenchCss, /\.my-work-table-header > :first-child \{ padding-inline-start: 41px; \}/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-action-heading \{\s*text-align: right;/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-action \{[\s\S]*?justify-content: flex-end;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :first-child \{\s*padding-inline-start: 30px;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :nth-child\(5\) \{\s*padding-inline-start: 7px;\s*text-align: left;/u)
+  assert.match(appCss, /\.todo-workflow-table-header > :last-child \{\s*text-align: right;/u)
 })
 
 test('renders My Work secondary text with the readable workbench token', () => {
@@ -125,6 +162,16 @@ test('scopes my work to the requested organization context', () => {
   assert.match(apiSource, /params\.set\('organizationId', serializeOrganizationContext\(organizationId\)\)/u)
   assert.match(serverSource, /app\.get\('\/api\/my-work'/u)
   assert.match(serverSource, /parseOrganizationContext\(request\.query\.organizationId\)/u)
+})
+
+test('work-hour confirmation reads require an organization administrator', () => {
+  const routeStart = serverSource.indexOf("app.get('/api/my-work'")
+  const routeEnd = serverSource.indexOf("app.get('/api/navigation-counts'", routeStart)
+  const routeSource = serverSource.slice(routeStart, routeEnd)
+  assert.match(routeSource, /if \(filters\.review\)/u)
+  assert.match(routeSource, /role\.role = 'organization_admin'/u)
+  assert.match(routeSource, /membership\.access_role in \('owner', 'admin'\)/u)
+  assert.match(routeSource, /只有当前组织的组织管理员可以查看工时确认/u)
 })
 
 test('filters dates across all records before paging and counts the complete match', () => {

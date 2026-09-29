@@ -1,17 +1,57 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Bug, CalendarBlank, Check, CheckCircle, Clock, FolderSimple, FunnelSimple, ListChecks, MagnifyingGlass, Flag, SortAscending, SortDescending } from '@phosphor-icons/react'
-import { fetchMyWork } from '../api'
-import type { Project } from '../types'
+import { ArrowCounterClockwise, Bug, CalendarBlank, Check, CheckCircle, Clock, Eye, FolderSimple, FunnelSimple, ListChecks, MagnifyingGlass, Flag, SortAscending, SortDescending } from '@phosphor-icons/react'
+import { acceptWorkHours, completeTodoFromWorkHours, fetchMyWork, fetchTodoDetail, fetchTodoWorkHours, returnWorkHours, type WorkHourEntry, type WorkHourSummary } from '../api'
+import type { Project, Todo } from '../types'
 import type { MyWorkData, MyWorkItem, MyWorkKind, MyWorkFilters, MyWorkViewState } from '../my-work-types'
 import type { OrganizationContext } from '../../shared/organization-context'
 import { startVisibleRefreshSchedule, workspaceRefreshIntervalMs } from '../refresh-schedule'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { ListPagination } from './list-pagination'
-import { ConfirmActionDialog } from './confirm-action-dialog'
+import { MarkdownPreview } from './markdown-preview'
+import { useConfirmAction } from '../hooks/use-confirm-action'
 import './my-work-workbench.css'
+
+const MAX_SELECTED_WORK_HOURS = 100
+
+const emptyWorkHourSummary: WorkHourSummary = {
+  byDate: [], byProject: [], byUser: [], confirmedMinutes: 0, pendingMinutes: 0,
+  projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0,
+}
+
+function formatMinutes(minutes: number | null | undefined) {
+  if (minutes == null) return '-'
+  return `${(minutes / 60).toFixed(minutes % 60 === 0 ? 0 : 1)}h`
+}
+
+function workHourStatusLabel(status: WorkHourEntry['status']) {
+  if (status === 'confirmed') return '已确认'
+  if (status === 'submitted') return '待确认'
+  return '已退回'
+}
+
+async function fetchWorkHourConfirmationDetails(todoId: number) {
+  const [detail, firstPage] = await Promise.all([
+    fetchTodoDetail(todoId),
+    fetchTodoWorkHours(todoId, { limit: 50 }),
+  ])
+  const entries = [...firstPage.entries]
+  let cursor = firstPage.pagination?.limit ?? entries.length
+  while (firstPage.pagination && entries.length < firstPage.pagination.total) {
+    const page = await fetchTodoWorkHours(todoId, { cursor, limit: 50 })
+    entries.push(...page.entries)
+    cursor += page.pagination?.limit ?? page.entries.length
+    if (page.entries.length === 0) break
+  }
+  return {
+    entries: [...new Map(entries.map((entry) => [entry.id, entry])).values()],
+    summary: firstPage.summary,
+    todo: detail.todo,
+  }
+}
 
 const kindLabels: Record<MyWorkKind, string> = {
   todo: '待办',
@@ -37,7 +77,7 @@ const statusLabels: Record<string, string> = {
   new: '新建',
   pending: '待达成',
   in_review: '验收中',
-  pending_review: '待审核',
+  pending_review: '待确认',
   reopened: '重新打开',
   rejected: '已拒绝',
   duplicate: '重复',
@@ -92,7 +132,7 @@ export function MyWorkWorkbench({
   onDeliveryClick,
   onBugClick,
   onMilestoneClick,
-  onAcceptTodos,
+  onWorkHoursChanged,
 }: {
   mode?: 'work' | 'review'
   scope: string
@@ -104,22 +144,31 @@ export function MyWorkWorkbench({
   onDeliveryClick: (projectId: number, eventId: number) => void
   onBugClick: (bugId: number) => void
   onMilestoneClick: (projectId: number) => void
-  onAcceptTodos?: (todoIds: number[]) => Promise<boolean>
+  onWorkHoursChanged?: () => void
 }) {
   const isReview = mode === 'review'
   const [view, setView] = useState<MyWorkViewState>(() => savedView?.scope === scope ? savedView : {
-    scope, filters: isReview ? { review: true, kind: 'todo', status: 'pending_review', sort: 'due_desc' } : { status: 'open', sort: 'due_desc' }, page: 0, pageSize: 20, scrollTop: 0,
+    scope, filters: isReview ? { review: true, kind: 'todo', status: 'all', sort: 'due_desc' } : { status: 'open', sort: 'due_desc' }, page: 0, pageSize: 20, scrollTop: 0,
   })
   const [result, setResult] = useState<{ data: MyWorkData; view: MyWorkViewState }>()
   const [loading, setLoading] = useState(true)
   const [backgroundRefreshVersion, setBackgroundRefreshVersion] = useState(0)
   const [error, setError] = useState('')
-  const [selectedTodoIds, setSelectedTodoIds] = useState<number[]>([])
+  const [reviewItem, setReviewItem] = useState<MyWorkItem | null>(null)
+  const [reviewTodo, setReviewTodo] = useState<Todo | null>(null)
+  const [reviewEntries, setReviewEntries] = useState<WorkHourEntry[]>([])
+  const [reviewSummary, setReviewSummary] = useState<WorkHourSummary>(emptyWorkHourSummary)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewSaving, setReviewSaving] = useState(false)
+  const [reviewError, setReviewError] = useState('')
+  const [reviewSuccess, setReviewSuccess] = useState('')
+  const [selectedEntryIds, setSelectedEntryIds] = useState<number[]>([])
+  const { confirmAction, confirmationDialog } = useConfirmAction(`work-hour-complete:${reviewItem?.sourceId ?? 0}`)
   const tableRef = useRef<HTMLDivElement>(null)
   const onViewChangeRef = useRef(onViewChange)
   useEffect(() => { onViewChangeRef.current = onViewChange }, [onViewChange])
   const data = result?.data
-  const { kind = 'all', projectId: selectedProjectId, creator = 'all', q: query = '', status = isReview ? 'pending_review' : 'open', sort = 'due_desc', due: dueFilter = 'all' } = view.filters
+  const { kind = 'all', projectId: selectedProjectId, creator = 'all', q: query = '', status = isReview ? 'all' : 'open', sort = 'due_desc', due: dueFilter = 'all' } = view.filters
   const projectId = selectedProjectId == null ? 'all' : String(selectedProjectId)
   function changeFilters(patch: Partial<MyWorkFilters>) {
     setView((current) => ({ ...current, filters: { ...current.filters, ...patch }, page: 0, scrollTop: 0 }))
@@ -164,6 +213,29 @@ export function MyWorkWorkbench({
     return () => { active = false }
   }, [backgroundRefreshVersion, organizationId, view])
 
+  useEffect(() => {
+    if (!reviewItem) return
+    let active = true
+    setReviewLoading(true)
+    setReviewError('')
+    setReviewSuccess('')
+    setReviewTodo(null)
+    setReviewEntries([])
+    setReviewSummary(emptyWorkHourSummary)
+    setSelectedEntryIds([])
+    void fetchWorkHourConfirmationDetails(reviewItem.sourceId).then((details) => {
+      if (!active) return
+      setReviewTodo(details.todo)
+      setReviewEntries(details.entries)
+      setReviewSummary(details.summary)
+    }).catch((cause) => {
+      if (active) setReviewError(cause instanceof Error ? cause.message : '工时详情加载失败。')
+    }).finally(() => {
+      if (active) setReviewLoading(false)
+    })
+    return () => { active = false }
+  }, [reviewItem])
+
   // Revalidation preserves the viewport. Explicit navigation and remounts restore
   // their own position only after the corresponding records are committed.
   const committedViewRef = useRef<MyWorkViewState | null>(null)
@@ -179,9 +251,11 @@ export function MyWorkWorkbench({
   }, [result])
 
   const visibleItems = data?.items ?? []
-  const reviewTodoIds = visibleItems.filter((item) => isReview && item.kind === 'todo').map((item) => item.sourceId)
-  const selectedReviewTodoIds = selectedTodoIds.filter((id) => reviewTodoIds.includes(id))
-  const toggleTodo = (todoId: number) => setSelectedTodoIds((current) => current.includes(todoId) ? current.filter((id) => id !== todoId) : [...current, todoId])
+  const submittedEntries = reviewEntries.filter((entry) => entry.status === 'submitted')
+  const selectableBatch = submittedEntries.slice(0, MAX_SELECTED_WORK_HOURS)
+  const selectedEntries = submittedEntries.filter((entry) => selectedEntryIds.includes(entry.id))
+  const selectedMinutes = selectedEntries.reduce((sum, entry) => sum + entry.minutes, 0)
+  const submittedMinutes = submittedEntries.reduce((sum, entry) => sum + entry.minutes, 0)
   const statusOptions = useMemo(() => {
     const concreteStatuses = (data?.filterOptions.statuses ?? []).map((value) => {
       const [kind, status] = value.split(':')
@@ -211,48 +285,146 @@ export function MyWorkWorkbench({
     if (item.kind === 'milestone' && item.projectId) onMilestoneClick(item.projectId)
   }
 
+  function applyCompletedTodo(details: Awaited<ReturnType<typeof fetchWorkHourConfirmationDetails>>, autoConfirmedCount = 0) {
+    setReviewTodo(details.todo)
+    setReviewEntries(details.entries)
+    setReviewSummary(details.summary)
+    setReviewSuccess(autoConfirmedCount > 0
+      ? `任务已完成，${autoConfirmedCount} 条未提交工时已自动确认。`
+      : '任务已完成。')
+    setBackgroundRefreshVersion((version) => version + 1)
+    onWorkHoursChanged?.()
+  }
+
+  async function requestTodoCompletion(todo: Todo, entries: WorkHourEntry[]) {
+    const pendingCount = entries.filter((entry) => entry.status === 'pending').length
+    const succeeded = await confirmAction({
+      title: `确认完成任务“${todo.title}”？`,
+      description: pendingCount > 0
+        ? `当前仍有 ${pendingCount} 条未提交工时。完成任务后，这些工时将自动标记为已确认，是否继续？`
+        : '当前所有工时均已确认。确认后任务将标记为已完成。',
+      confirmLabel: '确认完成任务',
+      variant: 'default',
+      reconcile: async () => {
+        const details = await fetchWorkHourConfirmationDetails(todo.id)
+        if (!details.todo.done) return 'unchanged' as const
+        applyCompletedTodo(details, pendingCount)
+        return 'succeeded' as const
+      },
+    }, async () => {
+      let mutationError: unknown
+      let autoConfirmedCount = 0
+      try {
+        const result = await completeTodoFromWorkHours(todo.id)
+        autoConfirmedCount = result.autoConfirmedCount
+      } catch (cause) {
+        mutationError = cause
+      }
+      const details = await fetchWorkHourConfirmationDetails(todo.id)
+      if (mutationError && !details.todo.done) throw mutationError
+      if (!details.todo.done) return false
+      applyCompletedTodo(details, autoConfirmedCount)
+      return true
+    })
+    if (succeeded) setReviewItem(null)
+  }
+
+  async function runWorkHourReview(action: 'return' | 'accept') {
+    if (!reviewItem || selectedEntryIds.length === 0) return
+    const todoId = reviewItem.sourceId
+    const entryIds = [...selectedEntryIds]
+    const expectedStatus: WorkHourEntry['status'] = action === 'accept' ? 'confirmed' : 'pending'
+    setReviewSaving(true)
+    setReviewError('')
+    setReviewSuccess('')
+    try {
+      let mutationError: unknown
+      try {
+        if (action === 'accept') await acceptWorkHours(todoId, entryIds)
+        else await returnWorkHours(todoId, entryIds)
+      } catch (cause) {
+        mutationError = cause
+      }
+      const details = await fetchWorkHourConfirmationDetails(todoId)
+      const reconciled = entryIds.every((entryId) => details.entries.some((entry) => entry.id === entryId && entry.status === expectedStatus))
+      if (mutationError && !reconciled) throw mutationError
+      setReviewTodo(details.todo)
+      setReviewEntries(details.entries)
+      setReviewSummary(details.summary)
+      setSelectedEntryIds([])
+      setReviewSuccess(action === 'accept' ? '所选工时已确认。' : '所选工时已退回修改。')
+      setBackgroundRefreshVersion((version) => version + 1)
+      onWorkHoursChanged?.()
+      const hasSubmitted = details.entries.some((entry) => entry.status === 'submitted')
+      const hasConfirmed = details.entries.some((entry) => entry.status === 'confirmed')
+      if (!hasSubmitted && !hasConfirmed) setReviewItem(null)
+      if (action === 'accept' && !hasSubmitted && !details.todo.done) {
+        void requestTodoCompletion(details.todo, details.entries)
+      }
+    } catch (cause) {
+      setReviewError(cause instanceof Error ? cause.message : '工时确认操作失败。')
+    } finally {
+      setReviewSaving(false)
+    }
+  }
+
   return (
     <section className={`panel my-work-panel${isReview ? ' my-work-review-panel' : ''}`}>
       <div className="my-work-heading">
         <div>
-          <p className="my-work-eyebrow">{isReview ? '验收队列' : '日常工作'}</p>
+          <p className="my-work-eyebrow">{isReview ? '待确认工时' : '日常工作'}</p>
         </div>
-        {isReview ? <span className="my-work-review-hint">只显示等待你确认的任务</span> : null}
+        {isReview && result ? <span className="my-work-review-hint">共 {result.data.total} 项</span> : null}
       </div>
       <div className="my-work-toolbar">
         <label className="my-work-search">
           <MagnifyingGlass size={17} />
-          <Input value={query} onChange={(event) => changeFilters({ q: event.target.value })} placeholder="搜索事项、项目或状态" />
+          <Input value={query} onChange={(event) => changeFilters({ q: event.target.value })} placeholder={isReview ? '搜索任务或项目' : '搜索事项、项目或状态'} />
         </label>
-        {isReview && onAcceptTodos ? (
-          <ConfirmActionDialog
-            actionKey={`review-selected-todos:${organizationId}:${selectedReviewTodoIds.join(',')}`}
-            title="确认验收选中的待办？"
-            description={`将验收 ${selectedReviewTodoIds.length} 项任务，未选中的任务保持待验收。`}
-            confirmLabel="确认验收"
-            variant="default"
-            onConfirm={async () => {
-              const saved = await onAcceptTodos(selectedReviewTodoIds)
-              if (saved) setSelectedTodoIds([])
-              return saved
-            }}
-            confirmDisabled={selectedReviewTodoIds.length === 0}
-            trigger={<Button type="button" disabled={selectedReviewTodoIds.length === 0}><CheckCircle size={15} />验收所选</Button>}
-          />
-        ) : null}
       </div>
 
-      {loading && !result ? <div className="my-work-empty"><Clock className="spin" size={24} />正在加载{isReview ? '待我验收' : '我的待办'}...</div> : null}
+      {loading && !result ? <div className="my-work-empty"><Clock className="spin" size={24} />正在加载{isReview ? '工时确认' : '我的待办'}...</div> : null}
       {error ? <div className="my-work-load-error" role="alert">{error}{result ? ' 列表仍显示上次加载的结果。' : ''}<Button type="button" variant="ghost" disabled={loading} onClick={() => setBackgroundRefreshVersion((version) => version + 1)}>重试</Button></div> : null}
-      {result ? (
-        <div className="my-work-table" role="table" aria-label={isReview ? '待我验收列表' : '我的待办列表'} aria-busy={loading} ref={tableRef} onScroll={(event) => {
+      {result && isReview ? (
+        <div className="my-work-table my-work-confirmation-table" role="table" aria-label="工时确认列表" aria-busy={loading} ref={tableRef} onScroll={(event) => {
+          onViewChange({ ...result.view, scrollTop: event.currentTarget.scrollTop })
+        }}>
+          <div className="my-work-table-header-group" role="rowgroup">
+            <div className="my-work-table-header my-work-confirmation-row" role="row">
+              <span role="columnheader">任务</span>
+              <div role="columnheader"><TableFilterMenu label="项目" value={projectId} onChange={(value) => changeFilters({ projectId: value === 'all' ? undefined : Number(value) })} options={[{ label: '全部项目', value: 'all' }, ...projects.map((project) => ({ label: project.name, value: String(project.id) }))]} /></div>
+              <span className="my-work-number-heading" role="columnheader">预估</span>
+              <span className="my-work-number-heading" role="columnheader">累计</span>
+              <span className="my-work-number-heading" role="columnheader">待确认</span>
+              <span role="columnheader">状态</span>
+              <span className="my-work-action-heading" role="columnheader">操作</span>
+            </div>
+          </div>
+          <div className="my-work-table-body" role="rowgroup">
+            {visibleItems.length === 0 ? <div className="my-work-table-row my-work-confirmation-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={7}><CheckCircle size={28} />当前没有待确认的工时</div></div> : null}
+            {visibleItems.map((item) => (
+              <div className="my-work-table-row my-work-confirmation-row" key={item.id} role="row">
+                <div className="my-work-table-cell my-work-main-cell" role="cell"><span className="my-work-kind-icon is-todo"><ListChecks size={17} /></span><strong className="my-work-confirmation-title">{item.title}</strong></div>
+                <span className="my-work-table-cell" role="cell">{item.projectName ?? '未关联项目'}</span>
+                <span className="my-work-table-cell my-work-number-cell" role="cell">{formatMinutes(item.estimatedWorkMinutes)}</span>
+                <span className="my-work-table-cell my-work-number-cell" role="cell">{formatMinutes(item.cumulativeWorkMinutes ?? 0)}</span>
+                <strong className="my-work-table-cell my-work-number-cell is-pending" role="cell">{formatMinutes(item.submittedWorkMinutes ?? 0)}</strong>
+                <span className="my-work-table-cell" role="cell">{item.status === 'completed' ? '已完成' : '进行中'}</span>
+                <span className="my-work-table-cell my-work-confirmation-action" role="cell"><Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => setReviewItem(item)}><Eye size={15} />查看工时</Button></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {result && !isReview ? (
+        <div className="my-work-table" role="table" aria-label="我的待办列表" aria-busy={loading} ref={tableRef} onScroll={(event) => {
           onViewChange({ ...result.view, scrollTop: event.currentTarget.scrollTop })
         }}>
           <div className="my-work-table-header-group" role="rowgroup">
             <div className="my-work-table-header" role="row">
               <span role="columnheader">事项</span>
               <div role="columnheader"><TableFilterMenu label="项目" value={projectId} onChange={(value) => changeFilters({ projectId: value === 'all' ? undefined : Number(value) })} options={[{ label: '全部项目', value: 'all' }, ...projects.map((project) => ({ label: project.name, value: String(project.id) }))]} /></div>
-              {!isReview ? <div role="columnheader"><TableFilterMenu label="类型" value={kind} onChange={(value) => changeFilters({ kind: value === 'all' ? undefined : value as MyWorkKind })} options={[{ label: '全部类型', value: 'all' }, ...Object.entries(kindLabels).map(([value, label]) => ({ label, value }))]} /></div> : <span role="columnheader">类型</span>}
+              <div role="columnheader"><TableFilterMenu label="类型" value={kind} onChange={(value) => changeFilters({ kind: value === 'all' ? undefined : value as MyWorkKind })} options={[{ label: '全部类型', value: 'all' }, ...Object.entries(kindLabels).map(([value, label]) => ({ label, value }))]} /></div>
               <div role="columnheader"><TableFilterMenu label="状态" value={status} onChange={(value) => changeFilters({ status: value })} options={statusOptions} /></div>
               <div className="my-work-date-heading" role="columnheader">
                 <TableFilterMenu label="截止日期" value={dueFilter} onChange={(value) => changeFilters({ due: value === 'all' ? undefined : value as MyWorkFilters['due'] })} options={[{ label: '全部日期', value: 'all' }, { label: '已逾期', value: 'overdue' }, { label: '今天', value: 'today' }, { label: '本周', value: 'this_week' }, { label: '更晚', value: 'later' }, { label: '未排期', value: 'unscheduled' }]} />
@@ -270,7 +442,7 @@ export function MyWorkWorkbench({
             </div>
           </div>
           <div className="my-work-table-body" role="rowgroup">
-            {visibleItems.length === 0 ? <div className="my-work-table-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={6}><CheckCircle size={28} />{isReview ? '当前没有等待你验收的任务' : '当前没有需要你推进的事项'}</div></div> : null}
+            {visibleItems.length === 0 ? <div className="my-work-table-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={6}><CheckCircle size={28} />当前没有需要你推进的事项</div></div> : null}
             {visibleItems.map((item) => (
               <div className="my-work-table-row" key={item.id} role="row">
                 <div className="my-work-table-cell my-work-main-cell" role="cell">
@@ -285,7 +457,6 @@ export function MyWorkWorkbench({
                       </span>
                     </span>
                   </button>
-                  {isReview && item.kind === 'todo' ? <input aria-label={`选择 ${item.title}`} checked={selectedReviewTodoIds.includes(item.sourceId)} onChange={() => toggleTodo(item.sourceId)} type="checkbox" /> : null}
                 </div>
                 <span className="my-work-table-cell" role="cell">{item.projectName ?? item.contextName ?? '未关联项目'}</span>
                 <span className="my-work-table-cell" role="cell"><Badge variant="outline">{kindLabels[item.kind]}</Badge></span>
@@ -298,10 +469,40 @@ export function MyWorkWorkbench({
         </div>
       ) : null}
       {result ? (
-        <ListPagination label="我的待办分页" page={result.view.page} pageSize={result.view.pageSize} total={result.data.total} disabled={loading || Boolean(error)}
+        <ListPagination label={isReview ? '工时确认分页' : '我的待办分页'} page={result.view.page} pageSize={result.view.pageSize} total={result.data.total} disabled={loading || Boolean(error)}
           onPageChange={(page) => setView({ ...result.view, page, scrollTop: 0 })}
           onPageSizeChange={(pageSize) => setView({ ...result.view, pageSize, page: 0, scrollTop: 0 })} />
       ) : null}
+      <Dialog open={Boolean(reviewItem)} onOpenChange={(open) => { if (!open && !reviewSaving) setReviewItem(null) }}>
+        <DialogContent className="my-work-confirmation-dialog fixed inset-y-0 right-0 left-auto z-50 h-full w-[min(820px,calc(100vw-64px))] translate-x-0 translate-y-0 gap-0 rounded-none border-l p-0 shadow-xl">
+          <DialogHeader><DialogTitle>查看工时</DialogTitle><DialogDescription>{reviewItem?.title ?? '任务工时详情'}</DialogDescription></DialogHeader>
+          {reviewLoading ? <div className="my-work-confirmation-loading"><Clock className="spin" size={22} />正在加载任务与工时...</div> : null}
+          {!reviewLoading && reviewTodo ? (
+            <div className="my-work-confirmation-content">
+              <section className="my-work-confirmation-task" aria-label="任务详情">
+                <div className="my-work-confirmation-task-heading"><div><span>任务详情</span><strong>{reviewTodo.title}</strong></div><Badge variant="outline">{reviewTodo.done ? '已完成' : '进行中'}</Badge></div>
+                <dl className="my-work-confirmation-properties"><div><dt>项目</dt><dd>{reviewItem?.projectName ?? '未关联项目'}</dd></div><div><dt>负责人</dt><dd>{reviewTodo.assigneeName ?? '未分配'}</dd></div><div><dt>创建人</dt><dd>{reviewTodo.creatorName ?? '未记录'}</dd></div><div><dt>截止日期</dt><dd>{formatDueDate(reviewTodo.dueDate)}</dd></div></dl>
+                <div className="my-work-confirmation-detail">{reviewTodo.detail.trim() ? <MarkdownPreview content={reviewTodo.detail} compact /> : <span>暂无任务详情</span>}</div>
+              </section>
+              <section className="my-work-confirmation-hours" aria-label="工时情况">
+                <div className="my-work-confirmation-metrics"><div><span>预估</span><strong>{formatMinutes(reviewTodo.estimatedWorkMinutes)}</strong></div><div><span>累计</span><strong>{formatMinutes(reviewSummary.totalMinutes)}</strong></div><div><span>已确认</span><strong>{formatMinutes(reviewSummary.confirmedMinutes)}</strong></div><div><span>待确认</span><strong>{formatMinutes(submittedMinutes)}</strong></div></div>
+                <div className="my-work-confirmation-selection-heading"><div><strong>工时记录</strong><span>已选 {selectedEntryIds.length} 条 · {formatMinutes(selectedMinutes)}</span></div>{submittedEntries.length ? <label><input type="checkbox" checked={selectableBatch.length > 0 && selectedEntryIds.length === selectableBatch.length && selectableBatch.every((entry) => selectedEntryIds.includes(entry.id))} onChange={(event) => setSelectedEntryIds(event.target.checked ? selectableBatch.map((entry) => entry.id) : [])} />{submittedEntries.length > MAX_SELECTED_WORK_HOURS ? `选择前 ${MAX_SELECTED_WORK_HOURS} 条` : '全选待确认'}</label> : null}</div>
+                <div className="my-work-confirmation-entry-list">{reviewEntries.length ? reviewEntries.map((entry) => {
+                  const selectable = entry.status === 'submitted'
+                  return <label className={`my-work-confirmation-entry is-${entry.status}`} key={entry.id}><input type="checkbox" checked={selectedEntryIds.includes(entry.id)} disabled={!selectable || (!selectedEntryIds.includes(entry.id) && selectedEntryIds.length >= MAX_SELECTED_WORK_HOURS)} onChange={(event) => setSelectedEntryIds((current) => event.target.checked ? current.length < MAX_SELECTED_WORK_HOURS ? [...current, entry.id] : current : current.filter((id) => id !== entry.id))} /><time>{entry.workDate}</time><div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p></div><span>{workHourStatusLabel(entry.status)}</span><b>{formatMinutes(entry.minutes)}</b></label>
+                }) : <p className="my-work-confirmation-empty">暂无工时记录</p>}</div>
+              </section>
+            </div>
+          ) : null}
+          {reviewError ? <p className="my-work-confirmation-message is-error" role="alert">{reviewError}</p> : null}
+          {reviewSuccess ? <p className="my-work-confirmation-message is-success" role="status">{reviewSuccess}</p> : null}
+          <DialogFooter className="my-work-confirmation-footer">
+            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
+            <Button type="button" variant="outline" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('return')}><ArrowCounterClockwise size={16} />{reviewSaving ? '处理中...' : '退回修改'}</Button><Button type="button" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('accept')}><CheckCircle size={16} />{reviewSaving ? '处理中...' : '确认工时'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {confirmationDialog}
     </section>
   )
 }

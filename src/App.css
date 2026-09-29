@@ -3562,8 +3562,7 @@ textarea:focus {
 
 .todo-workflow-number,
 .todo-workflow-table-header > :nth-child(3),
-.todo-workflow-table-header > :nth-child(4),
-.todo-workflow-table-header > :nth-child(5) {
+.todo-workflow-table-header > :nth-child(4) {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -3899,6 +3898,19 @@ textarea:focus {
   font-size: 12px;
   font-weight: 650;
   padding-inline: 0;
+}
+
+.todo-workflow-table-header > :first-child {
+  padding-inline-start: 30px;
+}
+
+.todo-workflow-table-header > :nth-child(5) {
+  padding-inline-start: 7px;
+  text-align: left;
+}
+
+.todo-workflow-table-header > :last-child {
+  text-align: right;
 }
 
 .todo-workflow-table-row {

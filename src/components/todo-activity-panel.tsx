@@ -70,10 +70,10 @@ export function TodoActivityPanel({
           </span>
           <h3>{todoId ? '任务动态' : '待办动态'}</h3>
           <p>{previewLimit == null
-            ? (todoId ? '按时间记录当前任务的创建、编辑、工时和验收变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。')
+            ? (todoId ? '按时间记录当前任务的创建、编辑、工时和确认变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。')
             : events.length
               ? (expanded ? `已展开全部 ${events.length} 条` : `最近 ${Math.min(events.length, previewLimit)} 条${canExpand ? `，共 ${events.length} 条` : ''}`)
-              : '记录任务的创建、编辑、工时和验收变化。'}</p>
+              : '记录任务的创建、编辑、工时和确认变化。'}</p>
         </div>
         <div className="todo-activity-header-actions">
           {canExpand ? (
@@ -159,7 +159,7 @@ export function TodoActivityPanel({
               },
               acceptance_failed: {
                 className: 'is-acceptance-failed',
-                description: '验收未通过这项待办',
+                description: '确认未通过这项待办',
                 icon: <XCircle size={18} weight="fill" />,
                 label: '验收未通过',
               },

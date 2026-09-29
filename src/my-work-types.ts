@@ -13,6 +13,9 @@ export type MyWorkItem = {
   title: string
   status: string
   priority?: 'high' | 'medium' | 'low'
+  estimatedWorkMinutes?: number | null
+  cumulativeWorkMinutes?: number
+  submittedWorkMinutes?: number
   offboardingTransferredFromName?: string
   dueAt?: string
   updatedAt: string

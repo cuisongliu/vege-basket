@@ -13,7 +13,7 @@ const priorityLabels: Record<string, string> = { high: '高优先级', low: '低
 const confirmationLabels: Record<string, string> = {
   acceptance_failed: '验收未通过',
   confirmed: '已确认',
-  pending_review: '待验收',
+  pending_review: '待确认',
   rejected: '已驳回',
 }
 
@@ -130,7 +130,7 @@ export function TodoShareView({ authUser, onBackToShare, onLogin, onOpenTodo, to
             <div className="bug-share-meta">
               <span>创建人：<UserName departedUserIds={data.departedUserIds} name={data.creatorName} userId={data.creatorUserId} /></span>
               {data.assigneeName ? <span>负责人：<UserName departedUserIds={data.departedUserIds} name={data.assigneeName} userId={data.assigneeUserId} /></span> : null}
-              {data.reviewerName ? <span>验收人：<UserName departedUserIds={data.departedUserIds} name={data.reviewerName} userId={data.reviewerUserId} /></span> : null}
+              {data.reviewerName ? <span>确认人：<UserName departedUserIds={data.departedUserIds} name={data.reviewerName} userId={data.reviewerUserId} /></span> : null}
               {data.watcherNames.length > 0 ? <span>关注人：{data.watcherNames.join('、')}</span> : null}
               <span>截止日期：{data.dueDate}</span>
               <span>更新时间：{new Date(data.updatedAt).toLocaleString()}</span>
@@ -148,7 +148,7 @@ export function TodoShareView({ authUser, onBackToShare, onLogin, onOpenTodo, to
               {data.notes.map((note) => (
                 <article key={note.id}>
                   <UserName departedUserIds={data.departedUserIds} name={note.authorName} userId={note.authorUserId} />
-                  {note.kind === 'acceptance' ? <span className="todo-share-note-kind">验收备注</span> : null}
+                  {note.kind === 'acceptance' ? <span className="todo-share-note-kind">确认备注</span> : null}
                   <time>{new Date(note.createdAt).toLocaleString()}</time>
                   <div className="bug-share-comment-markdown">
                     {note.fromShare
