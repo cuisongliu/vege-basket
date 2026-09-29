@@ -252,9 +252,9 @@ test('stores failed acceptance notes with a label and notifies the todo assignee
   assert.match(serverSource, /values \(\$1, \$2, \$3, 'acceptance'\)/u)
   assert.match(serverSource, /kind: row\.kind === 'acceptance' \? 'acceptance' : 'normal'/u)
   assert.match(appSource, /note\.kind === 'acceptance'/u)
-  assert.match(appSource, /验收备注/u)
+  assert.match(appSource, /确认备注/u)
   assert.match(serverSource, /enqueueAcceptanceFailedTodoAssigneeDelivery/u)
-  assert.match(serverSource, /验收备注/u)
+  assert.match(serverSource, /确认备注/u)
 })
 
 test('renders failed acceptance notifications as interactive Feishu cards', () => {
@@ -265,7 +265,7 @@ test('renders failed acceptance notifications as interactive Feishu cards', () =
   assert.ok(acceptanceCardEnd > acceptanceCardStart)
   const cardSource = serverSource.slice(acceptanceCardStart, acceptanceCardEnd)
   assert.match(cardSource, /tag: 'lark_md'/u)
-  assert.match(cardSource, /\*\*验收备注\*\*/u)
+  assert.match(cardSource, /\*\*确认备注\*\*/u)
   assert.match(cardSource, /template: 'red'/u)
   assert.match(serverSource, /msgType: interactiveCard \? 'interactive' : 'text'/u)
 })
@@ -318,7 +318,7 @@ test('routes pending-review Feishu delivery and group mentions to the effective 
     serverSource,
     /coalesce\(t\.reviewer_user_id, t\.created_by_user_id, p\.user_id\) as reviewer_user_id/,
   )
-  assert.match(serverSource, /`验收人：\$\{reviewerText\}`/)
+  assert.match(serverSource, /`确认人：\$\{reviewerText\}`/)
 })
 
 test('deduplicates todo note recipients and excludes the note author', () => {

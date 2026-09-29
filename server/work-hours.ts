@@ -517,7 +517,7 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
     if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
     if (workDate < formatDate(todo.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
-    if (todo.done || todo.confirmation_status === 'pending_review') throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能新增工时。', 409)
+    if (todo.done || todo.confirmation_status === 'pending_review') throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能新增工时。', 409)
     if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
       throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能为自己负责的任务记录工时。', 403)
     }
@@ -766,6 +766,83 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     }
   })
 
+  router.post('/todos/:todoId/work-hours/complete', async (request, response) => {
+    try {
+      const userId = await requireUser(request, response, options.getUserId)
+      if (!userId) return
+      const todoId = positiveId(request.params.todoId)
+      if (!todoId) throw new WorkHoursError('TODO_ID_INVALID', '有效的待办 ID 是必需的。', 400)
+      const client = await pool.connect()
+      try {
+        await client.query('begin')
+        const organization = await lockTodoOrganization(client, todoId, userId)
+        await lockWorkHoursRole(client, userId)
+        const todo = await getTodoForWork(client, todoId, userId, true)
+        if (
+          !todo ||
+          !todo.organization_id ||
+          !organization ||
+          Number(todo.organization_id) !== organization.organizationId ||
+          !(await projectMember(client, Number(todo.project_id), userId))
+        ) {
+          throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
+        }
+        const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
+        if (creatorId !== userId) {
+          throw new WorkHoursError('WORK_HOUR_COMPLETE_FORBIDDEN', '只有任务创建人可以完成任务。', 403)
+        }
+        if (todo.done) {
+          await client.query('commit')
+          response.json({ ok: true, autoConfirmedCount: 0 })
+          return
+        }
+        const entries = await client.query<{ id: string; status: WorkHourStatus }>(
+          `select id, status
+             from todo_work_hours
+            where todo_id = $1
+            order by id
+            for update`,
+          [todoId],
+        )
+        if (entries.rows.length === 0) {
+          throw new WorkHoursError('WORK_HOUR_REQUIRED_FOR_COMPLETION', '当前任务没有工时记录，不能从工时确认中完成。', 409)
+        }
+        if (entries.rows.some((entry) => entry.status === 'submitted')) {
+          throw new WorkHoursError('WORK_HOUR_PENDING_CONFIRMATION', '请先确认或退回全部待确认工时。', 409)
+        }
+        const pendingIds = entries.rows.filter((entry) => entry.status === 'pending').map((entry) => Number(entry.id))
+        if (pendingIds.length > 0) {
+          await client.query(
+            `update todo_work_hours
+                set status = 'confirmed', confirmed_by_user_id = $2,
+                    confirmed_at = now(), updated_at = now()
+              where todo_id = $1 and id = any($3::bigint[]) and status = 'pending'`,
+            [todoId, userId, pendingIds],
+          )
+        }
+        await client.query(
+          `update todos
+              set done = true, confirmation_status = 'confirmed', needs_revision = false,
+                  completed_at = now(), completed_by_user_id = $2,
+                  accepted_at = now(), accepted_by_user_id = $2,
+                  acceptance_version = acceptance_version + 1, updated_at = now()
+            where id = $1`,
+          [todoId, userId],
+        )
+        await insertWorkHoursActivityEvent(client, todo, userId, 'completed')
+        await client.query('commit')
+        response.json({ ok: true, autoConfirmedCount: pendingIds.length })
+      } catch (error) {
+        await client.query('rollback')
+        throw error
+      } finally {
+        client.release()
+      }
+    } catch (error) {
+      if (!sendWorkHoursError(response, error)) throw error
+    }
+  })
+
   router.get('/organizations/:organizationId/work-hours', async (request, response) => {
     try {
       const userId = await requireUser(request, response, options.getUserId)
@@ -857,7 +934,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
         if (todo.done || todo.confirmation_status === 'pending_review') {
-          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能修改工时。', 409)
+          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能修改工时。', 409)
         }
         const existing = await client.query<WorkHourRow>(
           "select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date, entry.minutes, entry.status, entry.description, entry.created_at, entry.updated_at, (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at from todo_work_hours entry join projects p on p.id = entry.project_id where entry.id = $1 for update of entry",
@@ -926,7 +1003,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
         if (todo.done || todo.confirmation_status === 'pending_review') {
-          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交验收的任务不能删除工时。', 409)
+          throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能删除工时。', 409)
         }
         const entry = await client.query<{ status: WorkHourStatus; user_id: string }>(
           'select status, user_id from todo_work_hours where id = $1 for update',
@@ -979,10 +1056,11 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         await client.query(`update todos set confirmation_status = 'pending_review', needs_revision = false, rejection_reason = null, submitted_at = now(), updated_at = now() where id = $1`, [todoId])
         await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_submitted')
       } else if (action === 'withdraw') {
-        if (todo.confirmation_status !== 'pending_review' || (assigneeId != null ? assigneeId !== userId : Number(todo.owner_user_id) !== userId)) throw new WorkHoursError('TODO_WITHDRAW_FORBIDDEN', '只有负责人可以撤回待验收任务。', 403)
+        if (todo.confirmation_status !== 'pending_review' || (assigneeId != null ? assigneeId !== userId : Number(todo.owner_user_id) !== userId)) throw new WorkHoursError('TODO_WITHDRAW_FORBIDDEN', '只有负责人可以撤回待确认任务。', 403)
         await client.query(`update todos set submitted_at = null, confirmation_status = 'confirmed', needs_revision = false, updated_at = now() where id = $1`, [todoId])
       } else if (action === 'accept') {
-        if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_ACCEPT_FORBIDDEN', '只有任务创建人可以验收。', 403)
+        if (todo.organization_id) throw new WorkHoursError('TODO_ACCEPT_VIA_WORK_HOURS', '企业待办请在工时确认中完成。', 409)
+        if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_ACCEPT_FORBIDDEN', '只有任务创建人可以确认。', 403)
         await client.query(`update todos set done = true, confirmation_status = 'confirmed', needs_revision = false, completed_at = now(), completed_by_user_id = $2, accepted_at = now(), accepted_by_user_id = $2, acceptance_version = acceptance_version + 1, updated_at = now() where id = $1`, [todoId, userId])
         await insertWorkHoursActivityEvent(client, todo, userId, 'completed')
       } else if (action === 'return') {

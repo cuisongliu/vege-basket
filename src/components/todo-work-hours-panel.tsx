@@ -37,7 +37,7 @@ function formatVariance(actualMinutes: number, estimatedMinutes: number | null |
 
 function todoStatus(todo: Todo) {
   if (todo.done) return '已完成'
-  if (todo.confirmationStatus === 'pending_review') return '待验收'
+  if (todo.confirmationStatus === 'pending_review') return '待确认'
   return '进行中'
 }
 

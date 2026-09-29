@@ -92,6 +92,16 @@ test('selected work-hour acceptance uses transactional stale-selection checks', 
   assert.match(source, /confirmed_by_user_id = null,[\s\S]*?confirmed_at = null/u)
 })
 
+test('task completion is restricted to the work-hour confirmation transaction', () => {
+  const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
+  assert.match(source, /router\.post\('\/todos\/:todoId\/work-hours\/complete'/u)
+  assert.match(source, /WORK_HOUR_COMPLETE_FORBIDDEN/u)
+  assert.match(source, /WORK_HOUR_PENDING_CONFIRMATION/u)
+  assert.match(source, /status = 'confirmed', confirmed_by_user_id = \$2/u)
+  assert.match(source, /autoConfirmedCount: pendingIds\.length/u)
+  assert.match(source, /insertWorkHoursActivityEvent\(client, todo, userId, 'completed'\)/u)
+})
+
 test('workspace todo aggregates join the project before filtering managed visibility', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
   assert.match(source, /from todos t\s+join projects p on p\.id = t\.project_id\s+left join lateral \(/u)

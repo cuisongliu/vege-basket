@@ -69,8 +69,8 @@
 }
 
 .my-work-confirmation-row {
-  grid-template-columns: minmax(280px, 2fr) minmax(150px, 1.2fr) 88px 88px 96px 124px;
-  min-width: 900px;
+  grid-template-columns: minmax(260px, 2fr) minmax(140px, 1.2fr) 82px 82px 90px 76px 120px;
+  min-width: 920px;
 }
 
 .my-work-number-heading,
@@ -367,6 +367,6 @@
   .my-work-confirmation-entry > span { text-align: center; }
   .my-work-confirmation-selection-heading { align-items: start; flex-direction: column; }
   .my-work-confirmation-message { padding-inline: 18px; }
-  .my-work-confirmation-footer { display: grid; grid-template-columns: 1fr 1fr; padding: 12px 18px; }
+  .my-work-confirmation-footer { display: grid; grid-template-columns: repeat(3, 1fr); padding: 12px 18px; }
   .my-work-confirmation-footer button { width: 100%; }
 }

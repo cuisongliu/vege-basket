@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowCounterClockwise, Bug, CalendarBlank, Check, CheckCircle, Clock, Eye, FolderSimple, FunnelSimple, ListChecks, MagnifyingGlass, Flag, SortAscending, SortDescending } from '@phosphor-icons/react'
-import { acceptWorkHours, fetchMyWork, fetchTodoDetail, fetchTodoWorkHours, returnWorkHours, type WorkHourEntry, type WorkHourSummary } from '../api'
+import { acceptWorkHours, completeTodoFromWorkHours, fetchMyWork, fetchTodoDetail, fetchTodoWorkHours, returnWorkHours, type WorkHourEntry, type WorkHourSummary } from '../api'
 import type { Project, Todo } from '../types'
 import type { MyWorkData, MyWorkItem, MyWorkKind, MyWorkFilters, MyWorkViewState } from '../my-work-types'
 import type { OrganizationContext } from '../../shared/organization-context'
@@ -12,6 +12,7 @@ import { Input } from './ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { ListPagination } from './list-pagination'
 import { MarkdownPreview } from './markdown-preview'
+import { useConfirmAction } from '../hooks/use-confirm-action'
 import './my-work-workbench.css'
 
 const MAX_SELECTED_WORK_HOURS = 100
@@ -76,7 +77,7 @@ const statusLabels: Record<string, string> = {
   new: '新建',
   pending: '待达成',
   in_review: '验收中',
-  pending_review: '待审核',
+  pending_review: '待确认',
   reopened: '重新打开',
   rejected: '已拒绝',
   duplicate: '重复',
@@ -162,6 +163,7 @@ export function MyWorkWorkbench({
   const [reviewError, setReviewError] = useState('')
   const [reviewSuccess, setReviewSuccess] = useState('')
   const [selectedEntryIds, setSelectedEntryIds] = useState<number[]>([])
+  const { confirmAction, confirmationDialog } = useConfirmAction(`work-hour-complete:${reviewItem?.sourceId ?? 0}`)
   const tableRef = useRef<HTMLDivElement>(null)
   const onViewChangeRef = useRef(onViewChange)
   useEffect(() => { onViewChangeRef.current = onViewChange }, [onViewChange])
@@ -283,6 +285,50 @@ export function MyWorkWorkbench({
     if (item.kind === 'milestone' && item.projectId) onMilestoneClick(item.projectId)
   }
 
+  function applyCompletedTodo(details: Awaited<ReturnType<typeof fetchWorkHourConfirmationDetails>>, autoConfirmedCount = 0) {
+    setReviewTodo(details.todo)
+    setReviewEntries(details.entries)
+    setReviewSummary(details.summary)
+    setReviewSuccess(autoConfirmedCount > 0
+      ? `任务已完成，${autoConfirmedCount} 条未提交工时已自动确认。`
+      : '任务已完成。')
+    setBackgroundRefreshVersion((version) => version + 1)
+    onWorkHoursChanged?.()
+  }
+
+  async function requestTodoCompletion(todo: Todo, entries: WorkHourEntry[]) {
+    const pendingCount = entries.filter((entry) => entry.status === 'pending').length
+    const succeeded = await confirmAction({
+      title: `确认完成任务“${todo.title}”？`,
+      description: pendingCount > 0
+        ? `当前仍有 ${pendingCount} 条未提交工时。完成任务后，这些工时将自动标记为已确认，是否继续？`
+        : '当前所有工时均已确认。确认后任务将标记为已完成。',
+      confirmLabel: '确认完成任务',
+      variant: 'default',
+      reconcile: async () => {
+        const details = await fetchWorkHourConfirmationDetails(todo.id)
+        if (!details.todo.done) return 'unchanged' as const
+        applyCompletedTodo(details, pendingCount)
+        return 'succeeded' as const
+      },
+    }, async () => {
+      let mutationError: unknown
+      let autoConfirmedCount = 0
+      try {
+        const result = await completeTodoFromWorkHours(todo.id)
+        autoConfirmedCount = result.autoConfirmedCount
+      } catch (cause) {
+        mutationError = cause
+      }
+      const details = await fetchWorkHourConfirmationDetails(todo.id)
+      if (mutationError && !details.todo.done) throw mutationError
+      if (!details.todo.done) return false
+      applyCompletedTodo(details, autoConfirmedCount)
+      return true
+    })
+    if (succeeded) setReviewItem(null)
+  }
+
   async function runWorkHourReview(action: 'return' | 'accept') {
     if (!reviewItem || selectedEntryIds.length === 0) return
     const todoId = reviewItem.sourceId
@@ -309,7 +355,12 @@ export function MyWorkWorkbench({
       setReviewSuccess(action === 'accept' ? '所选工时已确认。' : '所选工时已退回修改。')
       setBackgroundRefreshVersion((version) => version + 1)
       onWorkHoursChanged?.()
-      if (!details.entries.some((entry) => entry.status === 'submitted')) setReviewItem(null)
+      const hasSubmitted = details.entries.some((entry) => entry.status === 'submitted')
+      const hasConfirmed = details.entries.some((entry) => entry.status === 'confirmed')
+      if (!hasSubmitted && !hasConfirmed) setReviewItem(null)
+      if (action === 'accept' && !hasSubmitted && !details.todo.done) {
+        void requestTodoCompletion(details.todo, details.entries)
+      }
     } catch (cause) {
       setReviewError(cause instanceof Error ? cause.message : '工时确认操作失败。')
     } finally {
@@ -345,11 +396,12 @@ export function MyWorkWorkbench({
               <span className="my-work-number-heading" role="columnheader">预估</span>
               <span className="my-work-number-heading" role="columnheader">累计</span>
               <span className="my-work-number-heading" role="columnheader">待确认</span>
+              <span role="columnheader">状态</span>
               <span className="my-work-action-heading" role="columnheader">操作</span>
             </div>
           </div>
           <div className="my-work-table-body" role="rowgroup">
-            {visibleItems.length === 0 ? <div className="my-work-table-row my-work-confirmation-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={6}><CheckCircle size={28} />当前没有待确认的工时</div></div> : null}
+            {visibleItems.length === 0 ? <div className="my-work-table-row my-work-confirmation-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={7}><CheckCircle size={28} />当前没有待确认的工时</div></div> : null}
             {visibleItems.map((item) => (
               <div className="my-work-table-row my-work-confirmation-row" key={item.id} role="row">
                 <div className="my-work-table-cell my-work-main-cell" role="cell"><span className="my-work-kind-icon is-todo"><ListChecks size={17} /></span><strong className="my-work-confirmation-title">{item.title}</strong></div>
@@ -357,6 +409,7 @@ export function MyWorkWorkbench({
                 <span className="my-work-table-cell my-work-number-cell" role="cell">{formatMinutes(item.estimatedWorkMinutes)}</span>
                 <span className="my-work-table-cell my-work-number-cell" role="cell">{formatMinutes(item.cumulativeWorkMinutes ?? 0)}</span>
                 <strong className="my-work-table-cell my-work-number-cell is-pending" role="cell">{formatMinutes(item.submittedWorkMinutes ?? 0)}</strong>
+                <span className="my-work-table-cell" role="cell">{item.status === 'completed' ? '已完成' : '进行中'}</span>
                 <span className="my-work-table-cell my-work-confirmation-action" role="cell"><Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => setReviewItem(item)}><Eye size={15} />查看工时</Button></span>
               </div>
             ))}
@@ -427,7 +480,7 @@ export function MyWorkWorkbench({
           {!reviewLoading && reviewTodo ? (
             <div className="my-work-confirmation-content">
               <section className="my-work-confirmation-task" aria-label="任务详情">
-                <div className="my-work-confirmation-task-heading"><div><span>任务详情</span><strong>{reviewTodo.title}</strong></div><Badge variant="outline">{reviewTodo.done ? '已完成' : reviewTodo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</Badge></div>
+                <div className="my-work-confirmation-task-heading"><div><span>任务详情</span><strong>{reviewTodo.title}</strong></div><Badge variant="outline">{reviewTodo.done ? '已完成' : '进行中'}</Badge></div>
                 <dl className="my-work-confirmation-properties"><div><dt>项目</dt><dd>{reviewItem?.projectName ?? '未关联项目'}</dd></div><div><dt>负责人</dt><dd>{reviewTodo.assigneeName ?? '未分配'}</dd></div><div><dt>创建人</dt><dd>{reviewTodo.creatorName ?? '未记录'}</dd></div><div><dt>截止日期</dt><dd>{formatDueDate(reviewTodo.dueDate)}</dd></div></dl>
                 <div className="my-work-confirmation-detail">{reviewTodo.detail.trim() ? <MarkdownPreview content={reviewTodo.detail} compact /> : <span>暂无任务详情</span>}</div>
               </section>
@@ -443,9 +496,13 @@ export function MyWorkWorkbench({
           ) : null}
           {reviewError ? <p className="my-work-confirmation-message is-error" role="alert">{reviewError}</p> : null}
           {reviewSuccess ? <p className="my-work-confirmation-message is-success" role="status">{reviewSuccess}</p> : null}
-          <DialogFooter className="my-work-confirmation-footer"><Button type="button" variant="outline" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('return')}><ArrowCounterClockwise size={16} />{reviewSaving ? '处理中...' : '退回修改'}</Button><Button type="button" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('accept')}><CheckCircle size={16} />{reviewSaving ? '处理中...' : '确认工时'}</Button></DialogFooter>
+          <DialogFooter className="my-work-confirmation-footer">
+            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
+            <Button type="button" variant="outline" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('return')}><ArrowCounterClockwise size={16} />{reviewSaving ? '处理中...' : '退回修改'}</Button><Button type="button" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('accept')}><CheckCircle size={16} />{reviewSaving ? '处理中...' : '确认工时'}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
+      {confirmationDialog}
     </section>
   )
 }
