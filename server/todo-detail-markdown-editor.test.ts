@@ -158,7 +158,7 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   )
 })
 
-test('todo details expose paginated work-hour review controls without a manual checkbox status', () => {
+test('todo details expose paginated work-hour review controls with independent entry selection', () => {
   assert.match(appSource, /<TodoWorkHoursPanel/u)
   assert.match(appSource, /待办标题[\s\S]*负责人[\s\S]*预估时间[\s\S]*已记录[\s\S]*状态[\s\S]*操作/u)
   const compactTodoSource = todoListSource.slice(
@@ -171,4 +171,7 @@ test('todo details expose paginated work-hour review controls without a manual c
   assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
   assert.match(todoWorkHoursPanelSource, /工时验收/u)
   assert.match(todoWorkHoursPanelSource, /提交工时验收/u)
+  assert.match(todoWorkHoursPanelSource, /submitWorkHours\(todo\.id, selectedEntryIds\)/u)
+  assert.match(todoWorkHoursPanelSource, /acceptWorkHours\(todo\.id, selectedEntryIds\)/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
 })

@@ -123,7 +123,7 @@ export type NavigationCounts = {
   organizationId: OrganizationContext
 }
 
-export type WorkHourStatus = 'pending' | 'confirmed'
+export type WorkHourStatus = 'pending' | 'submitted' | 'confirmed'
 export type WorkHourEntry = {
   id: number
   projectId: number
@@ -655,6 +655,20 @@ export function updateWorkHour(entryId: number, payload: Partial<Pick<WorkHourEn
 
 export function removeWorkHour(entryId: number) {
   return request<{ ok: true }>(`/api/my-work-hours/${entryId}`, { method: 'DELETE' })
+}
+
+export function submitWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function acceptWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/accept`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
 }
 
 export function fetchOrganizationWorkHours(organizationId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
