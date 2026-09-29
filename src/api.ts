@@ -1069,6 +1069,13 @@ export function fetchOrganizations(options: Pick<RequestInit, 'signal'> = {}) {
   return request<{ canCreate: boolean; organizations: OrganizationListItem[] }>('/api/organizations', options)
 }
 
+export function createOrganization(name: string) {
+  return request<{ id: number; name: string }>('/api/organizations', {
+    method: 'POST',
+    body: JSON.stringify({ name, requestId: crypto.randomUUID() }),
+  })
+}
+
 export function fetchOrganizationPackageMarketCatalog(organizationId: number) {
   return request<{
     policy: OrganizationPackageMarketPolicy

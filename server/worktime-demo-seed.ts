@@ -6,7 +6,7 @@ if (process.env.DEMO_SEED_CONFIRM !== 'YES') {
 }
 
 const requestedUserId = Number(process.env.DEMO_SEED_USER_ID ?? '')
-const requestedUserName = String(process.env.DEMO_SEED_USER_NAME ?? '崔金睿').trim()
+const requestedUserName = String(process.env.DEMO_SEED_USER_NAME ?? '邱天丰').trim()
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
 
 function shiftDate(days: number) {
@@ -19,10 +19,13 @@ const user = await query<{ id: string; organization_id: string | null }>(
   `select u.id::text, membership.organization_id::text
      from users u
      join lateral (
-       select organization_id
-       from organization_memberships
-       where user_id = u.id and status = 'active'
-       order by access_role in ('owner', 'admin') desc, organization_id
+       select membership.organization_id
+       from organization_memberships membership
+       join user_roles role on role.user_id = membership.user_id and role.role = 'organization_admin'
+       where membership.user_id = u.id
+         and membership.status = 'active'
+         and membership.access_role in ('owner', 'admin')
+       order by membership.organization_id
        limit 1
      ) membership on true
     where u.account_status = 'active'
@@ -156,8 +159,8 @@ try {
   const workSeeds = [
     [0, userId, -20, 300, 'confirmed'], [0, userId, -14, 360, 'confirmed'], [0, userId, -7, 240, 'confirmed'],
     [1, userId, -5, 180, 'pending'], [1, userId, -1, 120, 'pending'],
-    [2, userId, -18, 420, 'pending'], [2, userId, -9, 300, 'pending'], [2, userId, -2, 180, 'pending'],
-    [3, assigneeB, -12, 180, 'pending'], [3, assigneeB, -4, 180, 'pending'],
+    [2, userId, -18, 420, 'confirmed'], [2, userId, -9, 300, 'submitted'], [2, userId, -2, 180, 'submitted'],
+    [3, assigneeB, -12, 180, 'submitted'], [3, assigneeB, -4, 180, 'submitted'],
     [4, managerId, -16, 300, 'confirmed'], [4, managerId, -8, 240, 'confirmed'],
     [5, assigneeB, -10, 180, 'confirmed'],
     [6, userId, -15, 360, 'pending'], [6, userId, -3, 240, 'pending'],
@@ -223,7 +226,7 @@ try {
   }
 
   await client.query('commit')
-  console.log(`Recreated work-time demo data for ${requestedUserName} (user ${userId}) in organization ${organizationId}: ${projectIds.length} projects, ${todoIds.length} todos.`)
+  console.log(`Recreated work-time demo data for organization administrator ${requestedUserName} (user ${userId}) in organization ${organizationId}: ${projectIds.length} projects, ${todoIds.length} todos.`)
 } catch (error) {
   await client.query('rollback')
   throw error

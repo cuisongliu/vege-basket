@@ -15,6 +15,7 @@
 .my-work-table { margin: 12px 12px 28px; overflow: auto; max-height: max(240px, calc(100dvh - 300px)); overscroll-behavior: contain; }
 .my-work-table-header, .my-work-table-row { align-items: center; display: grid; gap: 16px; grid-template-columns: minmax(260px, 2fr) minmax(150px, 1.2fr) 120px 130px 150px 130px; min-width: 1000px; }
 .my-work-table-header { border-bottom: 1px solid var(--border); color: var(--my-work-muted-readable); font-size: 12px; font-weight: 600; min-height: 48px; padding: 0 12px; }
+.my-work-table-header > :first-child { padding-inline-start: 41px; }
 .my-work-table-heading-filter { align-items: center; display: inline-flex; gap: 5px; min-width: 0; }
 .my-work-date-heading { align-items: center; display: inline-flex; gap: 2px; min-width: 0; }
 .my-work-sort-icon { align-items: center; background: transparent; border: 0; border-radius: 5px; color: var(--my-work-muted-readable); cursor: pointer; display: inline-flex; height: 26px; justify-content: center; outline: none; padding: 0; width: 26px; }.my-work-sort-icon:focus-visible { box-shadow: none; outline: none; }.my-work-sort-icon:hover, .my-work-sort-icon.is-active { background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--primary); }

@@ -134,7 +134,6 @@ import {
   createProjectPackageEvent,
   createProjectPackageOperation,
   createFeishuOAuthUrl,
-  createProject,
   createRiskFromJournal,
   createAiTurnDocument,
   createSummary,
@@ -1903,13 +1902,10 @@ function App() {
   const [todoModuleId, setTodoModuleId] = useState<number | null>(null)
   const [todoSubprojectId, setTodoSubprojectId] = useState<number | null>(null)
   const isLoadingTodoCreateDraftRef = useRef(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [newProjectTags, setNewProjectTags] = useState('')
-  const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
   const [isProjectModulesDialogOpen, setIsProjectModulesDialogOpen] = useState(false)
   const [projectModuleDraft, setProjectModuleDraft] = useState('')
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
+  const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('active')
   const [tagFilter, setTagFilter] = useState('全部')
   const projectBasketScope = JSON.stringify([authUserId, selectedOrganizationId, search, statusFilter, tagFilter])
   useEffect(() => {
@@ -2946,7 +2942,7 @@ function App() {
     selectedOrganization &&
     (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
   )
-  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canNavigateToProjectBasket)
+  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canManageSelectedOrganization)
   useEffect(() => {
     if (view === 'work_hours' && (selectedOrganizationId === null || !canManageSelectedOrganization)) {
       setView('my_work_hours')
@@ -3837,40 +3833,6 @@ function App() {
     if (selectedOrganizationId == null) return
     setDetailEntrySource('project')
     setView('work_hours')
-  }
-
-  function changeNewProjectDialogOpen(open: boolean) {
-    setIsNewProjectDialogOpen(open)
-    if (!open) {
-      setNewProjectName('')
-      setNewProjectTags('')
-    }
-  }
-
-  async function addProject() {
-    const name = newProjectName.trim()
-    if (!name) return
-
-    const tags = newProjectTags
-      .split(/[\s,，、]+/)
-      .map((tag) => tag.trim())
-      .filter(Boolean)
-
-    const data = await runMutation(() =>
-      createProject({
-        name,
-        organizationId: selectedOrganizationId ?? undefined,
-        tags: tags.length > 0 ? tags : ['新项目'],
-      }),
-    )
-    if (!data) return
-    const createdProject = data?.projects.find((project) => project.name === name)
-    if (createdProject) setSelectedProjectId(createdProject.id)
-    setNewProjectName('')
-    setNewProjectTags('')
-    setJournalDraft('')
-    setIsNewProjectDialogOpen(false)
-    setView(createdProject ? 'project' : 'search')
   }
 
   async function saveJournal(createdAt?: string) {
@@ -5729,34 +5691,6 @@ ${packageTimelineText}`
                   ) : null}
                 </>
               )}
-              {view === 'search' ? (
-                <Dialog
-                  open={isNewProjectDialogOpen}
-                  onOpenChange={changeNewProjectDialogOpen}
-                >
-                  <DialogTrigger asChild>
-                    <Button className="solid-button" type="button">
-                      <Plus size={17} /> 新建项目
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>新建项目</DialogTitle>
-                      <DialogDescription>
-                        先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
-                      </DialogDescription>
-                    </DialogHeader>
-                    <NewProjectForm
-                      newProjectName={newProjectName}
-                      newProjectTags={newProjectTags}
-                      onCancel={() => changeNewProjectDialogOpen(false)}
-                      onNewProjectNameChange={setNewProjectName}
-                      onNewProjectTagsChange={setNewProjectTags}
-                      onSubmit={addProject}
-                    />
-                  </DialogContent>
-                </Dialog>
-              ) : null}
             </div>
           </header>
         ) : null}
@@ -5864,14 +5798,7 @@ ${packageTimelineText}`
 
         {view === 'project' && !selectedProject && (
           <EmptyWorkspace
-            isNewProjectDialogOpen={isNewProjectDialogOpen}
-            newProjectName={newProjectName}
-            newProjectTags={newProjectTags}
             scopeLabel={selectedOrganizationName}
-            onAddProject={addProject}
-            onNewProjectDialogOpenChange={changeNewProjectDialogOpen}
-            onNewProjectNameChange={setNewProjectName}
-            onNewProjectTagsChange={setNewProjectTags}
           />
         )}
 
@@ -6011,6 +5938,7 @@ ${packageTimelineText}`
         {view === 'platform' && authUser?.isSystemAdmin ? (
           <PlatformManagementWorkbench
             currentUserId={authUser.id}
+            canCreateOrganizations={isOrganizationAdmin}
             sidebarNavigationHost={platformSidebarHost}
             topbarActionHost={platformTopbarHost}
             onAuthorizationLost={() => {
@@ -6585,113 +6513,18 @@ function AccountMenu({
 }
 
 function EmptyWorkspace({
-  isNewProjectDialogOpen,
-  newProjectName,
-  newProjectTags,
   scopeLabel,
-  onAddProject,
-  onNewProjectDialogOpenChange,
-  onNewProjectNameChange,
-  onNewProjectTagsChange,
 }: {
-  isNewProjectDialogOpen: boolean
-  newProjectName: string
-  newProjectTags: string
   scopeLabel: string
-  onAddProject: () => void
-  onNewProjectDialogOpenChange: (open: boolean) => void
-  onNewProjectNameChange: (value: string) => void
-  onNewProjectTagsChange: (value: string) => void
 }) {
   return (
     <Card className="panel empty-workspace">
       <p className="eyebrow">{scopeLabel}工作区</p>
-      <h3>先创建第一个项目篮子。</h3>
+      <h3>当前还没有可查看的项目。</h3>
       <p>
-        每个项目都会拥有自己的日记、待办、风险和总结。创建后就可以开始记录今天的上下文。
+        请前往组织管理的项目管理页面创建项目。
       </p>
-      <Dialog
-        open={isNewProjectDialogOpen}
-        onOpenChange={onNewProjectDialogOpenChange}
-      >
-        <DialogTrigger asChild>
-          <Button className="solid-button" type="button">
-            <Plus size={17} /> 创建第一个项目
-          </Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新建项目</DialogTitle>
-            <DialogDescription>
-              先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
-            </DialogDescription>
-          </DialogHeader>
-          <NewProjectForm
-            newProjectName={newProjectName}
-            newProjectTags={newProjectTags}
-            onCancel={() => onNewProjectDialogOpenChange(false)}
-            onNewProjectNameChange={onNewProjectNameChange}
-            onNewProjectTagsChange={onNewProjectTagsChange}
-            onSubmit={onAddProject}
-          />
-        </DialogContent>
-      </Dialog>
     </Card>
-  )
-}
-
-function NewProjectForm({
-  newProjectName,
-  newProjectTags,
-  onCancel,
-  onNewProjectNameChange,
-  onNewProjectTagsChange,
-  onSubmit,
-}: {
-  newProjectName: string
-  newProjectTags: string
-  onCancel: () => void
-  onNewProjectNameChange: (value: string) => void
-  onNewProjectTagsChange: (value: string) => void
-  onSubmit: () => void
-}) {
-  return (
-    <form
-      className="new-project-dialog-form"
-      onSubmit={(event) => {
-        event.preventDefault()
-        onSubmit()
-      }}
-    >
-      <Label>
-        项目名称
-        <Input
-          autoFocus
-          aria-label="新项目名称"
-          placeholder="例如：增长实验复盘"
-          required
-          value={newProjectName}
-          onChange={(event) => onNewProjectNameChange(event.target.value)}
-        />
-      </Label>
-      <Label>
-        标签
-        <Input
-          aria-label="项目标签"
-          placeholder="可选，用逗号或空格分隔"
-          value={newProjectTags}
-          onChange={(event) => onNewProjectTagsChange(event.target.value)}
-        />
-      </Label>
-      <DialogFooter>
-        <Button className="ghost-button" variant="outline" type="button" onClick={onCancel}>
-          取消
-        </Button>
-        <Button className="solid-button" type="submit">
-          <Plus size={15} /> 创建项目
-        </Button>
-      </DialogFooter>
-    </form>
   )
 }
 

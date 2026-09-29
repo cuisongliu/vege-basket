@@ -124,9 +124,9 @@ export async function getMyWork(
           )
           or (
             $7::boolean = true
-            and coalesce(t.created_by_user_id, p.user_id) = $1
+            and ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
             and not t.done
-            and (work_hours.submitted_minutes > 0 or work_hours.confirmed_minutes > 0)
+            and work_hours.submitted_minutes > 0
           )
         )
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)

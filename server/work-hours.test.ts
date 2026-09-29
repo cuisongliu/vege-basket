@@ -28,7 +28,7 @@ test('selected work-hour IDs are non-empty, unique positive integers', () => {
   assert.throws(() => parseWorkHourEntryIds([0]), WorkHoursError)
 })
 
-test('review authority stays creator-only for enterprise todos without changing personal projects', () => {
+test('legacy todo acceptance stays creator-only for enterprise todos without changing personal projects', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 
   assert.match(source, /existingTodo\.rows\[0\]\.organization_id != null\s*\? createdByUserId === userId\s*:\s*canUserReviewTodo/u)
@@ -88,7 +88,8 @@ test('selected work-hour acceptance uses transactional stale-selection checks', 
   assert.match(source, /selected\.rows\.length !== entryIds\.length/u)
   assert.match(source, /status = 'submitted'/u)
   assert.match(source, /action === 'accept'[\s\S]*?status = 'confirmed'[\s\S]*?else \{[\s\S]*?status = 'pending'/u)
-  assert.match(source, /action !== 'submit' && creatorId !== userId/u)
+  assert.match(source, /action !== 'submit' && !organization\?\.isManager/u)
+  assert.match(source, /只有组织管理员可以确认或退回工时/u)
   assert.match(source, /confirmed_by_user_id = null,[\s\S]*?confirmed_at = null/u)
 })
 
@@ -96,6 +97,7 @@ test('task completion is restricted to the work-hour confirmation transaction', 
   const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
   assert.match(source, /router\.post\('\/todos\/:todoId\/work-hours\/complete'/u)
   assert.match(source, /WORK_HOUR_COMPLETE_FORBIDDEN/u)
+  assert.match(source, /只有组织管理员可以完成任务/u)
   assert.match(source, /WORK_HOUR_PENDING_CONFIRMATION/u)
   assert.match(source, /status = 'confirmed', confirmed_by_user_id = \$2/u)
   assert.match(source, /autoConfirmedCount: pendingIds\.length/u)
@@ -108,8 +110,13 @@ test('workspace todo aggregates join the project before filtering managed visibi
   assert.match(source, /hours\.user_id = \$1\s+or t\.created_by_user_id = \$1\s+or \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}/u)
 })
 
-test('demo review queue assigns 崔金睿 as the explicit reviewer', () => {
+test('demo review queue targets an organization administrator and includes mixed confirmation states', () => {
   const source = readFileSync(new URL('./worktime-demo-seed.ts', import.meta.url), 'utf8')
+  assert.match(source, /DEMO_SEED_USER_NAME \?\? '邱天丰'/u)
+  assert.match(source, /role\.role = 'organization_admin'/u)
+  assert.match(source, /membership\.access_role in \('owner', 'admin'\)/u)
   assert.match(source, /created_by_user_id,\s*reviewer_user_id, assignee_user_id/u)
   assert.match(source, /\$7, \$7, \$8, \$7/u)
+  assert.match(source, /'confirmed'\], \[2, userId, -9, 300, 'submitted'\]/u)
+  assert.match(source, /\[1, userId, -5, 180, 'pending'\]/u)
 })
