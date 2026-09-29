@@ -103,16 +103,17 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  height: 100dvh;
-  left: auto;
-  max-height: none;
-  max-width: none;
+  bottom: auto !important;
+  height: 100dvh !important;
+  left: auto !important;
+  max-height: none !important;
+  max-width: none !important;
   overflow: hidden;
   padding: 0;
-  right: 0;
-  top: 0;
-  transform: none;
-  width: min(820px, calc(100vw - 64px));
+  right: 0 !important;
+  top: 0 !important;
+  transform: none !important;
+  width: min(820px, calc(100vw - 64px)) !important;
   border-block: 0;
   border-radius: 0;
   border-right: 0;
@@ -128,13 +129,13 @@
 }
 
 @keyframes my-work-confirmation-drawer-in {
-  from { opacity: 0; transform: translateX(100%); }
-  to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; translate: 100% 0; }
+  to { opacity: 1; translate: 0 0; }
 }
 
 @keyframes my-work-confirmation-drawer-out {
-  from { opacity: 1; transform: translateX(0); }
-  to { opacity: 0; transform: translateX(100%); }
+  from { opacity: 1; translate: 0 0; }
+  to { opacity: 0; translate: 100% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
