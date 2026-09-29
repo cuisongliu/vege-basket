@@ -23,6 +23,8 @@ const emptySummary: WorkHourSummary = {
   projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0,
 }
 
+const MAX_SELECTED_ENTRIES = 100
+
 function formatHours(minutes: number | null | undefined) {
   const value = minutes ?? 0
   return `${(value / 60).toFixed(value % 60 === 0 ? 0 : 1)}h`
@@ -178,6 +180,7 @@ export function TodoWorkHoursPanel({
   const selectableEntries = acceptanceEntries.filter((entry) => acceptanceMode === 'submit'
     ? entry.status === 'pending' && entry.userId === currentUserId
     : entry.status === 'submitted')
+  const selectableBatch = selectableEntries.slice(0, MAX_SELECTED_ENTRIES)
   const selectedEntries = selectableEntries.filter((entry) => selectedEntryIds.includes(entry.id))
   const selectedMinutes = selectedEntries.reduce((sum, entry) => sum + entry.minutes, 0)
 
@@ -250,8 +253,8 @@ export function TodoWorkHoursPanel({
             <div className={todo.estimatedWorkMinutes != null && summary.totalMinutes > todo.estimatedWorkMinutes ? 'is-over' : ''}><span>工时偏差</span><strong>{formatVariance(summary.totalMinutes, todo.estimatedWorkMinutes)}</strong></div>
           </div>
           <section className="todo-work-hours-selection" aria-busy={acceptanceLoading}>
-            <div className="todo-work-hours-selection-heading"><div><h4>{acceptanceMode === 'submit' ? '可提交工时' : '待验收工时'}</h4><span>已选 {selectedEntryIds.length} 条 · {formatHours(selectedMinutes)}</span></div>{selectableEntries.length ? <label><input type="checkbox" checked={selectedEntryIds.length === selectableEntries.length} onChange={(event) => setSelectedEntryIds(event.target.checked ? selectableEntries.map((entry) => entry.id) : [])} />全选</label> : null}</div>
-            {acceptanceLoading ? <p className="todo-work-hours-empty"><Clock className="spin" size={18} />正在加载工时...</p> : selectableEntries.length ? selectableEntries.map((entry) => <label className="todo-work-hours-selection-row" key={entry.id}><input type="checkbox" checked={selectedEntryIds.includes(entry.id)} onChange={(event) => setSelectedEntryIds((current) => event.target.checked ? [...current, entry.id] : current.filter((id) => id !== entry.id))} /><time>{entry.workDate}</time><div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p></div><b>{formatHours(entry.minutes)}</b></label>) : <p className="todo-work-hours-empty">{acceptanceMode === 'submit' ? '当前没有可提交的工时记录' : '当前没有待验收的工时记录'}</p>}
+            <div className="todo-work-hours-selection-heading"><div><h4>{acceptanceMode === 'submit' ? '可提交工时' : '待验收工时'}</h4><span>已选 {selectedEntryIds.length} 条 · {formatHours(selectedMinutes)}{selectableEntries.length > MAX_SELECTED_ENTRIES ? ` · 单次最多 ${MAX_SELECTED_ENTRIES} 条` : ''}</span></div>{selectableEntries.length ? <label><input type="checkbox" checked={selectableBatch.length > 0 && selectedEntryIds.length === selectableBatch.length && selectableBatch.every((entry) => selectedEntryIds.includes(entry.id))} onChange={(event) => setSelectedEntryIds(event.target.checked ? selectableBatch.map((entry) => entry.id) : [])} />{selectableEntries.length > MAX_SELECTED_ENTRIES ? `选择前 ${MAX_SELECTED_ENTRIES} 条` : '全选'}</label> : null}</div>
+            {acceptanceLoading ? <p className="todo-work-hours-empty"><Clock className="spin" size={18} />正在加载工时...</p> : selectableEntries.length ? selectableEntries.map((entry) => <label className="todo-work-hours-selection-row" key={entry.id}><input type="checkbox" checked={selectedEntryIds.includes(entry.id)} disabled={!selectedEntryIds.includes(entry.id) && selectedEntryIds.length >= MAX_SELECTED_ENTRIES} onChange={(event) => setSelectedEntryIds((current) => event.target.checked ? current.length < MAX_SELECTED_ENTRIES ? [...current, entry.id] : current : current.filter((id) => id !== entry.id))} /><time>{entry.workDate}</time><div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p></div><b>{formatHours(entry.minutes)}</b></label>) : <p className="todo-work-hours-empty">{acceptanceMode === 'submit' ? '当前没有可提交的工时记录' : '当前没有待验收的工时记录'}</p>}
           </section>
           {historicalEntries.length ? <section className="todo-work-hours-history-records"><h4>历史日期记录</h4>{historicalEntries.map((entry) => <div key={entry.id}><span>{entry.workDate}</span><p>{entry.description}</p><strong>{formatHours(entry.minutes)}</strong></div>)}</section> : null}
           <DialogFooter>

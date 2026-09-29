@@ -173,5 +173,7 @@ test('todo details expose paginated work-hour review controls with independent e
   assert.match(todoWorkHoursPanelSource, /提交工时验收/u)
   assert.match(todoWorkHoursPanelSource, /submitWorkHours\(todo\.id, selectedEntryIds\)/u)
   assert.match(todoWorkHoursPanelSource, /acceptWorkHours\(todo\.id, selectedEntryIds\)/u)
+  assert.match(todoWorkHoursPanelSource, /const MAX_SELECTED_ENTRIES = 100/u)
+  assert.match(todoWorkHoursPanelSource, /disabled=\{!selectedEntryIds\.includes\(entry\.id\) && selectedEntryIds\.length >= MAX_SELECTED_ENTRIES\}/u)
   assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
 })

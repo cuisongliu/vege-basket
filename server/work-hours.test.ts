@@ -76,9 +76,17 @@ test('selected work-hour acceptance uses transactional stale-selection checks', 
   const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
   assert.match(source, /work-hours\/submit/u)
   assert.match(source, /work-hours\/accept/u)
+  assert.match(source, /updateSelectedWorkHours[\s\S]*?const organization = await lockTodoOrganization\(client, todoId, userId\)[\s\S]*?await lockWorkHoursRole\(client, userId\)[\s\S]*?getTodoForWork\(client, todoId, userId, true\)/u)
+  assert.match(source, /async function transition[\s\S]*?const organization = await lockTodoOrganization\(client, todoId, userId\)[\s\S]*?await lockWorkHoursRole\(client, userId\)[\s\S]*?getTodoForWork\(client, todoId, userId, true\)/u)
+  assert.match(source, /Number\(todo\.organization_id\) !== organization\.organizationId/u)
+  assert.match(source, /select membership\.user_id as membership_user_id, role\.user_id as role_user_id/u)
+  assert.doesNotMatch(source, /select membership\.id as membership_id/u)
   assert.match(source, /id = any\(\$2::bigint\[\]\)/u)
+  assert.match(source, /\(\$3::bigint is null or user_id = \$3::bigint\)/u)
+  assert.match(source, /const selectedOwnerId = action === 'submit' \? userId : null/u)
   assert.match(source, /selected\.rows\.length !== entryIds\.length/u)
   assert.match(source, /status = 'submitted'/u)
+  assert.doesNotMatch(source, /update todo_work_hours set status = 'confirmed'[^`]*status = 'pending'/u)
 })
 
 test('workspace todo aggregates join the project before filtering managed visibility', () => {
