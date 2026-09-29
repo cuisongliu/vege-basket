@@ -3324,10 +3324,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     )
   }
 
+  const isEmptyState = eventTotal === 0
+    && !eventEditorOpen
+    && !assignedOnly
+    && !eventSearch.trim()
+    && activeEventFilterCount === 0
+
   return (
-    <div className="package-workbench">
+    <div className={isEmptyState ? 'package-workbench package-workbench-empty' : 'package-workbench'}>
       {confirmationDialog}
-      {eventTotal === 0 && !eventEditorOpen && !assignedOnly && !eventSearch.trim() && activeEventFilterCount === 0 ? (
+      {isEmptyState ? (
         <section className="package-empty-state">
           <div className="package-empty-panel">
             <h3>先创建一个项目事件</h3>

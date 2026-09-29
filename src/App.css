@@ -6510,6 +6510,11 @@ textarea:focus {
   overflow: hidden;
 }
 
+.package-workbench-empty {
+  align-self: start;
+  height: auto;
+}
+
 .package-workbench-summary {
   margin: 6px 0 0;
   color: var(--muted-text);
