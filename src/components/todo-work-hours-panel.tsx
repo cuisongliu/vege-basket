@@ -43,7 +43,7 @@ function todoStatus(todo: Todo) {
 
 function workHourStatus(status: WorkHourEntry['status']) {
   if (status === 'confirmed') return '已确认'
-  if (status === 'submitted') return '待验收'
+  if (status === 'submitted') return '待确认'
   return '未提交'
 }
 
@@ -120,7 +120,7 @@ export function TodoWorkHoursPanel({
       }
       if (active) setAcceptanceEntries(allEntries)
     })().catch((cause) => {
-      if (active) setError(cause instanceof Error ? cause.message : '待验收工时加载失败。')
+      if (active) setError(cause instanceof Error ? cause.message : '可提交工时加载失败。')
     }).finally(() => {
       if (active) setAcceptanceLoading(false)
     })
@@ -166,7 +166,7 @@ export function TodoWorkHoursPanel({
       await load()
       return true
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '工时验收操作失败。')
+      setError(cause instanceof Error ? cause.message : '工时提交操作失败。')
       return false
     } finally {
       setSaving(false)
@@ -196,7 +196,7 @@ export function TodoWorkHoursPanel({
         </div>
         <div className="todo-work-hours-actions">
           {canRecord ? <Button type="button" variant="outline" onClick={onRecord}><Plus size={15} />记录工时</Button> : null}
-          {canRecord && !todo.done ? <Button type="button" onClick={openAcceptance}>提交工时验收</Button> : null}
+          {canRecord && !todo.done ? <Button type="button" onClick={openAcceptance}>提交工时</Button> : null}
         </div>
       </div>
 
@@ -219,7 +219,7 @@ export function TodoWorkHoursPanel({
           {entries.map((entry) => (
             <article key={entry.id}>
               <time>{entry.workDate}</time>
-              <div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p><small>{entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待验收' : '未提交'}</small></div>
+              <div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p><small>{entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待确认' : '未提交'}</small></div>
               <b>{formatHours(entry.minutes)}</b>
               {entry.status === 'pending' && entry.userId === currentUserId ? (
                 <span>
@@ -246,7 +246,7 @@ export function TodoWorkHoursPanel({
       </Dialog>
       <Dialog open={acceptanceOpen} onOpenChange={(open) => { if (!saving) setAcceptanceOpen(open) }}>
         <DialogContent className="todo-work-hours-acceptance-dialog">
-          <DialogHeader><DialogTitle>提交工时验收</DialogTitle><DialogDescription>选择本次需要提交的工时，未选择的记录仍可继续修改。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>提交工时</DialogTitle><DialogDescription>选择本次需要提交的工时，未选择的记录仍可继续修改。</DialogDescription></DialogHeader>
           <div className="todo-work-hours-acceptance-summary">
             <div><span>预估工时</span><strong>{formatHours(todo.estimatedWorkMinutes)}</strong></div>
             <div><span>实际工时</span><strong>{formatHours(summary.totalMinutes)}</strong></div>
@@ -264,7 +264,7 @@ export function TodoWorkHoursPanel({
           })}</section> : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setAcceptanceOpen(false)}>取消</Button>
-            <Button type="button" disabled={saving || acceptanceLoading || selectedEntryIds.length === 0} onClick={() => void runWorkflow(async () => { await submitWorkHours(todo.id, selectedEntryIds); return true }, '所选工时已提交验收。').then((saved) => { if (saved) setAcceptanceOpen(false) })}>{saving ? '处理中...' : '提交所选工时'}</Button>
+            <Button type="button" disabled={saving || acceptanceLoading || selectedEntryIds.length === 0} onClick={() => void runWorkflow(async () => { await submitWorkHours(todo.id, selectedEntryIds); return true }, '所选工时已提交。').then((saved) => { if (saved) setAcceptanceOpen(false) })}>{saving ? '处理中...' : '提交所选工时'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

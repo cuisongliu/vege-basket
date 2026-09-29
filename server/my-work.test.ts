@@ -107,6 +107,8 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.doesNotMatch(myWorkWorkbenchSource, /验收所选/u)
   assert.doesNotMatch(myWorkWorkbenchSource, /onAcceptTodos/u)
   assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-row[\s\S]*grid-template-columns/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-dialog[\s\S]*width: min\(1120px/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-entry-list[\s\S]*min-height: 0[\s\S]*overflow: auto/u)
   assert.match(appSource, /> 工时确认/u)
   assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canNavigateToProjectBasket\)/u)
   assert.match(serverSource, /workHourConfirmationCount/u)
