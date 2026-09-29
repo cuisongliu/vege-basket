@@ -9643,7 +9643,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
   const result = await query<{
     assigned_bug_count: string
     open_todo_count: string
-    review_todo_count: string
+    work_hour_confirmation_count: string
   }>(
     `
     select
@@ -9671,11 +9671,16 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
         left join project_memberships mine
           on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
         where p.organization_id is not distinct from $2::bigint
-          and t.reviewer_user_id = $1::bigint
-          and t.confirmation_status = 'pending_review'
-          and not t.done
+          and coalesce(t.created_by_user_id, p.user_id) = $1::bigint
+          and exists (
+            select 1
+              from todo_work_hours hours
+             where hours.todo_id = t.id
+               and hours.project_id = t.project_id
+               and hours.status = 'submitted'
+          )
           and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
-      ) as review_todo_count,
+      ) as work_hour_confirmation_count,
       (
         select count(*)
         from test_bugs b
@@ -9696,7 +9701,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
   response.json({
     assignedBugCount: Number(row?.assigned_bug_count ?? 0),
     openTodoCount: Number(row?.open_todo_count ?? 0),
-    reviewTodoCount: Number(row?.review_todo_count ?? 0),
+    workHourConfirmationCount: Number(row?.work_hour_confirmation_count ?? 0),
     organizationId,
   })
 }))

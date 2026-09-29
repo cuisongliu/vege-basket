@@ -67,3 +67,252 @@
 .my-work-table-cell {
   line-height: 1.45;
 }
+
+.my-work-confirmation-row {
+  grid-template-columns: minmax(280px, 2fr) minmax(150px, 1.2fr) 88px 88px 96px 124px;
+  min-width: 900px;
+}
+
+.my-work-number-heading,
+.my-work-number-cell {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.my-work-action-heading {
+  text-align: right;
+}
+
+.my-work-number-cell.is-pending {
+  color: var(--primary);
+}
+
+.my-work-confirmation-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-work-confirmation-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.my-work-confirmation-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: min(90dvh, 860px);
+  max-width: min(920px, calc(100vw - 32px));
+  width: min(920px, calc(100vw - 32px));
+}
+
+.my-work-confirmation-content {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.4fr);
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.my-work-confirmation-task,
+.my-work-confirmation-hours {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.my-work-confirmation-task { align-self: start; border-right: 1px solid var(--border); padding-right: 18px; }
+
+.my-work-confirmation-task-heading {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.my-work-confirmation-task-heading > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.my-work-confirmation-task-heading span,
+.my-work-confirmation-properties dt,
+.my-work-confirmation-metrics span,
+.my-work-confirmation-selection-heading span {
+  color: var(--my-work-muted-readable);
+  font-size: 11px;
+}
+
+.my-work-confirmation-task-heading strong {
+  overflow-wrap: anywhere;
+}
+
+.my-work-confirmation-properties {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.my-work-confirmation-properties > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.my-work-confirmation-properties dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-work-confirmation-detail {
+  border-block: 1px solid var(--border);
+  color: var(--text);
+  max-height: 150px;
+  overflow: auto;
+  padding-block: 12px;
+}
+
+.my-work-confirmation-detail > span {
+  color: var(--my-work-muted-readable);
+  font-size: 13px;
+}
+
+.my-work-confirmation-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-block: 1px solid var(--border);
+}
+
+.my-work-confirmation-metrics > div {
+  display: grid;
+  gap: 4px;
+  padding: 11px 14px;
+}
+
+.my-work-confirmation-metrics > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.my-work-confirmation-metrics strong,
+.my-work-confirmation-entry b {
+  font-variant-numeric: tabular-nums;
+}
+
+.my-work-confirmation-selection-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.my-work-confirmation-selection-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.my-work-confirmation-selection-heading label {
+  align-items: center;
+  color: var(--my-work-muted-readable);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.my-work-confirmation-entry-list {
+  display: grid;
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.my-work-confirmation-entry {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 18px 92px minmax(0, 1fr) 70px 54px;
+  min-height: 58px;
+  padding: 8px 2px;
+}
+
+.my-work-confirmation-entry.is-submitted {
+  cursor: pointer;
+}
+
+.my-work-confirmation-entry time {
+  color: var(--my-work-muted-readable);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.my-work-confirmation-entry > div {
+  min-width: 0;
+}
+
+.my-work-confirmation-entry p {
+  color: var(--text);
+  font-size: 12px;
+  margin: 3px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-work-confirmation-entry > span {
+  color: var(--my-work-muted-readable);
+  font-size: 11px;
+  text-align: center;
+}
+
+.my-work-confirmation-entry.is-submitted > span {
+  color: var(--primary);
+}
+
+.my-work-confirmation-entry b {
+  text-align: right;
+}
+
+.my-work-confirmation-loading,
+.my-work-confirmation-empty,
+.my-work-confirmation-message {
+  align-items: center;
+  color: var(--my-work-muted-readable);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  justify-content: center;
+  margin: 0;
+  min-height: 90px;
+}
+
+.my-work-confirmation-message {
+  justify-content: flex-start;
+  min-height: 0;
+}
+
+.my-work-confirmation-message.is-error { color: var(--destructive); }
+.my-work-confirmation-message.is-success { color: var(--primary); }
+.my-work-confirmation-footer { border-top: 1px solid var(--border); padding-top: 14px; }
+
+@media (max-width: 760px) {
+  .my-work-confirmation-dialog { max-height: calc(100dvh - 24px); max-width: calc(100vw - 24px); width: calc(100vw - 24px); }
+  .my-work-confirmation-content { grid-template-columns: 1fr; overflow-y: auto; }
+  .my-work-confirmation-task { border-right: 0; padding-right: 0; }
+  .my-work-confirmation-properties { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .my-work-confirmation-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .my-work-confirmation-metrics > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); }
+  .my-work-confirmation-metrics > div:nth-child(4) { border-top: 1px solid var(--border); }
+  .my-work-confirmation-entry { grid-template-columns: 18px 72px minmax(0, 1fr) 48px; gap: 7px; }
+  .my-work-confirmation-entry > span { grid-column: 3; justify-self: start; text-align: left; }
+  .my-work-confirmation-entry > b { grid-column: 4; grid-row: 1 / span 2; }
+  .my-work-confirmation-selection-heading { align-items: start; flex-direction: column; }
+  .my-work-confirmation-footer { display: grid; grid-template-columns: 1fr; }
+  .my-work-confirmation-footer button { width: 100%; }
+}

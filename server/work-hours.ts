@@ -655,7 +655,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
   async function updateSelectedWorkHours(
     request: express.Request,
     response: express.Response,
-    action: 'submit' | 'accept',
+    action: 'submit' | 'accept' | 'return',
   ) {
     const userId = await requireUser(request, response, options.getUserId)
     if (!userId) return
@@ -682,8 +682,8 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       if (action === 'submit' && (todo.done || assigneeId !== userId)) {
         throw new WorkHoursError('WORK_HOUR_SUBMIT_FORBIDDEN', '只有负责人可以提交自己进行中任务的工时。', 403)
       }
-      if (action === 'accept' && creatorId !== userId) {
-        throw new WorkHoursError('WORK_HOUR_ACCEPT_FORBIDDEN', '只有任务创建人可以验收工时。', 403)
+      if (action !== 'submit' && creatorId !== userId) {
+        throw new WorkHoursError('WORK_HOUR_REVIEW_FORBIDDEN', '只有任务创建人可以确认或退回工时。', 403)
       }
       const expectedStatus: WorkHourStatus = action === 'submit' ? 'pending' : 'submitted'
       const selectedOwnerId = action === 'submit' ? userId : null
@@ -715,13 +715,21 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           [todoId, entryIds],
         )
         await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_submitted')
-      } else {
+      } else if (action === 'accept') {
         await client.query(
           `update todo_work_hours
               set status = 'confirmed', confirmed_by_user_id = $3,
                   confirmed_at = now(), updated_at = now()
             where todo_id = $1 and id = any($2::bigint[]) and status = 'submitted'`,
           [todoId, entryIds, userId],
+        )
+      } else {
+        await client.query(
+          `update todo_work_hours
+              set status = 'pending', confirmed_by_user_id = null,
+                  confirmed_at = null, updated_at = now()
+            where todo_id = $1 and id = any($2::bigint[]) and status = 'submitted'`,
+          [todoId, entryIds],
         )
       }
       await client.query('commit')
@@ -745,6 +753,14 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
   router.post('/todos/:todoId/work-hours/accept', async (request, response) => {
     try {
       await updateSelectedWorkHours(request, response, 'accept')
+    } catch (error) {
+      if (!sendWorkHoursError(response, error)) throw error
+    }
+  })
+
+  router.post('/todos/:todoId/work-hours/return', async (request, response) => {
+    try {
+      await updateSelectedWorkHours(request, response, 'return')
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }

@@ -125,7 +125,6 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import {
   acknowledgeChangelogAnnouncement,
-  acceptTodo,
   acceptOrganizationInviteLink,
   acceptProjectInvitation,
   archiveDraft,
@@ -1849,7 +1848,7 @@ function App() {
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [openTodoCount, setOpenTodoCount] = useState(0)
-  const [reviewTodoCount, setReviewTodoCount] = useState(0)
+  const [workHourConfirmationCount, setWorkHourConfirmationCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
   const [assignedBugCommentReadAtByBugId, setAssignedBugCommentReadAtByBugId] = useState<Record<number, string>>(() =>
     loadAssignedBugCommentReadAt(authUser?.id),
@@ -2945,11 +2944,14 @@ function App() {
     selectedOrganization &&
     (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
   )
-  const canNavigateToReview = canManageSelectedOrganization
+  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canNavigateToProjectBasket)
   useEffect(() => {
-    if ((view !== 'work_hours' && view !== 'my_work_review') || selectedOrganizationId === null || canManageSelectedOrganization) return
-    setView('my_work_hours')
-  }, [canManageSelectedOrganization, selectedOrganizationId, view])
+    if (view === 'work_hours' && (selectedOrganizationId === null || !canManageSelectedOrganization)) {
+      setView('my_work_hours')
+    } else if (view === 'my_work_review' && !canNavigateToReview) {
+      setView('my_work_hours')
+    }
+  }, [canManageSelectedOrganization, canNavigateToReview, selectedOrganizationId, view])
   const selectedProjectDraftId = selectedProject?.id
   const activeInvitePassword =
     inviteToken && invitePasswordRequired && invitePasswordVerified
@@ -3289,12 +3291,12 @@ function App() {
       const result = await fetchNavigationCounts(selectedOrganizationId, { signal })
       if (navigationCountsRequestIdRef.current !== requestId) return
       setOpenTodoCount(result.openTodoCount)
-      setReviewTodoCount(result.reviewTodoCount)
+      setWorkHourConfirmationCount(result.workHourConfirmationCount)
       setAssignedBugCount(canShowDeveloperAssignedBugs ? result.assignedBugCount : 0)
     } catch {
       if (navigationCountsRequestIdRef.current !== requestId || signal?.aborted) return
       setOpenTodoCount(0)
-      setReviewTodoCount(0)
+      setWorkHourConfirmationCount(0)
       setAssignedBugCount(0)
     }
   }, [canShowDeveloperAssignedBugs, selectedOrganizationId])
@@ -3303,7 +3305,7 @@ function App() {
     if (!loggedIn || !authUser?.id || !organizationContextReady) {
       navigationCountsRequestIdRef.current += 1
       setOpenTodoCount(0)
-      setReviewTodoCount(0)
+      setWorkHourConfirmationCount(0)
       setAssignedBugCount(0)
       return
     }
@@ -4074,22 +4076,6 @@ function App() {
         (payload.confirmationStatus === undefined || todo.confirmationStatus === payload.confirmationStatus)))
     }
     return Boolean(await runMutation(() => updateTodo(todoId, payload)))
-  }
-
-  async function acceptSelectedMyWorkTodos(todoIds: number[]) {
-    if (todoIds.length === 0) return false
-    for (const todoId of todoIds) {
-      const saved = await runConfirmedMutation(
-        async () => {
-          await acceptTodo(todoId)
-          return fetchWorkspace()
-        },
-        (data) => data.todos.some((todo) =>
-          todo.id === todoId && todo.done && todo.confirmationStatus === 'confirmed'),
-      )
-      if (!saved) return false
-    }
-    return true
   }
 
   const loadTodoDetails = useCallback(async (todoId: number) => {
@@ -5442,9 +5428,9 @@ ${packageTimelineText}`
                   </NavButton>
                   {canNavigateToReview ? (
                     <NavButton active={view === 'my_work_review'} onClick={openMyWorkReview}>
-                      <CheckCircle size={18} weight="duotone" /> 待我验收
-                      {reviewTodoCount > 0 && (
-                        <Badge className="nav-badge">{reviewTodoCount}</Badge>
+                      <CheckCircle size={18} weight="duotone" /> 工时确认
+                      {workHourConfirmationCount > 0 && (
+                        <Badge className="nav-badge">{workHourConfirmationCount}</Badge>
                       )}
                     </NavButton>
                   ) : null}
@@ -5620,12 +5606,12 @@ ${packageTimelineText}`
                     size={detailEntrySource !== 'project' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
                       ? '返回消息'
-                      : detailEntrySource === 'my_work_review' ? '返回待我验收'
+                      : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
                       : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回消息'
-                      : detailEntrySource === 'my_work_review' ? '返回待我验收'
+                      : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
                       : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     onClick={() => {
@@ -5930,7 +5916,7 @@ ${packageTimelineText}`
             onDeliveryClick={selectMyWorkPackageEvent}
             onBugClick={() => undefined}
             onMilestoneClick={selectProject}
-            onAcceptTodos={acceptSelectedMyWorkTodos}
+            onWorkHoursChanged={() => { void refreshNavigationCounts() }}
           />
         )}
 
@@ -11553,7 +11539,6 @@ function TodoEditorDialog({
   backLabel = '返回待办列表',
   canEdit = false,
   canEditProperties = canEdit,
-  canRespondToTodo = false,
   canRecordWorkHour = false,
   canShare = false,
   canCreateModule = false,
@@ -11603,7 +11588,6 @@ function TodoEditorDialog({
   backLabel?: string
   canEdit?: boolean
   canEditProperties?: boolean
-  canRespondToTodo?: boolean
   canRecordWorkHour?: boolean
   canShare?: boolean
   canCreateModule?: boolean
@@ -11956,13 +11940,6 @@ function TodoEditorDialog({
         {showDetailOverview && todo && project.organizationId ? (
           <TodoWorkHoursPanel
             canRecord={canRecordWorkHour}
-            canReview={Boolean(
-              canRespondToTodo &&
-              currentUserId != null &&
-              (project.organizationId
-                ? (todo.createdByUserId ?? project.ownerUserId) === currentUserId
-                : (todo.reviewerUserId ?? todo.createdByUserId ?? project.ownerUserId) === currentUserId),
-            )}
             currentUserId={currentUserId}
             todo={todo}
             onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
@@ -12545,7 +12522,6 @@ function TodoList({
           project={editingProject}
           canEdit={editingCanManageTodo}
           canEditProperties={editingCanManageTodoFields}
-          canRespondToTodo={editingCanRespondToTodo}
           canRecordWorkHour={canRecordWorkHour(editingTodo)}
           departedUserIds={departedUserIds}
           canShare={canShareTodo(editingTodo)}
@@ -12922,7 +12898,7 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'my_work') return '我的待办'
-  if (view === 'my_work_review') return '待我验收'
+  if (view === 'my_work_review') return '工时确认'
   if (view === 'my_work_hours') return '我的工时'
   if (view === 'work_hours') return '工时统计'
   if (view === 'notifications') return '通知中心'
