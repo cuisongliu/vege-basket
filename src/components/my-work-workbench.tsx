@@ -421,7 +421,7 @@ export function MyWorkWorkbench({
           onPageSizeChange={(pageSize) => setView({ ...result.view, pageSize, page: 0, scrollTop: 0 })} />
       ) : null}
       <Dialog open={Boolean(reviewItem)} onOpenChange={(open) => { if (!open && !reviewSaving) setReviewItem(null) }}>
-        <DialogContent className="my-work-confirmation-dialog">
+        <DialogContent className="my-work-confirmation-dialog fixed inset-y-0 right-0 left-auto z-50 h-full w-[min(820px,calc(100vw-64px))] translate-x-0 translate-y-0 gap-0 rounded-none border-l p-0 shadow-xl">
           <DialogHeader><DialogTitle>查看工时</DialogTitle><DialogDescription>{reviewItem?.title ?? '任务工时详情'}</DialogDescription></DialogHeader>
           {reviewLoading ? <div className="my-work-confirmation-loading"><Clock className="spin" size={22} />正在加载任务与工时...</div> : null}
           {!reviewLoading && reviewTodo ? (
