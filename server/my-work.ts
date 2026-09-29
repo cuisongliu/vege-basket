@@ -105,7 +105,8 @@ export async function getMyWork(
         on mine.project_id = p.id and mine.invited_user_id = $1 and mine.status = 'active'
       left join lateral (
         select coalesce(sum(hours.minutes), 0)::bigint as cumulative_minutes,
-               coalesce(sum(hours.minutes) filter (where hours.status = 'submitted'), 0)::bigint as submitted_minutes
+               coalesce(sum(hours.minutes) filter (where hours.status = 'submitted'), 0)::bigint as submitted_minutes,
+               coalesce(sum(hours.minutes) filter (where hours.status = 'confirmed'), 0)::bigint as confirmed_minutes
           from todo_work_hours hours
          where $7::boolean = true
            and hours.todo_id = t.id and hours.project_id = t.project_id
@@ -124,7 +125,8 @@ export async function getMyWork(
           or (
             $7::boolean = true
             and coalesce(t.created_by_user_id, p.user_id) = $1
-            and work_hours.submitted_minutes > 0
+            and not t.done
+            and (work_hours.submitted_minutes > 0 or work_hours.confirmed_minutes > 0)
           )
         )
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)

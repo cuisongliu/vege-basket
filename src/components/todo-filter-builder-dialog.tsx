@@ -401,7 +401,7 @@ export function TodoFilterBuilderDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="confirmed">已确认</SelectItem>
-            <SelectItem value="pending_review">待验收</SelectItem>
+            <SelectItem value="pending_review">待确认</SelectItem>
             <SelectItem value="rejected">已驳回</SelectItem>
             <SelectItem value="acceptance_failed">验收未通过</SelectItem>
           </SelectContent>

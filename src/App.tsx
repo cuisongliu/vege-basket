@@ -1125,7 +1125,7 @@ const priorityCopy: Record<Priority, string> = {
 
 const todoConfirmationCopy: Record<Todo['confirmationStatus'], string> = {
   confirmed: '进行中',
-  pending_review: '待验收',
+  pending_review: '待确认',
   rejected: '进行中',
   acceptance_failed: '进行中',
 }
@@ -1145,16 +1145,16 @@ function TodoAcceptanceDialog({ open, onOpenChange, onSubmit, title }: {
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={`验收待办「${title}」`}
+      title={`确认待办「${title}」`}
       description={decision === 'passed'
-        ? '验收通过后，待办将完成并退出未完成列表。可在项目待办的已完成筛选中查看。'
-        : '验收不通过后，待办保持未完成，并记录未通过原因。可在原项目待办中查看。'}
-      confirmLabel={decision === 'passed' ? '确认验收通过' : '确认验收不通过'}
+        ? '确认通过后，待办将完成并退出未完成列表。可在项目待办的已完成筛选中查看。'
+        : '确认未通过后，待办保持未完成，并记录未通过原因。可在原项目待办中查看。'}
+      confirmLabel={decision === 'passed' ? '确认通过' : '确认未通过'}
       variant={decision === 'passed' ? 'default' : 'destructive'}
       confirmDisabled={decision === 'failed' && !note.trim()}
       onConfirm={() => onSubmit(decision, note.trim())}
     >
-      <div className="todo-acceptance-decision" role="radiogroup" aria-label="验收结果">
+      <div className="todo-acceptance-decision" role="radiogroup" aria-label="确认结果">
         {([['passed', '通过'], ['failed', '不通过']] as const).map(([value, label]) => (
           <label className={decision === value ? 'todo-acceptance-choice is-selected' : 'todo-acceptance-choice'} key={value}>
             <input checked={decision === value} name="todo-acceptance-decision" type="radio" value={value} onChange={() => setDecision(value)} />
@@ -1163,8 +1163,8 @@ function TodoAcceptanceDialog({ open, onOpenChange, onSubmit, title }: {
         ))}
       </div>
       <Label className="todo-acceptance-note-field">
-        验收备注{decision === 'failed' ? '（必填）' : '（可选）'}
-        <Textarea placeholder={decision === 'failed' ? '请填写未通过原因...' : '可补充验收说明...'} value={note} onChange={(event) => setNote(event.target.value)} />
+        确认备注{decision === 'failed' ? '（必填）' : '（可选）'}
+        <Textarea placeholder={decision === 'failed' ? '请填写未通过原因...' : '可补充确认说明...'} value={note} onChange={(event) => setNote(event.target.value)} />
       </Label>
     </ConfirmDialog>
   )
@@ -1175,6 +1175,7 @@ function TodoConfirmSelect({
   done,
   status,
   disabled = false,
+  completionEnabled = true,
   onChange,
   onReject,
   onRequestAcceptance,
@@ -1183,6 +1184,7 @@ function TodoConfirmSelect({
   done: boolean
   status: Todo['confirmationStatus']
   disabled?: boolean
+  completionEnabled?: boolean
   onChange: (status: Todo['confirmationStatus']) => Promise<boolean>
   onReject: (reason: string) => Promise<boolean>
   onRequestAcceptance: () => void
@@ -1199,14 +1201,14 @@ function TodoConfirmSelect({
       setRejectDialogOpen(true)
       return
     }
-    if (nextStatus === 'acceptance_failed' || (nextStatus === 'confirmed' && status === 'pending_review')) {
+    if (completionEnabled && (nextStatus === 'acceptance_failed' || (nextStatus === 'confirmed' && status === 'pending_review'))) {
       onRequestAcceptance()
       return
     }
     if (nextStatus === 'pending_review') {
       void confirmAction({
-        title: `提交验收“${title}”？`, description: '待办将进入待验收状态，由验收人继续处理，可在原项目按待验收查看。',
-        confirmLabel: '提交验收', variant: 'default',
+        title: `提交确认“${title}”？`, description: '待办将进入待确认状态，由确认人继续处理，可在原项目按待确认查看。',
+        confirmLabel: '提交确认', variant: 'default',
       }, () => onChange(nextStatus))
     } else void onChange(nextStatus)
   }
@@ -11139,7 +11141,7 @@ function TodoFilterBuilderDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="open">进行中</SelectItem>
-            <SelectItem value="review">待验收</SelectItem>
+            <SelectItem value="review">待确认</SelectItem>
             <SelectItem value="completed">已完成</SelectItem>
           </SelectContent>
         </Select>
@@ -11434,7 +11436,7 @@ function TodoPropertiesPanel({
         </div>
         <div className="todo-property-row">
           <span>状态</span>
-          <strong>{todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'}</strong>
+          <strong>{todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待确认' : '进行中'}</strong>
         </div>
         <div className="todo-property-row">
           <span>截止日期</span>
@@ -11492,11 +11494,11 @@ function TodoPropertiesPanel({
         </div>
         {!project.organizationId ? (
           <div className="todo-property-row">
-            <span>验收人</span>
+            <span>确认人</span>
             <ProjectMemberPicker
               disabled={!canEdit}
               emptyLabel="待办创建人"
-              label="指定验收人"
+              label="指定确认人"
               members={members}
               value={reviewerUserId}
               onChange={updateReviewer}
@@ -11638,7 +11640,7 @@ function TodoEditorDialog({
   const showNotesSidebar = false
   const statusLabel = todo?.done
     ? '已完成'
-    : todo?.confirmationStatus === 'pending_review' ? '待验收' : '进行中'
+    : todo?.confirmationStatus === 'pending_review' ? '待确认' : '进行中'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
   const titleCharacterCount = Array.from(title).length
@@ -11694,20 +11696,11 @@ function TodoEditorDialog({
                   <span><small>未确认</small><strong>{formatInviteDurationLabel(todo.pendingWorkMinutes ?? 0)}</strong></span>
                 </div>
               ) : null}
-              {todo?.rejectionReason ? <p className="todo-acceptance-failure-note">最近一次验收未通过：{todo.rejectionReason}</p> : null}
+              {todo?.rejectionReason ? <p className="todo-acceptance-failure-note">最近一次确认未通过：{todo.rejectionReason}</p> : null}
             </div>
           </div>
-          {todo && (canRecordWorkHour || canShare) ? (
+          {todo && canShare ? (
             <div className="todo-detail-overview-actions">
-              {todo && canRecordWorkHour && onRecordWorkHour ? (
-                <Button
-                  className="todo-detail-work-hour-button"
-                  type="button"
-                  onClick={() => onRecordWorkHour(project.id, todo.id)}
-                >
-                  <Clock size={16} /> 记录工时
-                </Button>
-              ) : null}
               <Button
                 className="todo-detail-share-button"
                 type="button"
@@ -11837,10 +11830,10 @@ function TodoEditorDialog({
               </Label>
               {!project.organizationId ? (
                 <Label className="todo-inline-field-half">
-                  指定验收人
+                  指定确认人
                   <ProjectMemberPicker
                     emptyLabel="待办创建人"
-                    label="指定验收人"
+                    label="指定确认人"
                     members={members}
                     value={reviewerUserId}
                     onChange={onReviewerUserIdChange}
@@ -12212,7 +12205,7 @@ function TodoList({
         todo.dueDate,
         todo.createdAt,
         `${todoConfirmationCopy[todo.confirmationStatus]} ${todo.confirmationStatus}`,
-        todo.done ? '已完成 完成 completed' : todo.confirmationStatus === 'pending_review' ? '待验收 review' : '进行中 open',
+        todo.done ? '已完成 完成 completed' : todo.confirmationStatus === 'pending_review' ? '待确认 review' : '进行中 open',
       ]
         .join(' ')
         .toLowerCase()
@@ -12560,14 +12553,14 @@ function TodoList({
     <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
       <div className="todo-list-filters" aria-label="待办筛选">
         {compact ? <div className="todo-quick-status" role="tablist" aria-label="待办状态">
-          {([['all', '全部'], ['open', '进行中'], ['review', '待验收'], ['done', '已完成']] as const).map(([value, label]) => {
+          {([['all', '全部'], ['open', '进行中'], ['review', '待确认'], ['done', '已完成']] as const).map(([value, label]) => {
             const count = value === 'all' ? todos.length : value === 'done' ? todos.filter((todo) => todo.done).length : value === 'review' ? todos.filter((todo) => !todo.done && todo.confirmationStatus === 'pending_review').length : todos.filter((todo) => !todo.done && todo.confirmationStatus !== 'pending_review').length
             return <button className={quickStatus === value ? 'is-active' : ''} key={value} onClick={() => { setQuickStatus(value); setPage(0) }} role="tab" aria-selected={quickStatus === value} type="button">{label} <span>{count}</span></button>
           })}
         </div> : null}
         {compact ? <>
-          <label className="todo-scope-filter">待办范围<select aria-label="待办范围" value={todoScope} onChange={(event) => { setTodoScope(event.target.value as typeof todoScope); setPage(0) }}><option value="all">全部待办</option><option value="mine">我负责的</option><option value="review">待我验收</option></select></label>
-          <span className="todo-scope-note">提交后由创建人验收成果与工时</span>
+          <label className="todo-scope-filter">待办范围<select aria-label="待办范围" value={todoScope} onChange={(event) => { setTodoScope(event.target.value as typeof todoScope); setPage(0) }}><option value="all">全部待办</option><option value="mine">我负责的</option><option value="review">待我确认</option></select></label>
+          <span className="todo-scope-note">提交后由创建人确认成果与工时</span>
         </> : null}
         <Select value={subprojectFilter} onValueChange={(value) => { setSubprojectFilter(value); setPage(0) }}>
           <SelectTrigger aria-label="按子项目筛选" style={{ width: 160, flexShrink: 0 }}>
@@ -12633,9 +12626,9 @@ function TodoList({
       <ConfirmDialog
         open={Boolean(todoPendingReviewTarget)}
         onOpenChange={(open) => { if (!open) setTodoPendingReviewTarget(null) }}
-        title="确认提交验收？"
-        description={`「${todoPendingReviewTarget?.title ?? ''}」将交给验收人处理，可能退出负责人的我的待办列表。仍可在原项目待办查看。`}
-        confirmLabel="确认提交验收"
+        title="确认提交？"
+        description={`「${todoPendingReviewTarget?.title ?? ''}」将交给确认人处理，可能退出负责人的我的待办列表。仍可在原项目待办查看。`}
+        confirmLabel="提交确认"
         variant="default"
         onConfirm={() => todoPendingReviewTarget && onUpdateTodo
           ? onUpdateTodo(todoPendingReviewTarget.id, { confirmationStatus: 'pending_review' }) : Promise.resolve(false)}
@@ -12679,7 +12672,7 @@ function TodoList({
             const rowCanRespondToTodo = canRespondToTodo(todo)
             const indicators = getTodoContentIndicators(todo)
             const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
-            const statusLabel = todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待验收' : '进行中'
+            const statusLabel = todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待确认' : '进行中'
             if (compact) return (
               <div className={`todo-workflow-table-row is-${statusMarker}`} key={todo.id} role="row">
                 <button className="todo-workflow-title" type="button" role="cell" onClick={() => openTodoEditDialog(todo)}>
@@ -12799,6 +12792,7 @@ function TodoList({
                     done={todo.done}
                     status={todo.confirmationStatus}
                     disabled={!rowCanRespondToTodo}
+                    completionEnabled={!project?.organizationId}
                     onChange={(confirmationStatus) => onUpdateTodo ? onUpdateTodo(todo.id, { confirmationStatus }) : Promise.resolve(false)}
                     onReject={(rejectionReason) =>
                       onUpdateTodo ? onUpdateTodo(todo.id, {

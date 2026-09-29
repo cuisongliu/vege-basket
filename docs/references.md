@@ -679,7 +679,7 @@ Bug 分享接口：`POST /api/test-bugs/:bugId/share-link` 创建或复用当前
 以及同时拥有 `organization_admin` 账号角色和该项目所属组织有效 Owner/Admin 成员身份的
 组织管理员。
 `GET /api/todo-shares/:token` 为公开只读接口，`POST /api/todo-shares/:token/comments`
-要求登录后添加留言备注。公开 DTO 包含待办展示字段及未绑定交付操作的普通/验收备注，
+要求登录后添加留言备注。公开 DTO 包含待办展示字段及未绑定交付操作的普通/确认备注，
 匿名或非项目成员的登录响应不包含 `@` 候选；项目成员响应仅以项目 Owner 和有效项目成员中
 唯一、非空的展示名作为候选，不返回邮箱或内部用户 ID；服务端只为原本拥有项目访问权的
 留言人解析 mentions。留言请求需携带 UUID `requestId`，写入现有加密待办

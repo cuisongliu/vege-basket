@@ -138,8 +138,8 @@ test('project work-hour layout grows with content instead of forcing a fixed pan
 })
 
 test('assigned enterprise todos expose the work-hour entry with locked context', () => {
-  assert.match(todoEditorDialogSource, /todo-detail-work-hour-button/u)
-  assert.match(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
+  assert.doesNotMatch(todoEditorDialogSource, /todo-detail-work-hour-button/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
   assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /!todo\.done/u)
   assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)

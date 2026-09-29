@@ -678,6 +678,12 @@ export function returnWorkHours(todoId: number, entryIds: number[]) {
   })
 }
 
+export function completeTodoFromWorkHours(todoId: number) {
+  return request<{ ok: true; autoConfirmedCount: number }>(`/api/todos/${todoId}/work-hours/complete`, {
+    method: 'POST',
+  })
+}
+
 export function fetchOrganizationWorkHours(organizationId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
   return request<WorkHoursResponse>(`/api/organizations/${organizationId}/work-hours${workHoursQuery(filters)}`)
 }

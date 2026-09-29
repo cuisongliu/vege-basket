@@ -73,7 +73,7 @@ test('moves submitted todos from the assignee list to the effective reviewer', (
 test('keeps ordinary responsibility separate from the creator-only work-hour confirmation queue', () => {
   assert.match(myWorkSource, /t\.assignee_user_id = \$1\s+and t\.confirmation_status <> 'pending_review'/u)
   assert.match(myWorkSource, /\$7::boolean = false\s+and \([\s\S]*?or t\.reviewer_user_id = \$1\s+\)/u)
-  assert.match(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1\s+and work_hours\.submitted_minutes > 0/u)
+  assert.match(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1\s+and not t\.done[\s\S]*?work_hours\.submitted_minutes > 0 or work_hours\.confirmed_minutes > 0/u)
 })
 
 test('renders failed acceptance status in Chinese', () => {
@@ -96,6 +96,9 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.match(myWorkSource, /sum\(hours\.minutes\).*cumulative_minutes/u)
   assert.match(myWorkSource, /hours\.status = 'submitted'/u)
   assert.match(myWorkWorkbenchSource, /预估[\s\S]*累计[\s\S]*待确认[\s\S]*查看工时/u)
+  assert.match(myWorkWorkbenchSource, /<span role="columnheader">状态<\/span>/u)
+  assert.match(myWorkWorkbenchSource, /completeTodoFromWorkHours/u)
+  assert.match(myWorkWorkbenchSource, /当前仍有 \$\{pendingCount\} 条未提交工时/u)
   assert.match(myWorkWorkbenchSource, /fetchTodoDetail\(todoId\)/u)
   assert.match(myWorkWorkbenchSource, /fetchTodoWorkHours\(todoId/u)
   assert.match(myWorkWorkbenchSource, /selectedEntryIds/u)
