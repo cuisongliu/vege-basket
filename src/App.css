@@ -6093,6 +6093,7 @@ textarea:focus {
   border-bottom: 2px solid transparent;
   color: var(--muted-text);
   cursor: pointer;
+  display: inline-flex;
   flex: 0 0 auto;
   font-size: 13px;
   font-weight: 600;
