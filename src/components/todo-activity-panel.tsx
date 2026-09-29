@@ -51,7 +51,7 @@ export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: {
             <ClockCounterClockwise size={15} weight="bold" /> 待办事实流
           </span>
           <h3>{todoId ? '任务动态' : '待办动态'}</h3>
-          <p>{todoId ? '按时间记录当前任务的创建、编辑、工时和验收变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。'}</p>
+          <p>{todoId ? '按时间记录当前任务的创建、编辑、工时和确认变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。'}</p>
         </div>
         <Button
           aria-label="刷新待办动态"
@@ -130,7 +130,7 @@ export function TodoActivityPanel({ departedUserIds = [], projectId, todoId }: {
               },
               acceptance_failed: {
                 className: 'is-acceptance-failed',
-                description: '验收未通过这项待办',
+                description: '确认未通过这项待办',
                 icon: <XCircle size={18} weight="fill" />,
                 label: '验收未通过',
               },

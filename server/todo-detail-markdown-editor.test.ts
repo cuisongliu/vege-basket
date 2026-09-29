@@ -138,8 +138,8 @@ test('project work-hour layout grows with content instead of forcing a fixed pan
 })
 
 test('assigned enterprise todos expose the work-hour entry with locked context', () => {
-  assert.match(todoEditorDialogSource, /todo-detail-work-hour-button/u)
-  assert.match(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
+  assert.doesNotMatch(todoEditorDialogSource, /todo-detail-work-hour-button/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
   assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /!todo\.done/u)
   assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
@@ -158,7 +158,7 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   )
 })
 
-test('todo details expose paginated work-hour review controls without a manual checkbox status', () => {
+test('todo details expose paginated work-hour submission without confirmation actions', () => {
   assert.match(appSource, /<TodoWorkHoursPanel/u)
   assert.match(appSource, /待办标题[\s\S]*负责人[\s\S]*预估时间[\s\S]*已记录[\s\S]*状态[\s\S]*操作/u)
   const compactTodoSource = todoListSource.slice(
@@ -169,6 +169,13 @@ test('todo details expose paginated work-hour review controls without a manual c
   assert.match(todoWorkHoursPanelSource, /fetchTodoWorkHours\(todo\.id/u)
   assert.match(todoWorkHoursPanelSource, /ListPagination label="待办工时明细分页"/u)
   assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
-  assert.match(todoWorkHoursPanelSource, /工时验收/u)
-  assert.match(todoWorkHoursPanelSource, /提交工时验收/u)
+  assert.match(todoWorkHoursPanelSource, />提交工时</u)
+  assert.match(todoWorkHoursPanelSource, /status === 'submitted' \? '待确认'/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /提交工时验收/u)
+  assert.match(todoWorkHoursPanelSource, /submitWorkHours\(todo\.id, selectedEntryIds\)/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /acceptWorkHours/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, />验收工时</u)
+  assert.match(todoWorkHoursPanelSource, /const MAX_SELECTED_ENTRIES = 100/u)
+  assert.match(todoWorkHoursPanelSource, /disabled=\{!selectedEntryIds\.includes\(entry\.id\) && selectedEntryIds\.length >= MAX_SELECTED_ENTRIES\}/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
 })

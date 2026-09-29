@@ -119,11 +119,11 @@ export type NotificationResponse = {
 export type NavigationCounts = {
   assignedBugCount: number
   openTodoCount: number
-  reviewTodoCount: number
+  workHourConfirmationCount: number
   organizationId: OrganizationContext
 }
 
-export type WorkHourStatus = 'pending' | 'confirmed'
+export type WorkHourStatus = 'pending' | 'submitted' | 'confirmed'
 export type WorkHourEntry = {
   id: number
   projectId: number
@@ -657,6 +657,33 @@ export function removeWorkHour(entryId: number) {
   return request<{ ok: true }>(`/api/my-work-hours/${entryId}`, { method: 'DELETE' })
 }
 
+export function submitWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function acceptWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/accept`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function returnWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/return`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function completeTodoFromWorkHours(todoId: number) {
+  return request<{ ok: true; autoConfirmedCount: number }>(`/api/todos/${todoId}/work-hours/complete`, {
+    method: 'POST',
+  })
+}
+
 export function fetchOrganizationWorkHours(organizationId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
   return request<WorkHoursResponse>(`/api/organizations/${organizationId}/work-hours${workHoursQuery(filters)}`)
 }
@@ -1040,6 +1067,13 @@ export function deletePlatformOrganization(organizationId: number, confirmationN
 
 export function fetchOrganizations(options: Pick<RequestInit, 'signal'> = {}) {
   return request<{ canCreate: boolean; organizations: OrganizationListItem[] }>('/api/organizations', options)
+}
+
+export function createOrganization(name: string) {
+  return request<{ id: number; name: string }>('/api/organizations', {
+    method: 'POST',
+    body: JSON.stringify({ name, requestId: crypto.randomUUID() }),
+  })
 }
 
 export function fetchOrganizationPackageMarketCatalog(organizationId: number) {

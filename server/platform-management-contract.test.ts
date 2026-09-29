@@ -188,6 +188,12 @@ test('platform organization search does not silently truncate the directory', ()
   assert.doesNotMatch(listSource, /limit 1000/u)
 })
 
+test('platform organization creation is hidden without organization-admin permission', () => {
+  assert.match(clientAppSource, /canCreateOrganizations=\{isOrganizationAdmin\}/u)
+  assert.match(workbenchSource, /canCreateOrganizations \? <Button onClick=\{\(\) => setCreateOpen\(true\)\}/u)
+  assert.match(workbenchSource, /if \(!canCreateOrganizations\) return/u)
+})
+
 test('maintenance mode blocks business APIs while keeping administrator recovery routes', () => {
   assert.match(appSource, /app\.use\('\/api', platformMaintenanceMiddleware\)/u)
   assert.match(maintenanceSource, /code: 'PLATFORM_MAINTENANCE'/u)
@@ -217,7 +223,7 @@ test('maintenance mode blocks business APIs while keeping administrator recovery
 })
 
 test('automatic database migrations are serialized, checksummed, and recorded', () => {
-  assert.match(migrationsSource, /const migrationId = '20260929_schema_v18'/u)
+  assert.match(migrationsSource, /const migrationId = '20260929_schema_v19'/u)
   assert.match(migrationsSource, /pg_try_advisory_lock/u)
   assert.match(migrationsSource, /createHash\('sha256'\)\.update\(schemaSql\)/u)
   assert.match(migrationsSource, /DATABASE_MIGRATION_CHECKSUM_MISMATCH/u)

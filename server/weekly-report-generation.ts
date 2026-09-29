@@ -67,7 +67,7 @@ function formatDeveloperSource(params: GenerationSourceParams) {
     : '暂无项目日记记录。'
   const stats = params.workStats.projects.length
     ? params.workStats.projects.map((project) => (
-      `- ${clip(project.projectName, 120)}：待办共 ${project.todoTotal} 条，完成 ${project.todoCompleted} 条，未完成 ${project.todoUnfinished} 条，待验收 ${project.todoPendingReview} 条；交付事件共 ${project.deliveryTotal} 条，已交付 ${project.deliveryDelivered} 条，未完成 ${project.deliveryUnfinished} 条`
+      `- ${clip(project.projectName, 120)}：待办共 ${project.todoTotal} 条，完成 ${project.todoCompleted} 条，未完成 ${project.todoUnfinished} 条，待确认 ${project.todoPendingReview} 条；交付事件共 ${project.deliveryTotal} 条，已交付 ${project.deliveryDelivered} 条，未完成 ${project.deliveryUnfinished} 条`
     )).join('\n')
     : '暂无项目待办或交付事件统计。'
   return [
