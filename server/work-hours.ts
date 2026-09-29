@@ -637,7 +637,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           entry.description ? decryptText(entry.description) : '',
           entry.user_name ? decryptText(entry.user_name) : '',
           formatDate(entry.work_date),
-          entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待验收' : '未提交',
+          entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待确认' : '未提交',
         ].join(' ').toLocaleLowerCase('zh-CN').includes(queryText))
         : entries
       const offset = Math.max(0, Number.isSafeInteger(Number(request.query.cursor)) ? Number(request.query.cursor) : 0)
@@ -703,7 +703,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           'WORK_HOUR_SELECTION_STALE',
           action === 'submit'
             ? '部分工时已变更或不属于当前任务，请刷新后重新选择。'
-            : '部分待验收工时已变更，请刷新后重新选择。',
+            : '部分待确认工时已变更，请刷新后重新选择。',
           409,
         )
       }
