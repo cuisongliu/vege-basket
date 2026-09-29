@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { parseWorkDate, parseWorkMinutes, WorkHoursError } from './work-hours.ts'
+import { parseWorkDate, parseWorkHourEntryIds, parseWorkMinutes, WorkHoursError } from './work-hours.ts'
 
 test('work minutes use integer-hour increments within the daily limit', () => {
   assert.equal(parseWorkMinutes(60), 60)
@@ -19,6 +19,13 @@ test('work dates reject invalid calendar dates', () => {
   assert.equal(parseWorkDate('2026-09-23'), '2026-09-23')
   assert.throws(() => parseWorkDate('2026-02-30'), WorkHoursError)
   assert.throws(() => parseWorkDate('09/23/2026'), WorkHoursError)
+})
+
+test('selected work-hour IDs are non-empty, unique positive integers', () => {
+  assert.deepEqual(parseWorkHourEntryIds([3, '4']), [3, 4])
+  assert.throws(() => parseWorkHourEntryIds([]), WorkHoursError)
+  assert.throws(() => parseWorkHourEntryIds([1, 1]), WorkHoursError)
+  assert.throws(() => parseWorkHourEntryIds([0]), WorkHoursError)
 })
 
 test('review authority stays creator-only for enterprise todos without changing personal projects', () => {
@@ -46,7 +53,7 @@ test('work-hour schema preserves task-project identity and bounded states', () =
   const schema = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
 
   assert.match(schema, /create table if not exists todo_work_hours/u)
-  assert.match(schema, /status in \('pending', 'confirmed'\)/u)
+  assert.match(schema, /status in \('pending', 'submitted', 'confirmed'\)/u)
   assert.match(schema, /foreign key \(todo_id, project_id\) references todos\(id, project_id\)/u)
   assert.match(schema, /legacy_minutes or minutes % 60 = 0/u)
 })
@@ -63,6 +70,15 @@ test('todo detail work-hour reads stay scoped to the authorized todo and paginat
   assert.match(source, /TODO_NOT_ACCESSIBLE.*projectMember\(client, Number\(todo\.project_id\), userId\)/su)
   assert.match(source, /filters\.todoId \? `entry\.todo_id =/u)
   assert.match(source, /pagination: \{ offset, limit, total: filteredEntries\.length \}/u)
+})
+
+test('selected work-hour acceptance uses transactional stale-selection checks', () => {
+  const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
+  assert.match(source, /work-hours\/submit/u)
+  assert.match(source, /work-hours\/accept/u)
+  assert.match(source, /id = any\(\$2::bigint\[\]\)/u)
+  assert.match(source, /selected\.rows\.length !== entryIds\.length/u)
+  assert.match(source, /status = 'submitted'/u)
 })
 
 test('workspace todo aggregates join the project before filtering managed visibility', () => {

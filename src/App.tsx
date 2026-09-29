@@ -11966,9 +11966,6 @@ function TodoEditorDialog({
             currentUserId={currentUserId}
             todo={todo}
             onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
-            onSubmitReview={() => onInlineUpdate?.({ confirmationStatus: 'pending_review' }) ?? Promise.resolve(false)}
-            onAccept={() => onInlineUpdate?.({ done: true, confirmationStatus: 'confirmed' }) ?? Promise.resolve(false)}
-            onReturn={(reason) => onInlineUpdate?.({ confirmationStatus: 'acceptance_failed', acceptanceNote: reason }) ?? Promise.resolve(false)}
           />
         ) : null}
       </div>

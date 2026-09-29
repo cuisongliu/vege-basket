@@ -759,7 +759,9 @@ database and is not a read-only smoke test.
 企业待办详情通过 `GET /api/todos/:todoId/work-hours` 读取工时记录和预估、已确认、未确认汇总。
 服务端先按当前用户重新校验工作台角色、项目成员或组织管理员范围，再读取待办所属项目；
 浏览器传入的待办 ID 不会扩大项目访问权限。明细支持关键词和游标分页，工时创建、编辑、删除及
-提交验收、通过验收、退回修改继续复用工时事务与待办状态锁。组织管理员和任务创建人可以查看任务
+提交工时验收、按记录确认继续复用工时事务与待办状态锁；工时提交不会改变待办的成果验收状态。
+每条流水依次处于 `pending`、`submitted` 或 `confirmed`，负责人可只提交选中的 `pending` 记录，
+创建人也可只确认选中的 `submitted` 记录，未选记录保持原状态并继续遵循编辑权限。组织管理员和任务创建人可以查看任务
 的完整投入记录，普通开发/测试账号只能查看自己的记录和汇总，不能读取其他成员的工作说明或工时。
 
 Platform maintenance state is stored independently from configuration history. Manual maintenance,

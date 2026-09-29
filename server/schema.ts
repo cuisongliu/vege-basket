@@ -814,7 +814,7 @@ create table if not exists todo_work_hours (
   work_date date not null,
   minutes integer not null,
   status text not null default 'pending'
-    check (status in ('pending', 'confirmed')),
+    check (status in ('pending', 'submitted', 'confirmed')),
   description text not null default '',
   confirmed_by_user_id bigint references users(id) on delete set null,
   confirmed_at timestamptz,
@@ -840,6 +840,10 @@ create index if not exists idx_todo_work_hours_project_date
   on todo_work_hours(project_id, work_date, status);
 create index if not exists idx_todo_work_hours_todo
   on todo_work_hours(todo_id, created_at desc);
+
+alter table todo_work_hours drop constraint if exists todo_work_hours_status_check;
+alter table todo_work_hours add constraint todo_work_hours_status_check
+  check (status in ('pending', 'submitted', 'confirmed'));
 
 alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
