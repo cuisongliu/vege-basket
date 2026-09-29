@@ -206,8 +206,8 @@ async function lockTodoOrganization(client: PoolClient, todoId: number, userId: 
     : null
   if (!organizationId) return null
   await client.query('select id from organizations where id = $1 for update', [organizationId])
-  const managerResult = await client.query<{ membership_id: string; role_user_id: string }>(
-    `select membership.id as membership_id, role.user_id as role_user_id
+  const managerResult = await client.query<{ membership_user_id: string; role_user_id: string }>(
+    `select membership.user_id as membership_user_id, role.user_id as role_user_id
        from organization_memberships membership
        join user_roles role
          on role.user_id = membership.user_id
@@ -665,10 +665,16 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     const client = await pool.connect()
     try {
       await client.query('begin')
+      const organization = await lockTodoOrganization(client, todoId, userId)
       await lockWorkHoursRole(client, userId)
-      await lockTodoOrganization(client, todoId, userId)
       const todo = await getTodoForWork(client, todoId, userId, true)
-      if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
+      if (
+        !todo ||
+        !todo.organization_id ||
+        !organization ||
+        Number(todo.organization_id) !== organization.organizationId ||
+        !(await projectMember(client, Number(todo.project_id), userId))
+      ) {
         throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
       }
       const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
@@ -680,16 +686,17 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         throw new WorkHoursError('WORK_HOUR_ACCEPT_FORBIDDEN', '只有任务创建人可以验收工时。', 403)
       }
       const expectedStatus: WorkHourStatus = action === 'submit' ? 'pending' : 'submitted'
+      const selectedOwnerId = action === 'submit' ? userId : null
       const selected = await client.query<{ id: string }>(
         `select id
            from todo_work_hours
           where todo_id = $1
             and id = any($2::bigint[])
-            and user_id = $3
-            and status = $4
+            and ($3::bigint is null or user_id = $3::bigint)
+            and status = $4::text
           order by id
           for update`,
-        [todoId, entryIds, assigneeId, expectedStatus],
+        [todoId, entryIds, selectedOwnerId, expectedStatus],
       )
       if (selected.rows.length !== entryIds.length) {
         throw new WorkHoursError(
@@ -942,10 +949,12 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
     const client = await pool.connect()
     try {
       await client.query('begin')
-      await lockWorkHoursRole(client, userId)
       const organization = await lockTodoOrganization(client, todoId, userId)
+      await lockWorkHoursRole(client, userId)
       const todo = await getTodoForWork(client, todoId, userId, true)
-      if (!todo || !todo.organization_id) throw new WorkHoursError('TODO_NOT_FOUND', '企业待办不存在。', 404)
+      if (!todo || !todo.organization_id || !organization || Number(todo.organization_id) !== organization.organizationId) {
+        throw new WorkHoursError('TODO_NOT_FOUND', '企业待办不存在。', 404)
+      }
       const manager = Boolean(organization?.isManager)
       const creatorId = todo.created_by_user_id ? Number(todo.created_by_user_id) : Number(todo.owner_user_id)
       const assigneeId = todo.assignee_user_id ? Number(todo.assignee_user_id) : null
@@ -959,7 +968,6 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       } else if (action === 'accept') {
         if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_ACCEPT_FORBIDDEN', '只有任务创建人可以验收。', 403)
         await client.query(`update todos set done = true, confirmation_status = 'confirmed', needs_revision = false, completed_at = now(), completed_by_user_id = $2, accepted_at = now(), accepted_by_user_id = $2, acceptance_version = acceptance_version + 1, updated_at = now() where id = $1`, [todoId, userId])
-        await client.query(`update todo_work_hours set status = 'confirmed', confirmed_by_user_id = $2, confirmed_at = now(), updated_at = now() where todo_id = $1 and status = 'pending'`, [todoId, userId])
         await insertWorkHoursActivityEvent(client, todo, userId, 'completed')
       } else if (action === 'return') {
         if (creatorId !== userId || todo.confirmation_status !== 'pending_review') throw new WorkHoursError('TODO_RETURN_FORBIDDEN', '只有任务创建人可以退回任务。', 403)
