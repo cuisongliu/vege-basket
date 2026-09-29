@@ -12478,9 +12478,13 @@ app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request
   const rawLimit = Number(request.query.limit)
   const rawOffset = Number(request.query.offset)
   const assignedUserId = Number(request.query.assignedUserId)
+  const eventId = Number(request.query.eventId)
+  const includeDetails = request.query.includeDetails !== 'false'
   const timeline = await runProjectPackageEventMutation(response, () => getProjectPackageTimeline(projectId, userId, {
     assignedUserId: Number.isSafeInteger(assignedUserId) && assignedUserId > 0 ? assignedUserId : undefined,
+    eventId: Number.isSafeInteger(eventId) && eventId > 0 ? eventId : undefined,
     filters: parseProjectPackageEventFilters(request.query.filters),
+    includeDetails,
     join: request.query.join === 'or' ? 'or' : 'and',
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
     offset: Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,

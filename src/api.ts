@@ -2033,7 +2033,9 @@ export function deleteAiConversation(conversationId: string) {
 export function fetchProjectPackageTimeline(projectId: number, options: ProjectPackageTimelineQuery = {}) {
   const params = new URLSearchParams()
   if (options.assignedUserId != null) params.set('assignedUserId', String(options.assignedUserId))
+  if (options.eventId != null) params.set('eventId', String(options.eventId))
   if (options.filters?.length) params.set('filters', JSON.stringify(options.filters))
+  if (options.includeDetails === false) params.set('includeDetails', 'false')
   if (options.join) params.set('join', options.join)
   if (options.limit != null) params.set('limit', String(options.limit))
   if (options.offset != null) params.set('offset', String(options.offset))

@@ -154,6 +154,8 @@ export type ProjectPackageTimelineQuery = {
   offset?: number
   q?: string
   sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
 }
 
 export type ProjectPackageEventFilterCondition = {
@@ -227,7 +229,13 @@ type EventRow = {
   title: string
   type: ProjectPackageEventType
   updated_at: Date
-  total_count?: string
+}
+
+type EventSummaryCountRow = {
+  id: string
+  package_count: string
+  operation_count: string
+  comment_count: string
 }
 
 type GroupRow = {
@@ -1395,11 +1403,12 @@ function projectPackageEventMatchesQuery(row: EventRow, options: ProjectPackageT
 
 export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
   const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
+  const includeDetails = options.includeDetails !== false
   // Keep the server-side safety cap at 500 while the workbench requests 10 per page.
   const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 10)))
   const requestedOffset = Math.max(0, Math.floor(options.offset ?? 0))
-  const allEventsResult = await query<EventRow>(
-    `
+  const eventIdClause = options.eventId == null ? '' : ' and e.id = $2'
+  const eventSelect = `
     select e.id,
            coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
            coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
@@ -1417,13 +1426,37 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       left join users completer on completer.id = e.completed_by_user_id
       left join users assignee on assignee.id = e.assignee_user_id
       left join users assigner on assigner.id = e.assigned_by_user_id
-     where e.project_id = $1
+     where e.project_id = $1${eventIdClause}
+  `
+  const canUseDatabasePage = includeDetails === false && !normalizedQuery &&
+    !options.assignedUserId && (options.filters?.length ?? 0) === 0 && options.eventId == null
+  const databasePageResult = canUseDatabasePage
+    ? await query<EventRow>(
+      `${eventSelect}
+       order by coalesce(e.delivery_date, e.created_at::date) ${options.sort === 'asc' ? 'asc' : 'desc'}, e.created_at ${options.sort === 'asc' ? 'asc' : 'desc'}, e.id ${options.sort === 'asc' ? 'asc' : 'desc'}
+       limit $2 offset $3`,
+      options.eventId == null
+        ? [projectId, requestedLimit, requestedOffset]
+        : [projectId, options.eventId, requestedLimit, requestedOffset],
+    )
+    : null
+  const databaseTotalResult = databasePageResult
+    ? await query<{ total: string }>(
+      'select count(*)::text as total from project_package_events where project_id = $1',
+      [projectId],
+    )
+    : null
+  const allEventsResult = databasePageResult ?? await query<EventRow>(
+    `
+    ${eventSelect}
      order by e.created_at asc, e.id asc
     `,
-    [projectId],
+    options.eventId == null ? [projectId] : [projectId, options.eventId],
   )
   const direction = options.sort === 'asc' ? 1 : -1
-  const filteredEventRows = allEventsResult.rows
+  const filteredEventRows = databasePageResult
+    ? databasePageResult.rows
+    : allEventsResult.rows
     .filter((row) => projectPackageEventMatchesQuery(row, options, normalizedQuery))
     .sort((left, right) => {
       const leftDate = left.delivery_date ? formatDate(left.delivery_date) : formatDate(left.created_at)
@@ -1431,8 +1464,12 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       const comparison = leftDate.localeCompare(rightDate) || left.created_at.getTime() - right.created_at.getTime() || Number(left.id) - Number(right.id)
       return comparison * direction
     })
-  const total = filteredEventRows.length
-  const pageEventRows = filteredEventRows.slice(requestedOffset, requestedOffset + requestedLimit)
+  const total = databasePageResult
+    ? Number(databaseTotalResult?.rows[0]?.total ?? 0)
+    : filteredEventRows.length
+  const pageEventRows = databasePageResult
+    ? filteredEventRows
+    : filteredEventRows.slice(requestedOffset, requestedOffset + requestedLimit)
   const limit = requestedLimit
   const offset = requestedOffset
   const selectedEventIds = pageEventRows.map((row) => Number(row.id))
@@ -1445,8 +1482,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
     operationsResult,
     operationTodosResult,
     commentsResult,
-    mentionableMembersResult,
-  ] = await Promise.all([
+  ] = includeDetails ? await Promise.all([
     query<GroupRow>(
       `
       select g.id, g.project_package_event_id, g.package_name, g.created_at
@@ -1546,27 +1582,65 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       `,
       scopedValues,
     ),
-    query<MentionableMemberRow>(
+  ]) : [
+    { rows: [] as GroupRow[] },
+    { rows: [] as ItemRow[] },
+    { rows: [] as OperationRow[] },
+    { rows: [] as OperationTodoRow[] },
+    { rows: [] as PackageEventCommentRow[] },
+  ]
+
+  const summaryCountsResult = includeDetails
+    ? { rows: [] as EventSummaryCountRow[] }
+    : await query<EventSummaryCountRow>(
       `
-      select u.id, u.email, u.display_name
-      from users u
-      where (
-        u.id = (select p.user_id from projects p where p.id = $1)
-        or exists (
-          select 1 from project_memberships pm
-          where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
-        )
-        or exists (
-          select 1 from projects p
-          join organization_memberships om on om.organization_id = p.organization_id
-          where p.id = $1 and om.user_id = u.id and om.status = 'active'
-        )
-      )
-      order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+      select e.id,
+             (
+               select count(*)
+               from project_package_groups g
+               join project_package_items i on i.project_package_group_id = g.id
+               where g.project_package_event_id = e.id
+             )::text as package_count,
+             (
+               select count(*)
+               from project_package_operations o
+               where o.project_package_event_id = e.id
+             )::text as operation_count,
+             (
+               select count(*)
+               from project_package_event_comments c
+               where c.project_package_event_id = e.id
+             )::text as comment_count
+        from project_package_events e
+       where e.project_id = $1
+         ${selectedEventIds.length > 0 ? 'and e.id = any($2::bigint[])' : 'and false'}
       `,
-      [projectId],
-    ),
-  ])
+      selectedEventIds.length > 0 ? scopedValues : [projectId],
+    )
+
+  const mentionableMembersResult = await query<MentionableMemberRow>(
+    `
+    select u.id, u.email, u.display_name
+    from users u
+    where (
+      u.id = (select p.user_id from projects p where p.id = $1)
+      or exists (
+        select 1 from project_memberships pm
+        where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
+      )
+      or exists (
+        select 1 from projects p
+        join organization_memberships om on om.organization_id = p.organization_id
+        where p.id = $1 and om.user_id = u.id and om.status = 'active'
+      )
+    )
+    order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+    `,
+    [projectId],
+  )
+
+  const summaryCountsByEvent = new Map<number, EventSummaryCountRow>()
+  for (const row of summaryCountsResult.rows) summaryCountsByEvent.set(Number(row.id), row)
 
   const groupsByEvent = new Map<number, ProjectPackageGroup[]>()
   const groupMap = new Map<number, ProjectPackageGroup>()
@@ -1713,6 +1787,17 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
+      detailsLoaded: includeDetails,
+      packageCount: includeDetails
+        ? groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.items.length, 0) ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.package_count ?? 0),
+      operationCount: includeDetails
+        ? (eventOperationsByEvent.get(Number(row.id))?.length ?? 0) +
+          (groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.operations.length, 0) ?? 0)
+        : Number(summaryCountsByEvent.get(Number(row.id))?.operation_count ?? 0),
+      commentCount: includeDetails
+        ? commentsByEvent.get(Number(row.id))?.length ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.comment_count ?? 0),
     }))
   return {
     canPlanDelivery: access.canPlan,

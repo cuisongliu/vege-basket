@@ -6539,29 +6539,27 @@ textarea:focus {
 
 .package-empty-state {
   display: grid;
-  min-height: 360px;
+  min-height: 220px;
   align-content: start;
   justify-items: start;
-  padding: 28px;
+  padding: 24px;
   border: 1px solid color-mix(in oklch, var(--foreground) 10%, var(--line));
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, color-mix(in oklch, var(--primary) 6%, transparent) 0%, transparent 52%),
-    color-mix(in oklch, var(--surface) 92%, black);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .package-empty-panel {
   width: min(520px, 100%);
   display: grid;
   gap: 12px;
-  text-align: center;
+  text-align: left;
 }
 
 .package-empty-panel h3 {
   margin: 0;
   color: var(--strong);
-  font-size: 28px;
+  font-size: 20px;
   line-height: 1.2;
 }
 
@@ -6574,7 +6572,7 @@ textarea:focus {
 
 .package-empty-actions {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -6835,8 +6833,8 @@ textarea:focus {
 
 .project-event-layout {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
   height: 100%;
   min-height: 0;
@@ -6860,13 +6858,13 @@ textarea:focus {
 .project-events-panel,
 .event-workspace {
   border: 1px solid var(--line);
-  border-radius: 16px;
-  background: color-mix(in oklch, var(--surface) 94%, black);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .project-events-panel {
-  padding: 20px;
+  padding: 14px;
   max-height: 100%;
   overflow-y: auto;
   scrollbar-color: transparent transparent;
@@ -7031,9 +7029,9 @@ textarea:focus {
   align-items: center;
   gap: 10px;
   border: 1px solid var(--line);
-  border-radius: 14px;
-  background: color-mix(in oklch, var(--surface) 88%, black);
-  padding: 14px 16px;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 94%, var(--field));
+  padding: 10px 12px;
   transition:
     border-color 140ms ease,
     background 140ms ease,
@@ -7045,7 +7043,6 @@ textarea:focus {
 .project-package-item:hover {
   border-color: rgba(15, 118, 110, 0.22);
   background: color-mix(in oklch, var(--surface) 90%, var(--primary) 4%);
-  transform: translateY(-1px);
 }
 
 .project-event-item.active,
@@ -7175,6 +7172,16 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.project-event-tab-button .project-event-counts {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
 .project-event-status-badge.draft {
   border-color: color-mix(in oklch, var(--line) 86%, var(--muted-text));
   background: color-mix(in oklch, var(--muted) 60%, transparent);
@@ -7242,7 +7249,7 @@ textarea:focus {
 .event-workspace {
   min-height: 0;
   height: 100%;
-  padding: 18px;
+  padding: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -7795,7 +7802,7 @@ textarea:focus {
 .event-workspace-body {
   display: grid;
   grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
-  gap: 14px;
+  gap: 12px;
   min-height: min-content;
 }
 
@@ -7833,10 +7840,10 @@ textarea:focus {
 .project-package-list,
 .project-timeline-panel {
   border: 1px solid var(--line);
-  border-radius: 16px;
-  background: color-mix(in oklch, var(--surface) 94%, black);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26);
-  padding: 18px;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 96%, var(--field));
+  box-shadow: none;
+  padding: 14px;
 }
 
 .project-package-list-head,
@@ -7862,10 +7869,29 @@ textarea:focus {
 
 .operation-area {
   border: 1px solid var(--line);
-  border-radius: 16px;
-  background: color-mix(in oklch, var(--surface) 94%, black);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26);
-  padding: 20px;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 96%, var(--field));
+  box-shadow: none;
+  padding: 14px;
+}
+
+.event-details-loading {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.event-details-loading p {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 13px;
+}
+
+.event-details-loading-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--muted) 72%, var(--surface));
 }
 
 .operation-area-head {

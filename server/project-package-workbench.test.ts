@@ -290,3 +290,15 @@ test('delivery timeline API accepts bounded search pagination and reports totals
   assert.match(timelineSource, /options\.join === 'or'/u)
   assert.match(timelineSource, /options\.assignedUserId/u)
 })
+
+test('delivery event summaries use database pagination and hydrate one selected event on demand', () => {
+  assert.match(indexSource, /eventId: Number\.isSafeInteger\(eventId\)[\s\S]*?includeDetails,/u)
+  assert.match(timelineSource, /options\.includeDetails !== false/u)
+  assert.match(timelineSource, /limit \$2 offset \$3/u)
+  assert.match(timelineSource, /select count\(\*\)::text as total from project_package_events/u)
+  assert.match(timelineSource, /where e\.project_id = \$1\$\{eventIdClause\}/u)
+  assert.match(timelineSource, /detailsLoaded: includeDetails/u)
+  assert.match(workbenchSource, /includeDetails: false/u)
+  assert.match(workbenchSource, /eventId: selectedEventDetailId, includeDetails: true/u)
+  assert.match(workbenchSource, /project-event-counts/u)
+})

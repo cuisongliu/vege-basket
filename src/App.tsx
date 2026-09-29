@@ -1858,6 +1858,11 @@ function App() {
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
+  const installTimelineQueryRef = useRef<ProjectPackageTimelineQuery>({
+    includeDetails: false,
+    limit: 10,
+    offset: 0,
+  })
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() =>
     loadStoredSelectedProjectId(),
   )
@@ -3068,47 +3073,6 @@ function App() {
     todoSubprojectId,
   ])
 
-  const packageTimelineProjectId = selectedProject?.id
-  useEffect(() => {
-    if (
-      !loggedIn ||
-      view !== 'project' ||
-      !packageTimelineProjectId ||
-      projectDetailTab !== 'packages'
-    ) return
-
-    const refreshTimeline = async () => {
-      try {
-        const timeline = await fetchProjectPackageTimeline(packageTimelineProjectId, { limit: 10, offset: 0 })
-        setProjectPackageTimelines((current) => ({
-          ...current,
-          [packageTimelineProjectId]: timeline,
-        }))
-        return true
-      } catch {
-        setWorkspaceError('安装升级时间线读取失败，请确认后端服务和 OSS 配置正常。')
-        return false
-      }
-    }
-    return startVisibleRefreshSchedule({
-      clearInterval: (handle) => window.clearInterval(handle),
-      intervalMs: workspaceRefreshIntervalMs,
-      isVisible: () => document.visibilityState === 'visible',
-      onFocus: (listener) => {
-        window.addEventListener('focus', listener)
-        return () => window.removeEventListener('focus', listener)
-      },
-      onVisibilityChange: (listener) => {
-        document.addEventListener('visibilitychange', listener)
-        return () => document.removeEventListener('visibilitychange', listener)
-      },
-      refresh: refreshTimeline,
-      refreshImmediately: true,
-      minRefreshGapMs: 1_000,
-      setInterval: (listener, delay) => window.setInterval(listener, delay),
-    })
-  }, [loggedIn, packageTimelineProjectId, projectDetailTab, view])
-
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded || !authUser || !inviteToken) return
     if (invitePasswordRequired && !invitePasswordVerified) return
@@ -4142,10 +4106,33 @@ function App() {
 
   const loadInstallTimeline = useCallback(async (options: ProjectPackageTimelineQuery) => {
     if (!selectedProject) throw new Error('Project not found')
+    installTimelineQueryRef.current = options
     const timeline = await fetchProjectPackageTimeline(selectedProject.id, options)
-    setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
+    setProjectPackageTimelines((current) => {
+      const existing = current[selectedProject.id]
+      if (!existing || options.eventId == null || options.includeDetails === false) {
+        return { ...current, [selectedProject.id]: timeline }
+      }
+      const detailById = new Map(timeline.events.map((event) => [event.id, event]))
+      return {
+        ...current,
+        [selectedProject.id]: {
+          ...existing,
+          deliveryMembers: timeline.deliveryMembers,
+          departedUserIds: timeline.departedUserIds,
+          mentionableMembers: timeline.mentionableMembers,
+          events: existing.events.map((event) => detailById.get(event.id) ?? event),
+        },
+      }
+    })
     return timeline
   }, [selectedProject])
+
+  async function refreshInstallTimelineView(projectId: number) {
+    const options = { ...installTimelineQueryRef.current, includeDetails: false }
+    const timeline = await fetchProjectPackageTimeline(projectId, options)
+    setProjectPackageTimelines((current) => ({ ...current, [projectId]: timeline }))
+  }
 
   async function reassignInstallEvent(eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) {
     if (!selectedProject) return false
@@ -4156,6 +4143,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines(current => ({ ...current, [selectedProject.id]: timeline }))
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4170,8 +4158,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4184,6 +4171,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4200,6 +4188,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4218,8 +4207,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4234,8 +4222,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4262,8 +4249,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4287,14 +4273,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // The install record has already been persisted, so a follow-up
-        // workspace refresh failure should not surface as a save failure.
-      }
       if (payload.completed === true) {
         await refreshNotifications()
       }
@@ -4332,14 +4312,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // Keep the successful mutation result on screen even if the
-        // background workspace sync temporarily fails.
-      }
       if (payload.completed !== undefined) {
         void refreshNotifications()
       }
@@ -4361,8 +4335,7 @@ function App() {
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }

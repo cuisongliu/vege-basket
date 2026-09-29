@@ -432,6 +432,10 @@ export type ProjectPackageEvent = {
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
+  detailsLoaded?: boolean
+  packageCount?: number
+  operationCount?: number
+  commentCount?: number
 }
 
 export type ProjectPackageEventDocumentInput = {
@@ -487,6 +491,8 @@ export type ProjectPackageTimelineQuery = {
   offset?: number
   q?: string
   sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
 }
 
 export type PackageMarketPageKind = {

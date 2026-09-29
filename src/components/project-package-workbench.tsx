@@ -1612,6 +1612,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [timelineError, setTimelineError] = useState('')
   const timelineRequestIdRef = useRef(0)
+  const [eventDetailsLoading, setEventDetailsLoading] = useState(false)
+  const eventDetailsRequestIdRef = useRef(0)
   const [packageQuery, setPackageQuery] = useState('')
   const [packagePage, setPackagePage] = useState(0)
   const [deliveryResultDialogOpen, setDeliveryResultDialogOpen] = useState(false)
@@ -1760,6 +1762,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       void onLoadTimeline({
         assignedUserId: assignedOnly && currentUserId ? currentUserId : undefined,
         filters: eventFilterConditions,
+        includeDetails: false,
         join: eventFilterJoin,
         limit: eventPageSize,
         offset: eventPage * eventPageSize,
@@ -1775,6 +1778,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       window.clearTimeout(timer)
       if (timelineRequestIdRef.current === requestId) timelineRequestIdRef.current += 1
     }
+  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventSearch, eventSortDirection, onLoadTimeline])
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void onLoadTimeline({
+        assignedUserId: assignedOnly && currentUserId ? currentUserId : undefined,
+        filters: eventFilterConditions,
+        includeDetails: false,
+        join: eventFilterJoin,
+        limit: eventPageSize,
+        offset: eventPage * eventPageSize,
+        q: eventSearch,
+        sort: eventSortDirection,
+      }).catch(() => undefined)
+    }, 15_000)
+    return () => window.clearInterval(interval)
   }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventSearch, eventSortDirection, onLoadTimeline])
   useEffect(() => {
     setEventPage(0)
@@ -1896,6 +1914,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   const selectedEvent =
     visibleEvents.find((event) => event.id === selectedEventId) ?? visibleEvents[0] ?? null
+  const selectedEventDetailId = selectedEvent?.id ?? null
+  const selectedEventNeedsDetails = Boolean(selectedEvent && selectedEvent.detailsLoaded === false)
+  useEffect(() => {
+    if (!selectedEventNeedsDetails || selectedEventDetailId == null) {
+      setEventDetailsLoading(false)
+      return
+    }
+    const requestId = ++eventDetailsRequestIdRef.current
+    setEventDetailsLoading(true)
+    void onLoadTimeline({ eventId: selectedEventDetailId, includeDetails: true, limit: 1, offset: 0 })
+      .catch(() => undefined)
+      .finally(() => {
+        if (eventDetailsRequestIdRef.current === requestId) setEventDetailsLoading(false)
+      })
+  }, [onLoadTimeline, selectedEventDetailId, selectedEventNeedsDetails])
   const selectedEventGroups = selectedEvent?.groups ?? []
   const filteredPackageGroups = (() => {
     const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
@@ -3452,6 +3485,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     <strong>{event.title}</strong>
                     <span>{eventTypeLabel(event.type)} · {formatEventDeliveryWindow(event)}</span>
                     <span className="project-event-badges">
+                      <span className="project-event-counts" aria-label="事件内容摘要">
+                        包 {event.packageCount ?? 0} · 操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}
+                      </span>
                       <span className="project-event-assignee">
                         执行负责人：<UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} />
                       </span>
@@ -3503,7 +3539,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             {eventTotal > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} /> : null}
           </aside>
 
-          {eventEditorOpen ? (
+          {eventDetailsLoading && selectedEvent ? (
+            <section className="event-workspace event-details-loading" aria-live="polite">
+              <div className="event-details-loading-bar" />
+              <p>正在加载事件详情...</p>
+            </section>
+          ) : eventEditorOpen ? (
             renderEventEditor()
           ) : selectedEvent && !selectedEvent.publishedAt ? (
             <section className="event-workspace event-draft-summary">
