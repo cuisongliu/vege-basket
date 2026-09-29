@@ -124,8 +124,25 @@ test('creating an organization requires the actor organization-administrator rol
   const routeSource = platformOrganizationsSource.slice(routeStart, routeEnd)
 
   assert.match(routeSource, /where user_id = \$1 and role = 'organization_admin'/u)
+  assert.doesNotMatch(routeSource, /requirePlatformAdminWithClient/u)
   assert.match(routeSource, /ORGANIZATION_ADMIN_REQUIRED/u)
   assert.match(routeSource, /只有组织管理员可以创建组织/u)
+})
+
+test('organization administrators create self-owned organizations from organization management', () => {
+  const routeStart = organizationsSource.indexOf("router.post('/organizations'")
+  const routeEnd = organizationsSource.indexOf("router.get('/organizations/:organizationId'", routeStart)
+  const routeSource = organizationsSource.slice(routeStart, routeEnd)
+
+  assert.ok(routeStart >= 0)
+  assert.ok(routeEnd > routeStart)
+  assert.match(routeSource, /const session = await requireSession\(request, response\)/u)
+  assert.match(routeSource, /ownerUserId: session\.userId/u)
+  assert.match(routeSource, /createPlatformOrganization/u)
+  assert.match(organizationsSource, /canCreate: organizationAdmin\.rows\[0\]\?\.allowed === true/u)
+  assert.match(apiSource, /export function createOrganization\(name: string\)[\s\S]+request<\{ id: number; name: string \}>\('\/api\/organizations'/u)
+  assert.match(organizationWorkbenchSource, /新建组织/u)
+  assert.match(organizationWorkbenchSource, /await createOrganization\(organizationName\)/u)
 })
 
 test('weekly report collection management only requires organization administrator role', () => {

@@ -177,7 +177,6 @@ export async function createPlatformOrganization(input: {
   try {
     await client.query('begin')
     await lockPlatformAdministration(client)
-    await requirePlatformAdminWithClient(client, input.actorUserId)
     const organizationAdmin = await client.query<{ allowed: boolean }>(
       `select exists(
          select 1 from user_roles
