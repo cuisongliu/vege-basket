@@ -92,7 +92,7 @@ test('renders My Work grid rows with valid table descendants', () => {
   assert.doesNotMatch(myWorkWorkbenchSource, /role="row">\s*<button/u)
 })
 
-test('work-hour confirmation shows aligned totals and reviews selected entries in the detail dialog', () => {
+test('work-hour confirmation shows aligned totals and reviews selected entries in the detail drawer', () => {
   assert.match(myWorkSource, /sum\(hours\.minutes\).*cumulative_minutes/u)
   assert.match(myWorkSource, /hours\.status = 'submitted'/u)
   assert.match(myWorkWorkbenchSource, /预估[\s\S]*累计[\s\S]*待确认[\s\S]*查看工时/u)
@@ -107,8 +107,9 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.doesNotMatch(myWorkWorkbenchSource, /验收所选/u)
   assert.doesNotMatch(myWorkWorkbenchSource, /onAcceptTodos/u)
   assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-row[\s\S]*grid-template-columns/u)
-  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-dialog[\s\S]*width: min\(1120px/u)
-  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-entry-list[\s\S]*min-height: 0[\s\S]*overflow: auto/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-dialog[\s\S]*right: 0[\s\S]*width: min\(820px/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-content[\s\S]*overflow-y: auto/u)
+  assert.match(myWorkWorkbenchCss, /\.my-work-confirmation-entry[\s\S]*min-height: 54px/u)
   assert.match(appSource, /> 工时确认/u)
   assert.match(appSource, /const canNavigateToReview = Boolean\(selectedOrganizationId !== null && canNavigateToProjectBasket\)/u)
   assert.match(serverSource, /workHourConfirmationCount/u)
