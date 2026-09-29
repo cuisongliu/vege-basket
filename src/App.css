@@ -6535,7 +6535,9 @@ textarea:focus {
 .package-empty-state {
   display: grid;
   min-height: 360px;
-  place-items: center;
+  align-content: start;
+  justify-items: start;
+  padding: 28px;
   border: 1px solid color-mix(in oklch, var(--foreground) 10%, var(--line));
   border-radius: 18px;
   background:
@@ -6944,6 +6946,29 @@ textarea:focus {
   justify-content: space-between;
   gap: 12px;
   margin: 0 0 14px;
+}
+
+.project-events-search {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 180px;
+  min-width: 0;
+  gap: 6px;
+  color: var(--muted-text);
+}
+
+.project-events-search input {
+  min-width: 0;
+  min-height: 30px;
+  height: 30px;
+  padding-inline: 9px;
+  font-size: 12px;
+}
+
+.project-events-error {
+  margin: -5px 0 12px;
+  color: var(--destructive);
+  font-size: 12px;
 }
 
 .project-events-assigned-toggle {

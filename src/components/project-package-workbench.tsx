@@ -76,7 +76,6 @@ import {
 } from '@/components/todo-filter-builder-dialog'
 import { PackageEventFilterBuilderDialog } from '@/components/package-event-filter-builder-dialog'
 import {
-  matchesPackageEventFilterConditions,
   type PackageEventFilterCondition,
   type PackageEventFilterJoin,
 } from '@/components/package-event-filter'
@@ -99,6 +98,7 @@ import type {
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   Todo,
 } from '@/types'
 import { resolveExistingOperationInteraction } from '@/project-package-operation-access'
@@ -116,6 +116,7 @@ import {
 } from '../../shared/organization-package-market'
 
 type PackageWorkbenchProps = {
+  onLoadTimeline: (options: ProjectPackageTimelineQuery) => Promise<ProjectPackageTimeline>
   onAddEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
   onCompleteEvent: (eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) => Promise<boolean>
@@ -1550,6 +1551,7 @@ const operationEventOptions: Array<{
 ]
 
 export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle, PackageWorkbenchProps>(function ProjectPackageWorkbench({
+  onLoadTimeline,
   currentUserId,
   memberships,
   onAddEventComment,
@@ -1606,6 +1608,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
   const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
   const [eventPage, setEventPage] = useState(0)
+  const [eventSearch, setEventSearch] = useState('')
+  const [timelineLoading, setTimelineLoading] = useState(false)
+  const [timelineError, setTimelineError] = useState('')
+  const timelineRequestIdRef = useRef(0)
   const [packageQuery, setPackageQuery] = useState('')
   const [packagePage, setPackagePage] = useState(0)
   const [deliveryResultDialogOpen, setDeliveryResultDialogOpen] = useState(false)
@@ -1742,40 +1748,37 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }, [memberships, project.id, project.ownerName, project.ownerUserId, project.organizationId, timeline?.deliveryMembers])
   const [assignedOnly, setAssignedOnly] = useState(false)
   const activeEventFilterCount = eventFilterConditions.length
-  const visibleEvents = useMemo(() => {
-    const assignedEvents = assignedOnly && currentUserId
-      ? events.filter((event) => event.assigneeUserId === currentUserId)
-      : events
-    return assignedEvents
-      .filter((event) =>
-        matchesPackageEventFilterConditions(event, eventFilterConditions, eventFilterJoin),
-      )
-      .sort((left, right) => {
-        const deliveryDateComparison = getEventDeliveryDate(left)
-          .localeCompare(getEventDeliveryDate(right))
-        const createdAtComparison = left.createdAt.localeCompare(right.createdAt)
-        const comparison = deliveryDateComparison || createdAtComparison || left.id - right.id
-        return eventSortDirection === 'asc' ? comparison : -comparison
-      })
-  }, [
-    assignedOnly,
-    currentUserId,
-    eventFilterConditions,
-    eventFilterJoin,
-    eventSortDirection,
-    events,
-  ])
+  const visibleEvents = events
   const eventPageSize = 10
-  const pagedEvents = useMemo(
-    () => visibleEvents.slice(eventPage * eventPageSize, (eventPage + 1) * eventPageSize),
-    [eventPage, visibleEvents],
-  )
+  const pagedEvents = visibleEvents
+  const eventTotal = timeline?.pagination?.total ?? visibleEvents.length
   useEffect(() => {
-    setEventPage((page) => Math.min(page, Math.max(0, Math.ceil(visibleEvents.length / eventPageSize) - 1)))
-  }, [visibleEvents.length])
+    const requestId = ++timelineRequestIdRef.current
+    const timer = window.setTimeout(() => {
+      setTimelineLoading(true)
+      setTimelineError('')
+      void onLoadTimeline({
+        assignedUserId: assignedOnly && currentUserId ? currentUserId : undefined,
+        filters: eventFilterConditions,
+        join: eventFilterJoin,
+        limit: eventPageSize,
+        offset: eventPage * eventPageSize,
+        q: eventSearch,
+        sort: eventSortDirection,
+      }).catch(() => {
+        if (timelineRequestIdRef.current === requestId) setTimelineError('交付事件读取失败，请稍后重试。')
+      }).finally(() => {
+        if (timelineRequestIdRef.current === requestId) setTimelineLoading(false)
+      })
+    }, eventSearch.trim() ? 280 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (timelineRequestIdRef.current === requestId) timelineRequestIdRef.current += 1
+    }
+  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventSearch, eventSortDirection, onLoadTimeline])
   useEffect(() => {
     setEventPage(0)
-  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventSortDirection])
+  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventSearch, eventSortDirection])
   const packagePageSize = 10
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
@@ -3324,7 +3327,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   return (
     <div className="package-workbench">
       {confirmationDialog}
-      {events.length === 0 && !eventEditorOpen ? (
+      {eventTotal === 0 && !eventEditorOpen && !assignedOnly && !eventSearch.trim() && activeEventFilterCount === 0 ? (
         <section className="package-empty-state">
           <div className="package-empty-panel">
             <h3>先创建一个项目事件</h3>
@@ -3381,6 +3384,15 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               }}
             />
             <div className="project-events-controls-row">
+              <label className="project-events-search">
+                <MagnifyingGlass size={14} />
+                <Input
+                  aria-label="检索交付事件"
+                  placeholder="检索标题、状态、类型或交付人"
+                  value={eventSearch}
+                  onChange={(event) => setEventSearch(event.target.value)}
+                />
+              </label>
               <label className="project-events-assigned-toggle">
                 <input
                   type="checkbox"
@@ -3409,8 +3421,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 )}
               </Button>
             </div>
+            {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
             <div className="project-event-items">
-              {visibleEvents.length === 0 ? (
+              {timelineLoading && visibleEvents.length === 0 ? (
+                <p className="project-events-empty">正在加载交付事件...</p>
+              ) : visibleEvents.length === 0 ? (
                 <p className="project-events-empty">
                   {activeEventFilterCount > 0
                     ? '没有符合筛选条件的交付事件。'
@@ -3479,7 +3494,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </div>
               ))}
             </div>
-            {visibleEvents.length > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={visibleEvents.length} onPageChange={setEventPage} /> : null}
+            {eventTotal > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} /> : null}
           </aside>
 
           {eventEditorOpen ? (

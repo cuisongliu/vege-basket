@@ -147,9 +147,58 @@ export type ProjectPackageTimeline = {
 }
 
 export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: ProjectPackageEventFilterCondition[]
+  join?: 'and' | 'or'
   limit?: number
   offset?: number
   q?: string
+  sort?: 'asc' | 'desc'
+}
+
+export type ProjectPackageEventFilterCondition = {
+  field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+  operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+  value: string
+}
+
+const projectPackageEventFilterFields = new Set<ProjectPackageEventFilterCondition['field']>([
+  'title', 'assignee', 'deliveryDate', 'status', 'type',
+])
+const projectPackageEventFilterOperators = new Set<ProjectPackageEventFilterCondition['operator']>([
+  'contains', 'not_contains', 'equals', 'not_equals', 'is_empty', 'is_not_empty', 'before', 'after', 'between',
+])
+
+export function parseProjectPackageEventFilters(value: unknown): ProjectPackageEventFilterCondition[] {
+  if (value == null || value === '') return []
+  let parsed: unknown
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value } catch {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  if (!Array.isArray(parsed) || parsed.length > 10) {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  return parsed.map((condition) => {
+    if (!condition || typeof condition !== 'object') {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    const candidate = condition as Record<string, unknown>
+    if (
+      typeof candidate.field !== 'string' ||
+      !projectPackageEventFilterFields.has(candidate.field as ProjectPackageEventFilterCondition['field']) ||
+      typeof candidate.operator !== 'string' ||
+      !projectPackageEventFilterOperators.has(candidate.operator as ProjectPackageEventFilterCondition['operator']) ||
+      typeof candidate.value !== 'string' ||
+      candidate.value.length > 200
+    ) {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    return {
+      field: candidate.field as ProjectPackageEventFilterCondition['field'],
+      operator: candidate.operator as ProjectPackageEventFilterCondition['operator'],
+      value: candidate.value,
+    }
+  })
 }
 
 type EventRow = {
@@ -1294,27 +1343,103 @@ function buildProjectPackageEventMarkdown(
   return lines
 }
 
+function packageEventFilterValue(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  if (condition.field === 'title') return decryptText(row.title)
+  if (condition.field === 'assignee') return row.assignee_user_id ?? ''
+  if (condition.field === 'deliveryDate') return row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at)
+  if (condition.field === 'status') return ensureProjectPackageEventStatus(row.status, row.published_at)
+  return row.type
+}
+
+function matchesProjectPackageEventFilter(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  const fieldValue = packageEventFilterValue(row, condition)
+  const targetValue = condition.value.trim()
+  if (condition.operator === 'is_empty') return !fieldValue
+  if (condition.operator === 'is_not_empty') return Boolean(fieldValue)
+  if (condition.operator === 'contains') return fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'not_contains') return !fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'equals') return fieldValue === targetValue
+  if (condition.operator === 'not_equals') return fieldValue !== targetValue
+  if (condition.operator === 'before') return Boolean(fieldValue) && fieldValue < targetValue
+  if (condition.operator === 'after') return Boolean(fieldValue) && fieldValue > targetValue
+  if (condition.operator === 'between') {
+    const [rawStart, rawEnd] = targetValue.split('..')
+    const start = rawStart || rawEnd || ''
+    const end = rawEnd || rawStart || ''
+    const lower = start <= end ? start : end
+    const upper = start <= end ? end : start
+    return Boolean(fieldValue) && fieldValue >= lower && fieldValue <= upper
+  }
+  return true
+}
+
+function projectPackageEventMatchesQuery(row: EventRow, options: ProjectPackageTimelineQuery, normalizedQuery: string) {
+  if (options.assignedUserId && Number(row.assignee_user_id) !== options.assignedUserId) return false
+  if (normalizedQuery) {
+    const searchable = [
+      decryptText(row.title),
+      row.type,
+      ensureProjectPackageEventStatus(row.status, row.published_at),
+      row.assignee_user_id
+        ? displayUserName({ email: row.assignee_email, display_name: row.assignee_display_name })
+        : '',
+    ].join(' ').toLocaleLowerCase('zh-CN')
+    if (!searchable.includes(normalizedQuery)) return false
+  }
+  const filters = options.filters ?? []
+  if (filters.length === 0) return true
+  return options.join === 'or'
+    ? filters.some((condition) => matchesProjectPackageEventFilter(row, condition))
+    : filters.every((condition) => matchesProjectPackageEventFilter(row, condition))
+}
+
 export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
   const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
-  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 100)))
+  // Keep the server-side safety cap at 500 while the workbench requests 10 per page.
+  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 10)))
   const requestedOffset = Math.max(0, Math.floor(options.offset ?? 0))
-  const databasePageRequested = !normalizedQuery && (options.limit != null || options.offset != null)
-  let selectedEventIds: number[] | null = null
-  if (databasePageRequested) {
-    const pageResult = await query<{ id: string }>(
-      `select id
-         from project_package_events
-        where project_id = $1
-        order by created_at asc, id asc
-        limit $2 offset $3`,
-      [projectId, requestedLimit, requestedOffset],
-    )
-    selectedEventIds = pageResult.rows.map((row) => Number(row.id))
-  }
-  const eventScope = selectedEventIds ? 'and e.id = any($2::bigint[])' : ''
-  const scopedValues = selectedEventIds ? [projectId, selectedEventIds] : [projectId]
+  const allEventsResult = await query<EventRow>(
+    `
+    select e.id,
+           coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
+           coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
+           coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
+           e.completed_by_user_id, e.completed_at,
+           e.delivery_result, e.delivery_failure_reason,
+           e.type, e.status, e.title, e.assignee_user_id, e.assigned_by_user_id, e.assigned_at,
+           e.delivery_date, e.delivery_start_at, e.delivery_end_at,
+           e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
+           assignee.email as assignee_email, assignee.display_name as assignee_display_name,
+           assigner.email as assigner_email, assigner.display_name as assigner_display_name
+      from project_package_events e
+      left join users creator on creator.id = e.created_by_user_id
+      left join users publisher on publisher.id = e.published_by_user_id
+      left join users completer on completer.id = e.completed_by_user_id
+      left join users assignee on assignee.id = e.assignee_user_id
+      left join users assigner on assigner.id = e.assigned_by_user_id
+     where e.project_id = $1
+     order by e.created_at asc, e.id asc
+    `,
+    [projectId],
+  )
+  const direction = options.sort === 'asc' ? 1 : -1
+  const filteredEventRows = allEventsResult.rows
+    .filter((row) => projectPackageEventMatchesQuery(row, options, normalizedQuery))
+    .sort((left, right) => {
+      const leftDate = left.delivery_date ? formatDate(left.delivery_date) : formatDate(left.created_at)
+      const rightDate = right.delivery_date ? formatDate(right.delivery_date) : formatDate(right.created_at)
+      const comparison = leftDate.localeCompare(rightDate) || left.created_at.getTime() - right.created_at.getTime() || Number(left.id) - Number(right.id)
+      return comparison * direction
+    })
+  const total = filteredEventRows.length
+  const pageEventRows = filteredEventRows.slice(requestedOffset, requestedOffset + requestedLimit)
+  const limit = requestedLimit
+  const offset = requestedOffset
+  const selectedEventIds = pageEventRows.map((row) => Number(row.id))
+  const eventsResult = { rows: pageEventRows }
+  const eventScope = 'and e.id = any($2::bigint[])'
+  const scopedValues: [number, number[]] = [projectId, selectedEventIds]
   const [
-    eventsResult,
     groupsResult,
     itemsResult,
     operationsResult,
@@ -1322,43 +1447,6 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
     commentsResult,
     mentionableMembersResult,
   ] = await Promise.all([
-    query<EventRow>(
-      `
-      select e.id,
-             coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
-             coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
-             coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
-             e.completed_by_user_id, e.completed_at,
-             e.delivery_result, e.delivery_failure_reason,
-             e.type,
-             e.status,
-             e.title,
-             e.assignee_user_id,
-             e.assigned_by_user_id,
-             e.assigned_at,
-             e.delivery_date,
-             e.delivery_start_at,
-             e.delivery_end_at,
-             e.published_at,
-             e.published_by_user_id,
-             e.created_at,
-             e.updated_at,
-             assignee.email as assignee_email,
-             assignee.display_name as assignee_display_name,
-             assigner.email as assigner_email,
-             assigner.display_name as assigner_display_name
-      from project_package_events e
-      left join users creator on creator.id = e.created_by_user_id
-      left join users publisher on publisher.id = e.published_by_user_id
-      left join users completer on completer.id = e.completed_by_user_id
-      left join users assignee on assignee.id = e.assignee_user_id
-      left join users assigner on assigner.id = e.assigned_by_user_id
-      where e.project_id = $1
-        ${eventScope}
-      order by e.created_at asc, e.id asc
-      `,
-      scopedValues,
-    ),
     query<GroupRow>(
       `
       select g.id, g.project_package_event_id, g.package_name, g.created_at
@@ -1626,25 +1714,12 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
     }))
-  const filteredEvents = normalizedQuery
-    ? allEvents.filter((event) => [event.title, event.type, event.status, event.assigneeName ?? ''].join(' ').toLocaleLowerCase('zh-CN').includes(normalizedQuery))
-    : allEvents
-  const total = databasePageRequested
-    ? Number((await query<{ count: string }>('select count(*)::bigint as count from project_package_events where project_id = $1', [projectId])).rows[0]?.count ?? 0)
-    : filteredEvents.length
-  const limit = requestedLimit
-  const offset = requestedOffset
-  const events = databasePageRequested
-    ? allEvents
-    : options.limit == null && options.offset == null && !normalizedQuery
-    ? filteredEvents
-    : filteredEvents.slice(offset, offset + limit)
   return {
     canPlanDelivery: access.canPlan,
     deliveryMembers,
     departedUserIds: await getDepartedUserIds(),
     projectId,
-    events,
+    events: allEvents,
     pagination: { limit, offset, total },
     mentionableMembers,
   } satisfies ProjectPackageTimeline

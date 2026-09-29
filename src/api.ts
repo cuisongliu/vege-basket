@@ -26,6 +26,7 @@ import type {
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   ProjectPackageEventType,
   ProjectMembership,
   ProjectStatus,
@@ -2029,11 +2030,15 @@ export function deleteAiConversation(conversationId: string) {
   )
 }
 
-export function fetchProjectPackageTimeline(projectId: number, options: { limit?: number; offset?: number; q?: string } = {}) {
+export function fetchProjectPackageTimeline(projectId: number, options: ProjectPackageTimelineQuery = {}) {
   const params = new URLSearchParams()
+  if (options.assignedUserId != null) params.set('assignedUserId', String(options.assignedUserId))
+  if (options.filters?.length) params.set('filters', JSON.stringify(options.filters))
+  if (options.join) params.set('join', options.join)
   if (options.limit != null) params.set('limit', String(options.limit))
   if (options.offset != null) params.set('offset', String(options.offset))
   if (options.q?.trim()) params.set('q', options.q.trim())
+  if (options.sort) params.set('sort', options.sort)
   const query = params.toString() ? `?${params.toString()}` : ''
   return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline${query}`)
 }

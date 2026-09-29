@@ -475,6 +475,20 @@ export type ProjectPackageTimeline = {
   mentionableMembers: Array<{ id: number; name: string }>
 }
 
+export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: Array<{
+    field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+    operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+    value: string
+  }>
+  join?: 'and' | 'or'
+  limit?: number
+  offset?: number
+  q?: string
+  sort?: 'asc' | 'desc'
+}
+
 export type PackageMarketPageKind = {
   code: string
   key: string

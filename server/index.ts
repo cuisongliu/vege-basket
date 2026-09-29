@@ -100,6 +100,7 @@ import {
   exportProjectPackageTimeline,
   getProjectPackageItemDownloadSource,
   getProjectPackageTimeline,
+  parseProjectPackageEventFilters,
   ProjectPackageEventError,
   resolvePackageEventMentionUserIds,
   saveProjectPackageEvent,
@@ -12476,11 +12477,17 @@ app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request
   }
   const rawLimit = Number(request.query.limit)
   const rawOffset = Number(request.query.offset)
-  response.json(await getProjectPackageTimeline(projectId, userId, {
+  const assignedUserId = Number(request.query.assignedUserId)
+  const timeline = await runProjectPackageEventMutation(response, () => getProjectPackageTimeline(projectId, userId, {
+    assignedUserId: Number.isSafeInteger(assignedUserId) && assignedUserId > 0 ? assignedUserId : undefined,
+    filters: parseProjectPackageEventFilters(request.query.filters),
+    join: request.query.join === 'or' ? 'or' : 'and',
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
     offset: Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,
     q: typeof request.query.q === 'string' ? request.query.q : undefined,
+    sort: request.query.sort === 'asc' ? 'asc' : 'desc',
   }))
+  if (timeline.ok) response.json(timeline.value)
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {
