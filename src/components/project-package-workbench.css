@@ -1,16 +1,19 @@
 .delivery-workbench-shell {
+  height: 100%;
   min-width: 0;
   min-height: 0;
   width: 100%;
+  overflow: hidden;
 }
 
 .delivery-event-list-panel {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, auto) auto;
-  align-content: start;
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+  align-content: stretch;
+  height: 100%;
+  min-height: 0;
   width: 100%;
-  max-height: none;
-  overflow: visible;
+  overflow: hidden;
   padding: 20px;
   border-radius: 8px;
   background: var(--surface);
@@ -103,9 +106,18 @@
   margin-left: auto;
 }
 
+.delivery-event-message-row {
+  min-height: 0;
+}
+
+.delivery-event-message-row .project-events-error {
+  margin: 0 0 10px;
+}
+
 .delivery-event-table-viewport {
   min-width: 0;
-  max-height: clamp(300px, calc(100dvh - 390px), 680px);
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -114,9 +126,10 @@
 }
 
 .project-event-table-head,
-.project-event-row {
+.project-event-item {
+  --delivery-event-columns: minmax(210px, 2fr) minmax(74px, .7fr) minmax(100px, .9fr) minmax(112px, 1fr) minmax(92px, .7fr) minmax(130px, 1fr) minmax(130px, 1fr) 40px;
   display: grid;
-  grid-template-columns: minmax(210px, 2fr) minmax(74px, 0.7fr) minmax(100px, 0.9fr) minmax(112px, 1fr) minmax(92px, 0.7fr) minmax(130px, 1fr) minmax(130px, 1fr);
+  grid-template-columns: var(--delivery-event-columns);
   align-items: center;
   gap: 12px;
 }
@@ -126,7 +139,7 @@
   top: 0;
   z-index: 2;
   min-height: 36px;
-  padding: 8px 52px 8px 14px;
+  padding: 8px 14px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   color: var(--muted-text);
@@ -137,8 +150,7 @@
 
 .project-event-table .project-event-item {
   position: relative;
-  display: block;
-  padding: 0;
+  padding: 0 14px;
   border: 0;
   border-bottom: 1px solid var(--line);
   border-radius: 0;
@@ -159,21 +171,31 @@
 }
 
 .project-event-row {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   width: 100%;
-  min-height: 66px;
-  padding: 12px 52px 12px 14px;
-  color: var(--text);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
-.project-event-row:hover {
+.project-event-table .project-event-item:hover {
   background: color-mix(in oklch, var(--primary) 4%, var(--surface));
 }
 
-.project-event-item.active .project-event-row {
+.project-event-table .project-event-item.active {
   background: color-mix(in oklch, var(--primary) 7%, var(--surface));
 }
 
+.project-event-table .project-event-item:has(.project-event-row:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
 .project-event-cell {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   overflow: hidden;
   color: var(--muted-text);
@@ -181,6 +203,8 @@
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 12px 0;
+  pointer-events: none;
 }
 
 .project-event-title-cell {
@@ -211,12 +235,11 @@
 }
 
 .project-event-table .project-event-item-actions {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  z-index: 1;
+  grid-column: 8;
+  grid-row: 1;
+  justify-self: center;
+  z-index: 2;
   padding: 0;
-  transform: translateY(-50%);
 }
 
 .project-event-package-count {
@@ -310,6 +333,18 @@
   padding: 28px 22px;
 }
 
+.project-package-event-drawer > [data-slot="dialog-body"] > .event-details-loading {
+  padding: 22px;
+}
+
+.project-package-event-drawer > [data-slot="dialog-body"] > .event-details-error {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 8px;
+  padding: 28px 22px;
+}
+
 .event-details-error h3,
 .event-details-error p {
   margin: 0;
@@ -333,6 +368,7 @@
 }
 
 .project-events-empty {
+  grid-column: 1 / -1;
   display: grid;
   justify-items: start;
   gap: 4px;
@@ -359,13 +395,19 @@
 
 @media (max-width: 900px) {
   .project-event-table-head,
-  .project-event-row {
-    grid-template-columns: minmax(180px, 2fr) minmax(76px, 0.8fr) minmax(100px, 0.9fr) minmax(108px, 1fr) minmax(84px, 0.7fr) minmax(110px, 0.9fr);
+  .project-event-item {
+    --delivery-event-columns: minmax(180px, 2fr) minmax(76px, 0.8fr) minmax(100px, 0.9fr) minmax(108px, 1fr) minmax(84px, 0.7fr) minmax(110px, 0.9fr) 40px;
   }
 
   .project-event-table-head span:nth-child(7),
-  .project-event-row .project-event-cell:nth-child(7) {
+  .project-event-item .project-event-updated-cell {
     display: none;
+  }
+
+  .project-event-table-head span:last-child,
+  .project-event-table .project-event-item-actions {
+    grid-column: 7;
+    grid-row: 1;
   }
 }
 
@@ -411,60 +453,61 @@
   }
 
   .delivery-event-table-viewport {
-    max-height: min(62dvh, 620px);
+    min-height: 0;
   }
 
   .project-event-table .project-event-item {
-    grid-template-columns: minmax(0, 1fr) auto;
+    --delivery-event-columns: minmax(0, 1fr) auto 40px;
+    grid-template-columns: var(--delivery-event-columns);
+    padding: 0 8px 0 12px;
   }
 
   .project-event-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px 10px;
-    min-height: 84px;
-    padding: 12px 72px 12px 12px;
-  }
-
-  .project-event-row .project-event-cell {
     display: block;
   }
 
-  .project-event-row .project-event-date-cell,
-  .project-event-row .project-event-package-count {
+  .project-event-item .project-event-cell {
+    display: block;
+    padding: 12px;
+  }
+
+  .project-event-item .project-event-date-cell,
+  .project-event-item .project-event-package-count {
     grid-column: 1 / -1;
     white-space: normal;
   }
 
-  .project-event-row .project-event-type-cell,
-  .project-event-row .project-event-assignee-cell,
-  .project-event-row .project-event-updated-cell {
+  .project-event-item .project-event-type-cell,
+  .project-event-item .project-event-assignee-cell,
+  .project-event-item .project-event-updated-cell {
     display: none;
   }
 
-  .project-event-row .project-event-status-cell {
-    position: absolute;
-    top: 12px;
-    right: 44px;
+  .project-event-item .project-event-status-cell {
+    grid-column: 2;
+    grid-row: 1;
   }
 
-  .project-event-row .project-event-date-cell,
-  .project-event-row .project-event-package-count {
+  .project-event-item .project-event-date-cell,
+  .project-event-item .project-event-package-count {
     font-size: 11px;
   }
 
-  .project-event-row .project-event-date-cell::before {
+  .project-event-item .project-event-date-cell::before {
     content: '交付日期：';
   }
 
-  .project-event-row .project-event-package-count::before {
+  .project-event-item .project-event-package-count::before {
     content: '交付包数量：';
     color: var(--muted-text);
     font-weight: 450;
   }
 
   .project-event-table .project-event-item-actions {
-    top: 10px;
-    transform: none;
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+    padding-right: 8px;
   }
 
   .project-package-event-drawer {
@@ -475,6 +518,17 @@
   .delivery-drawer-header {
     padding: 16px 18px 12px;
   }
+}
+
+.project-package-event-drawer > [data-slot="dialog-body"] {
+  min-height: 0;
+  overflow: auto;
+}
+
+.project-package-event-drawer > [data-slot="dialog-body"] > .event-workspace {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
 }
 
 @media (prefers-reduced-motion: reduce) {

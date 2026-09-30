@@ -1613,7 +1613,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [timelineError, setTimelineError] = useState('')
   const timelineRequestIdRef = useRef(0)
-  const [eventDetailsLoading, setEventDetailsLoading] = useState(false)
   const [eventDetailsError, setEventDetailsError] = useState('')
   const [eventDetailsRetry, setEventDetailsRetry] = useState(0)
   const eventDetailsRequestIdRef = useRef(0)
@@ -1930,20 +1929,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectedEventDetailId = selectedEvent?.id ?? null
   const selectedEventNeedsDetails = Boolean(selectedEvent && selectedEvent.detailsLoaded === false)
   useEffect(() => {
+    const requestId = ++eventDetailsRequestIdRef.current
     if (!selectedEventNeedsDetails || selectedEventDetailId == null) {
-      setEventDetailsLoading(false)
       setEventDetailsError('')
       return
     }
-    const requestId = ++eventDetailsRequestIdRef.current
-    setEventDetailsLoading(true)
     setEventDetailsError('')
     void onLoadTimeline({ eventId: selectedEventDetailId, includeDetails: true, limit: 1, offset: 0 })
+      .then((detailTimeline) => {
+        if (eventDetailsRequestIdRef.current !== requestId) return
+        if (!detailTimeline.events.some((event) => event.id === selectedEventDetailId)) {
+          setEventDetailsError('事件不存在、已删除或当前账号无权查看。')
+        }
+      })
       .catch(() => {
         if (eventDetailsRequestIdRef.current === requestId) setEventDetailsError('事件详情读取失败，请稍后重试。')
-      })
-      .finally(() => {
-        if (eventDetailsRequestIdRef.current === requestId) setEventDetailsLoading(false)
       })
   }, [eventDetailsRetry, onLoadTimeline, selectedEventDetailId, selectedEventNeedsDetails])
   const selectedEventGroups = selectedEvent?.groups ?? []
@@ -3378,31 +3378,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     )
   }
 
-  const isEmptyState = eventTotal === 0
-    && !eventEditorOpen
-    && !assignedOnly
-    && !eventSearch.trim()
-    && activeEventFilterCount === 0
-
   return (
-    <div className={isEmptyState ? 'package-workbench package-workbench-empty' : 'package-workbench'}>
+    <div className="package-workbench">
       {confirmationDialog}
-      {isEmptyState ? (
-        <section className="package-empty-state">
-          <div className="package-empty-panel">
-            <h3>先创建一个项目事件</h3>
-            <p>正确路径是「项目 - 事件 - 选购安装包 - 编辑对应文档」，请先创建一个事件再开始维护交付记录。</p>
-              <div className="package-empty-actions">
-              {canManageProject ? (
-                <Button className="solid-button" type="button" onClick={openCreateEventEditor}>
-                  <Plus size={16} /> 新增事件
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </section>
-      ) : (
-        <div className="delivery-workbench-shell">
+      <div className="delivery-workbench-shell">
+        {eventEditorOpen ? renderEventEditor() : (
+          <>
           <section className="project-events-panel delivery-event-list-panel">
             <div className="delivery-workbench-heading">
               <div>
@@ -3495,10 +3476,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 )}
               </Button>
             </div>
-            {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
+            <div className="delivery-event-message-row">
+              {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
+            </div>
             <div className="delivery-event-table-viewport">
               <div className="project-event-table-head" aria-hidden="true">
-                <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span>
+                <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span><span aria-hidden="true" />
               </div>
               <div className="project-event-items project-event-table">
                 {timelineLoading && visibleEvents.length === 0 ? (
@@ -3518,16 +3501,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     <button
                       className="project-event-tab-button project-event-row"
                       type="button"
+                      aria-label={`查看交付事件 ${event.title}`}
                       onClick={() => selectEventFromList(event)}
-                    >
-                      <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
-                      <span className="project-event-cell project-event-type-cell">{eventTypeLabel(event.type)}</span>
-                      <span className="project-event-cell project-event-status-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
-                      <span className="project-event-cell project-event-date-cell">{formatEventDeliveryDate(event)}</span>
-                      <span className="project-event-cell project-event-package-count" aria-label={`${event.packageCount ?? 0} 个安装包条目`}>{event.packageCount ?? 0}</span>
-                      <span className="project-event-cell project-event-assignee-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
-                      <span className="project-event-cell project-event-updated-cell">{event.updatedAt}</span>
-                    </button>
+                    />
+                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
+                    <span className="project-event-cell project-event-type-cell">{eventTypeLabel(event.type)}</span>
+                    <span className="project-event-cell project-event-status-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
+                    <span className="project-event-cell project-event-date-cell">{formatEventDeliveryDate(event)}</span>
+                    <span className="project-event-cell project-event-package-count" aria-label={`${event.packageCount ?? 0} 个安装包条目`}>{event.packageCount ?? 0}</span>
+                    <span className="project-event-cell project-event-assignee-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
+                    <span className="project-event-cell project-event-updated-cell">{event.updatedAt}</span>
                     {event.capabilities?.canEditPlan ? (
                       <div className="project-event-item-actions">
                         <DropdownMenu>
@@ -3569,19 +3552,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 ))}
               </div>
             </div>
-            {eventTotal > 0 ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} onPageSizeChange={(size) => { setEventPage(0); setEventPageSize(size) }} /> : null}
+            <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} onPageSizeChange={(size) => { setEventPage(0); setEventPageSize(size) }} />
           </section>
 
-          {eventEditorOpen ? renderEventEditor() : (
           <Dialog open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
-            <DialogContent className="project-package-event-drawer">
+            <DialogContent fixedHeader className="project-package-event-drawer">
               <DialogHeader className="delivery-drawer-header">
                 <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
                 <DialogDescription>
                   {selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · 交付日期：${formatEventDeliveryDate(selectedEvent)}` : '查看事件的执行记录、安装包和反馈。'}
                 </DialogDescription>
               </DialogHeader>
-          {eventDetailsLoading && selectedEvent ? (
+          {selectedEvent && selectedEvent.detailsLoaded === false && !eventDetailsError ? (
             <section className="event-workspace event-details-loading" aria-live="polite">
               <div className="event-details-loading-bar" />
               <p>正在加载事件详情...</p>
@@ -3992,9 +3974,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           )}
             </DialogContent>
           </Dialog>
-          )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       <Dialog open={deliveryResultDialogOpen} onOpenChange={setDeliveryResultDialogOpen}>
         <DialogContent>

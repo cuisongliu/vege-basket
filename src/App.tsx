@@ -546,6 +546,27 @@ function formatAiMessageTime(value: string) {
     day: '2-digit',
   }).format(date)
 }
+
+function preserveLoadedPackageEventDetails(
+  current: ProjectPackageTimeline,
+  incoming: ProjectPackageTimeline,
+) {
+  const currentEventsById = new Map(current.events.map((event) => [event.id, event]))
+  return {
+    ...incoming,
+    events: incoming.events.map((event) => {
+      const loadedEvent = currentEventsById.get(event.id)
+      if (loadedEvent?.detailsLoaded !== true) return event
+      return {
+        ...event,
+        comments: loadedEvent.comments,
+        groups: loadedEvent.groups,
+        operations: loadedEvent.operations,
+        detailsLoaded: true,
+      }
+    }),
+  }
+}
 type TodoUpdatePayload = Omit<
   Partial<Todo>,
   'assigneeUserId' | 'moduleId' | 'subprojectId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'
@@ -4106,13 +4127,20 @@ function App() {
 
   const loadInstallTimeline = useCallback(async (options: ProjectPackageTimelineQuery) => {
     if (!selectedProject) throw new Error('Project not found')
-    installTimelineQueryRef.current = options
+    if (options.eventId == null) installTimelineQueryRef.current = options
     const timeline = await fetchProjectPackageTimeline(selectedProject.id, options)
     setProjectPackageTimelines((current) => {
       const existing = current[selectedProject.id]
-      if (!existing || options.eventId == null || options.includeDetails === false) {
+      if (!existing) {
         return { ...current, [selectedProject.id]: timeline }
       }
+      if (options.includeDetails === false) {
+        return {
+          ...current,
+          [selectedProject.id]: preserveLoadedPackageEventDetails(existing, timeline),
+        }
+      }
+      if (options.eventId == null) return { ...current, [selectedProject.id]: timeline }
       const detailById = new Map(timeline.events.map((event) => [event.id, event]))
       return {
         ...current,
@@ -4131,7 +4159,12 @@ function App() {
   async function refreshInstallTimelineView(projectId: number) {
     const options = { ...installTimelineQueryRef.current, includeDetails: false }
     const timeline = await fetchProjectPackageTimeline(projectId, options)
-    setProjectPackageTimelines((current) => ({ ...current, [projectId]: timeline }))
+    setProjectPackageTimelines((current) => ({
+      ...current,
+      [projectId]: current[projectId]
+        ? preserveLoadedPackageEventDetails(current[projectId], timeline)
+        : timeline,
+    }))
   }
 
   async function reassignInstallEvent(eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) {

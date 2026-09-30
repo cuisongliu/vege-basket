@@ -6185,16 +6185,18 @@ textarea:focus {
 
 .detail-layout.packages-mode .project-detail-main {
   grid-column: 1 / -1;
-  height: auto;
+  height: 100%;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .detail-layout.packages-mode {
-  height: auto;
+  height: 100%;
   min-height: 0;
   grid-template-columns: minmax(0, 1fr);
-  align-items: start;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
 }
 
 .project-detail-main {
@@ -6506,13 +6508,8 @@ textarea:focus {
 .package-workbench {
   min-width: 0;
   min-height: 0;
-  height: auto;
-  overflow: visible;
-}
-
-.package-workbench-empty {
-  align-self: start;
-  height: auto;
+  height: 100%;
+  overflow: hidden;
 }
 
 .package-workbench-summary {
