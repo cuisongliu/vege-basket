@@ -1608,6 +1608,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
   const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
   const [eventPage, setEventPage] = useState(0)
+  const [eventPageSize, setEventPageSize] = useState(10)
   const [eventSearch, setEventSearch] = useState('')
   const [timelineLoading, setTimelineLoading] = useState(false)
   const [timelineError, setTimelineError] = useState('')
@@ -1753,7 +1754,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [assignedOnly, setAssignedOnly] = useState(false)
   const activeEventFilterCount = eventFilterConditions.length
   const visibleEvents = events
-  const eventPageSize = 10
   const pagedEvents = visibleEvents
   const eventTotal = timeline?.pagination?.total ?? visibleEvents.length
   const eventStats = useMemo(() => ({
@@ -1787,7 +1787,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       window.clearTimeout(timer)
       if (timelineRequestIdRef.current === requestId) timelineRequestIdRef.current += 1
     }
-  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventSearch, eventSortDirection, onLoadTimeline])
+  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline])
   useEffect(() => {
     const interval = window.setInterval(() => {
       void onLoadTimeline({
@@ -1802,10 +1802,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       }).catch(() => undefined)
     }, 15_000)
     return () => window.clearInterval(interval)
-  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventSearch, eventSortDirection, onLoadTimeline])
+  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline])
   useEffect(() => {
     setEventPage(0)
-  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventSearch, eventSortDirection])
+  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventPageSize, eventSearch, eventSortDirection])
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil(eventTotal / eventPageSize) - 1)
+    if (eventPage > lastPage) setEventPage(lastPage)
+  }, [eventPage, eventPageSize, eventTotal])
   const packagePageSize = 10
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
@@ -3437,10 +3441,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </div>
             <div className="delivery-event-stats" aria-label="交付事件概览">
               <div><span>总事件</span><strong>{eventTotal}</strong></div>
-              <div><span>当前页</span><strong>{visibleEvents.length}</strong></div>
-              <div><span>进行中</span><strong>{eventStats.active}</strong></div>
-              <div><span>已完成</span><strong>{eventStats.completed}</strong></div>
-              <div><span>我的事件</span><strong>{eventStats.mine}</strong></div>
+              <div><span>本页事件</span><strong>{visibleEvents.length}</strong></div>
+              <div><span>本页进行中</span><strong>{eventStats.active}</strong></div>
+              <div><span>本页已完成</span><strong>{eventStats.completed}</strong></div>
+              <div><span>本页我的</span><strong>{eventStats.mine}</strong></div>
             </div>
             <PackageEventFilterBuilderDialog
               assigneeOptions={memberOptions}
@@ -3492,81 +3496,80 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Button>
             </div>
             {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
-            <div className="project-event-table-head" aria-hidden="true">
-              <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span><span />
-            </div>
-            <div className="project-event-items project-event-table">
-              {timelineLoading && visibleEvents.length === 0 ? (
-                <div className="delivery-event-skeletons" role="status" aria-label="正在加载交付事件">
-                  {[1, 2, 3, 4].map((row) => <div className="delivery-event-skeleton" key={row} />)}
-                </div>
-              ) : visibleEvents.length === 0 ? (
-                <p className="project-events-empty">
-                  {activeEventFilterCount > 0
-                    ? '没有符合筛选条件的交付事件。'
-                    : assignedOnly
-                      ? '暂无指派给你的交付事件。'
-                      : '暂无交付事件。'}
-                </p>
-              ) : pagedEvents.map((event) => (
-                <div
-                  className={event.id === selectedEvent?.id ? 'project-event-item active' : 'project-event-item'}
-                  key={event.id}
-                >
-                  <button
-                    className="project-event-tab-button project-event-row"
-                    type="button"
-                    onClick={() => selectEventFromList(event)}
+            <div className="delivery-event-table-viewport">
+              <div className="project-event-table-head" aria-hidden="true">
+                <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span>
+              </div>
+              <div className="project-event-items project-event-table">
+                {timelineLoading && visibleEvents.length === 0 ? (
+                  <div className="delivery-event-skeletons" role="status" aria-label="正在加载交付事件">
+                    {[1, 2, 3, 4].map((row) => <div className="delivery-event-skeleton" key={row} />)}
+                  </div>
+                ) : visibleEvents.length === 0 ? (
+                  <div className="project-events-empty">
+                    <strong>{activeEventFilterCount > 0 || eventSearch.trim() ? '没有匹配的交付事件' : assignedOnly ? '暂无指派给你的事件' : '暂无交付事件'}</strong>
+                    <span>{activeEventFilterCount > 0 || eventSearch.trim() ? '调整检索或筛选条件后重试。' : assignedOnly ? '关闭“只看我被指派的事件”可查看全部事件。' : '创建事件后，可在这里查看交付日期、安装包和执行记录。'}</span>
+                  </div>
+                ) : pagedEvents.map((event) => (
+                  <div
+                    className={event.id === selectedEvent?.id ? 'project-event-item active' : 'project-event-item'}
+                    key={event.id}
                   >
-                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
-                    <span className="project-event-cell">{eventTypeLabel(event.type)}</span>
-                    <span className="project-event-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
-                    <span className="project-event-cell">{formatEventDeliveryDate(event)}</span>
-                    <span className="project-event-cell project-event-package-count">{event.packageCount ?? 0}</span>
-                    <span className="project-event-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
-                    <span className="project-event-cell">{event.updatedAt}</span>
-                  </button>
-                  {event.capabilities?.canEditPlan ? (
-                    <div className="project-event-item-actions">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            className="icon-button project-menu-trigger project-event-menu-button"
-                            type="button"
-                            aria-label={`更多事件操作 ${event.title}`}
-                          >
-                            <DotsThree size={18} weight="bold" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="project-actions-menu-content" sideOffset={8}>
-                          {!event.publishedAt ? (
-                            <DropdownMenuItem onSelect={() => openDraftEventEditor(event)}>
-                              继续编辑
-                            </DropdownMenuItem>
-                          ) : null}
-                          <DeleteConfirmDialog
-                            confirmLabel="删除事件"
-                            description={`删除「${event.title}」后，这个交付事件下的安装包、记录和文档都会一起移除。`}
-                            onConfirm={() => deleteEventFromList(event)}
-                            title="确认删除这个交付事件？"
-                            trigger={(
-                              <DropdownMenuItem
-                                className="project-event-danger-menu-item"
-                                onSelect={(selectEvent) => selectEvent.preventDefault()}
-                                variant="destructive"
-                              >
-                                删除事件
+                    <button
+                      className="project-event-tab-button project-event-row"
+                      type="button"
+                      onClick={() => selectEventFromList(event)}
+                    >
+                      <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
+                      <span className="project-event-cell project-event-type-cell">{eventTypeLabel(event.type)}</span>
+                      <span className="project-event-cell project-event-status-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
+                      <span className="project-event-cell project-event-date-cell">{formatEventDeliveryDate(event)}</span>
+                      <span className="project-event-cell project-event-package-count" aria-label={`${event.packageCount ?? 0} 个安装包条目`}>{event.packageCount ?? 0}</span>
+                      <span className="project-event-cell project-event-assignee-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
+                      <span className="project-event-cell project-event-updated-cell">{event.updatedAt}</span>
+                    </button>
+                    {event.capabilities?.canEditPlan ? (
+                      <div className="project-event-item-actions">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              className="icon-button project-menu-trigger project-event-menu-button"
+                              type="button"
+                              aria-label={`更多事件操作 ${event.title}`}
+                            >
+                              <DotsThree size={18} weight="bold" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="project-actions-menu-content" sideOffset={8}>
+                            {!event.publishedAt ? (
+                              <DropdownMenuItem onSelect={() => openDraftEventEditor(event)}>
+                                继续编辑
                               </DropdownMenuItem>
-                            )}
-                          />
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+                            ) : null}
+                            <DeleteConfirmDialog
+                              confirmLabel="删除事件"
+                              description={`删除「${event.title}」后，这个交付事件下的安装包、记录和文档都会一起移除。`}
+                              onConfirm={() => deleteEventFromList(event)}
+                              title="确认删除这个交付事件？"
+                              trigger={(
+                                <DropdownMenuItem
+                                  className="project-event-danger-menu-item"
+                                  onSelect={(selectEvent) => selectEvent.preventDefault()}
+                                  variant="destructive"
+                                >
+                                  删除事件
+                                </DropdownMenuItem>
+                              )}
+                            />
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
             </div>
-            {eventTotal > eventPageSize ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} /> : null}
+            {eventTotal > 0 ? <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} onPageSizeChange={(size) => { setEventPage(0); setEventPageSize(size) }} /> : null}
           </section>
 
           {eventEditorOpen ? renderEventEditor() : (

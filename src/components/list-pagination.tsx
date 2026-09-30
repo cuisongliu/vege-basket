@@ -11,6 +11,7 @@ export function ListPagination({ label, page, pageSize, total, disabled = false,
   onPageSizeChange?: (size: number) => void
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize))
+  const pageSizeOptions = Array.from(new Set([10, 20, 50, pageSize])).sort((left, right) => left - right)
   return (
     <nav className="list-pagination" aria-label={label}>
       <span className="list-pagination-summary" aria-live="polite">
@@ -19,8 +20,7 @@ export function ListPagination({ label, page, pageSize, total, disabled = false,
       <div className="list-pagination-controls">
         {onPageSizeChange ? (
           <select aria-label={`${label}每页条数`} value={pageSize} disabled={disabled} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
-            <option value={20}>20 条/页</option>
-            <option value={50}>50 条/页</option>
+            {pageSizeOptions.map((size) => <option key={size} value={size}>{size} 条/页</option>)}
           </select>
         ) : null}
         <Button type="button" variant="ghost" disabled={disabled || page === 0} onClick={() => onPageChange(page - 1)}>上一页</Button>

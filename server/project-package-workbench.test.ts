@@ -12,6 +12,10 @@ const timelineSource = readFileSync(
   'utf8',
 )
 const indexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+const paginationSource = readFileSync(
+  new URL('../src/components/list-pagination.tsx', import.meta.url),
+  'utf8',
+)
 
 test('package market offers link validity choices from four hours through seven days', () => {
   const expireOptionsSource = workbenchSource.slice(
@@ -273,7 +277,9 @@ test('delivery event and package lists keep searchable paginated surfaces with t
   assert.match(workbenchSource, /const \[packageQuery, setPackageQuery\]/u)
   assert.match(workbenchSource, /visiblePackageGroups/u)
   assert.match(workbenchSource, /ListPagination label="交付事件分页"/u)
+  assert.match(workbenchSource, /onPageSizeChange=\{\(size\) => \{ setEventPage\(0\); setEventPageSize\(size\) \}\}/u)
   assert.match(workbenchSource, /ListPagination label="安装包列表分页"/u)
+  assert.match(paginationSource, /new Set\(\[10, 20, 50, pageSize\]\)/u)
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(appSource, /const hideSidebar/u)
   assert.match(appSource, /<aside className="sidebar"/u)
@@ -298,9 +304,12 @@ test('delivery event summaries use database pagination and hydrate one selected 
   assert.match(timelineSource, /select count\(\*\)::text as total from project_package_events/u)
   assert.match(timelineSource, /where e\.project_id = \$1\$\{eventIdClause\}/u)
   assert.match(timelineSource, /detailsLoaded: includeDetails/u)
+  assert.match(timelineSource, /select count\(\*\)[\s\S]*?from project_package_groups g[\s\S]*?join project_package_items i[\s\S]*?where g\.project_package_event_id = e\.id/u)
   assert.match(workbenchSource, /includeDetails: false/u)
   assert.match(workbenchSource, /eventId: selectedEventDetailId, includeDetails: true/u)
   assert.match(workbenchSource, /project-event-counts/u)
+  assert.match(workbenchSource, /交付包数量/u)
+  assert.match(workbenchSource, /个安装包条目/u)
 })
 
 test('delivery workbench uses a full-width event list and a responsive detail drawer', () => {
@@ -308,13 +317,17 @@ test('delivery workbench uses a full-width event list and a responsive detail dr
   assert.match(workbenchSource, /delivery-workbench-heading/u)
   assert.match(workbenchSource, /delivery-event-stats/u)
   assert.match(workbenchSource, /project-event-table-head/u)
+  assert.match(workbenchSource, /delivery-event-table-viewport/u)
   assert.match(workbenchSource, /project-package-event-drawer/u)
+  assert.match(workbenchSource, /事件详情暂时无法显示/u)
   assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)
   const workbenchCss = readFileSync(
     new URL('../src/components/project-package-workbench.css', import.meta.url),
     'utf8',
   )
   assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(860px/u)
+  assert.match(workbenchCss, /\.delivery-event-table-viewport[\s\S]*overflow: auto/u)
+  assert.match(workbenchCss, /\.project-event-table-head[\s\S]*position: sticky/u)
   assert.match(workbenchCss, /@media \(max-width: 680px\)[\s\S]*\.project-package-event-drawer[\s\S]*width: 100vw/u)
   assert.match(workbenchCss, /prefers-reduced-motion/u)
 })
