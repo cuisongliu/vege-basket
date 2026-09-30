@@ -6506,8 +6506,8 @@ textarea:focus {
 .package-workbench {
   min-width: 0;
   min-height: 0;
-  height: 100%;
-  overflow: hidden;
+  height: auto;
+  overflow: visible;
 }
 
 .package-workbench-empty {

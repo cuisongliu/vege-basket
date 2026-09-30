@@ -346,14 +346,8 @@ function getEventDeliveryEndAt(event: ProjectPackageEvent) {
   return normalizeDateTimeLocalStamp(event.deliveryEndAt, `${getEventDeliveryDate(event)}T23:59`)
 }
 
-function formatEventDeliveryWindow(event: ProjectPackageEvent) {
-  return formatDateTimeLocalWindow(getEventDeliveryStartAt(event), getEventDeliveryEndAt(event))
-}
-
-function formatDateTimeLocalWindow(startAt: string, endAt: string) {
-  const formattedStartAt = startAt.replace('T', ' ')
-  const formattedEndAt = endAt.replace('T', ' ')
-  return `${formattedStartAt} ~ ${formattedEndAt}`
+function formatEventDeliveryDate(event: ProjectPackageEvent) {
+  return getEventDeliveryDate(event)
 }
 
 function getExpireMinutesUntil(value: string) {
@@ -1615,6 +1609,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [timelineError, setTimelineError] = useState('')
   const timelineRequestIdRef = useRef(0)
   const [eventDetailsLoading, setEventDetailsLoading] = useState(false)
+  const [eventDetailsError, setEventDetailsError] = useState('')
+  const [eventDetailsRetry, setEventDetailsRetry] = useState(0)
   const eventDetailsRequestIdRef = useRef(0)
   const [packageQuery, setPackageQuery] = useState('')
   const [packagePage, setPackagePage] = useState(0)
@@ -1928,16 +1924,20 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   useEffect(() => {
     if (!selectedEventNeedsDetails || selectedEventDetailId == null) {
       setEventDetailsLoading(false)
+      setEventDetailsError('')
       return
     }
     const requestId = ++eventDetailsRequestIdRef.current
     setEventDetailsLoading(true)
+    setEventDetailsError('')
     void onLoadTimeline({ eventId: selectedEventDetailId, includeDetails: true, limit: 1, offset: 0 })
-      .catch(() => undefined)
+      .catch(() => {
+        if (eventDetailsRequestIdRef.current === requestId) setEventDetailsError('事件详情读取失败，请稍后重试。')
+      })
       .finally(() => {
         if (eventDetailsRequestIdRef.current === requestId) setEventDetailsLoading(false)
       })
-  }, [onLoadTimeline, selectedEventDetailId, selectedEventNeedsDetails])
+  }, [eventDetailsRetry, onLoadTimeline, selectedEventDetailId, selectedEventNeedsDetails])
   const selectedEventGroups = selectedEvent?.groups ?? []
   const filteredPackageGroups = (() => {
     const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
@@ -3489,7 +3489,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </div>
             {timelineError ? <p className="project-events-error" role="alert">{timelineError}</p> : null}
             <div className="project-event-table-head" aria-hidden="true">
-              <span>事件</span><span>类型</span><span>状态</span><span>交付时间</span><span>执行负责人</span><span>最近更新</span><span />
+              <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span><span />
             </div>
             <div className="project-event-items project-event-table">
               {timelineLoading && visibleEvents.length === 0 ? (
@@ -3514,10 +3514,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     type="button"
                     onClick={() => selectEventFromList(event)}
                   >
-                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">包 {event.packageCount ?? 0} · 操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
+                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
                     <span className="project-event-cell">{eventTypeLabel(event.type)}</span>
                     <span className="project-event-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
-                    <span className="project-event-cell">{formatEventDeliveryWindow(event)}</span>
+                    <span className="project-event-cell">{formatEventDeliveryDate(event)}</span>
+                    <span className="project-event-cell project-event-package-count">{event.packageCount ?? 0}</span>
                     <span className="project-event-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
                     <span className="project-event-cell">{event.updatedAt}</span>
                   </button>
@@ -3570,7 +3571,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <DialogHeader className="delivery-drawer-header">
                 <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
                 <DialogDescription>
-                  {selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · ${formatEventDeliveryWindow(selectedEvent)}` : '查看事件的执行记录、安装包和反馈。'}
+                  {selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · 交付日期：${formatEventDeliveryDate(selectedEvent)}` : '查看事件的执行记录、安装包和反馈。'}
                 </DialogDescription>
               </DialogHeader>
           {eventDetailsLoading && selectedEvent ? (
@@ -3578,13 +3579,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <div className="event-details-loading-bar" />
               <p>正在加载事件详情...</p>
             </section>
+          ) : eventDetailsError && selectedEvent ? (
+            <section className="event-workspace event-details-error" role="alert">
+              <h3>事件详情暂时无法显示</h3>
+              <p>{eventDetailsError}</p>
+              <Button type="button" variant="outline" onClick={() => setEventDetailsRetry((retry) => retry + 1)}>
+                重新加载
+              </Button>
+            </section>
           ) : selectedEvent && !selectedEvent.publishedAt ? (
             <section className="event-workspace event-draft-summary">
               <div className="event-draft-summary-head">
                 <div>
                   <span>草稿</span>
                   <h3>{selectedEvent.title}</h3>
-                  <p>{eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)} · <UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></p>
+                  <p>{eventTypeLabel(selectedEvent.type)} · 交付日期：{formatEventDeliveryDate(selectedEvent)} · <UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></p>
                 </div>
                 {canManageProject ? (
                   <Button className="solid-button" onClick={() => openDraftEventEditor(selectedEvent)} type="button">
@@ -3607,7 +3616,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                     <div>
                       <h4>操作文档</h4>
                       <p className="operation-area-meta">
-                        {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · {formatEventDeliveryWindow(selectedEvent)}
+                        {selectedEvent.title} · {eventTypeLabel(selectedEvent.type)} · 交付日期：{formatEventDeliveryDate(selectedEvent)}
                         <span className="event-progress-pill">
                           已完成 {selectedEventProgress.completed}/{selectedEventProgress.total} 个子事件 - 完成进度：{selectedEventProgress.percent}%
                         </span>
