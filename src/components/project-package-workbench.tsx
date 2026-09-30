@@ -19,6 +19,7 @@ import {
 } from 'react'
 import {
   CaretDown,
+  CaretLeft,
   CaretRight,
   ChatCircleDots,
   Check,
@@ -88,6 +89,7 @@ import type {
   Project,
   ProjectMembership,
   ProjectPackageEvent,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventComment,
   ProjectPackageEventSavePayload,
   ProjectPackageEventStatus,
@@ -114,6 +116,8 @@ import {
   organizationPackageMarketPolicyHasVisibleChannel,
   packageMarketDependencyChannel,
 } from '../../shared/organization-package-market'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../../shared/container-image-reference'
+import { maxDeliveryArtifactEntries, normalizeOfflinePackageUrl } from '../../shared/delivery-artifact'
 import './project-package-workbench.css'
 
 type PackageWorkbenchProps = {
@@ -151,6 +155,7 @@ type PackageWorkbenchProps = {
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onLoadPackageItemDownloadUrl: (itemId: number) => Promise<string>
+  onLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onLoadPackageMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onLoadPackageMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onLoadPackageMarketVersions: (payload: {
@@ -348,6 +353,12 @@ function getEventDeliveryEndAt(event: ProjectPackageEvent) {
 
 function formatEventDeliveryDate(event: ProjectPackageEvent) {
   return getEventDeliveryDate(event)
+}
+
+function formatDeliveryDelay(event: ProjectPackageEvent) {
+  if (event.deliveryDelayDays == null) return '--'
+  if (event.deliveryDelayDays > 0) return `+${event.deliveryDelayDays} 天`
+  return `${event.deliveryDelayDays} 天`
 }
 
 function formatDateTimeLocalWindow(startAt: string, endAt: string) {
@@ -1564,6 +1575,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   onExportTimeline,
   onLoadPackageMarketCiBranches,
   onLoadPackageMarketDetail,
+  onLoadEventDeliveryArtifacts,
   onLoadPackageItemDownloadUrl,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
@@ -1693,6 +1705,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       sizeBytes?: number
     }>
   >([])
+  const [containerImages, setContainerImages] = useState<string[]>([])
+  const [offlinePackageUrls, setOfflinePackageUrls] = useState<string[]>([])
+  const [deliveryArtifacts, setDeliveryArtifacts] = useState<ProjectPackageDeliveryArtifacts | null>(null)
+  const [deliveryArtifactsError, setDeliveryArtifactsError] = useState('')
+  const [deliveryArtifactsLoading, setDeliveryArtifactsLoading] = useState(false)
+  const [deliveryArtifactsExpireMinutes, setDeliveryArtifactsExpireMinutes] = useState<30 | 60 | 120>(30)
   const [busyAction, setBusyAction] = useState('')
   const [copiedValue, setCopiedValue] = useState('')
   const [copyingPackageItemId, setCopyingPackageItemId] = useState<number | null>(null)
@@ -1946,6 +1964,30 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         if (eventDetailsRequestIdRef.current === requestId) setEventDetailsError('事件详情读取失败，请稍后重试。')
       })
   }, [eventDetailsRetry, onLoadTimeline, selectedEventDetailId, selectedEventNeedsDetails])
+  useEffect(() => {
+    let cancelled = false
+    if (!eventDetailOpen || selectedEventDetailId == null || selectedEventNeedsDetails) {
+      setDeliveryArtifacts(null)
+      setDeliveryArtifactsError('')
+      return
+    }
+    setDeliveryArtifactsLoading(true)
+    setDeliveryArtifactsError('')
+    void onLoadEventDeliveryArtifacts(selectedEventDetailId, deliveryArtifactsExpireMinutes)
+      .then((value) => {
+        if (!cancelled) setDeliveryArtifacts(value)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDeliveryArtifacts(null)
+          setDeliveryArtifactsError('交付地址和执行脚本生成失败，请稍后重试。')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDeliveryArtifactsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [deliveryArtifactsExpireMinutes, eventDetailOpen, onLoadEventDeliveryArtifacts, selectedEventDetailId, selectedEventNeedsDetails])
   const selectedEventGroups = selectedEvent?.groups ?? []
   const filteredPackageGroups = (() => {
     const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
@@ -2046,6 +2088,28 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       eventDeliveryEndAt &&
       dateTimeLocalToUtcTimestamp(eventDeliveryEndAt) > dateTimeLocalToUtcTimestamp(eventDeliveryStartAt),
   )
+  const containerImageValidation = useMemo(() => {
+    const seen = new Set<string>()
+    return containerImages.map((value) => {
+      const result = normalizeContainerImageReference(value, { requireTagOrDigest: true })
+      if (!result.valid) return result.error
+      const key = containerImageReferenceKey(result.value)
+      if (seen.has(key)) return '镜像地址不能重复。'
+      seen.add(key)
+      return ''
+    })
+  }, [containerImages])
+  const offlinePackageValidation = useMemo(() => {
+    const seen = new Set<string>()
+    return offlinePackageUrls.map((value) => {
+      const result = normalizeOfflinePackageUrl(value)
+      if (!result.valid) return result.error
+      if (seen.has(result.value)) return '离线包地址不能重复。'
+      seen.add(result.value)
+      return ''
+    })
+  }, [offlinePackageUrls])
+  const eventArtifactsValid = !containerImageValidation.some(Boolean) && !offlinePackageValidation.some(Boolean)
 
   function updatePackageDocument(
     packageName: string,
@@ -2514,6 +2578,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       ),
     )
     setCartItems([])
+    setContainerImages([])
+    setOfflinePackageUrls([])
     setEventDocumentTitle('变更记录')
     setEventDocumentContent('')
     setEventDocumentRelatedTodoIds([])
@@ -2582,7 +2648,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     void refreshMarketDetail({ expireMinutes: nextMinutes })
   }
 
-  function openDraftEventEditor(event: ProjectPackageEvent) {
+  function openLoadedDraftEventEditor(event: ProjectPackageEvent) {
     if (event.publishedAt || !confirmDiscardEventChanges()) return
     const eventDocument = event.operations.find((operation) => operation.kind === 'document')
     setEventEditorEventId(event.id)
@@ -2605,6 +2671,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       sourcePackageName: item.sourcePackageName,
       version: item.version,
     }))))
+    setContainerImages(event.containerImages.map((item) => item.image))
+    setOfflinePackageUrls(event.offlinePackages.map((item) => item.url))
     setEventDocumentTitle(eventDocument?.title || `${event.title} 变更记录`)
     setEventDocumentContent(eventDocument?.content ?? '')
     setEventDocumentRelatedTodoIds(eventDocument?.relatedTodoIds ?? [])
@@ -2621,6 +2689,29 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setEventEditorOpen(true)
   }
 
+  async function openDraftEventEditor(event: ProjectPackageEvent) {
+    if (event.detailsLoaded !== false) {
+      openLoadedDraftEventEditor(event)
+      return
+    }
+    setEventDetailsError('')
+    try {
+      const detailTimeline = await onLoadTimeline({ eventId: event.id, includeDetails: true, limit: 1, offset: 0 })
+      const loadedEvent = detailTimeline.events.find((item) => item.id === event.id)
+      if (!loadedEvent) {
+        setEventDetailsError('事件不存在、已删除或当前账号无权查看。')
+        setSelectedEventId(event.id)
+        setEventDetailOpen(true)
+        return
+      }
+      openLoadedDraftEventEditor(loadedEvent)
+    } catch {
+      setEventDetailsError('事件详情读取失败，请稍后重试。')
+      setSelectedEventId(event.id)
+      setEventDetailOpen(true)
+    }
+  }
+
   function selectEventFromList(event: ProjectPackageEvent) {
     if (!confirmDiscardEventChanges()) return
     setEventEditorOpen(false)
@@ -2628,6 +2719,28 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setSelectedEventId(event.id)
     setSelectedGroupId(event.groups[0]?.id ?? null)
     setEventDetailOpen(true)
+  }
+
+  function resetEventEditor() {
+    setEventEditorOpen(false)
+    setEventEditorDirty(false)
+    setEventEditorEventId(null)
+  }
+
+  async function returnToEventList() {
+    if (!eventEditorDirty) {
+      resetEventEditor()
+      return
+    }
+    await confirmAction({
+      title: '放弃未保存的修改？',
+      description: '当前交付事件中的修改尚未保存，返回列表后这些修改将丢失。',
+      confirmLabel: '放弃修改',
+      variant: 'destructive',
+    }, async () => {
+      resetEventEditor()
+      return true
+    })
   }
 
   async function deleteEventFromList(event: ProjectPackageEvent) {
@@ -2775,7 +2888,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   async function saveEvent(action: 'publish' | 'save_draft') {
     const assigneeUserId = Number(eventAssigneeUserId)
-    if (!canManageProject || !eventBasicInformationValid) return
+    if (!canManageProject || !eventBasicInformationValid || !eventArtifactsValid) {
+      if (!eventArtifactsValid) setEventEditorStep(2)
+      return
+    }
     if (action === 'publish' && (!Number.isInteger(assigneeUserId) || assigneeUserId <= 0)) { setEventEditorStep(1); return }
     if (action === 'publish' && (!eventDocumentTitle.trim() || !eventDocumentContent.trim())) {
       setEventEditorStep(3)
@@ -2786,6 +2902,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       const savedEvent = await onSaveEvent(eventEditorEventId, {
         action,
         assigneeUserId: assigneeUserId || null,
+        containerImages: containerImages.map((value) => value.trim()),
         deliveryDate: dateTimeLocalDateStamp(eventDeliveryEndAt),
         deliveryEndAt: eventDeliveryEndAt,
         deliveryStartAt: eventDeliveryStartAt,
@@ -2796,6 +2913,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           title: eventDocumentTitle.trim() || `${eventTitle.trim()} 变更记录`,
         }],
         items: cartItems,
+        offlinePackageUrls: offlinePackageUrls.map((value) => value.trim()),
         title: eventTitle.trim(),
         type: eventType,
       })
@@ -2990,6 +3108,41 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setExportPreviewOpen(false)
   }
 
+  function renderDeliveryArtifacts() {
+    if (deliveryArtifactsLoading) return <section className="delivery-artifacts-panel" aria-live="polite"><p>正在生成交付地址和执行脚本...</p></section>
+    if (deliveryArtifactsError) return <section className="delivery-artifacts-panel"><p className="delivery-artifact-error" role="alert">{deliveryArtifactsError}</p></section>
+    if (!deliveryArtifacts || deliveryArtifacts.addresses.length === 0) {
+      return <section className="delivery-artifacts-panel"><div className="delivery-artifacts-heading"><div><h4>交付地址与执行脚本</h4><p>当前事件没有关联交付内容。</p></div></div></section>
+    }
+    const kindLabel = { 'container-image': '镜像地址', 'object-storage': '对象存储', 'offline-package': '离线包地址' } as const
+    return (
+      <section className="delivery-artifacts-panel">
+        <div className="delivery-artifacts-heading">
+          <div><h4>交付地址与执行脚本</h4><p>地址按交付顺序展示，对象存储地址为临时签名链接。</p></div>
+          <Label>对象存储有效期
+            <Select value={String(deliveryArtifactsExpireMinutes)} onValueChange={(value) => setDeliveryArtifactsExpireMinutes(Number(value) as 30 | 60 | 120)}>
+              <SelectTrigger aria-label="对象存储下载地址有效期"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="30">30 分钟</SelectItem><SelectItem value="60">1 小时</SelectItem><SelectItem value="120">2 小时</SelectItem></SelectContent>
+            </Select>
+          </Label>
+        </div>
+        <div className="delivery-address-list">
+          {deliveryArtifacts.addresses.map((address, index) => {
+            const key = `delivery-address-${index}`
+            return <div className="delivery-address-row" key={`${address.kind}-${index}`}>
+              <span>{kindLabel[address.kind]}</span>
+              <code>{address.value}</code>
+              {address.expiresAt ? <small>有效至 {address.expiresAt}</small> : null}
+              <Button size="icon" variant="ghost" type="button" title="复制原始地址" aria-label={`复制${kindLabel[address.kind]} ${index + 1}`} onClick={() => void copyToClipboard(address.value, key)}>{copiedValue === key ? <Check size={15} /> : <Copy size={15} />}</Button>
+            </div>
+          })}
+        </div>
+        <div className="delivery-script-heading"><strong>执行脚本</strong><Button type="button" variant="outline" onClick={() => void copyToClipboard(deliveryArtifacts.script, 'delivery-execution-script')}><TerminalWindow size={15} />{copiedValue === 'delivery-execution-script' ? '已复制' : '复制执行脚本'}</Button></div>
+        <pre className="delivery-execution-script"><code>{deliveryArtifacts.script}</code></pre>
+      </section>
+    )
+  }
+
   const packageTimelineNodes = useMemo(
     () => (selectedGroup ? sortByCreatedAt(selectedGroup.operations, 'asc') : []),
     [selectedGroup],
@@ -2999,6 +3152,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     return (
       <section className="event-wizard" aria-label="交付事件编辑器">
         <header className="event-wizard-header">
+          <Button className="event-wizard-return" type="button" variant="ghost" onClick={() => void returnToEventList()}>
+            <CaretLeft size={16} /> 返回事件列表
+          </Button>
           <div className="event-wizard-heading">
             <span className="event-wizard-eyebrow">
               {eventEditorEventId == null ? '新建交付事件' : '编辑事件草稿'}
@@ -3011,7 +3167,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             <nav className="event-wizard-steps" aria-label="事件创建步骤">
               {([
                 { label: '基本信息', step: 1 as const },
-                { label: '选择安装包', step: 2 as const },
+                { label: '交付内容', step: 2 as const },
                 { label: '变更记录', step: 3 as const },
               ]).map((item) => (
                 <div className={item.step === 3 ? 'event-wizard-step-group documents' : 'event-wizard-step-group'} key={item.step}>
@@ -3058,7 +3214,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           {eventEditorStep === 1 ? (
             <div className="event-wizard-form-grid">
               <Label>
-                事件类型
+                <span>事件类型 <span className="field-required" aria-hidden="true">*</span></span>
                 <Select
                   value={eventType}
                   onValueChange={(value) => {
@@ -3074,7 +3230,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </Select>
               </Label>
               <Label>
-                事件标题
+                <span>事件标题 <span className="field-required" aria-hidden="true">*</span></span>
                 <Input
                   value={eventTitle}
                   onChange={(event) => {
@@ -3086,7 +3242,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Label>
               <div className="event-wizard-date-fields">
                 <Label>
-                  交付开始日期
+                  <span>交付开始日期 <span className="field-required" aria-hidden="true">*</span></span>
                   <JournalDatePicker
                     ariaLabel="交付开始日期"
                     datesWithEntries={[]}
@@ -3099,7 +3255,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   />
                 </Label>
                 <Label>
-                  预期交付完成日期
+                  <span>预期交付完成日期 <span className="field-required" aria-hidden="true">*</span></span>
                   <JournalDatePicker
                     ariaLabel="预期交付完成日期"
                     datesWithEntries={[]}
@@ -3113,7 +3269,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </Label>
               </div>
               <Label>
-                执行负责人
+                <span>执行负责人 <span className="field-required" aria-hidden="true">*</span><small> 发布必填</small></span>
                 <Select
                   value={eventAssigneeUserId || 'unassigned'}
                   onValueChange={(value) => {
@@ -3137,8 +3293,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             <div className="event-wizard-packages">
               <div className="event-wizard-section-head">
                 <div>
-                  <h4>安装包</h4>
-                  <p>{cartItems.length > 0 ? `已选择 ${cartItems.length} 个安装包文件` : '当前事件不包含安装包'}</p>
+                  <h4>交付内容</h4>
+                  <p>可同时提供对象存储安装包、离线包地址和集群镜像。</p>
                 </div>
                 {packageMarketSelectionAvailable ? (
                   <Button className="solid-button" type="button" onClick={openPackageMarket}>
@@ -3146,6 +3302,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   </Button>
                 ) : null}
               </div>
+              <div className="delivery-artifact-editor-heading"><strong>对象存储安装包</strong><span>{cartItems.length} 项</span></div>
               {cartItems.length > 0 ? (
                 <div className="event-wizard-package-list">
                   {cartItems.map((item) => (
@@ -3166,6 +3323,50 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   ))}
                 </div>
               ) : null}
+              <section className="delivery-artifact-editor-section">
+                <div className="delivery-artifact-editor-heading"><strong>集群镜像</strong><span>{containerImages.length} / {maxDeliveryArtifactEntries}</span></div>
+                {containerImages.map((value, index) => (
+                  <div className="delivery-artifact-editor-row" key={`container-image-${index}`}>
+                    <Input
+                      aria-label={`集群镜像地址 ${index + 1}`}
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      maxLength={512}
+                      placeholder="例如：ghcr.io/example/admin:v2.1.0"
+                      spellCheck={false}
+                      value={value}
+                      onChange={(event) => {
+                        setContainerImages((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))
+                        setEventEditorDirty(true)
+                      }}
+                    />
+                    <Button aria-label={`移除集群镜像 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setContainerImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    {containerImageValidation[index] ? <p className="delivery-artifact-error" role="alert">{containerImageValidation[index]}</p> : null}
+                  </div>
+                ))}
+                <Button disabled={containerImages.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setContainerImages((current) => [...current, '']); setEventEditorDirty(true) }}><Plus size={15} /> 添加镜像</Button>
+              </section>
+              <section className="delivery-artifact-editor-section">
+                <div className="delivery-artifact-editor-heading"><strong>离线包地址</strong><span>{offlinePackageUrls.length} / {maxDeliveryArtifactEntries}</span></div>
+                {offlinePackageUrls.map((value, index) => (
+                  <div className="delivery-artifact-editor-row" key={`offline-package-${index}`}>
+                    <Input
+                      aria-label={`离线包地址 ${index + 1}`}
+                      autoComplete="off"
+                      maxLength={4096}
+                      placeholder="https://downloads.example.com/releases/app.tar"
+                      value={value}
+                      onChange={(event) => {
+                        setOfflinePackageUrls((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))
+                        setEventEditorDirty(true)
+                      }}
+                    />
+                    <Button aria-label={`移除离线包地址 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setOfflinePackageUrls((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    {offlinePackageValidation[index] ? <p className="delivery-artifact-error" role="alert">{offlinePackageValidation[index]}</p> : null}
+                  </div>
+                ))}
+                <Button disabled={offlinePackageUrls.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setOfflinePackageUrls((current) => [...current, '']); setEventEditorDirty(true) }}><Plus size={15} /> 添加离线包</Button>
+              </section>
             </div>
           ) : null}
 
@@ -3177,7 +3378,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               role="tabpanel"
             >
               <Label className="event-document-title-field">
-                文档标题
+                <span>文档标题 <span className="field-required" aria-hidden="true">*</span><small> 发布必填</small></span>
                 <Input
                   value={activePackageDocument ? activePackageDocument.title : eventDocumentTitle}
                   onChange={(event) => {
@@ -3311,6 +3512,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </DropdownMenu>
               </div>
               <MarkdownEditorLoadBoundary>
+                <div className="event-document-content-label">文档内容 <span className="field-required" aria-hidden="true">*</span><small> 发布必填</small></div>
                 <Suspense fallback={<div className="markdown-wysiwyg-loading" role="status">正在加载编辑器…</div>}>
                   <MarkdownWysiwygEditor
                     ariaLabel="变更记录内容"
@@ -3355,8 +3557,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Button>
             </div>
             <div className="event-wizard-save-actions">
+              <Button type="button" variant="ghost" disabled={busyAction === 'event'} onClick={() => void returnToEventList()}>
+                取消
+              </Button>
               <Button
-                disabled={!canManageProject || !eventBasicInformationValid || busyAction === 'event'}
+                disabled={!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || busyAction === 'event'}
                 onClick={() => void saveEvent('save_draft')}
                 type="button"
                 variant="outline"
@@ -3365,7 +3570,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Button>
               <Button
                 className="solid-button"
-                disabled={!canManageProject || !eventBasicInformationValid || !memberOptions.some(member => member.id === Number(eventAssigneeUserId)) || busyAction === 'event'}
+                disabled={!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || !memberOptions.some(member => member.id === Number(eventAssigneeUserId)) || busyAction === 'event'}
                 onClick={() => void saveEvent('publish')}
                 type="button"
               >
@@ -3481,7 +3686,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </div>
             <div className="delivery-event-table-viewport">
               <div className="project-event-table-head" aria-hidden="true">
-                <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span><span aria-hidden="true" />
+                <span>事件</span><span>类型</span><span>状态</span><span>交付日期</span><span>交付延期</span><span>交付包数量</span><span>执行负责人</span><span>最近更新</span><span aria-hidden="true" />
               </div>
               <div className="project-event-items project-event-table">
                 {timelineLoading && visibleEvents.length === 0 ? (
@@ -3503,14 +3708,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       type="button"
                       aria-label={`查看交付事件 ${event.title}`}
                       onClick={() => selectEventFromList(event)}
-                    />
-                    <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
-                    <span className="project-event-cell project-event-type-cell">{eventTypeLabel(event.type)}</span>
-                    <span className="project-event-cell project-event-status-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
-                    <span className="project-event-cell project-event-date-cell">{formatEventDeliveryDate(event)}</span>
-                    <span className="project-event-cell project-event-package-count" aria-label={`${event.packageCount ?? 0} 个安装包条目`}>{event.packageCount ?? 0}</span>
-                    <span className="project-event-cell project-event-assignee-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
-                    <span className="project-event-cell project-event-updated-cell">{event.updatedAt}</span>
+                    >
+                      <span className="project-event-cell project-event-title-cell"><strong>{event.title}</strong><small className="project-event-counts">操作 {event.operationCount ?? 0} · 反馈 {event.commentCount ?? 0}</small></span>
+                      <span className="project-event-cell project-event-type-cell">{eventTypeLabel(event.type)}</span>
+                      <span className="project-event-cell project-event-status-cell"><span className={`project-event-status-badge ${eventDisplayStatus(event)}`}>{event.deliveryResult === 'failed' ? '交付失败' : eventStatusLabel(eventDisplayStatus(event))}</span></span>
+                      <span className="project-event-cell project-event-date-cell">{formatEventDeliveryDate(event)}</span>
+                      <span className={`project-event-cell project-event-delay-cell ${event.deliveryDelayDays == null ? 'neutral' : event.deliveryDelayDays > 0 ? 'late' : event.deliveryDelayDays < 0 ? 'early' : 'neutral'}`}>{formatDeliveryDelay(event)}</span>
+                      <span className="project-event-cell project-event-package-count" aria-label={`${event.packageCount ?? 0} 个安装包条目`}>{event.packageCount ?? 0}</span>
+                      <span className="project-event-cell project-event-assignee-cell"><UserName departedUserIds={timeline?.departedUserIds} name={event.assigneeName || '未指派'} userId={event.assigneeUserId} /></span>
+                      <span className="project-event-cell project-event-updated-cell">{event.updatedAt}</span>
+                    </button>
                     {event.capabilities?.canEditPlan ? (
                       <div className="project-event-item-actions">
                         <DropdownMenu>
@@ -3525,7 +3732,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="project-actions-menu-content" sideOffset={8}>
                             {!event.publishedAt ? (
-                              <DropdownMenuItem onSelect={() => openDraftEventEditor(event)}>
+                              <DropdownMenuItem onSelect={() => void openDraftEventEditor(event)}>
                                 继续编辑
                               </DropdownMenuItem>
                             ) : null}
@@ -3585,16 +3792,17 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <p>{eventTypeLabel(selectedEvent.type)} · 交付日期：{formatEventDeliveryDate(selectedEvent)} · <UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></p>
                 </div>
                 {canManageProject ? (
-                  <Button className="solid-button" onClick={() => openDraftEventEditor(selectedEvent)} type="button">
+                  <Button className="solid-button" onClick={() => void openDraftEventEditor(selectedEvent)} type="button">
                     继续编辑
                   </Button>
                 ) : null}
               </div>
               <dl className="event-draft-summary-metrics">
-                <div><dt>安装包</dt><dd>{selectedEvent.groups.flatMap((group) => group.items).length}</dd></div>
+                <div><dt>安装包</dt><dd>{selectedEvent.packageCount ?? 0}</dd></div>
                 <div><dt>变更记录</dt><dd>{selectedEvent.operations.some((operation) => operation.kind === 'document') ? 1 : 0}</dd></div>
                 <div><dt>交付状态</dt><dd>{selectedEvent.deliveryResult === 'failed' ? '失败' : selectedEvent.publishedAt ? '执行中' : '草稿'}</dd></div>
               </dl>
+              {renderDeliveryArtifacts()}
             </section>
           ) : selectedEvent ? (
           <section className="event-workspace">
@@ -3656,6 +3864,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         }} trigger={<Button disabled={!nextAssignee || !reassignReason.trim()}>转交执行人</Button>} />
                     </div>
                   </div>}
+
+                  {renderDeliveryArtifacts()}
 
                   {selectedEvent.operations.length === 0 ? (
                     canManageTimeline ? (

@@ -411,6 +411,7 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryDelayDays?: number
   deliveryResult?: ProjectPackageDeliveryResult
   deliveryFailureReason?: string
   assignedAt?: string
@@ -419,6 +420,7 @@ export type ProjectPackageEvent = {
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: Array<{ id: number; image: string }>
   id: number
   type: ProjectPackageEventType
   status: ProjectPackageEventStatus
@@ -429,6 +431,7 @@ export type ProjectPackageEvent = {
   deliveryStartAt: string
   updatedAt: string
   operations: ProjectPackageOperation[]
+  offlinePackages: Array<{ id: number; url: string }>
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
@@ -449,6 +452,7 @@ export type ProjectPackageEventDocumentInput = {
 export type ProjectPackageEventSavePayload = {
   action: 'publish' | 'save_draft'
   assigneeUserId: number | null
+  containerImages: string[]
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
@@ -465,8 +469,18 @@ export type ProjectPackageEventSavePayload = {
     objectLastModified?: string
     sizeBytes?: number
   }>
+  offlinePackageUrls: string[]
   title: string
   type: ProjectPackageEventType
+}
+
+export type ProjectPackageDeliveryArtifacts = {
+  addresses: Array<{
+    expiresAt?: string
+    kind: 'object-storage' | 'offline-package' | 'container-image'
+    value: string
+  }>
+  script: string
 }
 
 export type ProjectPackageTimeline = {
@@ -476,6 +490,7 @@ export type ProjectPackageTimeline = {
   projectId: number
   events: ProjectPackageEvent[]
   pagination?: { limit: number; offset: number; total: number }
+  savedEventId?: number
   mentionableMembers: Array<{ id: number; name: string }>
 }
 

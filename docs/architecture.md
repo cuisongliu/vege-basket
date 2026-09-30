@@ -100,8 +100,9 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   and resource-scoped read/write authorization boundaries.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
   aggregate draft saves, one-way publication/completion transitions, encrypted timeline
-  fields, document-level todo links, and Markdown export. Publication atomically replaces
-  the draft's packages, documents, and document todo links, changes the event to `delivering`,
+  fields, mixed object-storage packages, container images and offline-package URLs, server-generated
+  execution scripts, document-level todo links, and Markdown export. Publication atomically replaces
+  the draft's packages, encrypted delivery addresses, documents, and document todo links, changes the event to `delivering`,
   and makes document content and package structure read-only. For organization projects,
   only the assigned executor may manage execution links/notes and complete the event;
   ordinary todo completion retains its separate authorization. Only unpublished plans may

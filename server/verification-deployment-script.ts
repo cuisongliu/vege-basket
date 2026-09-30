@@ -3,6 +3,11 @@ type VerificationPackageDownload = {
   objectKey: string
 }
 
+type OfflinePackageDownload = {
+  downloadUrl: string
+  fileName: string
+}
+
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
@@ -31,4 +36,31 @@ export function createPackageVerificationScript(packages: readonly VerificationP
 
 export function createClusterImageVerificationScript(images: readonly string[]) {
   return images.map((image) => `sealos run -f ${shellQuote(image)}`).join(' && \\\n')
+}
+
+export function createDeliveryExecutionScript(input: {
+  images: readonly string[]
+  offlinePackages: readonly OfflinePackageDownload[]
+  packages: readonly VerificationPackageDownload[]
+}) {
+  const usedNames = new Set<string>()
+  const archiveCommands = [
+    ...input.packages.map((item, index) => {
+      const fileName = archiveFileName(item.objectKey, index, usedNames)
+      const target = `"$delivery_dir/${fileName}"`
+      return `wget ${shellQuote(item.downloadUrl)} -O ${target} && sealos run -f ${target}`
+    }),
+    ...input.offlinePackages.map((item, index) => {
+      const fileName = archiveFileName(item.fileName, input.packages.length + index, usedNames)
+      const target = `"$delivery_dir/${fileName}"`
+      return `wget ${shellQuote(item.downloadUrl)} -O ${target} && sealos run -f ${target}`
+    }),
+  ]
+  const commands = [
+    ...(archiveCommands.length > 0
+      ? ['delivery_dir="$(mktemp -d)"', `trap 'rm -rf "$delivery_dir"' EXIT`, ...archiveCommands]
+      : []),
+    ...input.images.map((image) => `sealos run -f ${shellQuote(image)}`),
+  ]
+  return commands.join(' && \\\n')
 }

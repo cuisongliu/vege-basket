@@ -22,6 +22,7 @@ import type {
   Priority,
   Project,
   ProjectPackageEventStatus,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
@@ -2252,6 +2253,16 @@ export function fetchProjectPackageItemDownloadUrl(
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return request<{ downloadUrl: string; expiresAt: string; expiresInSeconds: number }>(
     `/api/projects/${projectId}/package-items/${itemId}/download-url${suffix}`,
+  )
+}
+
+export function fetchProjectPackageEventDeliveryArtifacts(
+  projectId: number,
+  eventId: number,
+  expireMinutes: 30 | 60 | 120 = 30,
+) {
+  return request<ProjectPackageDeliveryArtifacts>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/delivery-artifacts?expireMinutes=${expireMinutes}`,
   )
 }
 

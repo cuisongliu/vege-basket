@@ -148,6 +148,7 @@ import {
   fetchPackageMarketReleaseVersions,
   fetchPackageMarketRules,
   fetchProjectPackageItemDownloadUrl,
+  fetchProjectPackageEventDeliveryArtifacts,
   fetchProjectPackageTimeline,
   fetchProjectCatalog,
   fetchProjectJournals,
@@ -237,6 +238,7 @@ import type {
   Project,
   ProjectModule,
   ProjectPackageEvent,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
@@ -560,7 +562,9 @@ function preserveLoadedPackageEventDetails(
       return {
         ...event,
         comments: loadedEvent.comments,
+        containerImages: loadedEvent.containerImages,
         groups: loadedEvent.groups,
+        offlinePackages: loadedEvent.offlinePackages,
         operations: loadedEvent.operations,
         detailsLoaded: true,
       }
@@ -4104,19 +4108,35 @@ function App() {
     payload: ProjectPackageEventSavePayload,
   ) {
     if (!selectedProject) return null
+    const projectId = selectedProject.id
     try {
-      const timeline = eventId == null
-        ? await createProjectPackageEvent(selectedProject.id, payload)
-        : await saveProjectPackageEventDraft(selectedProject.id, eventId, payload)
-      setProjectPackageTimelines((current) => ({
-        ...current,
-        [selectedProject.id]: timeline,
-      }))
+      const mutationResult = eventId == null
+        ? await createProjectPackageEvent(projectId, payload)
+        : await saveProjectPackageEventDraft(projectId, eventId, payload)
+      const savedEventId = mutationResult.savedEventId ?? eventId
+      if (savedEventId == null) throw new Error('Saved delivery event ID is missing')
+      const [detailTimeline, listTimeline] = await Promise.all([
+        fetchProjectPackageTimeline(projectId, { eventId: savedEventId, includeDetails: true, limit: 1, offset: 0 }),
+        fetchProjectPackageTimeline(projectId, { ...installTimelineQueryRef.current, includeDetails: false }),
+      ])
+      const savedEvent = detailTimeline.events.find((event) => event.id === savedEventId)
+      if (!savedEvent) throw new Error('Saved delivery event could not be loaded')
+      setProjectPackageTimelines((current) => {
+        const existing = current[projectId]
+        const refreshed = existing
+          ? preserveLoadedPackageEventDetails(existing, listTimeline)
+          : listTimeline
+        return {
+          ...current,
+          [projectId]: {
+            ...refreshed,
+            events: refreshed.events.map((event) => event.id === savedEventId ? savedEvent : event),
+          },
+        }
+      })
       if (payload.action === 'publish') await refreshNotifications()
       setWorkspaceError('')
-      return eventId == null
-        ? [...timeline.events].sort((left, right) => right.id - left.id)[0] ?? null
-        : timeline.events.find((event) => event.id === eventId) ?? null
+      return savedEvent
     } catch {
       setWorkspaceError(payload.action === 'publish'
         ? '交付事件发布失败，请检查必填内容后重试。'
@@ -4270,6 +4290,11 @@ function App() {
       setWorkspaceError(formatApiErrorDiagnostic(error, '安装包链接生成失败，请稍后再试。'))
       throw error
     }
+  }
+
+  async function loadInstallEventDeliveryArtifacts(eventId: number, expireMinutes: 30 | 60 | 120) {
+    if (!selectedProject) throw new Error('Project not found')
+    return fetchProjectPackageEventDeliveryArtifacts(selectedProject.id, eventId, expireMinutes)
   }
 
   async function deleteInstallGroup(groupId: number) {
@@ -5755,6 +5780,7 @@ ${packageTimelineText}`
             onExportInstallTimeline={exportInstallTimeline}
             onInstallLoadMarketDetail={loadPackageMarketDetail}
             onInstallLoadItemDownloadUrl={loadInstallItemDownloadUrl}
+            onInstallLoadEventDeliveryArtifacts={loadInstallEventDeliveryArtifacts}
             onInstallLoadMarketCiBranches={loadPackageMarketCiBranches}
             onInstallLoadMarketRules={loadPackageMarketRules}
             onInstallLoadMarketVersions={loadPackageMarketVersions}
@@ -6567,6 +6593,7 @@ function ProjectDetail({
   onInstallLoadMarketCiBranches,
   onInstallLoadMarketDetail,
   onInstallLoadItemDownloadUrl,
+  onInstallLoadEventDeliveryArtifacts,
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
   onLoadInstallTimeline,
@@ -6661,6 +6688,7 @@ function ProjectDetail({
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
+  onInstallLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onInstallLoadMarketVersions: (payload: {
@@ -6934,6 +6962,7 @@ function ProjectDetail({
             onLoadPackageMarketDetail={onInstallLoadMarketDetail}
             onLoadPackageMarketCiBranches={onInstallLoadMarketCiBranches}
             onLoadPackageItemDownloadUrl={onInstallLoadItemDownloadUrl}
+            onLoadEventDeliveryArtifacts={onInstallLoadEventDeliveryArtifacts}
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}
             onLoadTimeline={onLoadInstallTimeline}

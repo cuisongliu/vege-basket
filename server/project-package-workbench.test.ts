@@ -16,6 +16,11 @@ const paginationSource = readFileSync(
   new URL('../src/components/list-pagination.tsx', import.meta.url),
   'utf8',
 )
+const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
+const deliveryArtifactsMigrationSource = readFileSync(
+  new URL('./migrations/20260930_project_delivery_artifacts.sql', import.meta.url),
+  'utf8',
+)
 
 test('package market offers link validity choices from four hours through seven days', () => {
   const expireOptionsSource = workbenchSource.slice(
@@ -77,7 +82,7 @@ test('existing operation todo management opens without a default filter', () => 
   assert.doesNotMatch(openTodoDialogSource, /createTodoFilterCondition/u)
 })
 
-test('event wizard keeps the stepper below its compact header without a return-list action', () => {
+test('event wizard keeps the stepper below its compact header with a return-list action', () => {
   const headerSource = workbenchSource.slice(
     workbenchSource.indexOf('<header className="event-wizard-header">'),
     workbenchSource.indexOf('<div className="event-wizard-steps-row">'),
@@ -90,7 +95,8 @@ test('event wizard keeps the stepper below its compact header without a return-l
   assert.doesNotMatch(headerSource, /event-wizard-steps/u)
   assert.match(editorTopSource, /<\/header>[\s\S]*event-wizard-main[\s\S]*event-wizard-steps-row[\s\S]*event-wizard-steps/u)
   assert.match(editorTopSource, /item\.step <= eventEditorStep \? 'reached'/u)
-  assert.doesNotMatch(headerSource, /返回列表/u)
+  assert.match(headerSource, /返回事件列表/u)
+  assert.match(headerSource, /returnToEventList/u)
 })
 
 test('selecting a draft event opens its summary instead of the editor', () => {
@@ -300,6 +306,7 @@ test('delivery timeline API accepts bounded search pagination and reports totals
 })
 
 test('delivery event summaries use database pagination and hydrate one selected event on demand', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
   assert.match(indexSource, /eventId: Number\.isSafeInteger\(eventId\)[\s\S]*?includeDetails,/u)
   assert.match(timelineSource, /options\.includeDetails !== false/u)
   assert.match(timelineSource, /limit \$2 offset \$3/u)
@@ -312,6 +319,44 @@ test('delivery event summaries use database pagination and hydrate one selected 
   assert.match(workbenchSource, /project-event-counts/u)
   assert.match(workbenchSource, /交付包数量/u)
   assert.match(workbenchSource, /个安装包条目/u)
+  assert.match(appSource, /containerImages: loadedEvent\.containerImages/u)
+  assert.match(appSource, /offlinePackages: loadedEvent\.offlinePackages/u)
+  assert.match(workbenchSource, /openLoadedDraftEventEditor/u)
+  assert.match(workbenchSource, /await onLoadTimeline\(\{ eventId: event\.id, includeDetails: true, limit: 1, offset: 0 \}\)/u)
+  assert.doesNotMatch(timelineSource, /packageCount:[\s\S]*?container_image_count/u)
+  assert.match(indexSource, /savedEventId: result\.eventId/u)
+  assert.match(indexSource, /containerImages: Array\.isArray\(body\.containerImages\)[\s\S]*?: undefined/u)
+  assert.match(timelineSource, /params\.eventId == null \|\| containerImages != null/u)
+  assert.match(appSource, /const savedEventId = mutationResult\.savedEventId \?\? eventId/u)
+  assert.match(appSource, /fetchProjectPackageTimeline\(projectId, \{ \.\.\.installTimelineQueryRef\.current, includeDetails: false \}\)/u)
+})
+
+test('delivery events support mixed encrypted artifacts and server-generated scripts', () => {
+  assert.match(timelineSource, /project_package_event_container_images/u)
+  assert.match(timelineSource, /project_package_event_offline_packages/u)
+  assert.match(timelineSource, /encryptText\(image\)/u)
+  assert.match(timelineSource, /encryptText\(url\)/u)
+  assert.match(timelineSource, /createDeliveryExecutionScript/u)
+  assert.match(indexSource, /delivery-artifacts/u)
+  assert.match(workbenchSource, /集群镜像/u)
+  assert.match(workbenchSource, /离线包地址/u)
+  assert.match(workbenchSource, /复制执行脚本/u)
+  for (const table of [
+    'project_package_event_container_images',
+    'project_package_event_offline_packages',
+  ]) {
+    const tablePattern = new RegExp(`create table if not exists ${table} \\([\\s\\S]*?\\n\\);`, 'u')
+    const schemaDefinition = schemaSource.match(tablePattern)?.[0]
+    assert.ok(schemaDefinition, `${table} must exist in the startup schema`)
+    assert.ok(deliveryArtifactsMigrationSource.includes(schemaDefinition), `${table} migration must match the startup schema`)
+  }
+})
+
+test('delivery list exposes signed delay days with distinct visual states', () => {
+  assert.match(timelineSource, /deliveryDelayDays/u)
+  assert.match(timelineSource, /calendarDayDifference/u)
+  assert.match(workbenchSource, /交付延期/u)
+  assert.match(workbenchSource, /project-event-delay-cell/u)
 })
 
 test('delivery workbench uses a full-width event list and a responsive detail drawer', () => {
@@ -333,8 +378,8 @@ test('delivery workbench uses a full-width event list and a responsive detail dr
   assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(860px/u)
   assert.match(workbenchCss, /\.delivery-event-table-viewport[\s\S]*overflow: auto/u)
   assert.match(workbenchCss, /\.project-event-table-head[\s\S]*position: sticky/u)
-  assert.match(workbenchCss, /--delivery-event-columns:[\s\S]*40px/u)
-  assert.match(workbenchCss, /grid-template-columns: var\(--delivery-event-columns\)/u)
+  assert.match(workbenchCss, /--delivery-event-content-columns:[\s\S]*minmax\(130px, 1fr\)/u)
+  assert.match(workbenchCss, /grid-template-columns: var\(--delivery-event-content-columns\) 40px/u)
   assert.match(workbenchCss, /\.delivery-event-list-panel[\s\S]*grid-template-rows: auto auto auto auto auto minmax\(0, 1fr\) auto/u)
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
   assert.match(appSource, /function preserveLoadedPackageEventDetails/u)

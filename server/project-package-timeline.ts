@@ -4,6 +4,7 @@ import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
 import {
+  createPackageItemDownloadLink,
   createPackageItemDownloadUrl,
   isPackageMarketObjectKeyAllowedForRule,
   type PackageMarketRule,
@@ -11,6 +12,9 @@ import {
 import { getDepartedUserIds } from './user-lifecycle.ts'
 import { getPlatformConfigSnapshot } from './platform-config-runtime.ts'
 import { getPackageMarketRulesForConfigRevision } from './platform-package-rules.ts'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../shared/container-image-reference.ts'
+import { maxDeliveryArtifactEntries, normalizeOfflinePackageUrl, offlinePackageFileName } from '../shared/delivery-artifact.ts'
+import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
@@ -40,6 +44,8 @@ export type ProjectPackageDocumentInput = {
 }
 
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
+export type ProjectPackageEventContainerImage = { id: number; image: string }
+export type ProjectPackageEventOfflinePackage = { id: number; url: string }
 
 export class ProjectPackageEventError extends Error {
   readonly status: 400 | 403 | 404 | 409
@@ -115,18 +121,21 @@ export type ProjectPackageEvent = {
   completedAt?: string
   deliveryFailureReason?: string
   deliveryResult?: ProjectPackageDeliveryResult
+  deliveryDelayDays?: number
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: ProjectPackageEventContainerImage[]
   createdAt: string
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
   groups: ProjectPackageGroup[]
   id: number
+  offlinePackages: ProjectPackageEventOfflinePackage[]
   operations: ProjectPackageOperation[]
   publishedAt?: string
   publishedByUserId?: number
@@ -134,6 +143,10 @@ export type ProjectPackageEvent = {
   title: string
   type: ProjectPackageEventType
   updatedAt: string
+  commentCount?: number
+  detailsLoaded?: boolean
+  operationCount?: number
+  packageCount?: number
 }
 
 export type ProjectPackageTimeline = {
@@ -144,6 +157,7 @@ export type ProjectPackageTimeline = {
   pagination?: { limit: number; offset: number; total: number }
   mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
+  savedEventId?: number
 }
 
 export type ProjectPackageTimelineQuery = {
@@ -236,6 +250,18 @@ type EventSummaryCountRow = {
   package_count: string
   operation_count: string
   comment_count: string
+}
+
+type ContainerImageRow = {
+  id: string
+  image_ref: string
+  project_package_event_id: string
+}
+
+type OfflinePackageRow = {
+  download_url: string
+  id: string
+  project_package_event_id: string
 }
 
 type GroupRow = {
@@ -386,6 +412,12 @@ function formatDate(value: Date | string) {
   const pick = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function calendarDayDifference(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
+  return Math.round((leftTime - rightTime) / 86_400_000)
 }
 
 function normalizeDeliveryDate(value: unknown) {
@@ -583,6 +615,35 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
       sourcePackageName: normalizeText(item.sourcePackageName || packageName, 160),
       version: normalizeText(item.version, 80),
     }
+  })
+}
+
+function normalizeContainerImages(values: unknown[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`镜像地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const image = normalizeContainerImageReference(value, { requireTagOrDigest: true })
+    if (!image.valid) throw new ProjectPackageEventError(`镜像地址 ${index + 1}：${image.error}`, 400)
+    const key = containerImageReferenceKey(image.value)
+    if (seen.has(key)) throw new ProjectPackageEventError('镜像地址不能重复', 400)
+    seen.add(key)
+    return image.value
+  })
+}
+
+function normalizeOfflinePackageUrls(values: unknown[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`离线包地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const url = normalizeOfflinePackageUrl(value)
+    if (!url.valid) throw new ProjectPackageEventError(`离线包地址 ${index + 1}：${url.error}`, 400)
+    if (seen.has(url.value)) throw new ProjectPackageEventError('离线包地址不能重复', 400)
+    seen.add(url.value)
+    return url.value
   })
 }
 
@@ -1479,6 +1540,8 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
   const [
     groupsResult,
     itemsResult,
+    containerImagesResult,
+    offlinePackagesResult,
     operationsResult,
     operationTodosResult,
     commentsResult,
@@ -1516,6 +1579,22 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         ${eventScope}
       order by i.created_at asc, i.id asc
       `,
+      scopedValues,
+    ),
+    query<ContainerImageRow>(
+      `select image.id, image.project_package_event_id, image.image_ref
+         from project_package_event_container_images image
+         join project_package_events e on e.id = image.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by image.position, image.id`,
+      scopedValues,
+    ),
+    query<OfflinePackageRow>(
+      `select package.id, package.project_package_event_id, package.download_url
+         from project_package_event_offline_packages package
+         join project_package_events e on e.id = package.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by package.position, package.id`,
       scopedValues,
     ),
     query<OperationRow>(
@@ -1585,6 +1664,8 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
   ]) : [
     { rows: [] as GroupRow[] },
     { rows: [] as ItemRow[] },
+    { rows: [] as ContainerImageRow[] },
+    { rows: [] as OfflinePackageRow[] },
     { rows: [] as OperationRow[] },
     { rows: [] as OperationTodoRow[] },
     { rows: [] as PackageEventCommentRow[] },
@@ -1682,6 +1763,22 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
     })
   }
 
+  const containerImagesByEvent = new Map<number, ProjectPackageEventContainerImage[]>()
+  for (const row of containerImagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const images = containerImagesByEvent.get(eventId) ?? []
+    images.push({ id: Number(row.id), image: decryptText(row.image_ref) })
+    containerImagesByEvent.set(eventId, images)
+  }
+
+  const offlinePackagesByEvent = new Map<number, ProjectPackageEventOfflinePackage[]>()
+  for (const row of offlinePackagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const packages = offlinePackagesByEvent.get(eventId) ?? []
+    packages.push({ id: Number(row.id), url: decryptText(row.download_url) })
+    offlinePackagesByEvent.set(eventId, packages)
+  }
+
   const relatedTodoIdsByOperation = new Map<number, number[]>()
   const relatedTodoNotesByOperation = new Map<number, Record<number, string>>()
   for (const row of operationTodosResult.rows) {
@@ -1774,6 +1871,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       comments: commentsByEvent.get(Number(row.id)) ?? [],
+      containerImages: containerImagesByEvent.get(Number(row.id)) ?? [],
       id: Number(row.id),
       publishedAt: row.published_at ? formatDateTime(row.published_at) : undefined,
       publishedByUserId: row.published_by_user_id ? Number(row.published_by_user_id) : undefined,
@@ -1782,10 +1880,17 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       title: decryptText(row.title),
       createdAt: formatDateTime(row.created_at),
       deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
+      deliveryDelayDays: row.published_at
+        ? calendarDayDifference(
+            row.completed_at ? formatDate(row.completed_at) : formatDate(new Date()),
+            row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.delivery_end_at),
+          )
+        : undefined,
       deliveryEndAt: formatDateTime(row.delivery_end_at),
       deliveryStartAt: formatDateTime(row.delivery_start_at),
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
+      offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
       detailsLoaded: includeDetails,
       packageCount: includeDetails
@@ -1820,7 +1925,9 @@ export async function saveProjectPackageEvent(params: {
   deliveryStartAt?: string
   documents: ProjectPackageDocumentInput[]
   eventId?: number
+  containerImages?: string[]
   items: ProjectPackageItemInput[]
+  offlinePackageUrls?: string[]
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -1833,6 +1940,8 @@ export async function saveProjectPackageEvent(params: {
   if (!title) throw new ProjectPackageEventError('Event title is required', 400)
   const deliveryWindow = normalizeDeliveryWindow(params)
   const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
+  const containerImages = params.containerImages == null ? undefined : normalizeContainerImages(params.containerImages)
+  const offlinePackageUrls = params.offlinePackageUrls == null ? undefined : normalizeOfflinePackageUrls(params.offlinePackageUrls)
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
@@ -1931,6 +2040,12 @@ export async function saveProjectPackageEvent(params: {
       'delete from project_package_groups where project_package_event_id = $1',
       [persistedEventId],
     )
+    if (params.eventId == null || containerImages != null) {
+      await client.query('delete from project_package_event_container_images where project_package_event_id = $1', [persistedEventId])
+    }
+    if (params.eventId == null || offlinePackageUrls != null) {
+      await client.query('delete from project_package_event_offline_packages where project_package_event_id = $1', [persistedEventId])
+    }
 
     const groupIds = new Map<string, number>()
     for (const item of items) {
@@ -1976,6 +2091,21 @@ export async function saveProjectPackageEvent(params: {
 
     for (const groupId of groupIds.values()) {
       await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
+    }
+
+    for (const [position, image] of (containerImages ?? []).entries()) {
+      await client.query(
+        `insert into project_package_event_container_images (project_package_event_id, position, image_ref)
+         values ($1, $2, $3)`,
+        [persistedEventId, position, encryptText(image)],
+      )
+    }
+    for (const [position, url] of (offlinePackageUrls ?? []).entries()) {
+      await client.query(
+        `insert into project_package_event_offline_packages (project_package_event_id, position, download_url)
+         values ($1, $2, $3)`,
+        [persistedEventId, position, encryptText(url)],
+      )
     }
 
     await client.query(
@@ -2510,6 +2640,86 @@ export async function getProjectPackageItemObjectKey(params: {
   projectId: number
 }) {
   return (await getProjectPackageItemDownloadSource(params))?.objectKey ?? ''
+}
+
+export async function getProjectPackageEventDeliveryArtifacts(params: {
+  eventId: number
+  expireMinutes: number
+  projectId: number
+}) {
+  const event = await query<{ id: string }>(
+    'select id from project_package_events where id = $1 and project_id = $2',
+    [params.eventId, params.projectId],
+  )
+  if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
+
+  const [packageRows, imageRows, offlineRows] = await Promise.all([
+    query<{
+      object_key: string
+      source_config_revision: string | null
+      source_package_id: string
+      channel: string
+    }>(
+      `select i.object_key, i.source_config_revision, i.source_package_id, i.channel
+         from project_package_items i
+         join project_package_groups g on g.id = i.project_package_group_id
+        where g.project_package_event_id = $1
+        order by i.created_at, i.id`,
+      [params.eventId],
+    ),
+    query<{ image_ref: string }>(
+      `select image_ref from project_package_event_container_images
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+    query<{ download_url: string }>(
+      `select download_url from project_package_event_offline_packages
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+  ])
+
+  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; objectKey: string }>
+  const rulesByRevision = new Map<number | null, Awaited<ReturnType<typeof getPackageMarketRulesForConfigRevision>>>()
+  for (const item of packageRows.rows) {
+    const revision = item.source_config_revision ? Number(item.source_config_revision) : null
+    let rules = rulesByRevision.get(revision)
+    if (!rulesByRevision.has(revision)) {
+      rules = await getPackageMarketRulesForConfigRevision(revision)
+      rulesByRevision.set(revision, rules)
+    }
+    if (!isPackageMarketObjectKeyAllowedForRule({
+      channel: item.channel === 'ci' ? 'ci' : 'release',
+      objectKey: item.object_key,
+      packageId: item.source_package_id,
+      rules,
+    })) {
+      throw new ProjectPackageEventError('交付安装包已不符合当前对象规则，无法生成下载地址', 409)
+    }
+    packageLinks.push({
+      ...createPackageItemDownloadLink(item.object_key, params.expireMinutes),
+      objectKey: item.object_key,
+    })
+  }
+
+  const images = normalizeContainerImages(imageRows.rows.map((row) => decryptText(row.image_ref)))
+  const offlinePackageUrls = normalizeOfflinePackageUrls(offlineRows.rows.map((row) => decryptText(row.download_url)))
+  const offlinePackages = offlinePackageUrls.map((downloadUrl, index) => ({
+    downloadUrl,
+    fileName: offlinePackageFileName(downloadUrl, index),
+  }))
+  return {
+    addresses: [
+      ...packageLinks.map((item) => ({ expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl })),
+      ...offlinePackageUrls.map((value) => ({ kind: 'offline-package' as const, value })),
+      ...images.map((value) => ({ kind: 'container-image' as const, value })),
+    ],
+    script: createDeliveryExecutionScript({
+      images,
+      offlinePackages,
+      packages: packageLinks,
+    }),
+  }
 }
 
 export async function exportProjectPackageTimeline(projectId: number, eventId?: number) {
