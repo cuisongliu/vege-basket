@@ -12419,6 +12419,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
           objectKey: String(value.objectKey ?? ''),
           objectLastModified: value.objectLastModified ? String(value.objectLastModified) : undefined,
           sizeBytes: typeof value.sizeBytes === 'number' ? value.sizeBytes : undefined,
+          runtimeConfig: value.runtimeConfig,
         }
       })
     : []
@@ -12440,10 +12441,24 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
     : []
   return {
     action: body.action === 'publish' ? 'publish' as const : 'save_draft' as const,
-    containerImages: Array.isArray(body.containerImages) ? body.containerImages.map(String) : undefined,
+    containerImages: Array.isArray(body.containerImages)
+      ? body.containerImages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : null
+          return value
+            ? { image: String(value.image ?? ''), runtimeConfig: value.runtimeConfig }
+            : { image: String(item) }
+        })
+      : undefined,
     documents,
     items,
-    offlinePackageUrls: Array.isArray(body.offlinePackageUrls) ? body.offlinePackageUrls.map(String) : undefined,
+    offlinePackages: Array.isArray(body.offlinePackages)
+      ? body.offlinePackages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+          return { runtimeConfig: value.runtimeConfig, url: String(value.url ?? '') }
+        })
+      : Array.isArray(body.offlinePackageUrls)
+        ? body.offlinePackageUrls.map((url) => ({ url: String(url) }))
+        : undefined,
   }
 }
 
@@ -12520,7 +12535,7 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     documents: aggregate.documents,
     containerImages: aggregate.containerImages,
     items: aggregate.items,
-    offlinePackageUrls: aggregate.offlinePackageUrls,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12569,7 +12584,7 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     containerImages: aggregate.containerImages,
     eventId: Number(request.params.eventId),
     items: aggregate.items,
-    offlinePackageUrls: aggregate.offlinePackageUrls,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),

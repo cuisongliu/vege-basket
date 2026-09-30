@@ -1,15 +1,60 @@
+import type { DeliveryRuntimeConfig } from '../shared/delivery-artifact.ts'
+
 type VerificationPackageDownload = {
   downloadUrl: string
   objectKey: string
+  runtimeConfig?: DeliveryRuntimeConfig
 }
 
 type OfflinePackageDownload = {
   downloadUrl: string
   fileName: string
+  runtimeConfig?: DeliveryRuntimeConfig
 }
 
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+function runtimeEnvironmentArguments(config: DeliveryRuntimeConfig | undefined) {
+  return (config?.environmentVariables ?? []).flatMap((variable) => ['--env', shellQuote(`${variable.name}=${variable.value}`)])
+}
+
+function createRuntimeCommand(command: string, config?: DeliveryRuntimeConfig, deliveryDirVariable = '$delivery_dir') {
+  const environmentArguments = runtimeEnvironmentArguments(config)
+  const run = [command, ...environmentArguments].join(' ')
+  if (!config?.valuesPath || !config.valuesPatch) return run
+  const token = Buffer.from(config.valuesPath).toString('hex').slice(0, 24)
+  const commands = [
+    'command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -Eq "(^|[[:space:]])v?4\\." || { echo "缺少 yq v4，无法应用 Values 修改" >&2; exit 1; }',
+    'command -v flock >/dev/null 2>&1 || { echo "缺少 flock，无法安全修改 Values 文件" >&2; exit 1; }',
+    `values_path="$(realpath -- ${shellQuote(config.valuesPath)})"`,
+    `case "$values_path" in /root/.sealos/cloud/values/*) ;; *) echo ${shellQuote('Values 文件必须位于 /root/.sealos/cloud/values/ 下')} >&2; exit 1 ;; esac`,
+    `test -f "$values_path" || { echo ${shellQuote(`Values 文件不存在：${config.valuesPath}`)} >&2; exit 1; }`,
+    `values_backup="${deliveryDirVariable}/values-backup-${token}"`,
+    `values_overlay="${deliveryDirVariable}/values-overlay-${token}.yaml"`,
+    `values_merged="${deliveryDirVariable}/values-merged-${token}.yaml"`,
+    'exec 9>"$values_path.veges.lock"',
+    'flock -x 9',
+    'cp -- "$values_path" "$values_backup"',
+    'restore_values() { restore_status=$?; if ! cp -- "$values_backup" "$values_path"; then echo "无法恢复 Values 文件：$values_path" >&2; restore_status=1; fi; return "$restore_status"; }',
+    'trap restore_values EXIT',
+    `printf '%s' ${shellQuote(Buffer.from(config.valuesPatch).toString('base64'))} | base64 -d > "$values_overlay"`,
+    `yq ea 'select(fileIndex == 0) * select(fileIndex == 1)' "$values_path" "$values_overlay" > "$values_merged"`,
+    'cp -- "$values_merged" "$values_path"',
+    run,
+  ]
+  return `( ${commands.join(' && ')} )`
+}
+
+function wrapStandaloneCommands(commands: string[], needsDeliveryDirectory: boolean) {
+  if (commands.length === 0) return ''
+  if (!needsDeliveryDirectory) return commands.join(' && \\\n')
+  return [
+    'delivery_dir="$(mktemp -d)"',
+    `trap 'rm -rf "$delivery_dir"' EXIT`,
+    ...commands,
+  ].join(' && \\\n')
 }
 
 function archiveFileName(objectKey: string, index: number, usedNames: Set<string>) {
@@ -28,18 +73,26 @@ function archiveFileName(objectKey: string, index: number, usedNames: Set<string
 
 export function createPackageVerificationScript(packages: readonly VerificationPackageDownload[]) {
   const usedNames = new Set<string>()
-  return packages.map((item, index) => {
+  const commands = packages.map((item, index) => {
     const fileName = archiveFileName(item.objectKey, index, usedNames)
-    return `wget ${shellQuote(item.downloadUrl)} -O ${shellQuote(fileName)} && sealos run -f ${shellQuote(fileName)}`
-  }).join(' && \\\n')
+    return `wget ${shellQuote(item.downloadUrl)} -O ${shellQuote(fileName)} && ${createRuntimeCommand(`sealos run -f ${shellQuote(fileName)}`, item.runtimeConfig)}`
+  })
+  return wrapStandaloneCommands(commands, packages.some((item) => item.runtimeConfig?.valuesPatch))
 }
 
-export function createClusterImageVerificationScript(images: readonly string[]) {
-  return images.map((image) => `sealos run -f ${shellQuote(image)}`).join(' && \\\n')
+export function createClusterImageVerificationScript(images: ReadonlyArray<string | { image: string; runtimeConfig?: DeliveryRuntimeConfig }>) {
+  const normalizedImages = images.map((entry) => {
+    const item = typeof entry === 'string' ? { image: entry } : entry
+    return { command: createRuntimeCommand(`sealos run -f ${shellQuote(item.image)}`, item.runtimeConfig), runtimeConfig: item.runtimeConfig }
+  })
+  return wrapStandaloneCommands(
+    normalizedImages.map((item) => item.command),
+    normalizedImages.some((item) => item.runtimeConfig?.valuesPatch),
+  )
 }
 
 export function createDeliveryExecutionScript(input: {
-  images: readonly string[]
+  images: ReadonlyArray<string | { image: string; runtimeConfig?: DeliveryRuntimeConfig }>
   offlinePackages: readonly OfflinePackageDownload[]
   packages: readonly VerificationPackageDownload[]
 }) {
@@ -48,19 +101,25 @@ export function createDeliveryExecutionScript(input: {
     ...input.packages.map((item, index) => {
       const fileName = archiveFileName(item.objectKey, index, usedNames)
       const target = `"$delivery_dir/${fileName}"`
-      return `wget ${shellQuote(item.downloadUrl)} -O ${target} && sealos run -f ${target}`
+      return [
+        `wget ${shellQuote(item.downloadUrl)} -O ${target} && ${createRuntimeCommand(`sealos run -f ${target}`, item.runtimeConfig)}`,
+      ].join(' && \\\n')
     }),
     ...input.offlinePackages.map((item, index) => {
       const fileName = archiveFileName(item.fileName, input.packages.length + index, usedNames)
       const target = `"$delivery_dir/${fileName}"`
-      return `wget ${shellQuote(item.downloadUrl)} -O ${target} && sealos run -f ${target}`
+      return [
+        `wget ${shellQuote(item.downloadUrl)} -O ${target} && ${createRuntimeCommand(`sealos run -f ${target}`, item.runtimeConfig)}`,
+      ].join(' && \\\n')
     }),
   ]
+  const images = input.images.map((entry) => typeof entry === 'string' ? { image: entry } : entry)
+  const needsDeliveryDirectory = archiveCommands.length > 0 || images.some((item) => item.runtimeConfig?.valuesPatch)
   const commands = [
-    ...(archiveCommands.length > 0
+    ...(needsDeliveryDirectory
       ? ['delivery_dir="$(mktemp -d)"', `trap 'rm -rf "$delivery_dir"' EXIT`, ...archiveCommands]
       : []),
-    ...input.images.map((image) => `sealos run -f ${shellQuote(image)}`),
+    ...images.map((item) => createRuntimeCommand(`sealos run -f ${shellQuote(item.image)}`, item.runtimeConfig)),
   ]
   return commands.join(' && \\\n')
 }

@@ -7661,6 +7661,13 @@ textarea:focus {
 
 .delivery-artifact-editor-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.delivery-artifact-editor-primary-row {
+  display: grid;
   grid-template-columns: minmax(0, 1fr) 36px;
   gap: 8px;
   align-items: start;
@@ -7678,9 +7685,10 @@ textarea:focus {
 }
 
 .event-wizard-package-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  align-items: start;
+  justify-content: initial;
   gap: 16px;
   min-width: 0;
   border-top: 1px solid var(--line);
@@ -7696,6 +7704,66 @@ textarea:focus {
   gap: 4px;
   min-width: 0;
 }
+
+.delivery-artifact-draft-summary { grid-column: 1; }
+.event-wizard-package-row > .delivery-runtime-config-editor { grid-column: 1 / -1; }
+
+.delivery-runtime-config-editor {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.delivery-runtime-config-editor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--muted-text);
+  font-size: 12px;
+  list-style: none;
+}
+
+.delivery-runtime-config-editor > summary::-webkit-details-marker { display: none; }
+.delivery-runtime-config-editor > summary svg { flex: 0 0 auto; color: var(--primary); transition: rotate 140ms ease; }
+.delivery-runtime-config-editor[open] > summary svg { rotate: 90deg; }
+.delivery-runtime-config-editor > summary small { margin-left: auto; color: var(--muted-text); }
+
+.delivery-runtime-config-content {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--field) 38%, var(--surface));
+}
+
+.delivery-runtime-config-heading,
+.delivery-item-script-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.delivery-runtime-config-heading > div { display: grid; gap: 2px; }
+.delivery-runtime-config-heading span { color: var(--muted-text); font-size: 11px; }
+.delivery-environment-variable-row { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(160px, 1.2fr) 36px; gap: 8px; align-items: center; }
+.delivery-values-fields { display: grid; gap: 10px; }
+.delivery-values-fields label { display: grid; gap: 6px; color: var(--muted-text); font-size: 12px; }
+.delivery-values-fields textarea { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.delivery-values-fields p { margin: 0; color: var(--muted-text); font-size: 11px; line-height: 1.45; }
+
+.delivery-address-item { display: grid; gap: 8px; border-bottom: 1px solid var(--line); padding: 10px 0; }
+.delivery-address-item:last-child { border-bottom: 0; }
+.delivery-runtime-config-summary { display: grid; gap: 6px; padding: 8px 10px; background: color-mix(in oklch, var(--field) 38%, var(--surface)); border-radius: 6px; }
+.delivery-runtime-config-summary > div { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; align-items: start; }
+.delivery-runtime-config-summary strong { color: var(--muted-text); font-size: 11px; }
+.delivery-runtime-config-summary code,
+.delivery-runtime-config-summary pre { min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--strong); font-size: 11px; }
+.delivery-item-script-heading { color: var(--muted-text); font-size: 11px; }
+.delivery-item-execution-script { margin: 0; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .event-wizard-package-row strong,
 .event-wizard-package-row span {
@@ -7717,6 +7785,12 @@ textarea:focus {
   width: 40px;
   height: 40px;
   color: var(--muted-text);
+}
+
+@media (max-width: 680px) {
+  .delivery-environment-variable-row { grid-template-columns: minmax(0, 1fr) 36px; }
+  .delivery-environment-variable-row input:first-child { grid-column: 1 / -1; }
+  .delivery-runtime-config-summary > div { grid-template-columns: 1fr; gap: 3px; }
 }
 
 .event-document-todo-link {

@@ -21,6 +21,10 @@ const deliveryArtifactsMigrationSource = readFileSync(
   new URL('./migrations/20260930_project_delivery_artifacts.sql', import.meta.url),
   'utf8',
 )
+const deliveryRuntimeConfigMigrationSource = readFileSync(
+  new URL('./migrations/20260930_project_delivery_runtime_config.sql', import.meta.url),
+  'utf8',
+)
 
 test('package market offers link validity choices from four hours through seven days', () => {
   const expireOptionsSource = workbenchSource.slice(
@@ -335,8 +339,10 @@ test('delivery event summaries use database pagination and hydrate one selected 
 test('delivery events support mixed encrypted artifacts and server-generated scripts', () => {
   assert.match(timelineSource, /project_package_event_container_images/u)
   assert.match(timelineSource, /project_package_event_offline_packages/u)
-  assert.match(timelineSource, /encryptText\(image\)/u)
-  assert.match(timelineSource, /encryptText\(url\)/u)
+  assert.match(timelineSource, /encryptText\(item\.image\)/u)
+  assert.match(timelineSource, /encryptText\(item\.url\)/u)
+  assert.match(timelineSource, /encryptedDeliveryRuntimeConfig/u)
+  assert.match(timelineSource, /readDeliveryRuntimeConfig/u)
   assert.match(timelineSource, /createDeliveryExecutionScript/u)
   assert.match(indexSource, /delivery-artifacts/u)
   assert.match(workbenchSource, /集群镜像/u)
@@ -351,6 +357,12 @@ test('delivery events support mixed encrypted artifacts and server-generated scr
     assert.ok(schemaDefinition, `${table} must exist in the startup schema`)
     assert.ok(deliveryArtifactsMigrationSource.includes(schemaDefinition), `${table} migration must match the startup schema`)
   }
+  assert.match(schemaSource, /environment_variables text/u)
+  assert.match(schemaSource, /values_path text/u)
+  assert.match(schemaSource, /values_patch text/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_items/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_event_container_images/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_event_offline_packages/u)
 })
 
 test('delivery list exposes signed delay days with distinct visual states', () => {
@@ -376,7 +388,7 @@ test('delivery workbench uses a full-width event list and a responsive detail dr
     new URL('../src/components/project-package-workbench.css', import.meta.url),
     'utf8',
   )
-  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(860px/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px/u)
   assert.match(workbenchCss, /\.delivery-event-table-viewport[\s\S]*overflow: auto/u)
   assert.match(workbenchCss, /\.project-event-table-head[\s\S]*position: sticky/u)
   assert.match(workbenchCss, /--delivery-event-content-columns:[\s\S]*minmax\(130px, 1fr\)/u)

@@ -1607,6 +1607,21 @@ create index if not exists idx_project_package_event_container_images_event
 create index if not exists idx_project_package_event_offline_packages_event
   on project_package_event_offline_packages(project_package_event_id, position);
 
+alter table project_package_items
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
+
+alter table project_package_event_container_images
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
+
+alter table project_package_event_offline_packages
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
+
 create table if not exists project_package_operations (
   id bigserial primary key,
   project_package_event_id bigint not null references project_package_events(id) on delete cascade,

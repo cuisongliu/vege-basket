@@ -62,3 +62,20 @@ test('chains multiple cluster images and gives duplicate archive names separate 
     /-O 'admin-2\.tar'/u,
   )
 })
+
+test('adds per-item environment variables without turning Values into sealos parameters', () => {
+  const config = {
+    environmentVariables: [{ name: 'REGION', value: 'cn-hz' }],
+    valuesPath: '/root/.sealos/cloud/values/app.yaml',
+    valuesPatch: 'replicas: 3\n',
+  }
+  const script = createClusterImageVerificationScript([{ image: 'ghcr.io/example/app:v1', runtimeConfig: config }])
+  assert.match(script, /delivery_dir="\$\(mktemp -d\)"/u)
+  assert.match(script, /sealos run -f 'ghcr\.io\/example\/app:v1' --env 'REGION=cn-hz'/u)
+  assert.match(script, /yq ea 'select\(fileIndex == 0\) \* select\(fileIndex == 1\)'/u)
+  assert.match(script, /cp -- "\$values_merged" "\$values_path"/u)
+  assert.match(script, /restore_values\(\)/u)
+  assert.match(script, /无法恢复 Values 文件/u)
+  assert.doesNotMatch(script, /restore_values\(\).*\|\| true/u)
+  assert.doesNotMatch(script, /--values|HELM_OPTIONS/u)
+})

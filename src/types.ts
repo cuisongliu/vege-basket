@@ -1,4 +1,5 @@
 import type { DeliveryCapabilities, ProjectDeliveryMember } from '../shared/project-delivery'
+import type { DeliveryRuntimeConfig } from '../shared/delivery-artifact'
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
 export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
@@ -368,6 +369,7 @@ export type ProjectPackageItem = {
   sizeBytes?: number
   sourceConfigRevision?: number
   createdAt: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -420,7 +422,7 @@ export type ProjectPackageEvent = {
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
-  containerImages: Array<{ id: number; image: string }>
+  containerImages: Array<{ id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }>
   id: number
   type: ProjectPackageEventType
   status: ProjectPackageEventStatus
@@ -431,7 +433,7 @@ export type ProjectPackageEvent = {
   deliveryStartAt: string
   updatedAt: string
   operations: ProjectPackageOperation[]
-  offlinePackages: Array<{ id: number; url: string }>
+  offlinePackages: Array<{ id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }>
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
@@ -452,7 +454,7 @@ export type ProjectPackageEventDocumentInput = {
 export type ProjectPackageEventSavePayload = {
   action: 'publish' | 'save_draft'
   assigneeUserId: number | null
-  containerImages: string[]
+  containerImages: Array<{ image: string; runtimeConfig: DeliveryRuntimeConfig }>
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
@@ -468,13 +470,23 @@ export type ProjectPackageEventSavePayload = {
     objectKey: string
     objectLastModified?: string
     sizeBytes?: number
+    runtimeConfig: DeliveryRuntimeConfig
   }>
-  offlinePackageUrls: string[]
+  offlinePackages: Array<{ runtimeConfig: DeliveryRuntimeConfig; url: string }>
   title: string
   type: ProjectPackageEventType
 }
 
 export type ProjectPackageDeliveryArtifacts = {
+  items?: Array<{
+    address: {
+      expiresAt?: string
+      kind: 'object-storage' | 'offline-package' | 'container-image'
+      value: string
+    }
+    runtimeConfig: DeliveryRuntimeConfig
+    script: string
+  }>
   addresses: Array<{
     expiresAt?: string
     kind: 'object-storage' | 'offline-package' | 'container-image'

@@ -117,7 +117,15 @@ import {
   packageMarketDependencyChannel,
 } from '../../shared/organization-package-market'
 import { containerImageReferenceKey, normalizeContainerImageReference } from '../../shared/container-image-reference'
-import { maxDeliveryArtifactEntries, normalizeOfflinePackageUrl } from '../../shared/delivery-artifact'
+import {
+  deliveryValuesRoot,
+  emptyDeliveryRuntimeConfig,
+  maxDeliveryArtifactEntries,
+  maxDeliveryEnvironmentVariables,
+  normalizeDeliveryRuntimeConfig,
+  normalizeOfflinePackageUrl,
+  type DeliveryRuntimeConfig,
+} from '../../shared/delivery-artifact'
 import './project-package-workbench.css'
 
 type PackageWorkbenchProps = {
@@ -256,6 +264,102 @@ type PackageMarketDetailContext = {
   ciVersion: string
   packageId: string
   releaseVersion: string
+}
+
+type DraftContainerImage = { image: string; runtimeConfig: DeliveryRuntimeConfig }
+type DraftOfflinePackage = { runtimeConfig: DeliveryRuntimeConfig; url: string }
+
+function DeliveryRuntimeConfigEditor({
+  config,
+  label,
+  onChange,
+}: {
+  config: DeliveryRuntimeConfig
+  label: string
+  onChange: (config: DeliveryRuntimeConfig) => void
+}) {
+  const validation = normalizeDeliveryRuntimeConfig(config)
+  return (
+    <details className="delivery-runtime-config-editor">
+      <summary>
+        <CaretRight aria-hidden="true" size={14} />
+        <span>运行配置</span>
+        <small>{config.environmentVariables.length > 0 || config.valuesPath || config.valuesPatch ? '已配置' : '可选'}</small>
+      </summary>
+      <div className="delivery-runtime-config-content">
+        <div className="delivery-runtime-config-heading">
+          <div><strong>环境变量</strong><span>仅应用于当前交付项</span></div>
+          <Button
+            disabled={config.environmentVariables.length >= maxDeliveryEnvironmentVariables}
+            size="sm"
+            type="button"
+            variant="outline"
+            onClick={() => onChange({ ...config, environmentVariables: [...config.environmentVariables, { name: '', value: '' }] })}
+          >
+            <Plus size={14} /> 添加变量
+          </Button>
+        </div>
+        {config.environmentVariables.map((variable, index) => (
+          <div className="delivery-environment-variable-row" key={`${label}-env-${index}`}>
+            <Input
+              aria-label={`${label}环境变量名称 ${index + 1}`}
+              autoCapitalize="none"
+              autoComplete="off"
+              placeholder="变量名，例如 REGION"
+              spellCheck={false}
+              value={variable.name}
+              onChange={(event) => onChange({
+                ...config,
+                environmentVariables: config.environmentVariables.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item),
+              })}
+            />
+            <Input
+              aria-label={`${label}环境变量值 ${index + 1}`}
+              autoComplete="off"
+              placeholder="变量值"
+              value={variable.value}
+              onChange={(event) => onChange({
+                ...config,
+                environmentVariables: config.environmentVariables.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item),
+              })}
+            />
+            <Button
+              aria-label={`删除${label}环境变量 ${index + 1}`}
+              size="icon"
+              type="button"
+              variant="ghost"
+              onClick={() => onChange({ ...config, environmentVariables: config.environmentVariables.filter((_, itemIndex) => itemIndex !== index) })}
+            ><Trash size={15} /></Button>
+          </div>
+        ))}
+        <div className="delivery-values-fields">
+          <Label>Values 文件绝对路径
+            <Input
+              aria-label={`${label} Values 文件绝对路径`}
+              autoCapitalize="none"
+              autoComplete="off"
+              placeholder={`${deliveryValuesRoot}/应用/values.yaml`}
+              spellCheck={false}
+              value={config.valuesPath}
+              onChange={(event) => onChange({ ...config, valuesPath: event.target.value })}
+            />
+          </Label>
+          <Label>Values 修改内容
+            <Textarea
+              aria-label={`${label} Values YAML 增量内容`}
+              placeholder={'replicaCount: 3\nimage:\n  tag: v2.1.0'}
+              rows={6}
+              spellCheck={false}
+              value={config.valuesPatch}
+              onChange={(event) => onChange({ ...config, valuesPatch: event.target.value })}
+            />
+          </Label>
+          <p>执行当前交付项前深度合并 YAML，执行结束后自动恢复原文件。</p>
+        </div>
+        {!validation.valid ? <p className="delivery-artifact-error" role="alert">{validation.error}</p> : null}
+      </div>
+    </details>
+  )
 }
 
 type PackageMarketDependencyState = {
@@ -1703,10 +1807,11 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       objectKey: string
       objectLastModified?: string
       sizeBytes?: number
+      runtimeConfig: DeliveryRuntimeConfig
     }>
   >([])
-  const [containerImages, setContainerImages] = useState<string[]>([])
-  const [offlinePackageUrls, setOfflinePackageUrls] = useState<string[]>([])
+  const [containerImages, setContainerImages] = useState<DraftContainerImage[]>([])
+  const [offlinePackages, setOfflinePackages] = useState<DraftOfflinePackage[]>([])
   const [deliveryArtifacts, setDeliveryArtifacts] = useState<ProjectPackageDeliveryArtifacts | null>(null)
   const [deliveryArtifactsError, setDeliveryArtifactsError] = useState('')
   const [deliveryArtifactsLoading, setDeliveryArtifactsLoading] = useState(false)
@@ -2090,26 +2195,34 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   )
   const containerImageValidation = useMemo(() => {
     const seen = new Set<string>()
-    return containerImages.map((value) => {
-      const result = normalizeContainerImageReference(value, { requireTagOrDigest: true })
+    return containerImages.map((item) => {
+      const result = normalizeContainerImageReference(item.image, { requireTagOrDigest: true })
       if (!result.valid) return result.error
       const key = containerImageReferenceKey(result.value)
       if (seen.has(key)) return '镜像地址不能重复。'
       seen.add(key)
-      return ''
+      const runtimeConfig = normalizeDeliveryRuntimeConfig(item.runtimeConfig)
+      return runtimeConfig.valid ? '' : runtimeConfig.error
     })
   }, [containerImages])
   const offlinePackageValidation = useMemo(() => {
     const seen = new Set<string>()
-    return offlinePackageUrls.map((value) => {
-      const result = normalizeOfflinePackageUrl(value)
+    return offlinePackages.map((item) => {
+      const result = normalizeOfflinePackageUrl(item.url)
       if (!result.valid) return result.error
       if (seen.has(result.value)) return '离线包地址不能重复。'
       seen.add(result.value)
-      return ''
+      const runtimeConfig = normalizeDeliveryRuntimeConfig(item.runtimeConfig)
+      return runtimeConfig.valid ? '' : runtimeConfig.error
     })
-  }, [offlinePackageUrls])
-  const eventArtifactsValid = !containerImageValidation.some(Boolean) && !offlinePackageValidation.some(Boolean)
+  }, [offlinePackages])
+  const packageRuntimeConfigValidation = useMemo(
+    () => cartItems.map((item) => normalizeDeliveryRuntimeConfig(item.runtimeConfig)),
+    [cartItems],
+  )
+  const eventArtifactsValid = !containerImageValidation.some(Boolean) &&
+    !offlinePackageValidation.some(Boolean) &&
+    packageRuntimeConfigValidation.every((result) => result.valid)
 
   function updatePackageDocument(
     packageName: string,
@@ -2274,6 +2387,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           objectKey: link.objectKey,
           objectLastModified: link.lastModified,
           sizeBytes: link.size,
+          runtimeConfig: emptyDeliveryRuntimeConfig(),
         },
       ]
     })
@@ -2579,7 +2693,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     )
     setCartItems([])
     setContainerImages([])
-    setOfflinePackageUrls([])
+    setOfflinePackages([])
     setEventDocumentTitle('变更记录')
     setEventDocumentContent('')
     setEventDocumentRelatedTodoIds([])
@@ -2667,12 +2781,13 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       objectLastModified: item.objectLastModified,
       packageName: item.packageName,
       sizeBytes: item.sizeBytes,
+      runtimeConfig: item.runtimeConfig,
       sourcePackageId: item.sourcePackageId,
       sourcePackageName: item.sourcePackageName,
       version: item.version,
     }))))
-    setContainerImages(event.containerImages.map((item) => item.image))
-    setOfflinePackageUrls(event.offlinePackages.map((item) => item.url))
+    setContainerImages(event.containerImages.map((item) => ({ image: item.image, runtimeConfig: item.runtimeConfig })))
+    setOfflinePackages(event.offlinePackages.map((item) => ({ runtimeConfig: item.runtimeConfig, url: item.url })))
     setEventDocumentTitle(eventDocument?.title || `${event.title} 变更记录`)
     setEventDocumentContent(eventDocument?.content ?? '')
     setEventDocumentRelatedTodoIds(eventDocument?.relatedTodoIds ?? [])
@@ -2902,7 +3017,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       const savedEvent = await onSaveEvent(eventEditorEventId, {
         action,
         assigneeUserId: assigneeUserId || null,
-        containerImages: containerImages.map((value) => value.trim()),
+        containerImages: containerImages.map((item) => ({
+          image: item.image.trim(),
+          runtimeConfig: item.runtimeConfig,
+        })),
         deliveryDate: dateTimeLocalDateStamp(eventDeliveryEndAt),
         deliveryEndAt: eventDeliveryEndAt,
         deliveryStartAt: eventDeliveryStartAt,
@@ -2913,7 +3031,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           title: eventDocumentTitle.trim() || `${eventTitle.trim()} 变更记录`,
         }],
         items: cartItems,
-        offlinePackageUrls: offlinePackageUrls.map((value) => value.trim()),
+        offlinePackages: offlinePackages.map((item) => ({
+          runtimeConfig: item.runtimeConfig,
+          url: item.url.trim(),
+        })),
         title: eventTitle.trim(),
         type: eventType,
       })
@@ -3127,13 +3248,32 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </Label>
         </div>
         <div className="delivery-address-list">
-          {deliveryArtifacts.addresses.map((address, index) => {
-            const key = `delivery-address-${index}`
+          {deliveryArtifacts.items?.length ? deliveryArtifacts.items.map((item, index) => {
+            const addressKey = `delivery-address-${index}`
+            const scriptKey = `delivery-item-script-${index}`
+            const configured = item.runtimeConfig.environmentVariables.length > 0 || Boolean(item.runtimeConfig.valuesPath)
+            return <article className="delivery-address-item" key={`${item.address.kind}-${index}`}>
+              <div className="delivery-address-row">
+                <span>{kindLabel[item.address.kind]}</span>
+                <code>{item.address.value}</code>
+                {item.address.expiresAt ? <small>有效至 {item.address.expiresAt}</small> : null}
+                <Button size="icon" variant="ghost" type="button" title="复制原始地址" aria-label={`复制${kindLabel[item.address.kind]} ${index + 1}`} onClick={() => void copyToClipboard(item.address.value, addressKey)}>{copiedValue === addressKey ? <Check size={15} /> : <Copy size={15} />}</Button>
+              </div>
+              {configured ? <div className="delivery-runtime-config-summary">
+                {item.runtimeConfig.environmentVariables.length > 0 ? <div><strong>环境变量</strong><code>{item.runtimeConfig.environmentVariables.map((variable) => `${variable.name}=${variable.value}`).join('\n')}</code></div> : null}
+                {item.runtimeConfig.valuesPath ? <div><strong>Values 文件</strong><code>{item.runtimeConfig.valuesPath}</code></div> : null}
+                {item.runtimeConfig.valuesPatch ? <div><strong>Values 增量</strong><pre><code>{item.runtimeConfig.valuesPatch}</code></pre></div> : null}
+              </div> : null}
+              <div className="delivery-item-script-heading"><span>当前项执行脚本</span><Button size="sm" type="button" variant="ghost" onClick={() => void copyToClipboard(item.script, scriptKey)}><Copy size={14} />{copiedValue === scriptKey ? '已复制' : '复制'}</Button></div>
+              <pre className="delivery-item-execution-script"><code>{item.script}</code></pre>
+            </article>
+          }) : deliveryArtifacts.addresses.map((address, index) => {
+            const addressKey = `delivery-address-${index}`
             return <div className="delivery-address-row" key={`${address.kind}-${index}`}>
               <span>{kindLabel[address.kind]}</span>
               <code>{address.value}</code>
               {address.expiresAt ? <small>有效至 {address.expiresAt}</small> : null}
-              <Button size="icon" variant="ghost" type="button" title="复制原始地址" aria-label={`复制${kindLabel[address.kind]} ${index + 1}`} onClick={() => void copyToClipboard(address.value, key)}>{copiedValue === key ? <Check size={15} /> : <Copy size={15} />}</Button>
+              <Button size="icon" variant="ghost" type="button" title="复制原始地址" aria-label={`复制${kindLabel[address.kind]} ${index + 1}`} onClick={() => void copyToClipboard(address.value, addressKey)}>{copiedValue === addressKey ? <Check size={15} /> : <Copy size={15} />}</Button>
             </div>
           })}
         </div>
@@ -3307,7 +3447,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 <div className="event-wizard-package-list">
                   {cartItems.map((item) => (
                     <div className="event-wizard-package-row" key={item.objectKey}>
-                      <div>
+                      <div className="delivery-artifact-draft-summary">
                         <strong>{packageItemFileName(item)}</strong>
                         <span>{item.packageName} · {itemChannelLabel(item)} · {item.arch} · {item.version}</span>
                       </div>
@@ -3319,53 +3459,67 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                       >
                         <Trash size={15} />
                       </button>
+                      <DeliveryRuntimeConfigEditor
+                        config={item.runtimeConfig}
+                        label={`安装包 ${packageItemFileName(item)}`}
+                        onChange={(runtimeConfig) => {
+                          setCartItems((current) => current.map((candidate) => candidate.objectKey === item.objectKey ? { ...candidate, runtimeConfig } : candidate))
+                          setEventEditorDirty(true)
+                        }}
+                      />
                     </div>
                   ))}
                 </div>
               ) : null}
               <section className="delivery-artifact-editor-section">
                 <div className="delivery-artifact-editor-heading"><strong>集群镜像</strong><span>{containerImages.length} / {maxDeliveryArtifactEntries}</span></div>
-                {containerImages.map((value, index) => (
+                {containerImages.map((item, index) => (
                   <div className="delivery-artifact-editor-row" key={`container-image-${index}`}>
-                    <Input
-                      aria-label={`集群镜像地址 ${index + 1}`}
-                      autoCapitalize="none"
-                      autoComplete="off"
-                      maxLength={512}
-                      placeholder="例如：ghcr.io/example/admin:v2.1.0"
-                      spellCheck={false}
-                      value={value}
-                      onChange={(event) => {
-                        setContainerImages((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))
-                        setEventEditorDirty(true)
-                      }}
-                    />
-                    <Button aria-label={`移除集群镜像 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setContainerImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    <div className="delivery-artifact-editor-primary-row">
+                      <Input
+                        aria-label={`集群镜像地址 ${index + 1}`}
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        maxLength={512}
+                        placeholder="例如：ghcr.io/example/admin:v2.1.0"
+                        spellCheck={false}
+                        value={item.image}
+                        onChange={(event) => {
+                          setContainerImages((current) => current.map((candidate, itemIndex) => itemIndex === index ? { ...candidate, image: event.target.value } : candidate))
+                          setEventEditorDirty(true)
+                        }}
+                      />
+                      <Button aria-label={`移除集群镜像 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setContainerImages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    </div>
+                    <DeliveryRuntimeConfigEditor config={item.runtimeConfig} label={`集群镜像 ${index + 1}`} onChange={(runtimeConfig) => { setContainerImages((current) => current.map((candidate, itemIndex) => itemIndex === index ? { ...candidate, runtimeConfig } : candidate)); setEventEditorDirty(true) }} />
                     {containerImageValidation[index] ? <p className="delivery-artifact-error" role="alert">{containerImageValidation[index]}</p> : null}
                   </div>
                 ))}
-                <Button disabled={containerImages.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setContainerImages((current) => [...current, '']); setEventEditorDirty(true) }}><Plus size={15} /> 添加镜像</Button>
+                <Button disabled={containerImages.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setContainerImages((current) => [...current, { image: '', runtimeConfig: emptyDeliveryRuntimeConfig() }]); setEventEditorDirty(true) }}><Plus size={15} /> 添加镜像</Button>
               </section>
               <section className="delivery-artifact-editor-section">
-                <div className="delivery-artifact-editor-heading"><strong>离线包地址</strong><span>{offlinePackageUrls.length} / {maxDeliveryArtifactEntries}</span></div>
-                {offlinePackageUrls.map((value, index) => (
+                <div className="delivery-artifact-editor-heading"><strong>离线包地址</strong><span>{offlinePackages.length} / {maxDeliveryArtifactEntries}</span></div>
+                {offlinePackages.map((item, index) => (
                   <div className="delivery-artifact-editor-row" key={`offline-package-${index}`}>
-                    <Input
-                      aria-label={`离线包地址 ${index + 1}`}
-                      autoComplete="off"
-                      maxLength={4096}
-                      placeholder="https://downloads.example.com/releases/app.tar"
-                      value={value}
-                      onChange={(event) => {
-                        setOfflinePackageUrls((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))
-                        setEventEditorDirty(true)
-                      }}
-                    />
-                    <Button aria-label={`移除离线包地址 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setOfflinePackageUrls((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    <div className="delivery-artifact-editor-primary-row">
+                      <Input
+                        aria-label={`离线包地址 ${index + 1}`}
+                        autoComplete="off"
+                        maxLength={4096}
+                        placeholder="https://downloads.example.com/releases/app.tar"
+                        value={item.url}
+                        onChange={(event) => {
+                          setOfflinePackages((current) => current.map((candidate, itemIndex) => itemIndex === index ? { ...candidate, url: event.target.value } : candidate))
+                          setEventEditorDirty(true)
+                        }}
+                      />
+                      <Button aria-label={`移除离线包地址 ${index + 1}`} size="icon" type="button" variant="ghost" onClick={() => { setOfflinePackages((current) => current.filter((_, itemIndex) => itemIndex !== index)); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    </div>
+                    <DeliveryRuntimeConfigEditor config={item.runtimeConfig} label={`离线包 ${index + 1}`} onChange={(runtimeConfig) => { setOfflinePackages((current) => current.map((candidate, itemIndex) => itemIndex === index ? { ...candidate, runtimeConfig } : candidate)); setEventEditorDirty(true) }} />
                     {offlinePackageValidation[index] ? <p className="delivery-artifact-error" role="alert">{offlinePackageValidation[index]}</p> : null}
                   </div>
                 ))}
-                <Button disabled={offlinePackageUrls.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setOfflinePackageUrls((current) => [...current, '']); setEventEditorDirty(true) }}><Plus size={15} /> 添加离线包</Button>
+                <Button disabled={offlinePackages.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setOfflinePackages((current) => [...current, { runtimeConfig: emptyDeliveryRuntimeConfig(), url: '' }]); setEventEditorDirty(true) }}><Plus size={15} /> 添加离线包</Button>
               </section>
             </div>
           ) : null}

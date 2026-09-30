@@ -13,7 +13,14 @@ import { getDepartedUserIds } from './user-lifecycle.ts'
 import { getPlatformConfigSnapshot } from './platform-config-runtime.ts'
 import { getPackageMarketRulesForConfigRevision } from './platform-package-rules.ts'
 import { containerImageReferenceKey, normalizeContainerImageReference } from '../shared/container-image-reference.ts'
-import { maxDeliveryArtifactEntries, normalizeOfflinePackageUrl, offlinePackageFileName } from '../shared/delivery-artifact.ts'
+import {
+  emptyDeliveryRuntimeConfig,
+  maxDeliveryArtifactEntries,
+  normalizeDeliveryRuntimeConfig,
+  normalizeOfflinePackageUrl,
+  offlinePackageFileName,
+  type DeliveryRuntimeConfig,
+} from '../shared/delivery-artifact.ts'
 import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
@@ -33,7 +40,11 @@ export type ProjectPackageItemInput = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: unknown
 }
+
+export type ProjectPackageContainerImageInput = { image: string; runtimeConfig?: unknown }
+export type ProjectPackageOfflinePackageInput = { runtimeConfig?: unknown; url: string }
 
 export type ProjectPackageDocumentInput = {
   content: string
@@ -44,8 +55,8 @@ export type ProjectPackageDocumentInput = {
 }
 
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
-export type ProjectPackageEventContainerImage = { id: number; image: string }
-export type ProjectPackageEventOfflinePackage = { id: number; url: string }
+export type ProjectPackageEventContainerImage = { id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }
+export type ProjectPackageEventOfflinePackage = { id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }
 
 export class ProjectPackageEventError extends Error {
   readonly status: 400 | 403 | 404 | 409
@@ -71,6 +82,7 @@ export type ProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -253,15 +265,21 @@ type EventSummaryCountRow = {
 }
 
 type ContainerImageRow = {
+  environment_variables: string | null
   id: string
   image_ref: string
   project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
 }
 
 type OfflinePackageRow = {
   download_url: string
+  environment_variables: string | null
   id: string
   project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
 }
 
 type GroupRow = {
@@ -285,6 +303,9 @@ type ItemRow = {
   source_package_id: string
   source_package_name: string
   version: string
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
 }
 
 type OperationRow = {
@@ -359,6 +380,7 @@ type NormalizedProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: DeliveryRuntimeConfig
 }
 
 type NormalizedProjectPackageDocument = {
@@ -614,36 +636,88 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
       sourcePackageId: normalizeText(item.sourcePackageId, 120),
       sourcePackageName: normalizeText(item.sourcePackageName || packageName, 160),
       version: normalizeText(item.version, 80),
+      runtimeConfig: item.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(item.runtimeConfig, `安装包 ${index + 1}`),
     }
   })
 }
 
-function normalizeContainerImages(values: unknown[]) {
+function requireDeliveryRuntimeConfig(value: unknown, label: string) {
+  const result = normalizeDeliveryRuntimeConfig(value)
+  if (!result.valid) throw new ProjectPackageEventError(`${label}：${result.error}`, 400)
+  return result.value
+}
+
+function readDeliveryRuntimeConfig(row: {
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
+}) {
+  let environmentVariables: unknown[] = []
+  if (row.environment_variables) {
+    try {
+      const parsed = JSON.parse(decryptText(row.environment_variables))
+      if (Array.isArray(parsed)) environmentVariables = parsed
+    } catch {
+      throw new ProjectPackageEventError('交付运行配置无法读取', 409)
+    }
+  }
+  const result = normalizeDeliveryRuntimeConfig({
+    environmentVariables,
+    valuesPath: row.values_path ? decryptText(row.values_path) : '',
+    valuesPatch: row.values_patch ? decryptText(row.values_patch) : '',
+  })
+  if (!result.valid) throw new ProjectPackageEventError('交付运行配置无效', 409)
+  return result.value
+}
+
+function encryptedDeliveryRuntimeConfig(runtimeConfig: DeliveryRuntimeConfig) {
+  return {
+    environmentVariables: runtimeConfig.environmentVariables.length > 0
+      ? encryptText(JSON.stringify(runtimeConfig.environmentVariables))
+      : null,
+    valuesPath: runtimeConfig.valuesPath ? encryptText(runtimeConfig.valuesPath) : null,
+    valuesPatch: runtimeConfig.valuesPatch ? encryptText(runtimeConfig.valuesPatch) : null,
+  }
+}
+
+function normalizeContainerImages(values: ProjectPackageContainerImageInput[]) {
   if (values.length > maxDeliveryArtifactEntries) {
     throw new ProjectPackageEventError(`镜像地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
   }
   const seen = new Set<string>()
   return values.map((value, index) => {
-    const image = normalizeContainerImageReference(value, { requireTagOrDigest: true })
+    const image = normalizeContainerImageReference(value.image, { requireTagOrDigest: true })
     if (!image.valid) throw new ProjectPackageEventError(`镜像地址 ${index + 1}：${image.error}`, 400)
     const key = containerImageReferenceKey(image.value)
     if (seen.has(key)) throw new ProjectPackageEventError('镜像地址不能重复', 400)
     seen.add(key)
-    return image.value
+    return {
+      image: image.value,
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `镜像 ${index + 1}`),
+    }
   })
 }
 
-function normalizeOfflinePackageUrls(values: unknown[]) {
+function normalizeOfflinePackages(values: ProjectPackageOfflinePackageInput[]) {
   if (values.length > maxDeliveryArtifactEntries) {
     throw new ProjectPackageEventError(`离线包地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
   }
   const seen = new Set<string>()
   return values.map((value, index) => {
-    const url = normalizeOfflinePackageUrl(value)
+    const url = normalizeOfflinePackageUrl(value.url)
     if (!url.valid) throw new ProjectPackageEventError(`离线包地址 ${index + 1}：${url.error}`, 400)
     if (seen.has(url.value)) throw new ProjectPackageEventError('离线包地址不能重复', 400)
     seen.add(url.value)
-    return url.value
+    return {
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `离线包 ${index + 1}`),
+      url: url.value,
+    }
   })
 }
 
@@ -1571,6 +1645,9 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
              i.object_last_modified,
              i.size_bytes::text,
              i.source_config_revision,
+             i.environment_variables,
+             i.values_path,
+             i.values_patch,
              i.created_at
       from project_package_items i
       join project_package_groups g on g.id = i.project_package_group_id
@@ -1582,7 +1659,8 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       scopedValues,
     ),
     query<ContainerImageRow>(
-      `select image.id, image.project_package_event_id, image.image_ref
+      `select image.id, image.project_package_event_id, image.image_ref,
+              image.environment_variables, image.values_path, image.values_patch
          from project_package_event_container_images image
          join project_package_events e on e.id = image.project_package_event_id
         where e.project_id = $1 ${eventScope}
@@ -1590,7 +1668,8 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       scopedValues,
     ),
     query<OfflinePackageRow>(
-      `select package.id, package.project_package_event_id, package.download_url
+      `select package.id, package.project_package_event_id, package.download_url,
+              package.environment_variables, package.values_path, package.values_patch
          from project_package_event_offline_packages package
          join project_package_events e on e.id = package.project_package_event_id
         where e.project_id = $1 ${eventScope}
@@ -1760,6 +1839,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       sizeBytes: row.size_bytes ? Number(row.size_bytes) : undefined,
       sourceConfigRevision: row.source_config_revision ? Number(row.source_config_revision) : undefined,
       createdAt: formatDateTime(row.created_at),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
     })
   }
 
@@ -1767,7 +1847,11 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
   for (const row of containerImagesResult.rows) {
     const eventId = Number(row.project_package_event_id)
     const images = containerImagesByEvent.get(eventId) ?? []
-    images.push({ id: Number(row.id), image: decryptText(row.image_ref) })
+    images.push({
+      id: Number(row.id),
+      image: decryptText(row.image_ref),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
     containerImagesByEvent.set(eventId, images)
   }
 
@@ -1775,7 +1859,11 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
   for (const row of offlinePackagesResult.rows) {
     const eventId = Number(row.project_package_event_id)
     const packages = offlinePackagesByEvent.get(eventId) ?? []
-    packages.push({ id: Number(row.id), url: decryptText(row.download_url) })
+    packages.push({
+      id: Number(row.id),
+      url: decryptText(row.download_url),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
     offlinePackagesByEvent.set(eventId, packages)
   }
 
@@ -1925,9 +2013,9 @@ export async function saveProjectPackageEvent(params: {
   deliveryStartAt?: string
   documents: ProjectPackageDocumentInput[]
   eventId?: number
-  containerImages?: string[]
+  containerImages?: ProjectPackageContainerImageInput[]
   items: ProjectPackageItemInput[]
-  offlinePackageUrls?: string[]
+  offlinePackages?: ProjectPackageOfflinePackageInput[]
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -1941,7 +2029,7 @@ export async function saveProjectPackageEvent(params: {
   const deliveryWindow = normalizeDeliveryWindow(params)
   const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
   const containerImages = params.containerImages == null ? undefined : normalizeContainerImages(params.containerImages)
-  const offlinePackageUrls = params.offlinePackageUrls == null ? undefined : normalizeOfflinePackageUrls(params.offlinePackageUrls)
+  const offlinePackages = params.offlinePackages == null ? undefined : normalizeOfflinePackages(params.offlinePackages)
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
@@ -2032,6 +2120,39 @@ export async function saveProjectPackageEvent(params: {
     if (eventId == null) throw new ProjectPackageEventError('Event could not be saved', 409)
     const persistedEventId = eventId
 
+    const existingItemConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingImageConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingOfflineConfigs = new Map<string, DeliveryRuntimeConfig>()
+    if (params.eventId != null) {
+      const [existingItems, existingImages, existingOfflinePackages] = await Promise.all([
+        client.query<Pick<ItemRow, 'environment_variables' | 'object_key' | 'values_patch' | 'values_path'>>(
+          `select item.object_key, item.environment_variables, item.values_path, item.values_patch
+             from project_package_items item
+             join project_package_groups group_row on group_row.id = item.project_package_group_id
+            where group_row.project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+          `select image_ref, environment_variables, values_path, values_patch
+             from project_package_event_container_images where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+          `select download_url, environment_variables, values_path, values_patch
+             from project_package_event_offline_packages where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+      ])
+      existingItems.rows.forEach((row) => existingItemConfigs.set(row.object_key, readDeliveryRuntimeConfig(row)))
+      existingImages.rows.forEach((row) => {
+        const image = decryptText(row.image_ref)
+        existingImageConfigs.set(containerImageReferenceKey(image), readDeliveryRuntimeConfig(row))
+      })
+      existingOfflinePackages.rows.forEach((row) => {
+        existingOfflineConfigs.set(decryptText(row.download_url), readDeliveryRuntimeConfig(row))
+      })
+    }
+
     await client.query(
       'delete from project_package_operations where project_package_event_id = $1',
       [persistedEventId],
@@ -2043,7 +2164,7 @@ export async function saveProjectPackageEvent(params: {
     if (params.eventId == null || containerImages != null) {
       await client.query('delete from project_package_event_container_images where project_package_event_id = $1', [persistedEventId])
     }
-    if (params.eventId == null || offlinePackageUrls != null) {
+    if (params.eventId == null || offlinePackages != null) {
       await client.query('delete from project_package_event_offline_packages where project_package_event_id = $1', [persistedEventId])
     }
 
@@ -2069,10 +2190,17 @@ export async function saveProjectPackageEvent(params: {
           size_bytes,
           created_by_user_id,
           source_config_revision
+          , environment_variables
+          , values_path
+          , values_patch
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         `,
-        [
+        (() => {
+          const runtimeConfig = encryptedDeliveryRuntimeConfig(
+            item.runtimeConfig ?? existingItemConfigs.get(item.objectKey) ?? emptyDeliveryRuntimeConfig(),
+          )
+          return [
           groupId,
           item.sourcePackageId,
           item.sourcePackageName,
@@ -2085,7 +2213,11 @@ export async function saveProjectPackageEvent(params: {
           item.sizeBytes,
           params.createdByUserId,
           sourceConfigRevision,
-        ],
+          runtimeConfig.environmentVariables,
+          runtimeConfig.valuesPath,
+          runtimeConfig.valuesPatch,
+          ]
+        })(),
       )
     }
 
@@ -2093,18 +2225,26 @@ export async function saveProjectPackageEvent(params: {
       await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
     }
 
-    for (const [position, image] of (containerImages ?? []).entries()) {
+    for (const [position, item] of (containerImages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingImageConfigs.get(containerImageReferenceKey(item.image)) ?? emptyDeliveryRuntimeConfig(),
+      )
       await client.query(
-        `insert into project_package_event_container_images (project_package_event_id, position, image_ref)
-         values ($1, $2, $3)`,
-        [persistedEventId, position, encryptText(image)],
+        `insert into project_package_event_container_images
+          (project_package_event_id, position, image_ref, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.image), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
       )
     }
-    for (const [position, url] of (offlinePackageUrls ?? []).entries()) {
+    for (const [position, item] of (offlinePackages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingOfflineConfigs.get(item.url) ?? emptyDeliveryRuntimeConfig(),
+      )
       await client.query(
-        `insert into project_package_event_offline_packages (project_package_event_id, position, download_url)
-         values ($1, $2, $3)`,
-        [persistedEventId, position, encryptText(url)],
+        `insert into project_package_event_offline_packages
+          (project_package_event_id, position, download_url, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.url), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
       )
     }
 
@@ -2655,31 +2795,35 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
 
   const [packageRows, imageRows, offlineRows] = await Promise.all([
     query<{
+      environment_variables: string | null
       object_key: string
       source_config_revision: string | null
       source_package_id: string
       channel: string
+      values_patch: string | null
+      values_path: string | null
     }>(
-      `select i.object_key, i.source_config_revision, i.source_package_id, i.channel
+      `select i.object_key, i.source_config_revision, i.source_package_id, i.channel,
+              i.environment_variables, i.values_path, i.values_patch
          from project_package_items i
          join project_package_groups g on g.id = i.project_package_group_id
         where g.project_package_event_id = $1
         order by i.created_at, i.id`,
       [params.eventId],
     ),
-    query<{ image_ref: string }>(
-      `select image_ref from project_package_event_container_images
+    query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+      `select image_ref, environment_variables, values_path, values_patch from project_package_event_container_images
         where project_package_event_id = $1 order by position, id`,
       [params.eventId],
     ),
-    query<{ download_url: string }>(
-      `select download_url from project_package_event_offline_packages
+    query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+      `select download_url, environment_variables, values_path, values_patch from project_package_event_offline_packages
         where project_package_event_id = $1 order by position, id`,
       [params.eventId],
     ),
   ])
 
-  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; objectKey: string }>
+  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; objectKey: string; runtimeConfig: DeliveryRuntimeConfig }>
   const rulesByRevision = new Map<number | null, Awaited<ReturnType<typeof getPackageMarketRulesForConfigRevision>>>()
   for (const item of packageRows.rows) {
     const revision = item.source_config_revision ? Number(item.source_config_revision) : null
@@ -2699,20 +2843,45 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     packageLinks.push({
       ...createPackageItemDownloadLink(item.object_key, params.expireMinutes),
       objectKey: item.object_key,
+      runtimeConfig: readDeliveryRuntimeConfig(item),
     })
   }
 
-  const images = normalizeContainerImages(imageRows.rows.map((row) => decryptText(row.image_ref)))
-  const offlinePackageUrls = normalizeOfflinePackageUrls(offlineRows.rows.map((row) => decryptText(row.download_url)))
-  const offlinePackages = offlinePackageUrls.map((downloadUrl, index) => ({
-    downloadUrl,
-    fileName: offlinePackageFileName(downloadUrl, index),
+  const images = imageRows.rows.map((row) => ({
+    image: decryptText(row.image_ref),
+    runtimeConfig: readDeliveryRuntimeConfig(row),
   }))
+  const offlinePackages = offlineRows.rows.map((row, index) => {
+    const downloadUrl = decryptText(row.download_url)
+    return {
+      downloadUrl,
+      fileName: offlinePackageFileName(downloadUrl, index),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    }
+  })
+  const addresses = [
+    ...packageLinks.map((item) => ({ expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl })),
+    ...offlinePackages.map((item) => ({ kind: 'offline-package' as const, value: item.downloadUrl })),
+    ...images.map((item) => ({ kind: 'container-image' as const, value: item.image })),
+  ]
   return {
-    addresses: [
-      ...packageLinks.map((item) => ({ expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl })),
-      ...offlinePackageUrls.map((value) => ({ kind: 'offline-package' as const, value })),
-      ...images.map((value) => ({ kind: 'container-image' as const, value })),
+    addresses,
+    items: [
+      ...packageLinks.map((item) => ({
+        address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] }),
+      })),
+      ...offlinePackages.map((item) => ({
+        address: { kind: 'offline-package' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] }),
+      })),
+      ...images.map((item) => ({
+        address: { kind: 'container-image' as const, value: item.image },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] }),
+      })),
     ],
     script: createDeliveryExecutionScript({
       images,

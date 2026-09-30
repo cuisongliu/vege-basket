@@ -223,7 +223,7 @@ test('maintenance mode blocks business APIs while keeping administrator recovery
 })
 
 test('automatic database migrations are serialized, checksummed, and recorded', () => {
-  assert.match(migrationsSource, /const migrationId = '20260930_schema_v20'/u)
+  assert.match(migrationsSource, /const migrationId = '20260930_schema_v21'/u)
   assert.match(migrationsSource, /pg_try_advisory_lock/u)
   assert.match(migrationsSource, /createHash\('sha256'\)\.update\(schemaSql\)/u)
   assert.match(migrationsSource, /DATABASE_MIGRATION_CHECKSUM_MISMATCH/u)
