@@ -350,6 +350,10 @@ function formatEventDeliveryDate(event: ProjectPackageEvent) {
   return getEventDeliveryDate(event)
 }
 
+function formatDateTimeLocalWindow(startAt: string, endAt: string) {
+  return `${startAt.replace('T', ' ')} ~ ${endAt.replace('T', ' ')}`
+}
+
 function getExpireMinutesUntil(value: string) {
   const remaining = Math.ceil(
     (dateTimeLocalToUtcTimestamp(value) -
