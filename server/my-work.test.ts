@@ -26,6 +26,12 @@ test('parses bounded my work filters', () => {
   })
 })
 
+test('defaults the work-hour confirmation queue to ten rows without changing ordinary work defaults', () => {
+  assert.equal(parseMyWorkFilters({ review: 'true' }).limit, 10)
+  assert.equal(parseMyWorkFilters({}).limit, 50)
+  assert.equal(parseMyWorkFilters({ review: 'true', limit: '20' }).limit, 20)
+})
+
 test('accepts concrete work statuses and falls back for unknown values', () => {
   assert.equal(parseMyWorkFilters({ status: 'confirmed' }).status, 'confirmed')
   assert.equal(parseMyWorkFilters({ status: 'acceptance_failed' }).status, 'acceptance_failed')
@@ -41,7 +47,8 @@ test('parses the independent work-hour confirmation queue filter', () => {
   assert.equal(parseMyWorkFilters({ review: '1' }).review, true)
   assert.equal(parseMyWorkFilters({ review: 'false' }).review, false)
   assert.match(myWorkSource, /\$7::boolean = false/u)
-  assert.match(myWorkSource, /work\.submitted_work_minutes > 0/u)
+  assert.match(myWorkSource, /and not t\.done/u)
+  assert.doesNotMatch(myWorkSource, /work\.submitted_minutes > 0/u)
   assert.match(myWorkWorkbenchSource, /mode === 'review'/u)
   assert.match(apiSource, /params\.set\('review', 'true'\)/u)
 })
@@ -74,7 +81,8 @@ test('moves submitted todos from the assignee list to the effective reviewer', (
 test('keeps ordinary responsibility separate from the organization-admin work-hour confirmation queue', () => {
   assert.match(myWorkSource, /t\.assignee_user_id = \$1\s+and t\.confirmation_status <> 'pending_review'/u)
   assert.match(myWorkSource, /\$7::boolean = false\s+and \([\s\S]*?or t\.reviewer_user_id = \$1\s+\)/u)
-  assert.match(myWorkSource, /\$7::boolean = true\s+and \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}\s+and not t\.done\s+and work_hours\.submitted_minutes > 0/u)
+  assert.match(myWorkSource, /\$7::boolean = true\s+and \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}\s+and not t\.done/u)
+  assert.doesNotMatch(myWorkSource, /\$7::boolean = true[\s\S]*?work_hours\.submitted_minutes > 0/u)
   assert.doesNotMatch(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
@@ -82,8 +90,8 @@ test('navigation count matches the actionable work-hour confirmation queue', () 
   const confirmationCountQuery = serverSource.match(
     /\) as open_todo_count,[\s\S]*?\(\s*select count\(\*\)[\s\S]*?\) as work_hour_confirmation_count/u,
   )?.[0] ?? ''
-  assert.match(confirmationCountQuery, /hours\.status = 'submitted'/u)
-  assert.doesNotMatch(confirmationCountQuery, /hours\.status in \('submitted', 'confirmed'\)/u)
+  assert.match(confirmationCountQuery, /not t\.done/u)
+  assert.doesNotMatch(confirmationCountQuery, /hours\.status = 'submitted'/u)
 })
 
 test('renders failed acceptance status in Chinese', () => {
@@ -113,6 +121,9 @@ test('work-hour confirmation shows aligned totals and reviews selected entries i
   assert.match(myWorkWorkbenchSource, /fetchTodoWorkHours\(todoId/u)
   assert.match(myWorkWorkbenchSource, /selectedEntryIds/u)
   assert.match(myWorkWorkbenchSource, /MAX_SELECTED_WORK_HOURS = 100/u)
+  assert.match(myWorkWorkbenchSource, /pageSize: isReview \? 10 : 20/u)
+  assert.match(myWorkWorkbenchSource, /pageSizeOptions=\{isReview \? \[10, 20, 50\] : undefined\}/u)
+  assert.match(myWorkWorkbenchSource, /reviewEntries\.length === 0/u)
   assert.match(myWorkWorkbenchSource, /returnWorkHours\(todoId, entryIds\)/u)
   assert.match(myWorkWorkbenchSource, /acceptWorkHours\(todoId, entryIds\)/u)
   assert.match(myWorkWorkbenchSource, /退回修改/u)
@@ -193,6 +204,20 @@ test('filters dates across all records before paging and counts the complete mat
   const empty = paginateMyWork([], { limit: 20, cursor: '40' }, '2026-09-22', '2026-09-27')
   assert.equal(empty.offset, 0)
   assert.equal(empty.total, 0)
+})
+
+test('paginates the eleventh work-hour confirmation task onto the second default page', () => {
+  const filters = parseMyWorkFilters({ review: 'true' })
+  const items = Array.from({ length: 11 }, (_, index) => ({
+    id: `todo:${index + 1}`, kind: 'todo' as const, sourceId: index + 1, title: `Task ${index + 1}`,
+    status: 'assigned', updatedAt: '', relation: 'assignee' as const,
+  }))
+  const first = paginateMyWork(items, filters, '2026-09-30', '2026-10-04')
+  const second = paginateMyWork(items, { ...filters, cursor: '10' }, '2026-09-30', '2026-10-04')
+  assert.equal(first.items.length, 10)
+  assert.equal(first.nextCursor, '10')
+  assert.equal(second.items.length, 1)
+  assert.equal(second.items[0]?.sourceId, 11)
 })
 
 test('validates date filters before paging', () => {

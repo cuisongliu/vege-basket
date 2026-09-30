@@ -9696,13 +9696,6 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
         where p.organization_id is not distinct from $2::bigint
           and not t.done
           and ${managedOrganizationReadScopeSql('p.organization_id', '$1::bigint')}
-          and exists (
-            select 1
-              from todo_work_hours hours
-             where hours.todo_id = t.id
-               and hours.project_id = t.project_id
-               and hours.status = 'submitted'
-          )
           and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
       ) as work_hour_confirmation_count,
       (

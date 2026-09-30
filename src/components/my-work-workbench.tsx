@@ -148,7 +148,7 @@ export function MyWorkWorkbench({
 }) {
   const isReview = mode === 'review'
   const [view, setView] = useState<MyWorkViewState>(() => savedView?.scope === scope ? savedView : {
-    scope, filters: isReview ? { review: true, kind: 'todo', status: 'all', sort: 'due_desc' } : { status: 'open', sort: 'due_desc' }, page: 0, pageSize: 20, scrollTop: 0,
+    scope, filters: isReview ? { review: true, kind: 'todo', status: 'all', sort: 'due_desc' } : { status: 'open', sort: 'due_desc' }, page: 0, pageSize: isReview ? 10 : 20, scrollTop: 0,
   })
   const [result, setResult] = useState<{ data: MyWorkData; view: MyWorkViewState }>()
   const [loading, setLoading] = useState(true)
@@ -372,7 +372,7 @@ export function MyWorkWorkbench({
     <section className={`panel my-work-panel${isReview ? ' my-work-review-panel' : ''}`}>
       <div className="my-work-heading">
         <div>
-          <p className="my-work-eyebrow">{isReview ? '待确认工时' : '日常工作'}</p>
+          <p className="my-work-eyebrow">{isReview ? '工时确认' : '日常工作'}</p>
         </div>
         {isReview && result ? <span className="my-work-review-hint">共 {result.data.total} 项</span> : null}
       </div>
@@ -401,7 +401,7 @@ export function MyWorkWorkbench({
             </div>
           </div>
           <div className="my-work-table-body" role="rowgroup">
-            {visibleItems.length === 0 ? <div className="my-work-table-row my-work-confirmation-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={7}><CheckCircle size={28} />当前没有待确认的工时</div></div> : null}
+            {visibleItems.length === 0 ? <div className="my-work-table-row my-work-confirmation-row" role="row"><div className="my-work-empty" role="cell" aria-colspan={7}><CheckCircle size={28} />当前没有未完成任务</div></div> : null}
             {visibleItems.map((item) => (
               <div className="my-work-table-row my-work-confirmation-row" key={item.id} role="row">
                 <div className="my-work-table-cell my-work-main-cell" role="cell"><span className="my-work-kind-icon is-todo"><ListChecks size={17} /></span><strong className="my-work-confirmation-title">{item.title}</strong></div>
@@ -469,7 +469,7 @@ export function MyWorkWorkbench({
         </div>
       ) : null}
       {result ? (
-        <ListPagination label={isReview ? '工时确认分页' : '我的待办分页'} page={result.view.page} pageSize={result.view.pageSize} total={result.data.total} disabled={loading || Boolean(error)}
+        <ListPagination label={isReview ? '工时确认分页' : '我的待办分页'} page={result.view.page} pageSize={result.view.pageSize} pageSizeOptions={isReview ? [10, 20, 50] : undefined} total={result.data.total} disabled={loading || Boolean(error)}
           onPageChange={(page) => setView({ ...result.view, page, scrollTop: 0 })}
           onPageSizeChange={(pageSize) => setView({ ...result.view, pageSize, page: 0, scrollTop: 0 })} />
       ) : null}
@@ -497,7 +497,7 @@ export function MyWorkWorkbench({
           {reviewError ? <p className="my-work-confirmation-message is-error" role="alert">{reviewError}</p> : null}
           {reviewSuccess ? <p className="my-work-confirmation-message is-success" role="status">{reviewSuccess}</p> : null}
           <DialogFooter className="my-work-confirmation-footer">
-            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
+            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0 || reviewEntries.length === 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : reviewEntries.length === 0 ? '请先记录至少一条工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
             <Button type="button" variant="outline" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('return')}><ArrowCounterClockwise size={16} />{reviewSaving ? '处理中...' : '退回修改'}</Button><Button type="button" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('accept')}><CheckCircle size={16} />{reviewSaving ? '处理中...' : '确认工时'}</Button>
           </DialogFooter>
         </DialogContent>

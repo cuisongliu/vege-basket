@@ -1,10 +1,11 @@
 import { Button } from './ui/button'
 import './list-pagination.css'
 
-export function ListPagination({ label, page, pageSize, total, disabled = false, onPageChange, onPageSizeChange }: {
+export function ListPagination({ label, page, pageSize, pageSizeOptions = [20, 50], total, disabled = false, onPageChange, onPageSizeChange }: {
   label: string
   page: number
   pageSize: number
+  pageSizeOptions?: number[]
   total: number
   disabled?: boolean
   onPageChange: (page: number) => void
