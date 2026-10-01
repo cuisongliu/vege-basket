@@ -4202,13 +4202,21 @@ function App() {
     return true
   }
 
-  async function completeInstallEvent(eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) {
+  async function completeInstallEvent(eventId: number, payload: {
+    result: 'success' | 'partial' | 'rejected' | 'failed'
+    failureReason?: string
+    stepResults?: Record<string, { result: 'success' | 'failed' | 'skipped'; failureDetail?: string }>
+  }) {
     if (!selectedProject) return false
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => completeProjectPackageEvent(selectedProject.id, eventId, payload),
       () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
-      (data) => data.events.some((event) => event.id === eventId && event.status === 'delivered'),
+      (data) => data.events.some((event) => event.id === eventId && (
+        payload.result === 'success' ? event.status === 'delivered'
+          : payload.result === 'partial' ? event.status === 'partially_delivered'
+            : event.status === payload.result
+      )),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
@@ -6658,7 +6666,11 @@ function ProjectDetail({
   onAddTodo: (projectId: number) => Promise<boolean>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
-  onCompleteInstallEvent: (eventId: number, payload: { result: 'success' | 'failed'; failureReason?: string }) => Promise<boolean>
+  onCompleteInstallEvent: (eventId: number, payload: {
+    result: 'success' | 'partial' | 'rejected' | 'failed'
+    failureReason?: string
+    stepResults?: Record<string, { result: 'success' | 'failed' | 'skipped'; failureDetail?: string }>
+  }) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
     groupId?: number | null

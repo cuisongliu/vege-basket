@@ -26,8 +26,8 @@ import {
 import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
-export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
-export type ProjectPackageDeliveryResult = 'success' | 'failed'
+export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'rejected' | 'partially_delivered' | 'delivered' | 'failed'
+export type ProjectPackageDeliveryResult = 'success' | 'partial' | 'rejected' | 'failed'
 export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 
@@ -47,6 +47,13 @@ export type ProjectPackageItemInput = {
 
 export type ProjectPackageContainerImageInput = { image: string; runtimeConfig?: unknown }
 export type ProjectPackageOfflinePackageInput = { runtimeConfig?: unknown; url: string }
+export type ProjectPackageDeliveryStepInput = {
+  content?: unknown
+  id?: unknown
+  kind?: unknown
+  processName?: unknown
+  reference?: unknown
+}
 
 export type ProjectPackageDocumentInput = {
   content: string
@@ -59,6 +66,17 @@ export type ProjectPackageDocumentInput = {
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
 export type ProjectPackageEventContainerImage = { id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }
 export type ProjectPackageEventOfflinePackage = { id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }
+
+export type ProjectPackageDeliveryStep = {
+  content?: string
+  id: string
+  kind: 'package' | 'container-image' | 'offline-package' | 'shell-script'
+  processName: string
+  reference: string
+  result?: 'pending' | 'success' | 'failed' | 'skipped'
+  failureDetail?: string
+}
+export type ProjectPackageDeliveryScript = { content: string; id: string; title: string }
 
 export class ProjectPackageEventError extends Error {
   readonly status: 400 | 403 | 404 | 409
@@ -121,6 +139,12 @@ export type ProjectPackageEventComment = {
   updatedAt: string
 }
 
+export type ProjectPackageEventRejection = {
+  createdAt: string
+  reason: string
+  rejectedByName: string
+}
+
 export type ProjectPackageMentionableMember = {
   id: number
   name: string
@@ -134,6 +158,11 @@ export type ProjectPackageEvent = {
   completedByUserId?: number
   completedAt?: string
   deliveryFailureReason?: string
+  rejectionCount?: number
+  latestRejectionReason?: string
+  latestRejectedByName?: string
+  latestRejectedAt?: string
+  rejections: ProjectPackageEventRejection[]
   deliveryResult?: ProjectPackageDeliveryResult
   deliveryDelayDays?: number
   assignedAt?: string
@@ -147,6 +176,8 @@ export type ProjectPackageEvent = {
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
+  deliverySteps: ProjectPackageDeliveryStep[]
+  deliveryScripts: ProjectPackageDeliveryScript[]
   groups: ProjectPackageGroup[]
   id: number
   offlinePackages: ProjectPackageEventOfflinePackage[]
@@ -251,6 +282,9 @@ type EventRow = {
   delivery_date: Date | string | null
   delivery_end_at: Date
   delivery_start_at: Date
+  delivery_steps: string | null
+  delivery_scripts: string | null
+  delivery_step_results: string | null
   other_script: string | null
   id: string
   published_at: Date | null
@@ -266,6 +300,90 @@ type EventSummaryCountRow = {
   package_count: string
   operation_count: string
   comment_count: string
+  rejection_count: string
+}
+
+type RejectionRow = {
+  created_at: Date
+  display_name: string | null
+  email: string | null
+  event_id: string
+  reason: string
+}
+
+function normalizeDeliverySteps(
+  value: unknown,
+  items: NormalizedProjectPackageItem[],
+  containerImages: Array<{ image: string }>,
+  offlinePackages: Array<{ url: string }>,
+  deliveryScripts: ProjectPackageDeliveryScript[],
+) {
+  const available = new Set<string>([
+    ...items.map((item) => `package:${item.objectKey}`),
+    ...containerImages.map((item) => `container-image:${item.image}`),
+    ...offlinePackages.map((item) => `offline-package:${item.url}`),
+    ...deliveryScripts.map((script) => `shell-script:${script.id}`),
+  ])
+  const rawSteps = Array.isArray(value) ? value : []
+  if (rawSteps.length > 100) throw new ProjectPackageEventError('交付流程最多添加 100 步', 400)
+  const seenStepIds = new Set<string>()
+  const steps = rawSteps.map((raw, index) => {
+    const input = raw && typeof raw === 'object' ? raw as ProjectPackageDeliveryStepInput : {}
+    const kind = input.kind
+    if (kind !== 'package' && kind !== 'container-image' && kind !== 'offline-package' && kind !== 'shell-script') {
+      throw new ProjectPackageEventError(`交付流程 ${index + 1} 的交付内容类型无效`, 400)
+    }
+    const reference = String(input.reference ?? '').trim()
+    const processName = normalizeText(input.processName, 120)
+    if (!processName || /[\r\n]/u.test(processName)) throw new ProjectPackageEventError(`交付流程 ${index + 1} 必须填写单行流程名称`, 400)
+    const id = String(input.id ?? `step-${index + 1}`).trim()
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(id) || seenStepIds.has(id)) throw new ProjectPackageEventError('交付流程标识无效或重复', 400)
+    seenStepIds.add(id)
+    if (kind === 'shell-script') {
+      if (!available.has(`shell-script:${reference}`)) throw new ProjectPackageEventError(`交付流程 ${processName} 引用的 Shell 脚本不存在`, 400)
+      return {
+        id,
+        kind,
+        processName,
+        reference,
+      } satisfies ProjectPackageDeliveryStep
+    }
+    if (!available.has(`${kind}:${reference}`)) {
+      throw new ProjectPackageEventError(`交付流程 ${processName} 引用的交付内容不存在`, 400)
+    }
+    return {
+      id,
+      kind,
+      processName,
+      reference,
+    } satisfies ProjectPackageDeliveryStep
+  })
+  if (value != null) return steps
+  return [
+    ...items.map((item, index) => ({ id: `package-${index + 1}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
+    ...offlinePackages.map((item, index) => ({ id: `offline-${index + 1}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
+    ...containerImages.map((item, index) => ({ id: `image-${index + 1}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+    ...deliveryScripts.map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
+  ]
+}
+
+function normalizeDeliveryScripts(value: unknown, normalizedOther: DeliveryOther | null | undefined) {
+  const rawScripts = Array.isArray(value) ? value : normalizedOther ? [{ id: 'script-1', title: 'Shell 脚本', content: normalizedOther.content }] : []
+  if (rawScripts.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`Shell 脚本最多添加 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seenIds = new Set<string>()
+  return rawScripts.map((raw, index): ProjectPackageDeliveryScript => {
+    const script = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const id = String(script.id ?? `script-${index + 1}`).trim()
+    const title = normalizeText(script.title, 120)
+    const normalized = normalizeDeliveryOther({ type: 'shell-script', content: script.content })
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(id) || seenIds.has(id)) throw new ProjectPackageEventError('Shell 脚本标识无效或重复', 400)
+    if (!title || /[\r\n]/u.test(title)) throw new ProjectPackageEventError(`Shell 脚本 ${index + 1} 必须填写单行名称`, 400)
+    if (!normalized.valid || !normalized.value) throw new ProjectPackageEventError(normalized.valid ? 'Shell 脚本不能为空' : normalized.error, 400)
+    seenIds.add(id)
+    return { content: normalized.value.content, id, title }
+  })
 }
 
 type ContainerImageRow = {
@@ -581,8 +699,14 @@ export function ensureProjectPackageEventStatus(
 ): ProjectPackageEventStatus {
   if (publishedAt !== undefined) {
     if (!publishedAt) return 'draft'
+    if (value === 'rejected') return 'rejected'
+    if (value === 'partially_delivered' || value === 'partial') return 'partially_delivered'
+    if (value === 'failed') return 'failed'
     return value === 'delivered' || value === 'success' ? 'delivered' : 'delivering'
   }
+  if (value === 'rejected') return 'rejected'
+  if (value === 'partially_delivered' || value === 'partial') return 'partially_delivered'
+  if (value === 'failed') return 'failed'
   if (value === 'delivered' || value === 'success') return 'delivered'
   if (value === 'delivering' || value === 'failed') return 'delivering'
   return 'draft'
@@ -674,6 +798,60 @@ function readDeliveryRuntimeConfig(row: {
   })
   if (!result.valid) throw new ProjectPackageEventError('交付运行配置无效', 409)
   return result.value
+}
+
+function readDeliverySteps(value: string | null) {
+  if (!value) return [] as ProjectPackageDeliveryStep[]
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!Array.isArray(parsed)) return []
+    const valid = parsed.every((step) => Boolean(
+      step && typeof step === 'object' && typeof step.id === 'string' &&
+      (step.kind === 'package' || step.kind === 'container-image' || step.kind === 'offline-package' || step.kind === 'shell-script') &&
+      typeof step.processName === 'string' && typeof step.reference === 'string',
+    ))
+    if (!valid) throw new Error('invalid delivery step')
+    return parsed as ProjectPackageDeliveryStep[]
+  } catch {
+    throw new ProjectPackageEventError('交付流程无法读取', 409)
+  }
+}
+
+function readDeliveryScripts(value: string | null, legacyOther: string | null) {
+  if (!value) {
+    return legacyOther
+      ? [{ id: 'script-1', title: 'Shell 脚本', content: decryptText(legacyOther) }]
+      : []
+  }
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!Array.isArray(parsed) || !parsed.every((script) => Boolean(
+      script && typeof script === 'object' && typeof script.id === 'string' &&
+      typeof script.title === 'string' && typeof script.content === 'string',
+    ))) throw new Error('invalid delivery scripts')
+    return parsed as ProjectPackageDeliveryScript[]
+  } catch {
+    throw new ProjectPackageEventError('Shell 脚本无法读取', 409)
+  }
+}
+
+function readDeliveryStepResults(value: string | null) {
+  if (!value) return {} as Record<string, { failureDetail?: string; result: 'success' | 'failed' | 'skipped' }>
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('invalid delivery step results')
+    const entries = Object.entries(parsed as Record<string, unknown>)
+    const valid = entries.every(([, raw]) => {
+      if (!raw || Array.isArray(raw) || typeof raw !== 'object') return false
+      const result = raw as Record<string, unknown>
+      return (result.result === 'success' || result.result === 'failed' || result.result === 'skipped') &&
+        (result.failureDetail == null || typeof result.failureDetail === 'string')
+    })
+    if (!valid) throw new Error('invalid delivery step results')
+    return parsed as Record<string, { failureDetail?: string; result: 'success' | 'failed' | 'skipped' }>
+  } catch {
+    throw new ProjectPackageEventError('交付流程结果无法读取', 409)
+  }
 }
 
 function encryptedDeliveryRuntimeConfig(runtimeConfig: DeliveryRuntimeConfig) {
@@ -794,14 +972,22 @@ async function findEventMeta(eventId: number, projectId: number, client?: PoolCl
     ${client ? 'for update' : ''}
   `
   const result = client
-    ? await client.query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
-    : await query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
+    ? await client.query<{ id: string; published_at: Date | null; status: ProjectPackageEventStatus; type: ProjectPackageEventType }>(sql.replace('select id, type, published_at', 'select id, type, published_at, status'), [eventId, projectId])
+    : await query<{ id: string; published_at: Date | null; status: ProjectPackageEventStatus; type: ProjectPackageEventType }>(sql.replace('select id, type, published_at', 'select id, type, published_at, status'), [eventId, projectId])
   return result.rows[0] ?? null
 }
 
 function ensureUnpublishedEvent<T extends { published_at: Date | null }>(event: T | null): T {
   if (!event) throw new ProjectPackageEventError('Event not found', 404)
   if (event.published_at) throw new ProjectPackageEventError('Published events are read-only', 409)
+  return event
+}
+
+function ensureEditableEvent<T extends { published_at: Date | null; status: ProjectPackageEventStatus }>(event: T | null): T {
+  if (!event) throw new ProjectPackageEventError('Event not found', 404)
+  if (event.published_at && event.status !== 'rejected') {
+    throw new ProjectPackageEventError('当前交付事件不可编辑', 409)
+  }
   return event
 }
 
@@ -1440,10 +1626,19 @@ function buildProjectPackageEventMarkdown(
     '',
     `- 交付人：${textValue(event.assigneeName, '未指派')}`,
     `- 交付时间：${event.deliveryStartAt} ~ ${event.deliveryEndAt}`,
+    `- 交付状态：${event.status}`,
+    `- 拒绝次数：${event.rejectionCount ?? 0}`,
     '',
-    '### 1. 操作文档',
+    '### 1. 基础信息与变更记录',
     '',
   ]
+  if (event.rejections.length > 0) {
+    lines.push('#### 拒绝记录', '')
+    event.rejections.forEach((rejection, index) => {
+      lines.push(`- ${index + 1}. ${rejection.createdAt} · ${textValue(rejection.rejectedByName, '未知人员')}：${normalizeExportNoteText(rejection.reason)}`)
+    })
+    lines.push('')
+  }
   if (event.operations.length === 0) {
     lines.push('暂无操作文档。', '')
   } else {
@@ -1470,8 +1665,18 @@ function buildProjectPackageEventMarkdown(
     })
   }
 
-  if (event.other?.content) {
-    lines.push('### 2. 其他（Shell 脚本）', '', '```sh', event.other.content, '```', '')
+  lines.push('### 2. 交付内容', '')
+  if (event.deliverySteps.length === 0) {
+    lines.push('暂无交付内容。', '')
+  } else {
+    event.deliverySteps.forEach((step, index) => {
+      lines.push(`${index + 1}. **${textValue(step.processName, `流程 ${index + 1}`)}** · ${step.kind} · ${step.reference}`)
+      if (step.kind === 'shell-script') {
+        const script = event.deliveryScripts.find((item) => item.id === step.reference)
+        if (script?.content) lines.push('', '```sh', `# 流程 ${index + 1}：${step.processName}`, script.content, '```')
+      }
+    })
+    lines.push('')
   }
 
   if (event.groups.length === 0) {
@@ -1486,7 +1691,7 @@ function buildProjectPackageEventMarkdown(
       lines.push(
         ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, rulesByRevision, {
           headingLevel: '###',
-          sectionNumber: String(groupIndex + (event.other?.content ? 3 : 2)),
+          sectionNumber: String(groupIndex + 3),
         }),
         '',
       )
@@ -1557,10 +1762,13 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
            coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
            coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
            e.completed_by_user_id, e.completed_at,
-           e.delivery_result, e.delivery_failure_reason,
+           e.delivery_result, ${includeDetails ? 'e.delivery_failure_reason' : 'null::text'} as delivery_failure_reason,
            e.type, e.status, e.title, e.assignee_user_id, e.assigned_by_user_id, e.assigned_at,
            e.delivery_date, e.delivery_start_at, e.delivery_end_at,
-           e.other_script,
+           ${includeDetails ? 'e.other_script' : 'null::text'} as other_script,
+           ${includeDetails ? 'e.delivery_steps' : 'null::text'} as delivery_steps,
+           ${includeDetails ? 'e.delivery_scripts' : 'null::text'} as delivery_scripts,
+           ${includeDetails ? 'e.delivery_step_results' : 'null::text'} as delivery_step_results,
            e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
            assignee.email as assignee_email, assignee.display_name as assignee_display_name,
            assigner.email as assigner_email, assigner.display_name as assigner_display_name
@@ -1779,13 +1987,36 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
                select count(*)
                from project_package_event_comments c
                where c.project_package_event_id = e.id
-             )::text as comment_count
+             )::text as comment_count,
+             (
+               select count(*)
+               from project_package_event_rejections r
+               where r.project_package_event_id = e.id
+             )::text as rejection_count
         from project_package_events e
        where e.project_id = $1
          ${selectedEventIds.length > 0 ? 'and e.id = any($2::bigint[])' : 'and false'}
       `,
       selectedEventIds.length > 0 ? scopedValues : [projectId],
     )
+
+  const rejectionRowsResult = includeDetails && selectedEventIds.length > 0
+    ? await query<RejectionRow>(
+      `select r.project_package_event_id as event_id, r.reason, r.created_at,
+              u.email, u.display_name
+         from project_package_event_rejections r
+         left join users u on u.id = r.rejected_by_user_id
+        where r.project_package_event_id = any($1::bigint[])
+        order by r.created_at desc, r.id desc`,
+      [selectedEventIds],
+    )
+    : { rows: [] as RejectionRow[] }
+  const rejectionsByEvent = new Map<number, RejectionRow[]>()
+  for (const row of rejectionRowsResult.rows) {
+    const eventRejections = rejectionsByEvent.get(Number(row.event_id)) ?? []
+    eventRejections.push(row)
+    rejectionsByEvent.set(Number(row.event_id), eventRejections)
+  }
 
   const mentionableMembersResult = await query<MentionableMemberRow>(
     `
@@ -1950,14 +2181,14 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
   const access = await deliveryAccess(projectId, userId)
   const deliveryMembers = await listDeliveryMembers(projectId)
   const allEvents = eventsResult.rows.map((row) => ({
-      capabilities: deliveryCapabilities(access, { published: Boolean(row.published_at), delivered: row.status === 'delivered', assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : null }, userId),
+      capabilities: deliveryCapabilities(access, { published: Boolean(row.published_at), delivered: ['delivered', 'failed', 'partially_delivered'].includes(row.status), editable: row.status === 'rejected', assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : null }, userId),
       createdByName: row.creator_name ?? undefined,
       publishedByName: row.publisher_name ?? undefined,
       completedByName: row.completer_name ?? undefined,
       completedByUserId: row.completed_by_user_id ? Number(row.completed_by_user_id) : undefined,
       completedAt: row.completed_at ? formatDateTime(row.completed_at) : undefined,
       deliveryFailureReason: row.delivery_failure_reason ? decryptText(row.delivery_failure_reason) : undefined,
-      deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : undefined),
+      deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : row.status === 'rejected' ? 'rejected' : row.status === 'failed' ? 'failed' : row.status === 'partially_delivered' ? 'partial' : undefined),
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
       assignedByName: row.assigned_by_user_id
         ? displayUserName({ email: row.assigner_email, display_name: row.assigner_display_name })
@@ -1985,11 +2216,38 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         : undefined,
       deliveryEndAt: formatDateTime(row.delivery_end_at),
       deliveryStartAt: formatDateTime(row.delivery_start_at),
+      deliverySteps: includeDetails ? (row.delivery_steps ? readDeliverySteps(row.delivery_steps) : [
+        ...(groupsByEvent.get(Number(row.id)) ?? []).flatMap((group) => group.items.map((item, index) => ({ id: `package-${item.id}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey }))),
+        ...(offlinePackagesByEvent.get(Number(row.id)) ?? []).map((item, index) => ({ id: `offline-${item.id}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
+        ...(containerImagesByEvent.get(Number(row.id)) ?? []).map((item, index) => ({ id: `image-${item.id}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+        ...readDeliveryScripts(row.delivery_scripts, row.other_script).map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
+      ]).map((step) => {
+        const stepResult = readDeliveryStepResults(row.delivery_step_results)[step.id]
+        return stepResult ? { ...step, failureDetail: stepResult.failureDetail, result: stepResult.result } : { ...step, result: 'pending' as const }
+      }) : [],
+      deliveryScripts: includeDetails ? readDeliveryScripts(row.delivery_scripts, row.other_script) : [],
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
       other: includeDetails && row.other_script ? { content: decryptText(row.other_script), type: 'shell-script' as const } : null,
+      rejectionCount: includeDetails
+        ? rejectionsByEvent.get(Number(row.id))?.length ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.rejection_count ?? 0),
+      latestRejectionReason: rejectionsByEvent.get(Number(row.id))?.[0]?.reason
+        ? decryptText(rejectionsByEvent.get(Number(row.id))![0].reason)
+        : undefined,
+      latestRejectedByName: rejectionsByEvent.get(Number(row.id))?.[0]
+        ? displayUserName({ email: rejectionsByEvent.get(Number(row.id))![0].email, display_name: rejectionsByEvent.get(Number(row.id))![0].display_name })
+        : undefined,
+      latestRejectedAt: rejectionsByEvent.get(Number(row.id))?.[0]
+        ? formatDateTime(rejectionsByEvent.get(Number(row.id))![0].created_at)
+        : undefined,
+      rejections: (rejectionsByEvent.get(Number(row.id)) ?? []).map((rejection) => ({
+        createdAt: formatDateTime(rejection.created_at),
+        reason: decryptText(rejection.reason),
+        rejectedByName: displayUserName({ email: rejection.email, display_name: rejection.display_name }),
+      })),
       detailsLoaded: includeDetails,
       packageCount: includeDetails
         ? groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.items.length, 0) ?? 0
@@ -2027,6 +2285,8 @@ export async function saveProjectPackageEvent(params: {
   items: ProjectPackageItemInput[]
   offlinePackages?: ProjectPackageOfflinePackageInput[]
   other?: unknown
+  deliverySteps?: unknown
+  deliveryScripts?: unknown
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -2046,6 +2306,14 @@ export async function saveProjectPackageEvent(params: {
     throw new ProjectPackageEventError(otherResult.error, 400)
   }
   const normalizedOther = otherResult?.value
+  const deliveryScripts = normalizeDeliveryScripts(params.deliveryScripts, normalizedOther)
+  const deliverySteps = normalizeDeliverySteps(
+    params.deliverySteps,
+    items,
+    containerImages ?? [],
+    offlinePackages ?? [],
+    deliveryScripts,
+  )
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
@@ -2055,7 +2323,7 @@ export async function saveProjectPackageEvent(params: {
   const hasDeliveryContent = items.length > 0 ||
     (containerImages?.length ?? 0) > 0 ||
     (offlinePackages?.length ?? 0) > 0 ||
-    Boolean(normalizedOther?.content)
+    deliveryScripts.length > 0
   if (params.eventId == null && !hasDeliveryContent) {
     throw new ProjectPackageEventError('至少添加一种交付内容后才能创建交付事件', 400)
   }
@@ -2068,6 +2336,9 @@ export async function saveProjectPackageEvent(params: {
   if (params.action === 'publish' && !documents.some((document) => document.scope === 'event')) {
     throw new ProjectPackageEventError('An event document is required before publishing', 400)
   }
+  if (params.action === 'publish' && deliverySteps.length === 0) {
+    throw new ProjectPackageEventError('发布交付事件前必须定义至少一个交付流程', 400)
+  }
   const sourceConfigRevision = getPlatformConfigSnapshot().revision
 
   return withTransaction(async (client) => {
@@ -2077,8 +2348,10 @@ export async function saveProjectPackageEvent(params: {
 
     let eventId = params.eventId
     if (eventId != null) {
-      ensureUnpublishedEvent(await findEventMeta(eventId, params.projectId, client))
+      ensureEditableEvent(await findEventMeta(eventId, params.projectId, client))
       const otherScriptAssignment = normalizedOther !== undefined ? 'other_script = $10,' : ''
+      const stepPlaceholder = normalizedOther !== undefined ? '$11' : '$10'
+      const stepAssignment = `delivery_steps = ${stepPlaceholder},`
       const updated = await client.query(
         `
         update project_package_events
@@ -2090,10 +2363,12 @@ export async function saveProjectPackageEvent(params: {
             delivery_start_at = $6::timestamptz,
             delivery_end_at = $7::timestamptz,
             ${otherScriptAssignment}
+            ${stepAssignment}
+            delivery_scripts = ${normalizedOther !== undefined ? '$12' : '$11'},
             updated_at = now()
         where id = $8
           and project_id = $9
-          and published_at is null
+          and (published_at is null or status = 'rejected')
         `,
         [
           params.type,
@@ -2106,6 +2381,8 @@ export async function saveProjectPackageEvent(params: {
           eventId,
           params.projectId,
           ...(normalizedOther !== undefined ? [normalizedOther ? encryptText(normalizedOther.content) : null] : []),
+          encryptText(JSON.stringify(deliverySteps)),
+          encryptText(JSON.stringify(deliveryScripts)),
         ],
       )
       if (updated.rowCount !== 1) {
@@ -2125,9 +2402,11 @@ export async function saveProjectPackageEvent(params: {
           delivery_date,
           delivery_start_at,
           delivery_end_at,
-          other_script
+          other_script,
+          delivery_steps,
+          delivery_scripts
         )
-        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz, $10)
+        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz, $10, $11, $12)
         returning id
         `,
         [
@@ -2141,6 +2420,8 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryStartAt,
           deliveryWindow.deliveryEndAt,
           normalizedOther?.content ? encryptText(normalizedOther.content) : null,
+          encryptText(JSON.stringify(deliverySteps)),
+          encryptText(JSON.stringify(deliveryScripts)),
         ],
       )
       eventId = Number(created.rows[0].id)
@@ -2317,10 +2598,15 @@ export async function saveProjectPackageEvent(params: {
             published_at = now(),
             published_by_user_id = $1,
             assigned_at = now(),
+            delivery_result = null,
+            delivery_failure_reason = null,
+            delivery_step_results = null,
+            completed_by_user_id = null,
+            completed_at = null,
             updated_at = now()
         where id = $2
           and project_id = $3
-          and published_at is null
+          and (published_at is null or status = 'rejected')
         `,
         [params.assignedByUserId, persistedEventId, params.projectId],
       )
@@ -2338,22 +2624,85 @@ export async function completeProjectPackageEvent(params: {
   eventId: number
   failureReason?: string
   projectId: number
-  result?: ProjectPackageDeliveryResult
+  result?: unknown
+  stepResults?: unknown
   userId: number
 }) {
-  const result = params.result === 'failed' ? 'failed' : 'success'
+  const result = params.result ?? 'success'
+  if (result !== 'success' && result !== 'partial' && result !== 'rejected' && result !== 'failed') {
+    throw new ProjectDeliveryError('交付结果无效', 400)
+  }
   const failureReason = String(params.failureReason ?? '').trim()
-  if (result === 'failed' && !failureReason) {
-    throw new ProjectDeliveryError('交付失败时必须填写失败原因', 400)
+  if ((result === 'failed' || result === 'rejected') && !failureReason) {
+    throw new ProjectDeliveryError(result === 'rejected' ? '拒绝交付时必须填写拒绝理由' : '交付失败时必须填写失败详情', 400)
+  }
+  if (failureReason.length > 4000) throw new ProjectDeliveryError('交付结果详情不能超过 4000 字', 400)
+  const rawStepResults = params.stepResults && typeof params.stepResults === 'object'
+    ? params.stepResults as Record<string, unknown>
+    : {}
+  const rawStepResultEntries = Object.entries(rawStepResults)
+  if (rawStepResultEntries.length > 100) throw new ProjectDeliveryError('交付流程结果最多提交 100 项', 400)
+  const stepResults = Object.fromEntries(rawStepResultEntries.map(([stepId, raw]) => {
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(stepId)) throw new ProjectDeliveryError('交付流程结果标识无效', 400)
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const stepResult = value.result
+    if (stepResult !== 'success' && stepResult !== 'failed' && stepResult !== 'skipped') {
+      throw new ProjectDeliveryError(`流程 ${stepId} 的执行结果无效`, 400)
+    }
+    const failureDetail = String(value.failureDetail ?? '').trim()
+    if (failureDetail.length > 4000) throw new ProjectDeliveryError('流程失败详情不能超过 4000 字', 400)
+    if (stepResult === 'failed' && !failureDetail) {
+      throw new ProjectDeliveryError('失败流程必须填写失败详情', 400)
+    }
+    return [stepId, { failureDetail, result: stepResult }]
+  }))
+  const resultValues = Object.values(stepResults)
+  if (result === 'partial' && (!resultValues.some((item) => item.result === 'success') || !resultValues.some((item) => item.result !== 'success'))) {
+    throw new ProjectDeliveryError('部分交付必须同时包含成功和失败或未执行流程', 400)
+  }
+  if (result === 'failed' && (!resultValues.some((item) => item.result === 'failed') || resultValues.some((item) => item.result === 'success'))) {
+    throw new ProjectDeliveryError('交付失败必须包含失败流程，且不能包含成功流程', 400)
   }
   await withTransaction(async (client) => {
-    await authorizeDelivery(client, params.projectId, params.userId, 'canComplete', { eventId: params.eventId })
-    const updated = await client.query(`update project_package_events set status = 'delivered', completed_by_user_id = $1,
-      completed_at = now(), delivery_result = $2, delivery_failure_reason = $3, updated_at = now() where id = $4 and project_id = $5
+    await authorizeDelivery(
+      client,
+      params.projectId,
+      params.userId,
+      result === 'rejected' ? 'canReject' : 'canComplete',
+      { eventId: params.eventId },
+    )
+    const event = await client.query<{ delivery_steps: string | null }>(
+      'select delivery_steps from project_package_events where id = $1 and project_id = $2 for update',
+      [params.eventId, params.projectId],
+    )
+    const steps = readDeliverySteps(event.rows[0]?.delivery_steps ?? null)
+    const stepIds = new Set(steps.map((step) => step.id))
+    if (Object.keys(stepResults).some((stepId) => !stepIds.has(stepId))) {
+      throw new ProjectDeliveryError('交付结果包含未知流程', 400)
+    }
+    if ((result === 'partial' || result === 'failed') && Object.keys(stepResults).length !== steps.length) {
+      throw new ProjectDeliveryError('请填写每个交付流程的执行结果', 400)
+    }
+    const status = result === 'success' ? 'delivered' : result === 'partial' ? 'partially_delivered' : result === 'rejected' ? 'rejected' : 'failed'
+    const terminal = result !== 'rejected'
+    const completedStepResults = result === 'success'
+      ? Object.fromEntries(steps.map((step) => [step.id, { result: 'success' }]))
+      : result === 'rejected' ? {} : stepResults
+    const updated = await client.query(`update project_package_events set status = $1, completed_by_user_id = $2,
+      completed_at = case when $3::boolean then now() else null end, delivery_result = $4, delivery_failure_reason = $5,
+      delivery_step_results = $6, updated_at = now() where id = $7 and project_id = $8
       and published_at is not null
       and status = 'delivering'`,
-    [params.userId, result, result === 'failed' ? encryptText(failureReason) : null, params.eventId, params.projectId])
+    [status, terminal ? params.userId : null, terminal, result, result === 'failed' ? encryptText(failureReason) : null,
+      encryptText(JSON.stringify(completedStepResults)), params.eventId, params.projectId])
     if (updated.rowCount !== 1) throw new ProjectDeliveryError('交付事件已结束，请新建事件继续交付', 409)
+    if (result === 'rejected') {
+      await client.query(
+        `insert into project_package_event_rejections (project_package_event_id, rejected_by_user_id, reason)
+         values ($1, $2, $3)`,
+        [params.eventId, params.userId, encryptText(failureReason)],
+      )
+    }
   })
 }
 
@@ -2815,8 +3164,14 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
   expireMinutes: number
   projectId: number
 }) {
-  const event = await query<{ id: string; other_script: string | null }>(
-    'select id, other_script from project_package_events where id = $1 and project_id = $2',
+  const event = await query<{
+    delivery_scripts: string | null
+    delivery_steps: string | null
+    id: string
+    other_script: string | null
+  }>(
+    `select id, other_script, delivery_steps, delivery_scripts
+       from project_package_events where id = $1 and project_id = $2`,
     [params.eventId, params.projectId],
   )
   if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
@@ -2892,11 +3247,68 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     ...offlinePackages.map((item) => ({ kind: 'offline-package' as const, value: item.downloadUrl })),
     ...images.map((item) => ({ kind: 'container-image' as const, value: item.image })),
   ]
+  const scripts = readDeliveryScripts(event.rows[0].delivery_scripts, event.rows[0].other_script)
+  const packageByReference = new Map(packageLinks.map((item) => [item.objectKey, item]))
+  const imageByReference = new Map(images.map((item) => [item.image, item]))
+  const offlineByReference = new Map(offlinePackages.map((item) => [item.downloadUrl, item]))
+  const scriptByReference = new Map(scripts.map((item) => [item.id, item]))
+  const storedSteps = readDeliverySteps(event.rows[0].delivery_steps)
+  const deliverySteps = event.rows[0].delivery_steps
+    ? storedSteps
+    : [
+        ...packageLinks.map((item, index) => ({ id: `package-${index + 1}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
+        ...offlinePackages.map((item, index) => ({ id: `offline-${index + 1}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.downloadUrl })),
+        ...images.map((item, index) => ({ id: `image-${index + 1}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+        ...scripts.map((item, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: item.title, reference: item.id })),
+      ]
+  const processes = deliverySteps.map((step, index) => {
+    const comment = `# 流程 ${index + 1}：${step.processName}`
+    if (step.kind === 'shell-script') {
+      const script = scriptByReference.get(step.reference)
+      if (!script) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的 Shell 脚本不存在`, 409)
+      return { content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
+    }
+    if (step.kind === 'package') {
+      const item = packageByReference.get(step.reference)
+      if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的安装包不存在`, 409)
+      return {
+        address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
+        content: `${comment}\n${createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })}`,
+        kind: step.kind,
+        processName: step.processName,
+        runtimeConfig: item.runtimeConfig,
+        stepId: step.id,
+      }
+    }
+    if (step.kind === 'offline-package') {
+      const item = offlineByReference.get(step.reference)
+      if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的离线包不存在`, 409)
+      return {
+        address: { kind: 'offline-package' as const, value: item.downloadUrl },
+        content: `${comment}\n${createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })}`,
+        kind: step.kind,
+        processName: step.processName,
+        runtimeConfig: item.runtimeConfig,
+        stepId: step.id,
+      }
+    }
+    const item = imageByReference.get(step.reference)
+    if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的镜像不存在`, 409)
+    return {
+      address: { kind: 'container-image' as const, value: item.image },
+      content: `${comment}\n${createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })}`,
+      kind: step.kind,
+      processName: step.processName,
+      runtimeConfig: item.runtimeConfig,
+      stepId: step.id,
+    }
+  })
   return {
     addresses,
     other: event.rows[0].other_script
       ? { content: decryptText(event.rows[0].other_script), type: 'shell-script' as const }
       : null,
+    processes,
     items: [
       ...packageLinks.map((item) => ({
         address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
@@ -2914,11 +3326,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
         script: createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] }),
       })),
     ],
-    script: createDeliveryExecutionScript({
-      images,
-      offlinePackages,
-      packages: packageLinks,
-    }),
+    script: processes.map((process) => process.content).join('\n\n'),
   }
 }
 
