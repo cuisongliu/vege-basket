@@ -55,6 +55,26 @@ test('new delivery events require content and support reusable ordered shell scr
   assert.match(timelineSource, /交付内容类型无效/u)
 })
 
+test('legacy delivery fallback uses stable database identities everywhere', () => {
+  assert.match(timelineSource, /function buildFallbackDeliverySteps/u)
+  assert.match(timelineSource, /buildFallbackDeliverySteps\(\{[\s\S]*items: \(groupsByEvent/u)
+  assert.match(timelineSource, /buildFallbackDeliverySteps\(\{[\s\S]*legacyItems/u)
+  assert.match(timelineSource, /buildFallbackDeliverySteps\(\{[\s\S]*packageLinks.map/u)
+  assert.match(timelineSource, /id: `package-\$\{item\.id\}`/u)
+  assert.match(timelineSource, /id: `offline-\$\{item\.id\}`/u)
+  assert.match(timelineSource, /id: `image-\$\{item\.id\}`/u)
+})
+
+test('omitted delivery plan fields preserve stored values and reject dangling references', () => {
+  assert.match(timelineSource, /const hasDeliveryScripts = params\.deliveryScripts !== undefined/u)
+  assert.match(timelineSource, /const hasDeliverySteps = params\.deliverySteps !== undefined/u)
+  assert.match(timelineSource, /const effectiveScripts = hasDeliveryScripts \? deliveryScripts : storedScripts/u)
+  assert.match(timelineSource, /const effectiveSteps = hasDeliverySteps \? deliverySteps : storedSteps/u)
+  assert.match(timelineSource, /请提交完整交付流程/u)
+  assert.match(timelineSource, /delivery_steps = \$11/u)
+  assert.match(timelineSource, /delivery_scripts = \$12/u)
+})
+
 test('delivery lifecycle migration preserves terminal states and rejection history', () => {
   assert.match(deliveryExecutionMigrationSource, /delivery_result = 'failed' or status = 'failed'.*?then 'failed'/su)
   assert.match(deliveryExecutionMigrationSource, /delivery_result = 'partial' or status = 'partially_delivered'.*?then 'partially_delivered'/su)
@@ -402,6 +422,7 @@ test('delivery summary refresh preserves every loaded detail field only for the 
   const detailEvent = {
     id: 7,
     updatedAt: '2026-10-01 12:00:00',
+    detailRevision: '1790841600.123456',
     detailsLoaded: true,
     comments: [{ id: 1 }],
     containerImages: [{ id: 2 }],
@@ -446,7 +467,11 @@ test('delivery summary refresh preserves every loaded detail field only for the 
   assert.equal(preserved.deliveryFailureReason, detailEvent.deliveryFailureReason)
   assert.equal(preserved.other, detailEvent.other)
 
-  const changedSummary = { ...summaryEvent, updatedAt: '2026-10-01 12:01:00' }
+  const changedSummary = {
+    ...summaryEvent,
+    updatedAt: detailEvent.updatedAt,
+    detailRevision: '1790841600.123789',
+  }
   const invalidated = preserveLoadedPackageEventDetails(timeline(detailEvent), timeline(changedSummary)).events[0]
   assert.equal(invalidated.detailsLoaded, false)
   assert.deepEqual(invalidated.deliverySteps, [])

@@ -9,7 +9,7 @@ export function preserveLoadedPackageEventDetails(
     ...incoming,
     events: incoming.events.map((event) => {
       const loadedEvent = currentEventsById.get(event.id)
-      if (loadedEvent?.detailsLoaded !== true || loadedEvent.updatedAt !== event.updatedAt) return event
+      if (loadedEvent?.detailsLoaded !== true || loadedEvent.detailRevision !== event.detailRevision) return event
       return {
         ...event,
         comments: loadedEvent.comments,

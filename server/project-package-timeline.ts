@@ -164,6 +164,7 @@ export type ProjectPackageEvent = {
   latestRejectedAt?: string
   rejections: ProjectPackageEventRejection[]
   deliveryResult?: ProjectPackageDeliveryResult
+  detailRevision: string
   deliveryDelayDays?: number
   assignedAt?: string
   assignedByName?: string
@@ -285,6 +286,7 @@ type EventRow = {
   delivery_steps: string | null
   delivery_scripts: string | null
   delivery_step_results: string | null
+  detail_revision: string
   other_script: string | null
   id: string
   published_at: Date | null
@@ -384,6 +386,20 @@ function normalizeDeliveryScripts(value: unknown, normalizedOther: DeliveryOther
     seenIds.add(id)
     return { content: normalized.value.content, id, title }
   })
+}
+
+function buildFallbackDeliverySteps(params: {
+  items: Array<{ id: string | number; objectKey: string }>
+  offlinePackages: Array<{ id: string | number; url: string }>
+  containerImages: Array<{ id: string | number; image: string }>
+  deliveryScripts: ProjectPackageDeliveryScript[]
+}) {
+  return [
+    ...params.items.map((item, index) => ({ id: `package-${item.id}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
+    ...params.offlinePackages.map((item, index) => ({ id: `offline-${item.id}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
+    ...params.containerImages.map((item, index) => ({ id: `image-${item.id}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+    ...params.deliveryScripts.map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
+  ] satisfies ProjectPackageDeliveryStep[]
 }
 
 type ContainerImageRow = {
@@ -1770,6 +1786,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
            ${includeDetails ? 'e.delivery_scripts' : 'null::text'} as delivery_scripts,
            ${includeDetails ? 'e.delivery_step_results' : 'null::text'} as delivery_step_results,
            e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
+           extract(epoch from e.updated_at)::text as detail_revision,
            assignee.email as assignee_email, assignee.display_name as assignee_display_name,
            assigner.email as assigner_email, assigner.display_name as assigner_display_name
       from project_package_events e
@@ -2189,6 +2206,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       completedAt: row.completed_at ? formatDateTime(row.completed_at) : undefined,
       deliveryFailureReason: row.delivery_failure_reason ? decryptText(row.delivery_failure_reason) : undefined,
       deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : row.status === 'rejected' ? 'rejected' : row.status === 'failed' ? 'failed' : row.status === 'partially_delivered' ? 'partial' : undefined),
+      detailRevision: row.detail_revision,
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
       assignedByName: row.assigned_by_user_id
         ? displayUserName({ email: row.assigner_email, display_name: row.assigner_display_name })
@@ -2216,12 +2234,12 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         : undefined,
       deliveryEndAt: formatDateTime(row.delivery_end_at),
       deliveryStartAt: formatDateTime(row.delivery_start_at),
-      deliverySteps: includeDetails ? (row.delivery_steps ? readDeliverySteps(row.delivery_steps) : [
-        ...(groupsByEvent.get(Number(row.id)) ?? []).flatMap((group) => group.items.map((item, index) => ({ id: `package-${item.id}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey }))),
-        ...(offlinePackagesByEvent.get(Number(row.id)) ?? []).map((item, index) => ({ id: `offline-${item.id}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
-        ...(containerImagesByEvent.get(Number(row.id)) ?? []).map((item, index) => ({ id: `image-${item.id}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
-        ...readDeliveryScripts(row.delivery_scripts, row.other_script).map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
-      ]).map((step) => {
+      deliverySteps: includeDetails ? (row.delivery_steps ? readDeliverySteps(row.delivery_steps) : buildFallbackDeliverySteps({
+        items: (groupsByEvent.get(Number(row.id)) ?? []).flatMap((group) => group.items),
+        offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
+        containerImages: containerImagesByEvent.get(Number(row.id)) ?? [],
+        deliveryScripts: readDeliveryScripts(row.delivery_scripts, row.other_script),
+      })).map((step) => {
         const stepResult = readDeliveryStepResults(row.delivery_step_results)[step.id]
         return stepResult ? { ...step, failureDetail: stepResult.failureDetail, result: stepResult.result } : { ...step, result: 'pending' as const }
       }) : [],
@@ -2306,14 +2324,16 @@ export async function saveProjectPackageEvent(params: {
     throw new ProjectPackageEventError(otherResult.error, 400)
   }
   const normalizedOther = otherResult?.value
-  const deliveryScripts = normalizeDeliveryScripts(params.deliveryScripts, normalizedOther)
-  const deliverySteps = normalizeDeliverySteps(
+  const hasDeliveryScripts = params.deliveryScripts !== undefined || normalizedOther !== undefined
+  const hasDeliverySteps = params.deliverySteps !== undefined
+  const deliveryScripts = hasDeliveryScripts ? normalizeDeliveryScripts(params.deliveryScripts, normalizedOther) : []
+  const deliverySteps = hasDeliverySteps ? normalizeDeliverySteps(
     params.deliverySteps,
     items,
     containerImages ?? [],
     offlinePackages ?? [],
     deliveryScripts,
-  )
+  ) : []
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
@@ -2349,9 +2369,67 @@ export async function saveProjectPackageEvent(params: {
     let eventId = params.eventId
     if (eventId != null) {
       ensureEditableEvent(await findEventMeta(eventId, params.projectId, client))
-      const otherScriptAssignment = normalizedOther !== undefined ? 'other_script = $10,' : ''
-      const stepPlaceholder = normalizedOther !== undefined ? '$11' : '$10'
-      const stepAssignment = `delivery_steps = ${stepPlaceholder},`
+      const existing = await client.query<{
+        delivery_scripts: string | null
+        delivery_steps: string | null
+        other_script: string | null
+      }>(
+        'select delivery_scripts, delivery_steps, other_script from project_package_events where id = $1 and project_id = $2 for update',
+        [eventId, params.projectId],
+      )
+      const existingRow = existing.rows[0]
+      if (!existingRow) throw new ProjectPackageEventError('Event not found', 404)
+      const storedScripts = readDeliveryScripts(existingRow.delivery_scripts, existingRow.other_script)
+      const storedSteps = readDeliverySteps(existingRow.delivery_steps)
+      const effectiveScripts = hasDeliveryScripts ? deliveryScripts : storedScripts
+      const effectiveSteps = hasDeliverySteps ? deliverySteps : storedSteps
+      if (!hasDeliverySteps && !existingRow.delivery_steps) {
+        const legacyItems = await client.query<{ id: string; object_key: string }>(
+          `select i.id, i.object_key from project_package_items i
+             join project_package_groups g on g.id = i.project_package_group_id
+            where g.project_package_event_id = $1 order by i.created_at, i.id`,
+          [eventId],
+        )
+        const legacyOffline = await client.query<{ id: string; url: string }>(
+          'select id, download_url as url from project_package_event_offline_packages where project_package_event_id = $1 order by position, id',
+          [eventId],
+        )
+        const legacyImages = await client.query<{ id: string; image: string }>(
+          'select id, image_ref as image from project_package_event_container_images where project_package_event_id = $1 order by position, id',
+          [eventId],
+        )
+        effectiveSteps.push(...buildFallbackDeliverySteps({
+          items: legacyItems.rows.map((row) => ({ id: row.id, objectKey: row.object_key })),
+          offlinePackages: legacyOffline.rows.map((row) => ({ id: row.id, url: decryptText(row.url) })),
+          containerImages: legacyImages.rows.map((row) => ({ id: row.id, image: decryptText(row.image) })),
+          deliveryScripts: effectiveScripts,
+        }))
+      }
+      const availableReferences = new Set([
+        ...items.map((item) => `package:${item.objectKey}`),
+        ...(containerImages ?? []).map((item) => `container-image:${item.image}`),
+        ...(offlinePackages ?? []).map((item) => `offline-package:${item.url}`),
+        ...effectiveScripts.map((script) => `shell-script:${script.id}`),
+      ])
+      if (!hasDeliverySteps && (items.length > 0 || containerImages != null || offlinePackages != null || hasDeliveryScripts)) {
+        const invalid = effectiveSteps.find((step) => !availableReferences.has(`${step.kind}:${step.reference}`))
+        if (invalid) throw new ProjectPackageEventError(`交付流程“${invalid.processName}”引用的交付内容已变更，请提交完整交付流程`, 409)
+      }
+      const otherValue = normalizedOther !== undefined ? normalizedOther : (existingRow.other_script ? { content: decryptText(existingRow.other_script) } : null)
+      const sqlValues = [
+        params.type,
+        encryptText(title),
+        params.assigneeUserId,
+        params.assignedByUserId,
+        deliveryWindow.deliveryDate,
+        deliveryWindow.deliveryStartAt,
+        deliveryWindow.deliveryEndAt,
+        eventId,
+        params.projectId,
+        otherValue?.content ? encryptText(otherValue.content) : null,
+        encryptText(JSON.stringify(effectiveSteps)),
+        encryptText(JSON.stringify(effectiveScripts)),
+      ]
       const updated = await client.query(
         `
         update project_package_events
@@ -2362,9 +2440,9 @@ export async function saveProjectPackageEvent(params: {
             delivery_date = $5::date,
             delivery_start_at = $6::timestamptz,
             delivery_end_at = $7::timestamptz,
-            ${otherScriptAssignment}
-            ${stepAssignment}
-            delivery_scripts = ${normalizedOther !== undefined ? '$12' : '$11'},
+            other_script = $10,
+            delivery_steps = $11,
+            delivery_scripts = $12,
             updated_at = now()
         where id = $8
           and project_id = $9
@@ -2380,9 +2458,7 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryEndAt,
           eventId,
           params.projectId,
-          ...(normalizedOther !== undefined ? [normalizedOther ? encryptText(normalizedOther.content) : null] : []),
-          encryptText(JSON.stringify(deliverySteps)),
-          encryptText(JSON.stringify(deliveryScripts)),
+          ...sqlValues.slice(9),
         ],
       )
       if (updated.rowCount !== 1) {
@@ -2671,22 +2747,47 @@ export async function completeProjectPackageEvent(params: {
       result === 'rejected' ? 'canReject' : 'canComplete',
       { eventId: params.eventId },
     )
-    const event = await client.query<{ delivery_steps: string | null }>(
-      'select delivery_steps from project_package_events where id = $1 and project_id = $2 for update',
+    const event = await client.query<{
+      delivery_scripts: string | null
+      delivery_steps: string | null
+      other_script: string | null
+    }>(
+      'select delivery_scripts, delivery_steps, other_script from project_package_events where id = $1 and project_id = $2 for update',
       [params.eventId, params.projectId],
     )
-    const steps = readDeliverySteps(event.rows[0]?.delivery_steps ?? null)
-    const stepIds = new Set(steps.map((step) => step.id))
+    const eventRow = event.rows[0]
+    const scripts = readDeliveryScripts(eventRow?.delivery_scripts ?? null, eventRow?.other_script ?? null)
+    const steps = readDeliverySteps(eventRow?.delivery_steps ?? null)
+    const resolvedSteps = eventRow?.delivery_steps ? steps : buildFallbackDeliverySteps({
+      items: (await client.query<{ id: string; object_key: string }>(
+        `select i.id, i.object_key from project_package_items i
+           join project_package_groups g on g.id = i.project_package_group_id
+          where g.project_package_event_id = $1 order by i.created_at, i.id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, objectKey: item.object_key })),
+      offlinePackages: (await client.query<{ id: string; url: string }>(
+        `select id, download_url as url from project_package_event_offline_packages
+          where project_package_event_id = $1 order by position, id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, url: decryptText(item.url) })),
+      containerImages: (await client.query<{ id: string; image: string }>(
+        `select id, image_ref as image from project_package_event_container_images
+          where project_package_event_id = $1 order by position, id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, image: decryptText(item.image) })),
+      deliveryScripts: scripts,
+    })
+    const stepIds = new Set(resolvedSteps.map((step) => step.id))
     if (Object.keys(stepResults).some((stepId) => !stepIds.has(stepId))) {
       throw new ProjectDeliveryError('交付结果包含未知流程', 400)
     }
-    if ((result === 'partial' || result === 'failed') && Object.keys(stepResults).length !== steps.length) {
+    if ((result === 'partial' || result === 'failed') && Object.keys(stepResults).length !== resolvedSteps.length) {
       throw new ProjectDeliveryError('请填写每个交付流程的执行结果', 400)
     }
     const status = result === 'success' ? 'delivered' : result === 'partial' ? 'partially_delivered' : result === 'rejected' ? 'rejected' : 'failed'
     const terminal = result !== 'rejected'
     const completedStepResults = result === 'success'
-      ? Object.fromEntries(steps.map((step) => [step.id, { result: 'success' }]))
+      ? Object.fromEntries(resolvedSteps.map((step) => [step.id, { result: 'success' }]))
       : result === 'rejected' ? {} : stepResults
     const updated = await client.query(`update project_package_events set status = $1, completed_by_user_id = $2,
       completed_at = case when $3::boolean then now() else null end, delivery_result = $4, delivery_failure_reason = $5,
@@ -3178,6 +3279,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
 
   const [packageRows, imageRows, offlineRows] = await Promise.all([
     query<{
+      id: string
       environment_variables: string | null
       object_key: string
       source_config_revision: string | null
@@ -3186,7 +3288,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
       values_patch: string | null
       values_path: string | null
     }>(
-      `select i.object_key, i.source_config_revision, i.source_package_id, i.channel,
+      `select i.id, i.object_key, i.source_config_revision, i.source_package_id, i.channel,
               i.environment_variables, i.values_path, i.values_patch
          from project_package_items i
          join project_package_groups g on g.id = i.project_package_group_id
@@ -3194,19 +3296,19 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
         order by i.created_at, i.id`,
       [params.eventId],
     ),
-    query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
-      `select image_ref, environment_variables, values_path, values_patch from project_package_event_container_images
+    query<Pick<ContainerImageRow, 'id' | 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+      `select id, image_ref, environment_variables, values_path, values_patch from project_package_event_container_images
         where project_package_event_id = $1 order by position, id`,
       [params.eventId],
     ),
-    query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
-      `select download_url, environment_variables, values_path, values_patch from project_package_event_offline_packages
+    query<Pick<OfflinePackageRow, 'id' | 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+      `select id, download_url, environment_variables, values_path, values_patch from project_package_event_offline_packages
         where project_package_event_id = $1 order by position, id`,
       [params.eventId],
     ),
   ])
 
-  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; objectKey: string; runtimeConfig: DeliveryRuntimeConfig }>
+  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; id: string; objectKey: string; runtimeConfig: DeliveryRuntimeConfig }>
   const rulesByRevision = new Map<number | null, Awaited<ReturnType<typeof getPackageMarketRulesForConfigRevision>>>()
   for (const item of packageRows.rows) {
     const revision = item.source_config_revision ? Number(item.source_config_revision) : null
@@ -3225,6 +3327,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     }
     packageLinks.push({
       ...createPackageItemDownloadLink(item.object_key, params.expireMinutes),
+      id: item.id,
       objectKey: item.object_key,
       runtimeConfig: readDeliveryRuntimeConfig(item),
     })
@@ -3232,6 +3335,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
 
   const images = imageRows.rows.map((row) => ({
     image: decryptText(row.image_ref),
+    id: row.id,
     runtimeConfig: readDeliveryRuntimeConfig(row),
   }))
   const offlinePackages = offlineRows.rows.map((row, index) => {
@@ -3239,6 +3343,7 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     return {
       downloadUrl,
       fileName: offlinePackageFileName(downloadUrl, index),
+      id: row.id,
       runtimeConfig: readDeliveryRuntimeConfig(row),
     }
   })
@@ -3255,12 +3360,12 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
   const storedSteps = readDeliverySteps(event.rows[0].delivery_steps)
   const deliverySteps = event.rows[0].delivery_steps
     ? storedSteps
-    : [
-        ...packageLinks.map((item, index) => ({ id: `package-${index + 1}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
-        ...offlinePackages.map((item, index) => ({ id: `offline-${index + 1}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.downloadUrl })),
-        ...images.map((item, index) => ({ id: `image-${index + 1}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
-        ...scripts.map((item, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: item.title, reference: item.id })),
-      ]
+    : buildFallbackDeliverySteps({
+        items: packageLinks.map((item) => ({ id: item.id, objectKey: item.objectKey })),
+        offlinePackages: offlinePackages.map((item) => ({ id: item.id, url: item.downloadUrl })),
+        containerImages: images.map((item) => ({ id: item.id, image: item.image })),
+        deliveryScripts: scripts,
+      })
   const processes = deliverySteps.map((step, index) => {
     const comment = `# 流程 ${index + 1}：${step.processName}`
     if (step.kind === 'shell-script') {

@@ -421,6 +421,7 @@ export type ProjectPackageEvent = {
   completedAt?: string
   deliveryDelayDays?: number
   deliveryResult?: ProjectPackageDeliveryResult
+  detailRevision: string
   deliveryFailureReason?: string
   rejectionCount?: number
   latestRejectionReason?: string
