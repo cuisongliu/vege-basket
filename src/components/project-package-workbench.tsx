@@ -123,6 +123,7 @@ import {
   emptyDeliveryRuntimeConfig,
   maxDeliveryArtifactEntries,
   maxDeliveryEnvironmentVariables,
+  maxDeliveryOtherScriptLength,
   normalizeDeliveryRuntimeConfig,
   normalizeDeliveryOther,
   normalizeOfflinePackageUrl,
@@ -3560,7 +3561,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <div className="delivery-artifact-editor-row">
                     <Textarea
                       aria-label="其他交付内容 Shell 脚本"
-                      maxLength={64 * 1024}
+                      maxLength={maxDeliveryOtherScriptLength}
                       placeholder="输入 Shell 脚本，例如：set -eu"
                       value={eventOther.content}
                       onChange={(event) => {

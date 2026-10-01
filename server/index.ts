@@ -682,6 +682,7 @@ app.get('/api/test-plan-images', (request, response, next) => {
 }))
 
 app.use(express.json({
+  limit: '512kb',
   verify: (request, _response, buffer) => {
     const expressRequest = request as express.Request & { rawBody?: string }
     if (expressRequest.originalUrl === '/api/integrations/feishu/card-actions') {

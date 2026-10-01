@@ -5,7 +5,7 @@ export const maxOfflinePackageUrlLength = 4096
 export const maxDeliveryEnvironmentVariables = 20
 export const maxDeliveryEnvironmentValueLength = 4096
 export const maxDeliveryValuesPatchLength = 64 * 1024
-export const maxDeliveryOtherScriptLength = 64 * 1024
+export const maxDeliveryOtherScriptLength = 256 * 1024
 export const deliveryValuesRoot = '/root/.sealos/cloud/values'
 
 export type DeliveryEnvironmentVariable = {
@@ -68,7 +68,7 @@ export function normalizeDeliveryOther(value: unknown): DeliveryOtherResult {
   const content = typeof input.content === 'string' ? input.content.trim() : ''
   if (!content) return { error: 'Shell 脚本不能为空。', valid: false }
   if (content.length > maxDeliveryOtherScriptLength || hasDisallowedScriptControlCharacter(content)) {
-    return { error: 'Shell 脚本格式无效或超过 64 KiB。', valid: false }
+    return { error: 'Shell 脚本格式无效或超过 256 KiB。', valid: false }
   }
   return { valid: true, value: { content, type: 'shell-script' } }
 }

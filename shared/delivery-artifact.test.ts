@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   deliveryValuesRoot,
+  maxDeliveryOtherScriptLength,
   normalizeDeliveryOther,
   normalizeDeliveryRuntimeConfig,
   normalizeOfflinePackageUrl,
@@ -24,6 +25,17 @@ test('rejects unsupported other delivery methods and invalid shell scripts', () 
   ]) {
     assert.equal(normalizeDeliveryOther(value).valid, false)
   }
+})
+
+test('supports shell scripts up to 256 KiB', () => {
+  assert.equal(normalizeDeliveryOther({
+    type: 'shell-script',
+    content: 'x'.repeat(maxDeliveryOtherScriptLength),
+  }).valid, true)
+  assert.equal(normalizeDeliveryOther({
+    type: 'shell-script',
+    content: 'x'.repeat(maxDeliveryOtherScriptLength + 1),
+  }).valid, false)
 })
 
 test('accepts HTTPS offline package URLs without changing signed queries', () => {
