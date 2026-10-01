@@ -682,6 +682,7 @@ app.get('/api/test-plan-images', (request, response, next) => {
 }))
 
 app.use(express.json({
+  limit: '512kb',
   verify: (request, _response, buffer) => {
     const expressRequest = request as express.Request & { rawBody?: string }
     if (expressRequest.originalUrl === '/api/integrations/feishu/card-actions') {
@@ -12557,6 +12558,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
         }
       })
     : []
+  const other = Object.prototype.hasOwnProperty.call(body, 'other') ? body.other : undefined
   return {
     action: body.action === 'publish' ? 'publish' as const : 'save_draft' as const,
     containerImages: Array.isArray(body.containerImages)
@@ -12569,6 +12571,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
       : undefined,
     documents,
     items,
+    other,
     offlinePackages: Array.isArray(body.offlinePackages)
       ? body.offlinePackages.map((item) => {
           const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
@@ -12654,6 +12657,7 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     containerImages: aggregate.containerImages,
     items: aggregate.items,
     offlinePackages: aggregate.offlinePackages,
+    other: aggregate.other,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12703,6 +12707,7 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     eventId: Number(request.params.eventId),
     items: aggregate.items,
     offlinePackages: aggregate.offlinePackages,
+    other: aggregate.other,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),

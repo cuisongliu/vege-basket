@@ -2,10 +2,41 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   deliveryValuesRoot,
+  maxDeliveryOtherScriptLength,
+  normalizeDeliveryOther,
   normalizeDeliveryRuntimeConfig,
   normalizeOfflinePackageUrl,
   offlinePackageFileName,
 } from './delivery-artifact.ts'
+
+test('accepts an optional shell script as other delivery content', () => {
+  assert.deepEqual(normalizeDeliveryOther({ type: 'shell-script', content: 'set -eu\necho ready' }), {
+    valid: true,
+    value: { type: 'shell-script', content: 'set -eu\necho ready' },
+  })
+  assert.deepEqual(normalizeDeliveryOther(null), { valid: true, value: null })
+})
+
+test('rejects unsupported other delivery methods and invalid shell scripts', () => {
+  for (const value of [
+    { type: 'python', content: 'print(1)' },
+    { type: 'shell-script', content: '' },
+    { type: 'shell-script', content: 'echo \u0001' },
+  ]) {
+    assert.equal(normalizeDeliveryOther(value).valid, false)
+  }
+})
+
+test('supports shell scripts up to 256 KiB', () => {
+  assert.equal(normalizeDeliveryOther({
+    type: 'shell-script',
+    content: 'x'.repeat(maxDeliveryOtherScriptLength),
+  }).valid, true)
+  assert.equal(normalizeDeliveryOther({
+    type: 'shell-script',
+    content: 'x'.repeat(maxDeliveryOtherScriptLength + 1),
+  }).valid, false)
+})
 
 test('accepts HTTPS offline package URLs without changing signed queries', () => {
   const signed = 'https://downloads.example.com/app.tar?signature=a%2Bb&expires=123'

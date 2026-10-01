@@ -25,6 +25,21 @@ const deliveryRuntimeConfigMigrationSource = readFileSync(
   new URL('./migrations/20260930_project_delivery_runtime_config.sql', import.meta.url),
   'utf8',
 )
+const deliveryOtherScriptMigrationSource = readFileSync(
+  new URL('./migrations/20261001_project_delivery_other_script.sql', import.meta.url),
+  'utf8',
+)
+
+test('new delivery events require content and optionally support shell scripts', () => {
+  assert.match(timelineSource, /至少添加一种交付内容后才能创建交付事件/u)
+  assert.match(timelineSource, /normalizeDeliveryOther/u)
+  assert.match(workbenchSource, /此处只支持 Shell 脚本，其他方式暂不支持/u)
+  assert.match(workbenchSource, /添加 Shell 脚本/u)
+  assert.match(indexSource, /limit: '512kb'/u)
+  assert.match(workbenchSource, /maxDeliveryOtherScriptLength/u)
+  assert.match(deliveryOtherScriptMigrationSource, /add column if not exists other_script/u)
+  assert.match(schemaSource, /add column if not exists other_script text/u)
+})
 
 test('package market offers link validity choices from four hours through seven days', () => {
   const expireOptionsSource = workbenchSource.slice(

@@ -16,9 +16,11 @@ import { containerImageReferenceKey, normalizeContainerImageReference } from '..
 import {
   emptyDeliveryRuntimeConfig,
   maxDeliveryArtifactEntries,
+  normalizeDeliveryOther,
   normalizeDeliveryRuntimeConfig,
   normalizeOfflinePackageUrl,
   offlinePackageFileName,
+  type DeliveryOther,
   type DeliveryRuntimeConfig,
 } from '../shared/delivery-artifact.ts'
 import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
@@ -148,6 +150,7 @@ export type ProjectPackageEvent = {
   groups: ProjectPackageGroup[]
   id: number
   offlinePackages: ProjectPackageEventOfflinePackage[]
+  other?: DeliveryOther | null
   operations: ProjectPackageOperation[]
   publishedAt?: string
   publishedByUserId?: number
@@ -248,6 +251,7 @@ type EventRow = {
   delivery_date: Date | string | null
   delivery_end_at: Date
   delivery_start_at: Date
+  other_script: string | null
   id: string
   published_at: Date | null
   published_by_user_id: string | null
@@ -1466,6 +1470,10 @@ function buildProjectPackageEventMarkdown(
     })
   }
 
+  if (event.other?.content) {
+    lines.push('### 2. 其他（Shell 脚本）', '', '```sh', event.other.content, '```', '')
+  }
+
   if (event.groups.length === 0) {
     lines.push('暂无安装包。', '')
     return lines
@@ -1478,7 +1486,7 @@ function buildProjectPackageEventMarkdown(
       lines.push(
         ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, rulesByRevision, {
           headingLevel: '###',
-          sectionNumber: String(groupIndex + 2),
+          sectionNumber: String(groupIndex + (event.other?.content ? 3 : 2)),
         }),
         '',
       )
@@ -1552,6 +1560,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
            e.delivery_result, e.delivery_failure_reason,
            e.type, e.status, e.title, e.assignee_user_id, e.assigned_by_user_id, e.assigned_at,
            e.delivery_date, e.delivery_start_at, e.delivery_end_at,
+           e.other_script,
            e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
            assignee.email as assignee_email, assignee.display_name as assignee_display_name,
            assigner.email as assigner_email, assigner.display_name as assigner_display_name
@@ -1980,6 +1989,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
       offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
+      other: includeDetails && row.other_script ? { content: decryptText(row.other_script), type: 'shell-script' as const } : null,
       detailsLoaded: includeDetails,
       packageCount: includeDetails
         ? groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.items.length, 0) ?? 0
@@ -2016,6 +2026,7 @@ export async function saveProjectPackageEvent(params: {
   containerImages?: ProjectPackageContainerImageInput[]
   items: ProjectPackageItemInput[]
   offlinePackages?: ProjectPackageOfflinePackageInput[]
+  other?: unknown
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -2030,11 +2041,23 @@ export async function saveProjectPackageEvent(params: {
   const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
   const containerImages = params.containerImages == null ? undefined : normalizeContainerImages(params.containerImages)
   const offlinePackages = params.offlinePackages == null ? undefined : normalizeOfflinePackages(params.offlinePackages)
+  const otherResult = params.other === undefined ? undefined : normalizeDeliveryOther(params.other)
+  if (otherResult && !otherResult.valid) {
+    throw new ProjectPackageEventError(otherResult.error, 400)
+  }
+  const normalizedOther = otherResult?.value
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
   if (duplicateObjectKeys.length > 0) {
     throw new ProjectPackageEventError('Package items must be unique', 400)
+  }
+  const hasDeliveryContent = items.length > 0 ||
+    (containerImages?.length ?? 0) > 0 ||
+    (offlinePackages?.length ?? 0) > 0 ||
+    Boolean(normalizedOther?.content)
+  if (params.eventId == null && !hasDeliveryContent) {
+    throw new ProjectPackageEventError('至少添加一种交付内容后才能创建交付事件', 400)
   }
   const packageNames = new Set(items.map((item) => item.packageName))
   const documents = normalizeProjectPackageDocuments(
@@ -2055,6 +2078,7 @@ export async function saveProjectPackageEvent(params: {
     let eventId = params.eventId
     if (eventId != null) {
       ensureUnpublishedEvent(await findEventMeta(eventId, params.projectId, client))
+      const otherScriptAssignment = normalizedOther !== undefined ? 'other_script = $10,' : ''
       const updated = await client.query(
         `
         update project_package_events
@@ -2065,6 +2089,7 @@ export async function saveProjectPackageEvent(params: {
             delivery_date = $5::date,
             delivery_start_at = $6::timestamptz,
             delivery_end_at = $7::timestamptz,
+            ${otherScriptAssignment}
             updated_at = now()
         where id = $8
           and project_id = $9
@@ -2080,6 +2105,7 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryEndAt,
           eventId,
           params.projectId,
+          ...(normalizedOther !== undefined ? [normalizedOther ? encryptText(normalizedOther.content) : null] : []),
         ],
       )
       if (updated.rowCount !== 1) {
@@ -2098,9 +2124,10 @@ export async function saveProjectPackageEvent(params: {
           assigned_by_user_id,
           delivery_date,
           delivery_start_at,
-          delivery_end_at
+          delivery_end_at,
+          other_script
         )
-        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz)
+        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz, $10)
         returning id
         `,
         [
@@ -2113,6 +2140,7 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryDate,
           deliveryWindow.deliveryStartAt,
           deliveryWindow.deliveryEndAt,
+          normalizedOther?.content ? encryptText(normalizedOther.content) : null,
         ],
       )
       eventId = Number(created.rows[0].id)
@@ -2787,8 +2815,8 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
   expireMinutes: number
   projectId: number
 }) {
-  const event = await query<{ id: string }>(
-    'select id from project_package_events where id = $1 and project_id = $2',
+  const event = await query<{ id: string; other_script: string | null }>(
+    'select id, other_script from project_package_events where id = $1 and project_id = $2',
     [params.eventId, params.projectId],
   )
   if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
@@ -2866,6 +2894,9 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
   ]
   return {
     addresses,
+    other: event.rows[0].other_script
+      ? { content: decryptText(event.rows[0].other_script), type: 'shell-script' as const }
+      : null,
     items: [
       ...packageLinks.map((item) => ({
         address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },

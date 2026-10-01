@@ -1419,6 +1419,7 @@ create table if not exists project_package_events (
   delivery_date date not null default current_date,
   delivery_start_at timestamptz not null default (current_date::timestamp at time zone 'Asia/Shanghai'),
   delivery_end_at timestamptz not null default ((current_date::timestamp + interval '1 day' - interval '1 second') at time zone 'Asia/Shanghai'),
+  other_script text,
   published_at timestamptz,
   published_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -1479,7 +1480,8 @@ alter table project_package_events
 
 alter table project_package_events
   add column if not exists published_at timestamptz,
-  add column if not exists published_by_user_id bigint references users(id) on delete set null;
+  add column if not exists published_by_user_id bigint references users(id) on delete set null,
+  add column if not exists other_script text;
 
 update project_package_events
 set status = case
