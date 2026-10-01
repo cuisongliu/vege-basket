@@ -94,6 +94,14 @@ test('navigation count matches the actionable work-hour confirmation queue', () 
   assert.doesNotMatch(confirmationCountQuery, /hours\.status = 'submitted'/u)
 })
 
+test('navigation count uses the same mixed actionable-item scope as My Work', () => {
+  const countSource = serverSource.slice(serverSource.indexOf("app.get('/api/navigation-counts'"))
+  assert.match(countSource, /union all[\s\S]*project_package_events/u)
+  assert.match(countSource, /union all[\s\S]*project_milestones/u)
+  assert.match(countSource, /union all[\s\S]*test_bugs/u)
+  assert.match(countSource, /t\.reviewer_user_id = \$1::bigint/u)
+})
+
 test('renders failed acceptance status in Chinese', () => {
   assert.match(myWorkWorkbenchSource, /acceptance_failed: '验收未通过'/u)
 })

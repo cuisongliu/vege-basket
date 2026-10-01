@@ -15,6 +15,23 @@ test('work minutes use integer-hour increments within the daily limit', () => {
   }
 })
 
+test('work-hour description is visibly and semantically required', () => {
+  const source = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /工作说明 <span className="field-required" aria-hidden="true">\*<\/span>/u)
+  assert.match(source, /<textarea aria-required="true" required value=\{description\}/u)
+  assert.match(source, /if \(!description\.trim\(\)\)/u)
+})
+
+test('todo quick-status counts follow the active non-status filters', () => {
+  const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /const statusFilteredTodos = useMemo/u)
+  assert.match(source, /const quickStatusCounts = useMemo\(\(\) => \(\{[\s\S]*?all: statusFilteredTodos\.length/u)
+  assert.match(source, /<span>\{quickStatusCounts\[value\]\}<\/span>/u)
+  assert.doesNotMatch(source, /const count = value === 'all' \? todos\.length/u)
+})
+
 test('work dates reject invalid calendar dates', () => {
   assert.equal(parseWorkDate('2026-09-23'), '2026-09-23')
   assert.throws(() => parseWorkDate('2026-02-30'), WorkHoursError)
@@ -62,12 +79,12 @@ test('todo detail work-hour reads stay scoped to the authorized todo and paginat
   const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
 
   assert.match(source, /router\.get\('\/todos\/:todoId\/work-hours'/u)
-  assert.match(source, /await projectMember\(client, Number\(todo\.project_id\), userId\)/u)
+  assert.match(source, /await organizationMember\(client, Number\(todo\.organization_id\), userId\)/u)
   assert.match(source, /await managedProject\(userId, Number\(todo\.project_id\), client\)/u)
-  assert.match(source, /canReadAll = Boolean\(todo && \(managed \|\| Number\(todo\.created_by_user_id\) === userId\)\)/u)
+  assert.match(source, /canReadAll = Boolean\(todo && \(managed \|\| Number\(todo\.created_by_user_id\) === userId \|\| assigneeId === userId\)\)/u)
   assert.match(source, /onlyUser: !canReadAll/u)
   assert.match(source, /const todo = await getTodoForWork\(client, Number\(reference\.todo_id\), userId(?:, true)?\)/u)
-  assert.match(source, /TODO_NOT_ACCESSIBLE.*projectMember\(client, Number\(todo\.project_id\), userId\)/su)
+  assert.match(source, /TODO_NOT_ACCESSIBLE[\s\S]*organizationMember\(client, organization\.organizationId, userId\)/u)
   assert.match(source, /filters\.todoId \? `entry\.todo_id =/u)
   assert.match(source, /pagination: \{ offset, limit, total: filteredEntries\.length \}/u)
 })
@@ -84,13 +101,26 @@ test('selected work-hour acceptance uses transactional stale-selection checks', 
   assert.doesNotMatch(source, /select membership\.id as membership_id/u)
   assert.match(source, /id = any\(\$2::bigint\[\]\)/u)
   assert.match(source, /\(\$3::bigint is null or user_id = \$3::bigint\)/u)
-  assert.match(source, /const selectedOwnerId = action === 'submit' \? userId : null/u)
+  assert.match(source, /const selectedOwnerId = null/u)
   assert.match(source, /selected\.rows\.length !== entryIds\.length/u)
   assert.match(source, /status = 'submitted'/u)
   assert.match(source, /action === 'accept'[\s\S]*?status = 'confirmed'[\s\S]*?else \{[\s\S]*?status = 'pending'/u)
   assert.match(source, /action !== 'submit' && !organization\?\.isManager/u)
   assert.match(source, /只有组织管理员可以确认或退回工时/u)
   assert.match(source, /confirmed_by_user_id = null,[\s\S]*?confirmed_at = null/u)
+  assert.match(source, /const isOrganizationMember = todo\?\.organization_id/u)
+})
+
+test('organization members can record and edit hours while only assignees submit them', () => {
+  const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url), 'utf8')
+  assert.match(source, /organizationMember\(client, organization\.organizationId, userId\)/u)
+  assert.match(source, /if \(!todo\.assignee_user_id\)[\s\S]*TODO_NOT_ASSIGNED/u)
+  assert.doesNotMatch(source, /只能为自己负责的任务记录工时/u)
+  assert.doesNotMatch(source, /只能修改自己负责任务的工时/u)
+  assert.doesNotMatch(source, /只能删除自己负责任务的工时/u)
+  assert.match(source, /action === 'submit' && \(todo\.done \|\| assigneeId == null \|\| assigneeId !== userId\)/u)
+  assert.match(client, /const selectableEntries = uniqueAcceptanceEntries\.filter\(\(entry\) => entry\.status === 'pending'\)/u)
 })
 
 test('task completion is restricted to the work-hour confirmation transaction', () => {

@@ -1870,9 +1870,24 @@ export function createAiTurnDocument(conversationId: string, turnId: string) {
   )
 }
 
-export function fetchTodoActivity(projectId: number, todoId?: number) {
-  const query = todoId == null ? '' : `?todoId=${encodeURIComponent(todoId)}`
-  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity${query}`)
+export function fetchTodoActivity(
+  projectId: number,
+  todoId?: number,
+  pagination?: { cursor?: string; limit?: number; snapshotMaxId?: number },
+) {
+  const search = new URLSearchParams()
+  if (todoId != null) search.set('todoId', String(todoId))
+  if (pagination?.limit != null) search.set('limit', String(pagination.limit))
+  if (pagination?.cursor != null) search.set('cursor', pagination.cursor)
+  if (pagination?.snapshotMaxId != null) search.set('snapshotMaxId', String(pagination.snapshotMaxId))
+  const query = search.size ? `?${search.toString()}` : ''
+  return request<{
+    departedUserIds: number[]
+    events: TodoActivityEvent[]
+    nextCursor: string | null
+    snapshotMaxId: number | null
+    total: number | null
+  }>(`/api/projects/${projectId}/todo-activity${query}`)
 }
 
 export function fetchNotificationSubscription() {

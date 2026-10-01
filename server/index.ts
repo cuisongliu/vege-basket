@@ -5554,10 +5554,89 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
   if (!userId) return
   const projectId = Number(request.params.projectId)
   const todoId = request.query.todoId == null ? null : Number(request.query.todoId)
+  const limit = request.query.limit == null ? 200 : Number(request.query.limit)
+  const requestedSnapshotMaxId = request.query.snapshotMaxId == null ? null : Number(request.query.snapshotMaxId)
+  const cursor = typeof request.query.cursor === 'string' ? request.query.cursor : null
+  let cursorOccurredAt: string | null = null
+  let cursorId: number | null = null
+  if (cursor && cursor.length <= 256) {
+    try {
+      const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
+      const separator = decoded.lastIndexOf('|')
+      const occurredAt = separator > 0 ? decoded.slice(0, separator) : ''
+      const parsedId = separator > 0 ? Number(decoded.slice(separator + 1)) : Number.NaN
+      const timestampMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{6}Z$/u.exec(occurredAt)
+      const year = Number(timestampMatch?.[1])
+      const month = Number(timestampMatch?.[2])
+      const day = Number(timestampMatch?.[3])
+      const hour = Number(timestampMatch?.[4])
+      const minute = Number(timestampMatch?.[5])
+      const second = Number(timestampMatch?.[6])
+      const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+      const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0
+      if (
+        !timestampMatch
+        || year < 1
+        || month < 1
+        || month > 12
+        || day < 1
+        || day > daysInMonth
+        || hour > 23
+        || minute > 59
+        || second > 59
+        || !Number.isSafeInteger(parsedId)
+        || parsedId <= 0
+      ) {
+        throw new Error('Invalid cursor')
+      }
+      cursorOccurredAt = occurredAt
+      cursorId = parsedId
+    } catch {
+      response.status(400).json({ error: 'Valid todo activity cursor is required' })
+      return
+    }
+  } else if (request.query.cursor != null) {
+    response.status(400).json({ error: 'Valid todo activity cursor is required' })
+    return
+  }
+  if (
+    (todoId != null && (!Number.isSafeInteger(todoId) || todoId <= 0))
+    || !Number.isSafeInteger(limit)
+    || limit < 1
+    || limit > 200
+    || (requestedSnapshotMaxId != null && (!Number.isSafeInteger(requestedSnapshotMaxId) || requestedSnapshotMaxId <= 0))
+    || (cursor != null && requestedSnapshotMaxId == null)
+  ) {
+    response.status(400).json({ error: 'Valid todo activity pagination is required' })
+    return
+  }
   const access = await getProjectReadAccess(projectId, userId)
   if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
+  }
+
+  let snapshotMaxId = requestedSnapshotMaxId
+  let total: number | null = null
+  if (!cursor) {
+    const snapshotResult = await query<{
+      snapshot_max_id: string | null
+      total_count: string
+    }>(
+      `
+      select max(event.id)::text as snapshot_max_id,
+             count(*)::text as total_count
+      from todo_activity_events event
+      where event.project_id = $1
+        and ($2::bigint is null or event.todo_id = $2)
+        and ($3::bigint is null or event.id <= $3)
+      `,
+      [projectId, todoId, requestedSnapshotMaxId],
+    )
+    snapshotMaxId = requestedSnapshotMaxId ?? (
+      snapshotResult.rows[0]?.snapshot_max_id ? Number(snapshotResult.rows[0].snapshot_max_id) : null
+    )
+    total = Number(snapshotResult.rows[0]?.total_count ?? 0)
   }
 
   const result = await query<{
@@ -5571,6 +5650,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     event_type: TodoActivityEventType
     id: string
     occurred_at: Date
+    occurred_at_cursor: string
     priority: Priority
     title: string
     todo_id: string | null
@@ -5585,6 +5665,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
            event.due_date,
            event.priority,
            event.occurred_at,
+           to_char(event.occurred_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as occurred_at_cursor,
            actor.email as actor_email,
            actor.display_name as actor_display_name,
            assignee.email as assignee_email,
@@ -5594,11 +5675,18 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     left join users assignee on assignee.id = event.assignee_user_id
     where event.project_id = $1
       and ($2::bigint is null or event.todo_id = $2)
+      and ($3::bigint is null or event.id <= $3)
+      and ($4::timestamptz is null or (event.occurred_at, event.id) < ($4::timestamptz, $5::bigint))
     order by event.occurred_at desc, event.id desc
-    limit 200
+    limit $6
     `,
-    [projectId, todoId != null && Number.isSafeInteger(todoId) && todoId > 0 ? todoId : null],
+    [projectId, todoId, snapshotMaxId, cursorOccurredAt, cursorId, limit],
   )
+
+  const lastEvent = result.rows[result.rows.length - 1]
+  const nextCursor = lastEvent
+    ? Buffer.from(`${lastEvent.occurred_at_cursor}|${lastEvent.id}`).toString('base64url')
+    : null
 
   response.json({
     departedUserIds: await getDepartedUserIds(),
@@ -5627,6 +5715,9 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
       priority: event.priority,
       occurredAt: formatDateTime(event.occurred_at),
     })),
+    nextCursor,
+    snapshotMaxId,
+    total,
   })
 }))
 
@@ -9671,21 +9762,48 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
     `
     select
       (
-        select count(*)
-        from todos t
-        join projects p on p.id = t.project_id
-        left join project_memberships mine
-          on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
-        where p.organization_id is not distinct from $2::bigint
-          and (
-            (
-              t.assignee_user_id = $1::bigint
-              and t.confirmation_status <> 'pending_review'
-            )
-          )
-          and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
-          and not t.done
-          and t.confirmation_status <> 'rejected'
+        select count(*) from (
+          select distinct t.id
+            from todos t
+            join projects p on p.id = t.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and (
+               (t.assignee_user_id = $1::bigint and t.confirmation_status <> 'pending_review')
+               or t.reviewer_user_id = $1::bigint
+             )
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+             and not t.done
+             and t.confirmation_status <> 'rejected'
+          union all
+          select event.id
+            from project_package_events event
+            join projects p on p.id = event.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and event.assignee_user_id = $1::bigint
+             and event.status not in ('delivered', 'cancelled')
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+          union all
+          select milestone.id
+            from project_milestones milestone
+            join projects p on p.id = milestone.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and milestone.responsible_user_id = $1::bigint
+             and milestone.status not in ('achieved', 'cancelled')
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+          union all
+          select bug.id
+            from test_bugs bug
+            join test_spaces space on space.id = bug.test_space_id
+           where space.organization_id is not distinct from $2::bigint
+             and bug.assignee_user_id = $1::bigint
+             and bug.status not in ('closed', 'rejected', 'duplicate')
+        ) actionable_work
       ) as open_todo_count,
       (
         select count(*)

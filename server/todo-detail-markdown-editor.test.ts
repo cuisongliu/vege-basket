@@ -24,6 +24,12 @@ const todoWorkHoursPanelSource = readFileSync(
   new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
   'utf8',
 )
+const todoActivityPanelSource = readFileSync(
+  new URL('../src/components/todo-activity-panel.tsx', import.meta.url),
+  'utf8',
+)
+const appApiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
+const serverIndexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const workHoursCssSource = readFileSync(
   new URL('../src/components/work-hours-workbench.css', import.meta.url),
   'utf8',
@@ -142,7 +148,9 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   assert.doesNotMatch(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
   assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /!todo\.done/u)
+  assert.match(todoListSource, /todo\.assigneeUserId != null/u)
   assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
+  assert.match(todoListSource, /function canSubmitWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /todo\.assigneeUserId === currentUserId/u)
   assert.match(
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
@@ -155,6 +163,10 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   assert.match(
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
     /recorderContextLocked[\s\S]*?disabled=\{Boolean\(editingEntry\) \|\| recorderContextLocked\}/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /todo\.assigneeUserId != null[\s\S]*?confirmationStatus !== 'pending_review'/u,
   )
 })
 
@@ -178,4 +190,29 @@ test('todo details expose paginated work-hour submission without confirmation ac
   assert.match(todoWorkHoursPanelSource, /const MAX_SELECTED_ENTRIES = 100/u)
   assert.match(todoWorkHoursPanelSource, /disabled=\{!selectedEntryIds\.includes\(entry\.id\) && selectedEntryIds\.length >= MAX_SELECTED_ENTRIES\}/u)
   assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
+})
+
+test('todo details require explicit edit mode and expose share beside edit', () => {
+  assert.match(todoListSource, /isTodoDetailEditing && editingCanManageTodoFields/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onInlineUpdate=\{/u)
+  assert.match(todoEditorDialogSource, /aria-label="编辑待办"/u)
+  assert.match(todoEditorDialogSource, /aria-label="分享待办"/u)
+  assert.doesNotMatch(todoEditorDialogSource, /更多待办操作/u)
+})
+
+test('todo detail shows five recent activity entries before expanding the complete history', () => {
+  assert.match(todoEditorDialogSource, /<TodoActivityPanel[\s\S]*?previewLimit=\{5\}/u)
+  assert.match(todoActivityPanelSource, /previewLimit == null \|\| expanded[\s\S]*?events\.slice\(0, previewLimit\)/u)
+  assert.match(todoActivityPanelSource, /const canExpand = previewLimit != null && total > previewLimit/u)
+  assert.match(todoActivityPanelSource, /while \(allEvents\.length < \(firstPage\.total \?\? 0\) && nextCursor && firstPage\.snapshotMaxId != null\)/u)
+  assert.match(todoActivityPanelSource, /requestVersion !== requestVersionRef\.current/u)
+  assert.match(todoActivityPanelSource, /throw new Error\('待办动态分页不完整，请刷新后重试。'\)/u)
+  assert.match(todoActivityPanelSource, /const load = useCallback[\s\S]*?setExpanded\(false\)/u)
+  assert.match(todoActivityPanelSource, /展开全部动态/u)
+  assert.match(todoActivityPanelSource, /收起动态/u)
+  assert.match(appApiSource, /pagination\?: \{ cursor\?: string; limit\?: number; snapshotMaxId\?: number \}/u)
+  assert.match(serverIndexSource, /occurred_at, event\.id\) < \(\$4::timestamptz, \$5::bigint\)[\s\S]*?limit \$6/u)
+  assert.match(serverIndexSource, /to_char\(event\.occurred_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US"Z"'\)/u)
+  assert.match(serverIndexSource, /const daysInMonth = \[31, leapYear \? 29 : 28,[\s\S]*?year < 1[\s\S]*?day > daysInMonth/u)
+  assert.match(serverIndexSource, /snapshotMaxId,[\s\S]*?total,/u)
 })
