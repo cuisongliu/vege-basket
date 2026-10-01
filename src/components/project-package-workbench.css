@@ -283,7 +283,7 @@
   top: 0 !important;
   right: 0 !important;
   left: auto !important;
-  width: min(820px, calc(100vw - 64px)) !important;
+  width: min(820px, calc(100vw - 32px)) !important;
   max-width: none !important;
   height: 100dvh !important;
   max-height: none !important;
@@ -291,6 +291,7 @@
   padding: 0;
   gap: 0;
   transform: none !important;
+  translate: none !important;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border-radius: 0;
@@ -587,11 +588,6 @@
     grid-row: 1;
     justify-self: end;
     padding-right: 8px;
-  }
-
-  .project-package-event-drawer {
-    width: 100vw !important;
-    border-radius: 0;
   }
 
   .delivery-drawer-header {

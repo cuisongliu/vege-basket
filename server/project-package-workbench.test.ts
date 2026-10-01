@@ -372,7 +372,7 @@ test('delivery list exposes signed delay days with distinct visual states', () =
   assert.match(workbenchSource, /project-event-delay-cell/u)
 })
 
-test('delivery workbench uses a full-width event list and a responsive detail drawer', () => {
+test('delivery workbench uses a full-width event list and a desktop right detail drawer', () => {
   assert.match(workbenchSource, /delivery-workbench-shell/u)
   assert.match(workbenchSource, /delivery-workbench-heading/u)
   assert.match(workbenchSource, /delivery-event-stats/u)
@@ -398,6 +398,8 @@ test('delivery workbench uses a full-width event list and a responsive detail dr
   assert.match(appSource, /function preserveLoadedPackageEventDetails/u)
   assert.match(appSource, /loadedEvent\?\.detailsLoaded !== true/u)
   assert.match(appSource, /if \(options\.eventId == null\) installTimelineQueryRef\.current = options/u)
-  assert.match(workbenchCss, /@media \(max-width: 680px\)[\s\S]*\.project-package-event-drawer[\s\S]*width: 100vw/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px, calc\(100vw - 32px\)\) !important/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*translate: none !important/u)
+  assert.doesNotMatch(workbenchCss, /@media \(max-width: 680px\)[\s\S]*\.project-package-event-drawer[\s\S]*width: 100vw/u)
   assert.match(workbenchCss, /prefers-reduced-motion/u)
 })
