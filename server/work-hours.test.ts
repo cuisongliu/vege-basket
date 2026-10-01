@@ -15,6 +15,23 @@ test('work minutes use integer-hour increments within the daily limit', () => {
   }
 })
 
+test('work-hour description is visibly and semantically required', () => {
+  const source = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /工作说明 <span className="field-required" aria-hidden="true">\*<\/span>/u)
+  assert.match(source, /<textarea aria-required="true" required value=\{description\}/u)
+  assert.match(source, /if \(!description\.trim\(\)\)/u)
+})
+
+test('todo quick-status counts follow the active non-status filters', () => {
+  const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /const statusFilteredTodos = useMemo/u)
+  assert.match(source, /const quickStatusCounts = useMemo\(\(\) => \(\{[\s\S]*?all: statusFilteredTodos\.length/u)
+  assert.match(source, /<span>\{quickStatusCounts\[value\]\}<\/span>/u)
+  assert.doesNotMatch(source, /const count = value === 'all' \? todos\.length/u)
+})
+
 test('work dates reject invalid calendar dates', () => {
   assert.equal(parseWorkDate('2026-09-23'), '2026-09-23')
   assert.throws(() => parseWorkDate('2026-02-30'), WorkHoursError)

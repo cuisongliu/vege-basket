@@ -12065,7 +12065,7 @@ function TodoList({
     () => getProjectAssignableUsers(project, memberships),
     [memberships, project],
   )
-  const filteredTodos = useMemo(() => {
+  const statusFilteredTodos = useMemo(() => {
     const query = todoSearchQuery.trim().toLowerCase()
     const hasExplicitStatusFilter = todoFilterConditions.some((condition) => condition.field === 'status')
     const useDefaultOpenFilter = !todoFilterPersistenceEnabled && !hasExplicitStatusFilter
@@ -12088,10 +12088,6 @@ function TodoList({
         .join(' ')
         .toLowerCase()
         .includes(query)
-      const matchesQuickStatus = !compact || quickStatus === 'all'
-        || quickStatus === 'done' && todo.done
-        || quickStatus === 'review' && !todo.done && todo.confirmationStatus === 'pending_review'
-        || quickStatus === 'open' && !todo.done && todo.confirmationStatus !== 'pending_review'
       const isMine = todo.assigneeUserId === currentUserId
         || (todo.assigneeUserId == null && project.ownerUserId === currentUserId)
       const isMyReview = todo.confirmationStatus === 'pending_review' && (
@@ -12103,7 +12099,6 @@ function TodoList({
         || todoScope === 'review' && isMyReview
       return (
         (!useDefaultOpenFilter || compact || !todo.done) &&
-        matchesQuickStatus &&
         matchesScope &&
         (subprojectFilter === 'all' || (subprojectFilter === 'none'
           ? todo.subprojectId == null
@@ -12112,7 +12107,20 @@ function TodoList({
         matchesTodoFilterConditions(todo, todoFilterConditions, todoFilterJoin)
       )
     })
-  }, [compact, currentUserId, project.ownerUserId, quickStatus, sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoScope, todoSearchQuery, subprojectFilter])
+  }, [compact, currentUserId, project.ownerUserId, sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoScope, todoSearchQuery, subprojectFilter])
+  const quickStatusCounts = useMemo(() => ({
+    all: statusFilteredTodos.length,
+    done: statusFilteredTodos.filter((todo) => todo.done).length,
+    open: statusFilteredTodos.filter((todo) => !todo.done && todo.confirmationStatus !== 'pending_review').length,
+    review: statusFilteredTodos.filter((todo) => !todo.done && todo.confirmationStatus === 'pending_review').length,
+  }), [statusFilteredTodos])
+  const filteredTodos = useMemo(() => statusFilteredTodos.filter((todo) => (
+    !compact
+    || quickStatus === 'all'
+    || quickStatus === 'done' && todo.done
+    || quickStatus === 'review' && !todo.done && todo.confirmationStatus === 'pending_review'
+    || quickStatus === 'open' && !todo.done && todo.confirmationStatus !== 'pending_review'
+  )), [compact, quickStatus, statusFilteredTodos])
   const pageSize = compact ? itemsPerPage : listPageSize
   const totalPages = Math.max(1, Math.ceil(filteredTodos.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
@@ -12432,8 +12440,7 @@ function TodoList({
       <div className="todo-list-filters" aria-label="待办筛选">
         {compact ? <div className="todo-quick-status" role="tablist" aria-label="待办状态">
           {([['all', '全部'], ['open', '进行中'], ['review', '待确认'], ['done', '已完成']] as const).map(([value, label]) => {
-            const count = value === 'all' ? todos.length : value === 'done' ? todos.filter((todo) => todo.done).length : value === 'review' ? todos.filter((todo) => !todo.done && todo.confirmationStatus === 'pending_review').length : todos.filter((todo) => !todo.done && todo.confirmationStatus !== 'pending_review').length
-            return <button className={quickStatus === value ? 'is-active' : ''} key={value} onClick={() => { setQuickStatus(value); setPage(0) }} role="tab" aria-selected={quickStatus === value} type="button">{label} <span>{count}</span></button>
+            return <button className={quickStatus === value ? 'is-active' : ''} key={value} onClick={() => { setQuickStatus(value); setPage(0) }} role="tab" aria-selected={quickStatus === value} type="button">{label} <span>{quickStatusCounts[value]}</span></button>
           })}
         </div> : null}
         {compact ? <>
