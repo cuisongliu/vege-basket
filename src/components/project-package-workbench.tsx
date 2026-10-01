@@ -2223,6 +2223,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const eventArtifactsValid = !containerImageValidation.some(Boolean) &&
     !offlinePackageValidation.some(Boolean) &&
     packageRuntimeConfigValidation.every((result) => result.valid)
+  const eventDocumentValid = Boolean(eventDocumentTitle.trim() && eventDocumentContent.trim())
+  const eventPublishValid = canManageProject &&
+    eventBasicInformationValid &&
+    eventArtifactsValid &&
+    eventDocumentValid &&
+    memberOptions.some((member) => member.id === Number(eventAssigneeUserId))
 
   function updatePackageDocument(
     packageName: string,
@@ -3007,9 +3013,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       if (!eventArtifactsValid) setEventEditorStep(2)
       return
     }
-    if (action === 'publish' && (!Number.isInteger(assigneeUserId) || assigneeUserId <= 0)) { setEventEditorStep(1); return }
-    if (action === 'publish' && (!eventDocumentTitle.trim() || !eventDocumentContent.trim())) {
-      setEventEditorStep(3)
+    if (action === 'publish' && !eventPublishValid) {
+      if (!Number.isInteger(assigneeUserId) || assigneeUserId <= 0 || !memberOptions.some((member) => member.id === assigneeUserId)) {
+        setEventEditorStep(1)
+      } else if (!eventDocumentValid) {
+        setEventEditorStep(3)
+      }
       return
     }
     setBusyAction('event')
@@ -3724,7 +3733,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               </Button>
               <Button
                 className="solid-button"
-                disabled={!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || !memberOptions.some(member => member.id === Number(eventAssigneeUserId)) || busyAction === 'event'}
+                disabled={!eventPublishValid || busyAction === 'event'}
                 onClick={() => void saveEvent('publish')}
                 type="button"
               >
