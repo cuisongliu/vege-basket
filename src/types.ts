@@ -434,6 +434,7 @@ export type ProjectPackageEvent = {
   updatedAt: string
   operations: ProjectPackageOperation[]
   offlinePackages: Array<{ id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }>
+  other?: ProjectPackageEventOther | null
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
@@ -449,6 +450,11 @@ export type ProjectPackageEventDocumentInput = {
   relatedTodoIds: number[]
   scope: 'event' | 'package'
   title: string
+}
+
+export type ProjectPackageEventOther = {
+  content: string
+  type: 'shell-script'
 }
 
 export type ProjectPackageEventSavePayload = {
@@ -473,6 +479,7 @@ export type ProjectPackageEventSavePayload = {
     runtimeConfig: DeliveryRuntimeConfig
   }>
   offlinePackages: Array<{ runtimeConfig: DeliveryRuntimeConfig; url: string }>
+  other?: ProjectPackageEventOther | null
   title: string
   type: ProjectPackageEventType
 }
@@ -492,6 +499,7 @@ export type ProjectPackageDeliveryArtifacts = {
     kind: 'object-storage' | 'offline-package' | 'container-image'
     value: string
   }>
+  other?: ProjectPackageEventOther | null
   script: string
 }
 

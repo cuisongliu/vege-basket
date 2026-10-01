@@ -5,6 +5,7 @@ export const maxOfflinePackageUrlLength = 4096
 export const maxDeliveryEnvironmentVariables = 20
 export const maxDeliveryEnvironmentValueLength = 4096
 export const maxDeliveryValuesPatchLength = 64 * 1024
+export const maxDeliveryOtherScriptLength = 64 * 1024
 export const deliveryValuesRoot = '/root/.sealos/cloud/values'
 
 export type DeliveryEnvironmentVariable = {
@@ -16,6 +17,11 @@ export type DeliveryRuntimeConfig = {
   environmentVariables: DeliveryEnvironmentVariable[]
   valuesPath: string
   valuesPatch: string
+}
+
+export type DeliveryOther = {
+  content: string
+  type: 'shell-script'
 }
 
 export const emptyDeliveryRuntimeConfig = (): DeliveryRuntimeConfig => ({
@@ -37,6 +43,34 @@ function hasControlCharacter(value: string) {
     const code = character.charCodeAt(0)
     return code <= 31 || code === 127
   })
+}
+
+function hasDisallowedScriptControlCharacter(value: string) {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0)
+    return code <= 31 && code !== 9 && code !== 10 && code !== 13
+  }) || value.includes(String.fromCharCode(127))
+}
+
+export type DeliveryOtherResult =
+  | { error: string; valid: false }
+  | { valid: true; value: DeliveryOther | null }
+
+export function normalizeDeliveryOther(value: unknown): DeliveryOtherResult {
+  if (value == null) return { valid: true, value: null }
+  if (typeof value !== 'object') {
+    return { error: '其他交付内容格式无效。', valid: false }
+  }
+  const input = value as Record<string, unknown>
+  if (input.type !== 'shell-script') {
+    return { error: '其他交付内容目前只支持 Shell 脚本。', valid: false }
+  }
+  const content = typeof input.content === 'string' ? input.content.trim() : ''
+  if (!content) return { error: 'Shell 脚本不能为空。', valid: false }
+  if (content.length > maxDeliveryOtherScriptLength || hasDisallowedScriptControlCharacter(content)) {
+    return { error: 'Shell 脚本格式无效或超过 64 KiB。', valid: false }
+  }
+  return { valid: true, value: { content, type: 'shell-script' } }
 }
 
 function normalizeValuesPath(value: unknown) {

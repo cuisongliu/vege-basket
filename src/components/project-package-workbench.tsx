@@ -89,6 +89,7 @@ import type {
   Project,
   ProjectMembership,
   ProjectPackageEvent,
+  ProjectPackageEventOther,
   ProjectPackageDeliveryArtifacts,
   ProjectPackageEventComment,
   ProjectPackageEventSavePayload,
@@ -123,6 +124,7 @@ import {
   maxDeliveryArtifactEntries,
   maxDeliveryEnvironmentVariables,
   normalizeDeliveryRuntimeConfig,
+  normalizeDeliveryOther,
   normalizeOfflinePackageUrl,
   type DeliveryRuntimeConfig,
 } from '../../shared/delivery-artifact'
@@ -1701,6 +1703,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventEditorDirty, setEventEditorDirty] = useState(false)
   const [eventDocumentTitle, setEventDocumentTitle] = useState('变更记录')
   const [eventDocumentContent, setEventDocumentContent] = useState('')
+  const [eventOther, setEventOther] = useState<ProjectPackageEventOther | null>(null)
   const [eventDocumentRelatedTodoIds, setEventDocumentRelatedTodoIds] = useState<number[]>([])
   const [packageDocumentValues, setPackageDocumentValues] = useState<Record<string, EventDocumentDraftValue>>({})
   const [activeDocumentScope, setActiveDocumentScope] = useState('event')
@@ -2220,13 +2223,21 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     () => cartItems.map((item) => normalizeDeliveryRuntimeConfig(item.runtimeConfig)),
     [cartItems],
   )
+  const otherValidation = useMemo(
+    () => eventOther == null ? { valid: true as const, value: null } : normalizeDeliveryOther(eventOther),
+    [eventOther],
+  )
+  const eventHasDeliveryContent = cartItems.length > 0 || containerImages.length > 0 || offlinePackages.length > 0 || Boolean(eventOther?.content.trim())
   const eventArtifactsValid = !containerImageValidation.some(Boolean) &&
     !offlinePackageValidation.some(Boolean) &&
-    packageRuntimeConfigValidation.every((result) => result.valid)
+    packageRuntimeConfigValidation.every((result) => result.valid) &&
+    otherValidation.valid
+  const eventCreateContentValid = eventEditorEventId != null || eventHasDeliveryContent
   const eventDocumentValid = Boolean(eventDocumentTitle.trim() && eventDocumentContent.trim())
   const eventPublishValid = canManageProject &&
     eventBasicInformationValid &&
     eventArtifactsValid &&
+    eventCreateContentValid &&
     eventDocumentValid &&
     memberOptions.some((member) => member.id === Number(eventAssigneeUserId))
 
@@ -2700,6 +2711,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setCartItems([])
     setContainerImages([])
     setOfflinePackages([])
+    setEventOther(null)
     setEventDocumentTitle('变更记录')
     setEventDocumentContent('')
     setEventDocumentRelatedTodoIds([])
@@ -2794,6 +2806,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     }))))
     setContainerImages(event.containerImages.map((item) => ({ image: item.image, runtimeConfig: item.runtimeConfig })))
     setOfflinePackages(event.offlinePackages.map((item) => ({ runtimeConfig: item.runtimeConfig, url: item.url })))
+    setEventOther(event.other ?? null)
     setEventDocumentTitle(eventDocument?.title || `${event.title} 变更记录`)
     setEventDocumentContent(eventDocument?.content ?? '')
     setEventDocumentRelatedTodoIds(eventDocument?.relatedTodoIds ?? [])
@@ -3009,8 +3022,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   async function saveEvent(action: 'publish' | 'save_draft') {
     const assigneeUserId = Number(eventAssigneeUserId)
-    if (!canManageProject || !eventBasicInformationValid || !eventArtifactsValid) {
+    if (!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || !eventCreateContentValid) {
       if (!eventArtifactsValid) setEventEditorStep(2)
+      if (!eventCreateContentValid) setEventEditorStep(2)
       return
     }
     if (action === 'publish' && !eventPublishValid) {
@@ -3044,6 +3058,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           runtimeConfig: item.runtimeConfig,
           url: item.url.trim(),
         })),
+        other: eventOther,
         title: eventTitle.trim(),
         type: eventType,
       })
@@ -3241,7 +3256,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   function renderDeliveryArtifacts() {
     if (deliveryArtifactsLoading) return <section className="delivery-artifacts-panel" aria-live="polite"><p>正在生成交付地址和执行脚本...</p></section>
     if (deliveryArtifactsError) return <section className="delivery-artifacts-panel"><p className="delivery-artifact-error" role="alert">{deliveryArtifactsError}</p></section>
-    if (!deliveryArtifacts || deliveryArtifacts.addresses.length === 0) {
+    if (!deliveryArtifacts || (deliveryArtifacts.addresses.length === 0 && !deliveryArtifacts.other)) {
       return <section className="delivery-artifacts-panel"><div className="delivery-artifacts-heading"><div><h4>交付地址与执行脚本</h4><p>当前事件没有关联交付内容。</p></div></div></section>
     }
     const kindLabel = { 'container-image': '镜像地址', 'object-storage': '对象存储', 'offline-package': '离线包地址' } as const
@@ -3286,8 +3301,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             </div>
           })}
         </div>
-        <div className="delivery-script-heading"><strong>执行脚本</strong><Button type="button" variant="outline" onClick={() => void copyToClipboard(deliveryArtifacts.script, 'delivery-execution-script')}><TerminalWindow size={15} />{copiedValue === 'delivery-execution-script' ? '已复制' : '复制执行脚本'}</Button></div>
-        <pre className="delivery-execution-script"><code>{deliveryArtifacts.script}</code></pre>
+        {deliveryArtifacts.other ? (
+          <div className="delivery-item-script-heading"><span>其他（Shell 脚本）</span><Button size="sm" type="button" variant="ghost" onClick={() => void copyToClipboard(deliveryArtifacts.other?.content ?? '', 'delivery-other-script')}><Copy size={14} />{copiedValue === 'delivery-other-script' ? '已复制' : '复制'}</Button></div>
+        ) : null}
+        {deliveryArtifacts.other ? <pre className="delivery-item-execution-script"><code>{deliveryArtifacts.other.content}</code></pre> : null}
+        {deliveryArtifacts.addresses.length > 0 ? (
+          <>
+            <div className="delivery-script-heading"><strong>执行脚本</strong><Button type="button" variant="outline" onClick={() => void copyToClipboard(deliveryArtifacts.script, 'delivery-execution-script')}><TerminalWindow size={15} />{copiedValue === 'delivery-execution-script' ? '已复制' : '复制执行脚本'}</Button></div>
+            <pre className="delivery-execution-script"><code>{deliveryArtifacts.script}</code></pre>
+          </>
+        ) : null}
       </section>
     )
   }
@@ -3530,6 +3553,29 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 ))}
                 <Button disabled={offlinePackages.length >= maxDeliveryArtifactEntries} type="button" variant="outline" onClick={() => { setOfflinePackages((current) => [...current, { runtimeConfig: emptyDeliveryRuntimeConfig(), url: '' }]); setEventEditorDirty(true) }}><Plus size={15} /> 添加离线包</Button>
               </section>
+              <section className="delivery-artifact-editor-section">
+                <div className="delivery-artifact-editor-heading"><strong>其他</strong><span>可选</span></div>
+                <p className="delivery-artifact-error" role="note">此处只支持 Shell 脚本，其他方式暂不支持。</p>
+                {eventOther ? (
+                  <div className="delivery-artifact-editor-row">
+                    <Textarea
+                      aria-label="其他交付内容 Shell 脚本"
+                      maxLength={64 * 1024}
+                      placeholder="输入 Shell 脚本，例如：set -eu"
+                      value={eventOther.content}
+                      onChange={(event) => {
+                        setEventOther({ content: event.target.value, type: 'shell-script' })
+                        setEventEditorDirty(true)
+                      }}
+                    />
+                    <Button aria-label="移除其他交付内容" size="icon" type="button" variant="ghost" onClick={() => { setEventOther(null); setEventEditorDirty(true) }}><Trash size={15} /></Button>
+                    {!otherValidation.valid ? <p className="delivery-artifact-error" role="alert">{otherValidation.error}</p> : null}
+                  </div>
+                ) : (
+                  <Button type="button" variant="outline" onClick={() => { setEventOther({ content: '', type: 'shell-script' }); setEventEditorDirty(true) }}><Plus size={15} /> 添加 Shell 脚本</Button>
+                )}
+              </section>
+              {!eventCreateContentValid ? <p className="delivery-artifact-error" role="alert">至少添加一种交付内容后才能创建交付事件。</p> : null}
             </div>
           ) : null}
 
@@ -3724,7 +3770,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 取消
               </Button>
               <Button
-                disabled={!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || busyAction === 'event'}
+                disabled={!canManageProject || !eventBasicInformationValid || !eventArtifactsValid || !eventCreateContentValid || busyAction === 'event'}
                 onClick={() => void saveEvent('save_draft')}
                 type="button"
                 variant="outline"
