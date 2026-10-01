@@ -115,10 +115,11 @@ test('organization members can record and edit hours while only assignees submit
   const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url), 'utf8')
   assert.match(source, /organizationMember\(client, organization\.organizationId, userId\)/u)
+  assert.match(source, /if \(!todo\.assignee_user_id\)[\s\S]*TODO_NOT_ASSIGNED/u)
   assert.doesNotMatch(source, /只能为自己负责的任务记录工时/u)
   assert.doesNotMatch(source, /只能修改自己负责任务的工时/u)
   assert.doesNotMatch(source, /只能删除自己负责任务的工时/u)
-  assert.match(source, /action === 'submit' && \(todo\.done \|\| assigneeId !== userId\)/u)
+  assert.match(source, /action === 'submit' && \(todo\.done \|\| assigneeId == null \|\| assigneeId !== userId\)/u)
   assert.match(client, /const selectableEntries = uniqueAcceptanceEntries\.filter\(\(entry\) => entry\.status === 'pending'\)/u)
 })
 

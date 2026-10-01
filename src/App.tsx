@@ -12159,6 +12159,7 @@ function TodoList({
       onRecordWorkHour &&
       project.organizationId &&
       currentUserId != null &&
+      todo.assigneeUserId != null &&
       !todo.done &&
       todo.confirmationStatus !== 'pending_review',
     )
@@ -12168,9 +12169,7 @@ function TodoList({
     return Boolean(
       currentUserId != null &&
       !todo.done &&
-      (todo.assigneeUserId === currentUserId || (
-        todo.assigneeUserId == null && project.ownerUserId === currentUserId
-      )),
+      todo.assigneeUserId === currentUserId,
     )
   }
 

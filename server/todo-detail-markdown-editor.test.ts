@@ -148,6 +148,7 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   assert.doesNotMatch(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
   assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /!todo\.done/u)
+  assert.match(todoListSource, /todo\.assigneeUserId != null/u)
   assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
   assert.match(todoListSource, /function canSubmitWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /todo\.assigneeUserId === currentUserId/u)
@@ -162,6 +163,10 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   assert.match(
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
     /recorderContextLocked[\s\S]*?disabled=\{Boolean\(editingEntry\) \|\| recorderContextLocked\}/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /todo\.assigneeUserId != null[\s\S]*?confirmationStatus !== 'pending_review'/u,
   )
 })
 

@@ -532,6 +532,9 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
       ) {
         throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
       }
+      if (!todo.assignee_user_id) {
+        throw new WorkHoursError('TODO_NOT_ASSIGNED', '待办未设置负责人，无法记录工时。', 403)
+      }
       if (!description) throw new WorkHoursError('WORK_DESCRIPTION_REQUIRED', '工作说明不能为空。', 400)
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
       if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
@@ -700,8 +703,8 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       ) {
         throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
       }
-      const assigneeId = todo.assignee_user_id ? Number(todo.assignee_user_id) : Number(todo.owner_user_id)
-      if (action === 'submit' && (todo.done || assigneeId !== userId)) {
+      const assigneeId = todo.assignee_user_id ? Number(todo.assignee_user_id) : null
+      if (action === 'submit' && (todo.done || assigneeId == null || assigneeId !== userId)) {
         throw new WorkHoursError('WORK_HOUR_SUBMIT_FORBIDDEN', '只有负责人可以提交自己进行中任务的工时。', 403)
       }
       if (action !== 'submit' && !organization?.isManager) {
