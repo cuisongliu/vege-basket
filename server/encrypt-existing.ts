@@ -179,6 +179,15 @@ async function main() {
   await encryptColumn('project_package_events', 'title')
   await encryptColumn('project_package_operations', 'title')
   await encryptColumn('project_package_operations', 'content')
+  for (const table of [
+    'project_package_items',
+    'project_package_event_container_images',
+    'project_package_event_offline_packages',
+  ]) {
+    await encryptColumn(table, 'environment_variables')
+    await encryptColumn(table, 'values_path')
+    await encryptColumn(table, 'values_patch')
+  }
   await encryptProjectPackageOperationTodoNotes()
   await encryptColumn('test_bugs', 'discovery_difficulty_reason')
   await encryptColumn('test_cases', 'remarks')

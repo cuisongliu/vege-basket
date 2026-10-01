@@ -185,7 +185,7 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images`; authenticated `GET /api/todos/:todoId/work-hours` returns the authorized todo's work-hour detail, summary, and `{ q, cursor, limit }` pagination; `POST /api/todos/:todoId/work-hours` records a pending entry; `POST /api/todos/:todoId/work-hours/submit`, `/accept`, and `/return` atomically update selected entry IDs without changing the todo's ordinary acceptance status; return moves only selected `submitted` entries back to `pending` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | Organization-context `GET /api/package-market/rules?organizationId=:id` (or `projectId=:id` for a project selector), package details, release versions, CI branches/versions; every market read is filtered by the resolved organization policy |
-| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), package-item download URLs, and timeline export |
+| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), mixed object-storage packages, encrypted container-image/offline-package addresses, per-item encrypted environment variables and Values YAML overlays, authorized `GET .../events/:eventId/delivery-artifacts` address and execution-script generation, package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu events | `/api/integrations/feishu/events` |
@@ -202,6 +202,13 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
 must remain bound to the authorized project ID.
+
+Each package, container image, or offline package in a delivery event owns an independent
+runtime configuration. Environment variables become repeated `sealos run --env KEY=VALUE`
+arguments. A Values target must be an absolute file path below
+`/root/.sealos/cloud/values/`; its bounded YAML mapping is merged into the existing file by
+the generated script immediately before that item runs. The script passes no Values argument
+to `sealos run`, serializes access with `flock`, and restores the original file on exit.
 
 `GET /api/navigation-counts` returns only `openTodoCount`, `assignedBugCount`, and the
 requested organization context. It rechecks active organization membership and applies

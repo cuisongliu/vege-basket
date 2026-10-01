@@ -98,8 +98,10 @@ import {
   ensureProjectPackageOperationKind,
   ensureProjectPackageOperationStatus,
   exportProjectPackageTimeline,
+  getProjectPackageEventDeliveryArtifacts,
   getProjectPackageItemDownloadSource,
   getProjectPackageTimeline,
+  parseProjectPackageEventFilters,
   ProjectPackageEventError,
   resolvePackageEventMentionUserIds,
   saveProjectPackageEvent,
@@ -12417,6 +12419,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
           objectKey: String(value.objectKey ?? ''),
           objectLastModified: value.objectLastModified ? String(value.objectLastModified) : undefined,
           sizeBytes: typeof value.sizeBytes === 'number' ? value.sizeBytes : undefined,
+          runtimeConfig: value.runtimeConfig,
         }
       })
     : []
@@ -12438,8 +12441,24 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
     : []
   return {
     action: body.action === 'publish' ? 'publish' as const : 'save_draft' as const,
+    containerImages: Array.isArray(body.containerImages)
+      ? body.containerImages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : null
+          return value
+            ? { image: String(value.image ?? ''), runtimeConfig: value.runtimeConfig }
+            : { image: String(item) }
+        })
+      : undefined,
     documents,
     items,
+    offlinePackages: Array.isArray(body.offlinePackages)
+      ? body.offlinePackages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+          return { runtimeConfig: value.runtimeConfig, url: String(value.url ?? '') }
+        })
+      : Array.isArray(body.offlinePackageUrls)
+        ? body.offlinePackageUrls.map((url) => ({ url: String(url) }))
+        : undefined,
   }
 }
 
@@ -12467,13 +12486,24 @@ app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const rawLimit = Number(request.query.limit)
   const rawOffset = Number(request.query.offset)
-  response.json(await getProjectPackageTimeline(projectId, userId, {
+  const assignedUserId = Number(request.query.assignedUserId)
+  const eventId = Number(request.query.eventId)
+  const includeDetails = request.query.includeDetails !== 'false'
+  const timeline = await runProjectPackageEventMutation(response, () => getProjectPackageTimeline(projectId, userId, {
+    assignedUserId: Number.isSafeInteger(assignedUserId) && assignedUserId > 0 ? assignedUserId : undefined,
+    eventId: Number.isSafeInteger(eventId) && eventId > 0 ? eventId : undefined,
+    filters: parseProjectPackageEventFilters(request.query.filters),
+    includeDetails,
+    join: request.query.join === 'or' ? 'or' : 'and',
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
     offset: Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,
     q: typeof request.query.q === 'string' ? request.query.q : undefined,
+    sort: request.query.sort === 'asc' ? 'asc' : 'desc',
   }))
+  if (timeline.ok) response.json(timeline.value)
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {
@@ -12485,6 +12515,7 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const assigneeUserId = request.body.assigneeUserId == null ? null : Number(request.body.assigneeUserId)
   const aggregate = parseProjectPackageEventAggregateBody(request.body)
   const rejectedItem = aggregate.items.find((item) => !isSafePackageMarketObjectKey(item.objectKey))
@@ -12502,7 +12533,9 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     deliveryEndAt: request.body.deliveryEndAt ? String(request.body.deliveryEndAt) : undefined,
     deliveryStartAt: request.body.deliveryStartAt ? String(request.body.deliveryStartAt) : undefined,
     documents: aggregate.documents,
+    containerImages: aggregate.containerImages,
     items: aggregate.items,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12516,7 +12549,10 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
   if (!saved.ok) return
   const result = saved.value
   if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
-  response.status(201).json(await getProjectPackageTimeline(projectId, userId))
+  response.status(201).json({
+    ...await getProjectPackageTimeline(projectId, userId),
+    savedEventId: result.eventId,
+  })
 }))
 
 app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
@@ -12528,6 +12564,7 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const assigneeUserId = request.body.assigneeUserId == null ? null : Number(request.body.assigneeUserId)
   const aggregate = parseProjectPackageEventAggregateBody(request.body)
   if (aggregate.items.some((item) => !isSafePackageMarketObjectKey(item.objectKey))) {
@@ -12544,8 +12581,10 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     deliveryEndAt: request.body.deliveryEndAt ? String(request.body.deliveryEndAt) : undefined,
     deliveryStartAt: request.body.deliveryStartAt ? String(request.body.deliveryStartAt) : undefined,
     documents: aggregate.documents,
+    containerImages: aggregate.containerImages,
     eventId: Number(request.params.eventId),
     items: aggregate.items,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12559,7 +12598,10 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
   if (!saved.ok) return
   const result = saved.value
   if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
-  response.json(await getProjectPackageTimeline(projectId, userId))
+  response.json({
+    ...await getProjectPackageTimeline(projectId, userId),
+    savedEventId: result.eventId,
+  })
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events/:eventId/reassign', asyncHandler(async (request, response) => {
@@ -12991,6 +13033,24 @@ app.get('/api/projects/:projectId/package-timeline/export', asyncHandler(async (
     }
     throw error
   }
+}))
+
+app.get('/api/projects/:projectId/package-timeline/events/:eventId/delivery-artifacts', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectReadAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.set('Cache-Control', 'private, no-store')
+  const result = await runProjectPackageEventMutation(response, () => getProjectPackageEventDeliveryArtifacts({
+    eventId: Number(request.params.eventId),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+    projectId,
+  }))
+  if (result.ok) response.json(result.value)
 }))
 
 app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHandler(async (request, response) => {

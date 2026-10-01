@@ -148,6 +148,7 @@ import {
   fetchPackageMarketReleaseVersions,
   fetchPackageMarketRules,
   fetchProjectPackageItemDownloadUrl,
+  fetchProjectPackageEventDeliveryArtifacts,
   fetchProjectPackageTimeline,
   fetchProjectCatalog,
   fetchProjectJournals,
@@ -237,9 +238,11 @@ import type {
   Project,
   ProjectModule,
   ProjectPackageEvent,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   ProjectPackageOperationKind,
   ProjectMembership,
   ProjectStatus,
@@ -544,6 +547,29 @@ function formatAiMessageTime(value: string) {
     month: '2-digit',
     day: '2-digit',
   }).format(date)
+}
+
+function preserveLoadedPackageEventDetails(
+  current: ProjectPackageTimeline,
+  incoming: ProjectPackageTimeline,
+) {
+  const currentEventsById = new Map(current.events.map((event) => [event.id, event]))
+  return {
+    ...incoming,
+    events: incoming.events.map((event) => {
+      const loadedEvent = currentEventsById.get(event.id)
+      if (loadedEvent?.detailsLoaded !== true) return event
+      return {
+        ...event,
+        comments: loadedEvent.comments,
+        containerImages: loadedEvent.containerImages,
+        groups: loadedEvent.groups,
+        offlinePackages: loadedEvent.offlinePackages,
+        operations: loadedEvent.operations,
+        detailsLoaded: true,
+      }
+    }),
+  }
 }
 type TodoUpdatePayload = Omit<
   Partial<Todo>,
@@ -1857,6 +1883,11 @@ function App() {
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
+  const installTimelineQueryRef = useRef<ProjectPackageTimelineQuery>({
+    includeDetails: false,
+    limit: 10,
+    offset: 0,
+  })
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() =>
     loadStoredSelectedProjectId(),
   )
@@ -3067,47 +3098,6 @@ function App() {
     todoSubprojectId,
   ])
 
-  const packageTimelineProjectId = selectedProject?.id
-  useEffect(() => {
-    if (
-      !loggedIn ||
-      view !== 'project' ||
-      !packageTimelineProjectId ||
-      projectDetailTab !== 'packages'
-    ) return
-
-    const refreshTimeline = async () => {
-      try {
-        const timeline = await fetchProjectPackageTimeline(packageTimelineProjectId, { limit: 500, offset: 0 })
-        setProjectPackageTimelines((current) => ({
-          ...current,
-          [packageTimelineProjectId]: timeline,
-        }))
-        return true
-      } catch {
-        setWorkspaceError('安装升级时间线读取失败，请确认后端服务和 OSS 配置正常。')
-        return false
-      }
-    }
-    return startVisibleRefreshSchedule({
-      clearInterval: (handle) => window.clearInterval(handle),
-      intervalMs: workspaceRefreshIntervalMs,
-      isVisible: () => document.visibilityState === 'visible',
-      onFocus: (listener) => {
-        window.addEventListener('focus', listener)
-        return () => window.removeEventListener('focus', listener)
-      },
-      onVisibilityChange: (listener) => {
-        document.addEventListener('visibilitychange', listener)
-        return () => document.removeEventListener('visibilitychange', listener)
-      },
-      refresh: refreshTimeline,
-      refreshImmediately: true,
-      minRefreshGapMs: 1_000,
-      setInterval: (listener, delay) => window.setInterval(listener, delay),
-    })
-  }, [loggedIn, packageTimelineProjectId, projectDetailTab, view])
-
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded || !authUser || !inviteToken) return
     if (invitePasswordRequired && !invitePasswordVerified) return
@@ -4118,19 +4108,35 @@ function App() {
     payload: ProjectPackageEventSavePayload,
   ) {
     if (!selectedProject) return null
+    const projectId = selectedProject.id
     try {
-      const timeline = eventId == null
-        ? await createProjectPackageEvent(selectedProject.id, payload)
-        : await saveProjectPackageEventDraft(selectedProject.id, eventId, payload)
-      setProjectPackageTimelines((current) => ({
-        ...current,
-        [selectedProject.id]: timeline,
-      }))
+      const mutationResult = eventId == null
+        ? await createProjectPackageEvent(projectId, payload)
+        : await saveProjectPackageEventDraft(projectId, eventId, payload)
+      const savedEventId = mutationResult.savedEventId ?? eventId
+      if (savedEventId == null) throw new Error('Saved delivery event ID is missing')
+      const [detailTimeline, listTimeline] = await Promise.all([
+        fetchProjectPackageTimeline(projectId, { eventId: savedEventId, includeDetails: true, limit: 1, offset: 0 }),
+        fetchProjectPackageTimeline(projectId, { ...installTimelineQueryRef.current, includeDetails: false }),
+      ])
+      const savedEvent = detailTimeline.events.find((event) => event.id === savedEventId)
+      if (!savedEvent) throw new Error('Saved delivery event could not be loaded')
+      setProjectPackageTimelines((current) => {
+        const existing = current[projectId]
+        const refreshed = existing
+          ? preserveLoadedPackageEventDetails(existing, listTimeline)
+          : listTimeline
+        return {
+          ...current,
+          [projectId]: {
+            ...refreshed,
+            events: refreshed.events.map((event) => event.id === savedEventId ? savedEvent : event),
+          },
+        }
+      })
       if (payload.action === 'publish') await refreshNotifications()
       setWorkspaceError('')
-      return eventId == null
-        ? [...timeline.events].sort((left, right) => right.id - left.id)[0] ?? null
-        : timeline.events.find((event) => event.id === eventId) ?? null
+      return savedEvent
     } catch {
       setWorkspaceError(payload.action === 'publish'
         ? '交付事件发布失败，请检查必填内容后重试。'
@@ -4139,15 +4145,58 @@ function App() {
     }
   }
 
+  const loadInstallTimeline = useCallback(async (options: ProjectPackageTimelineQuery) => {
+    if (!selectedProject) throw new Error('Project not found')
+    if (options.eventId == null) installTimelineQueryRef.current = options
+    const timeline = await fetchProjectPackageTimeline(selectedProject.id, options)
+    setProjectPackageTimelines((current) => {
+      const existing = current[selectedProject.id]
+      if (!existing) {
+        return { ...current, [selectedProject.id]: timeline }
+      }
+      if (options.includeDetails === false) {
+        return {
+          ...current,
+          [selectedProject.id]: preserveLoadedPackageEventDetails(existing, timeline),
+        }
+      }
+      if (options.eventId == null) return { ...current, [selectedProject.id]: timeline }
+      const detailById = new Map(timeline.events.map((event) => [event.id, event]))
+      return {
+        ...current,
+        [selectedProject.id]: {
+          ...existing,
+          deliveryMembers: timeline.deliveryMembers,
+          departedUserIds: timeline.departedUserIds,
+          mentionableMembers: timeline.mentionableMembers,
+          events: existing.events.map((event) => detailById.get(event.id) ?? event),
+        },
+      }
+    })
+    return timeline
+  }, [selectedProject])
+
+  async function refreshInstallTimelineView(projectId: number) {
+    const options = { ...installTimelineQueryRef.current, includeDetails: false }
+    const timeline = await fetchProjectPackageTimeline(projectId, options)
+    setProjectPackageTimelines((current) => ({
+      ...current,
+      [projectId]: current[projectId]
+        ? preserveLoadedPackageEventDetails(current[projectId], timeline)
+        : timeline,
+    }))
+  }
+
   async function reassignInstallEvent(eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) {
     if (!selectedProject) return false
     const timeline = await reconcileAction(
       () => reassignProjectPackageEvent(selectedProject.id, eventId, payload),
-      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       data => data.events.some(event => event.id === eventId && event.assigneeUserId === payload.assigneeUserId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines(current => ({ ...current, [selectedProject.id]: timeline }))
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4157,13 +4206,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => completeProjectPackageEvent(selectedProject.id, eventId, payload),
-      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => data.events.some((event) => event.id === eventId && event.status === 'delivered'),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4176,6 +4224,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4192,6 +4241,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4205,13 +4255,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => deletePackageEventComment(selectedProject.id, eventId, commentId),
-      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => data.events.some((event) => event.id === eventId && !event.comments.some((comment) => comment.id === commentId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4221,13 +4270,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageEvent(selectedProject.id, eventId),
-      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.id === eventId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4244,18 +4292,22 @@ function App() {
     }
   }
 
+  async function loadInstallEventDeliveryArtifacts(eventId: number, expireMinutes: 30 | 60 | 120) {
+    if (!selectedProject) throw new Error('Project not found')
+    return fetchProjectPackageEventDeliveryArtifacts(selectedProject.id, eventId, expireMinutes)
+  }
+
   async function deleteInstallGroup(groupId: number) {
     if (!selectedProject) return false
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageGroup(selectedProject.id, groupId),
-      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.groups.some((group) => group.id === groupId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4279,14 +4331,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // The install record has already been persisted, so a follow-up
-        // workspace refresh failure should not surface as a save failure.
-      }
       if (payload.completed === true) {
         await refreshNotifications()
       }
@@ -4314,7 +4360,7 @@ function App() {
     try {
       const timeline = await reconcileAction(
         () => updateProjectPackageOperation(selectedProject.id, operationId, payload),
-        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
         (data) => {
           const operation = data.events.flatMap((event) => [...event.operations, ...event.groups.flatMap((group) => group.operations)]).find((item) => item.id === operationId)
           return Boolean(operation && Object.entries(payload).every(([key, value]) => JSON.stringify(operation[key as keyof typeof operation]) === JSON.stringify(value)))
@@ -4324,14 +4370,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // Keep the successful mutation result on screen even if the
-        // background workspace sync temporarily fails.
-      }
       if (payload.completed !== undefined) {
         void refreshNotifications()
       }
@@ -4348,13 +4388,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageOperation(selectedProject.id, operationId),
-        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 500, offset: 0 }),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.operations.some((operation) => operation.id === operationId) || event.groups.some((group) => group.operations.some((operation) => operation.id === operationId))),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -5741,9 +5780,11 @@ ${packageTimelineText}`
             onExportInstallTimeline={exportInstallTimeline}
             onInstallLoadMarketDetail={loadPackageMarketDetail}
             onInstallLoadItemDownloadUrl={loadInstallItemDownloadUrl}
+            onInstallLoadEventDeliveryArtifacts={loadInstallEventDeliveryArtifacts}
             onInstallLoadMarketCiBranches={loadPackageMarketCiBranches}
             onInstallLoadMarketRules={loadPackageMarketRules}
             onInstallLoadMarketVersions={loadPackageMarketVersions}
+            onLoadInstallTimeline={loadInstallTimeline}
             onSaveInstallEvent={saveInstallEvent}
             onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
@@ -6552,8 +6593,10 @@ function ProjectDetail({
   onInstallLoadMarketCiBranches,
   onInstallLoadMarketDetail,
   onInstallLoadItemDownloadUrl,
+  onInstallLoadEventDeliveryArtifacts,
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
+  onLoadInstallTimeline,
   onSaveInstallEvent,
   onUpdateInstallEventComment,
   onUpdateInstallOperation,
@@ -6645,6 +6688,7 @@ function ProjectDetail({
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
   onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
+  onInstallLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onInstallLoadMarketVersions: (payload: {
@@ -6656,6 +6700,7 @@ function ProjectDetail({
     packageId: string
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketVersion[]>
+  onLoadInstallTimeline: (options: ProjectPackageTimelineQuery) => Promise<ProjectPackageTimeline>
   onSaveInstallEvent: (
     eventId: number | null,
     payload: ProjectPackageEventSavePayload,
@@ -6917,8 +6962,10 @@ function ProjectDetail({
             onLoadPackageMarketDetail={onInstallLoadMarketDetail}
             onLoadPackageMarketCiBranches={onInstallLoadMarketCiBranches}
             onLoadPackageItemDownloadUrl={onInstallLoadItemDownloadUrl}
+            onLoadEventDeliveryArtifacts={onInstallLoadEventDeliveryArtifacts}
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}
+            onLoadTimeline={onLoadInstallTimeline}
             onSaveEvent={onSaveInstallEvent}
             onUpdateEventComment={onUpdateInstallEventComment}
             onUpdateOperation={onUpdateInstallOperation}

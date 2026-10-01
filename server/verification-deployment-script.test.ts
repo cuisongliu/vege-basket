@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createClusterImageVerificationScript,
+  createDeliveryExecutionScript,
   createPackageVerificationScript,
 } from './verification-deployment-script.ts'
 
@@ -18,6 +19,36 @@ test('builds a per-archive download and run command without retaining the link',
   )
 })
 
+test('builds one deterministic script for object packages, offline URLs, and images', () => {
+  assert.equal(
+    createDeliveryExecutionScript({
+      packages: [{ downloadUrl: 'https://oss.example/app.tar?token=x', objectKey: 'release/app.tar' }],
+      offlinePackages: [{ downloadUrl: 'https://downloads.example/app.tar', fileName: 'app.tar' }],
+      images: ['ghcr.io/example/worker:v2'],
+    }),
+    "delivery_dir=\"$(mktemp -d)\" && \\\n" +
+      "trap 'rm -rf \"$delivery_dir\"' EXIT && \\\n" +
+      "wget 'https://oss.example/app.tar?token=x' -O \"$delivery_dir/app.tar\" && sealos run -f \"$delivery_dir/app.tar\" && \\\n" +
+      "wget 'https://downloads.example/app.tar' -O \"$delivery_dir/app-2.tar\" && sealos run -f \"$delivery_dir/app-2.tar\" && \\\n" +
+      "sealos run -f 'ghcr.io/example/worker:v2'",
+  )
+})
+
+test('quotes untrusted delivery addresses and never writes archives into the working directory', () => {
+  const script = createDeliveryExecutionScript({
+    packages: [],
+    offlinePackages: [{
+      downloadUrl: "https://example.com/package.tar?value=';$()",
+      fileName: '.bashrc',
+    }],
+    images: [],
+  })
+  assert.match(script, /delivery_dir="\$\(mktemp -d\)"/u)
+  assert.match(script, /-O "\$delivery_dir\/\.bashrc"/u)
+  assert.match(script, /value='\\'';\$\(\)/u)
+  assert.doesNotMatch(script, /-O '\.bashrc'/u)
+})
+
 test('chains multiple cluster images and gives duplicate archive names separate files', () => {
   assert.equal(
     createClusterImageVerificationScript(['ghcr.io/example/admin:v1', 'ghcr.io/example/worker:v1']),
@@ -30,4 +61,21 @@ test('chains multiple cluster images and gives duplicate archive names separate 
     ]),
     /-O 'admin-2\.tar'/u,
   )
+})
+
+test('adds per-item environment variables without turning Values into sealos parameters', () => {
+  const config = {
+    environmentVariables: [{ name: 'REGION', value: 'cn-hz' }],
+    valuesPath: '/root/.sealos/cloud/values/app.yaml',
+    valuesPatch: 'replicas: 3\n',
+  }
+  const script = createClusterImageVerificationScript([{ image: 'ghcr.io/example/app:v1', runtimeConfig: config }])
+  assert.match(script, /delivery_dir="\$\(mktemp -d\)"/u)
+  assert.match(script, /sealos run -f 'ghcr\.io\/example\/app:v1' --env 'REGION=cn-hz'/u)
+  assert.match(script, /yq ea 'select\(fileIndex == 0\) \* select\(fileIndex == 1\)'/u)
+  assert.match(script, /cp -- "\$values_merged" "\$values_path"/u)
+  assert.match(script, /restore_values\(\)/u)
+  assert.match(script, /无法恢复 Values 文件/u)
+  assert.doesNotMatch(script, /restore_values\(\).*\|\| true/u)
+  assert.doesNotMatch(script, /--values|HELM_OPTIONS/u)
 })

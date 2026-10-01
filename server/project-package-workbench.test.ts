@@ -12,6 +12,19 @@ const timelineSource = readFileSync(
   'utf8',
 )
 const indexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+const paginationSource = readFileSync(
+  new URL('../src/components/list-pagination.tsx', import.meta.url),
+  'utf8',
+)
+const schemaSource = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
+const deliveryArtifactsMigrationSource = readFileSync(
+  new URL('./migrations/20260930_project_delivery_artifacts.sql', import.meta.url),
+  'utf8',
+)
+const deliveryRuntimeConfigMigrationSource = readFileSync(
+  new URL('./migrations/20260930_project_delivery_runtime_config.sql', import.meta.url),
+  'utf8',
+)
 
 test('package market offers link validity choices from four hours through seven days', () => {
   const expireOptionsSource = workbenchSource.slice(
@@ -73,7 +86,7 @@ test('existing operation todo management opens without a default filter', () => 
   assert.doesNotMatch(openTodoDialogSource, /createTodoFilterCondition/u)
 })
 
-test('event wizard keeps the stepper below its compact header without a return-list action', () => {
+test('event wizard keeps the stepper below its compact header with a return-list action', () => {
   const headerSource = workbenchSource.slice(
     workbenchSource.indexOf('<header className="event-wizard-header">'),
     workbenchSource.indexOf('<div className="event-wizard-steps-row">'),
@@ -86,7 +99,8 @@ test('event wizard keeps the stepper below its compact header without a return-l
   assert.doesNotMatch(headerSource, /event-wizard-steps/u)
   assert.match(editorTopSource, /<\/header>[\s\S]*event-wizard-main[\s\S]*event-wizard-steps-row[\s\S]*event-wizard-steps/u)
   assert.match(editorTopSource, /item\.step <= eventEditorStep \? 'reached'/u)
-  assert.doesNotMatch(headerSource, /返回列表/u)
+  assert.match(headerSource, /返回事件列表/u)
+  assert.match(headerSource, /returnToEventList/u)
 })
 
 test('selecting a draft event opens its summary instead of the editor', () => {
@@ -273,7 +287,12 @@ test('delivery event and package lists keep searchable paginated surfaces with t
   assert.match(workbenchSource, /const \[packageQuery, setPackageQuery\]/u)
   assert.match(workbenchSource, /visiblePackageGroups/u)
   assert.match(workbenchSource, /ListPagination label="交付事件分页"/u)
+  assert.match(workbenchSource, /onPageSizeChange=\{\(size\) => \{ setEventPage\(0\); setEventPageSize\(size\) \}\}/u)
   assert.match(workbenchSource, /ListPagination label="安装包列表分页"/u)
+  assert.match(paginationSource, /pageSizeOptions = \[20, 50\]/u)
+  assert.match(paginationSource, /new Set\(\[\.\.\.pageSizeOptions, pageSize\]\)/u)
+  assert.doesNotMatch(workbenchSource, /const isEmptyState/u)
+  assert.match(workbenchSource, /<ListPagination label="交付事件分页"[\s\S]*?total=\{eventTotal\}/u)
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(appSource, /const hideSidebar/u)
   assert.match(appSource, /<aside className="sidebar"/u)
@@ -286,4 +305,101 @@ test('delivery timeline API accepts bounded search pagination and reports totals
   assert.match(timelineSource, /const normalizedQuery = options\.q\?\.trim()/u)
   assert.match(timelineSource, /Math\.min\(500/u)
   assert.match(timelineSource, /pagination: \{ limit, offset, total \}/u)
+  assert.match(indexSource, /parseProjectPackageEventFilters\(request\.query\.filters\)/u)
+  assert.match(timelineSource, /options\.join === 'or'/u)
+  assert.match(timelineSource, /options\.assignedUserId/u)
+})
+
+test('delivery event summaries use database pagination and hydrate one selected event on demand', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+  assert.match(indexSource, /eventId: Number\.isSafeInteger\(eventId\)[\s\S]*?includeDetails,/u)
+  assert.match(timelineSource, /options\.includeDetails !== false/u)
+  assert.match(timelineSource, /limit \$2 offset \$3/u)
+  assert.match(timelineSource, /select count\(\*\)::text as total from project_package_events/u)
+  assert.match(timelineSource, /where e\.project_id = \$1\$\{eventIdClause\}/u)
+  assert.match(timelineSource, /detailsLoaded: includeDetails/u)
+  assert.match(timelineSource, /select count\(\*\)[\s\S]*?from project_package_groups g[\s\S]*?join project_package_items i[\s\S]*?where g\.project_package_event_id = e\.id/u)
+  assert.match(workbenchSource, /includeDetails: false/u)
+  assert.match(workbenchSource, /eventId: selectedEventDetailId, includeDetails: true/u)
+  assert.match(workbenchSource, /project-event-counts/u)
+  assert.match(workbenchSource, /交付包数量/u)
+  assert.match(workbenchSource, /个安装包条目/u)
+  assert.match(appSource, /containerImages: loadedEvent\.containerImages/u)
+  assert.match(appSource, /offlinePackages: loadedEvent\.offlinePackages/u)
+  assert.match(workbenchSource, /openLoadedDraftEventEditor/u)
+  assert.match(workbenchSource, /await onLoadTimeline\(\{ eventId: event\.id, includeDetails: true, limit: 1, offset: 0 \}\)/u)
+  assert.doesNotMatch(timelineSource, /packageCount:[\s\S]*?container_image_count/u)
+  assert.match(indexSource, /savedEventId: result\.eventId/u)
+  assert.match(indexSource, /containerImages: Array\.isArray\(body\.containerImages\)[\s\S]*?: undefined/u)
+  assert.match(timelineSource, /params\.eventId == null \|\| containerImages != null/u)
+  assert.match(appSource, /const savedEventId = mutationResult\.savedEventId \?\? eventId/u)
+  assert.match(appSource, /fetchProjectPackageTimeline\(projectId, \{ \.\.\.installTimelineQueryRef\.current, includeDetails: false \}\)/u)
+})
+
+test('delivery events support mixed encrypted artifacts and server-generated scripts', () => {
+  assert.match(timelineSource, /project_package_event_container_images/u)
+  assert.match(timelineSource, /project_package_event_offline_packages/u)
+  assert.match(timelineSource, /encryptText\(item\.image\)/u)
+  assert.match(timelineSource, /encryptText\(item\.url\)/u)
+  assert.match(timelineSource, /encryptedDeliveryRuntimeConfig/u)
+  assert.match(timelineSource, /readDeliveryRuntimeConfig/u)
+  assert.match(timelineSource, /createDeliveryExecutionScript/u)
+  assert.match(indexSource, /delivery-artifacts/u)
+  assert.match(workbenchSource, /集群镜像/u)
+  assert.match(workbenchSource, /离线包地址/u)
+  assert.match(workbenchSource, /复制执行脚本/u)
+  for (const table of [
+    'project_package_event_container_images',
+    'project_package_event_offline_packages',
+  ]) {
+    const tablePattern = new RegExp(`create table if not exists ${table} \\([\\s\\S]*?\\n\\);`, 'u')
+    const schemaDefinition = schemaSource.match(tablePattern)?.[0]
+    assert.ok(schemaDefinition, `${table} must exist in the startup schema`)
+    assert.ok(deliveryArtifactsMigrationSource.includes(schemaDefinition), `${table} migration must match the startup schema`)
+  }
+  assert.match(schemaSource, /environment_variables text/u)
+  assert.match(schemaSource, /values_path text/u)
+  assert.match(schemaSource, /values_patch text/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_items/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_event_container_images/u)
+  assert.match(deliveryRuntimeConfigMigrationSource, /alter table project_package_event_offline_packages/u)
+})
+
+test('delivery list exposes signed delay days with distinct visual states', () => {
+  assert.match(timelineSource, /deliveryDelayDays/u)
+  assert.match(timelineSource, /calendarDayDifference/u)
+  assert.match(workbenchSource, /交付延期/u)
+  assert.match(workbenchSource, /project-event-delay-cell/u)
+})
+
+test('delivery workbench uses a full-width event list and a desktop right detail drawer', () => {
+  assert.match(workbenchSource, /delivery-workbench-shell/u)
+  assert.match(workbenchSource, /delivery-workbench-heading/u)
+  assert.match(workbenchSource, /delivery-event-stats/u)
+  assert.match(workbenchSource, /project-event-table-head/u)
+  assert.match(workbenchSource, /delivery-event-table-viewport/u)
+  assert.match(workbenchSource, /project-package-event-drawer/u)
+  assert.match(workbenchSource, /事件详情暂时无法显示/u)
+  assert.match(workbenchSource, /<DialogContent fixedHeader className="project-package-event-drawer">/u)
+  assert.match(workbenchSource, /selectedEvent\.detailsLoaded === false && !eventDetailsError/u)
+  assert.match(workbenchSource, /事件不存在、已删除或当前账号无权查看/u)
+  assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)
+  const workbenchCss = readFileSync(
+    new URL('../src/components/project-package-workbench.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px/u)
+  assert.match(workbenchCss, /\.delivery-event-table-viewport[\s\S]*overflow: auto/u)
+  assert.match(workbenchCss, /\.project-event-table-head[\s\S]*position: sticky/u)
+  assert.match(workbenchCss, /--delivery-event-content-columns:[\s\S]*minmax\(130px, 1fr\)/u)
+  assert.match(workbenchCss, /grid-template-columns: var\(--delivery-event-content-columns\) 40px/u)
+  assert.match(workbenchCss, /\.delivery-event-list-panel[\s\S]*grid-template-rows: auto auto auto auto auto minmax\(0, 1fr\) auto/u)
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+  assert.match(appSource, /function preserveLoadedPackageEventDetails/u)
+  assert.match(appSource, /loadedEvent\?\.detailsLoaded !== true/u)
+  assert.match(appSource, /if \(options\.eventId == null\) installTimelineQueryRef\.current = options/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px, calc\(100vw - 32px\)\) !important/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*translate: none !important/u)
+  assert.doesNotMatch(workbenchCss, /@media \(max-width: 680px\)[\s\S]*\.project-package-event-drawer[\s\S]*width: 100vw/u)
+  assert.match(workbenchCss, /prefers-reduced-motion/u)
 })

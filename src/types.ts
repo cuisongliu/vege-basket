@@ -1,4 +1,5 @@
 import type { DeliveryCapabilities, ProjectDeliveryMember } from '../shared/project-delivery'
+import type { DeliveryRuntimeConfig } from '../shared/delivery-artifact'
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
 export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
@@ -368,6 +369,7 @@ export type ProjectPackageItem = {
   sizeBytes?: number
   sourceConfigRevision?: number
   createdAt: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -411,6 +413,7 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryDelayDays?: number
   deliveryResult?: ProjectPackageDeliveryResult
   deliveryFailureReason?: string
   assignedAt?: string
@@ -419,6 +422,7 @@ export type ProjectPackageEvent = {
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: Array<{ id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }>
   id: number
   type: ProjectPackageEventType
   status: ProjectPackageEventStatus
@@ -429,9 +433,14 @@ export type ProjectPackageEvent = {
   deliveryStartAt: string
   updatedAt: string
   operations: ProjectPackageOperation[]
+  offlinePackages: Array<{ id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }>
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
+  detailsLoaded?: boolean
+  packageCount?: number
+  operationCount?: number
+  commentCount?: number
 }
 
 export type ProjectPackageEventDocumentInput = {
@@ -445,6 +454,7 @@ export type ProjectPackageEventDocumentInput = {
 export type ProjectPackageEventSavePayload = {
   action: 'publish' | 'save_draft'
   assigneeUserId: number | null
+  containerImages: Array<{ image: string; runtimeConfig: DeliveryRuntimeConfig }>
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
@@ -460,9 +470,29 @@ export type ProjectPackageEventSavePayload = {
     objectKey: string
     objectLastModified?: string
     sizeBytes?: number
+    runtimeConfig: DeliveryRuntimeConfig
   }>
+  offlinePackages: Array<{ runtimeConfig: DeliveryRuntimeConfig; url: string }>
   title: string
   type: ProjectPackageEventType
+}
+
+export type ProjectPackageDeliveryArtifacts = {
+  items?: Array<{
+    address: {
+      expiresAt?: string
+      kind: 'object-storage' | 'offline-package' | 'container-image'
+      value: string
+    }
+    runtimeConfig: DeliveryRuntimeConfig
+    script: string
+  }>
+  addresses: Array<{
+    expiresAt?: string
+    kind: 'object-storage' | 'offline-package' | 'container-image'
+    value: string
+  }>
+  script: string
 }
 
 export type ProjectPackageTimeline = {
@@ -472,7 +502,24 @@ export type ProjectPackageTimeline = {
   projectId: number
   events: ProjectPackageEvent[]
   pagination?: { limit: number; offset: number; total: number }
+  savedEventId?: number
   mentionableMembers: Array<{ id: number; name: string }>
+}
+
+export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: Array<{
+    field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+    operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+    value: string
+  }>
+  join?: 'and' | 'or'
+  limit?: number
+  offset?: number
+  q?: string
+  sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
 }
 
 export type PackageMarketPageKind = {
