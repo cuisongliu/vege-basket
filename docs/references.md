@@ -140,10 +140,11 @@ visible when the global dependency switch or parent component channel is disable
 由当前源码构建的不可变合并镜像标签或分架构标签/摘要；Deployment 注解、应用容器和
 待办日报 CronJob 在模板安装时共用这一个值。
 
-镜像合并成功后，同一工作流会通过 `production` GitHub Environment 自动发布到
-Kubernetes。Environment Secret `KUBE_CONFIG` 保存 kubeconfig 原文；Environment
+镜像合并成功后，如果配置了 `production` GitHub Environment 的发布凭据，同一工作流会自动
+发布到 Kubernetes。Environment Secret `KUBE_CONFIG` 保存 kubeconfig 原文；Environment
 variable `K8S_DEPLOYMENT_NAME` 指定应用 Deployment。kubeconfig 的 current context 必须显式
-配置目标 namespace，工作流不需要 `K8S_NAMESPACE`。Deployment 的容器名必须与 Deployment
+配置目标 namespace，工作流不需要 `K8S_NAMESPACE`。未配置 `KUBE_CONFIG` 时，工作流会输出
+警告并跳过 Kubernetes 发布，但镜像构建和推送仍会完成。Deployment 的容器名必须与 Deployment
 同名。自动发布不更新日报 CronJob，也不需要 `K8S_CRONJOB_NAME`；该身份仅需对目标
 Deployment 及其注解具有读取、更新和 patch 权限。
 
@@ -180,11 +181,11 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 | Workspace | Compatibility `GET /api/workspace`; live scoped reads under `GET /api/workspace/{catalog,overview,inbox,documents,search}`, `GET /api/projects/:projectId/{overview,journals,todos}`, and `GET /api/todos/:todoId/detail`; `GET /api/my-work?organizationId=:id|personal`; lightweight `GET /api/navigation-counts?organizationId=:id|personal`; `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
 | Assigned Bugs | `GET /api/test-bugs/assigned?organizationId=:id|personal` and all `/api/test-bugs/:bugId/assigned*` mutations require the same active organization context; verification submissions require either package snapshots or one or more validated, pinned cluster-image references, and create an immutable acceptance comment in the same transaction. CI package snapshots retain their validated branch when the object path uses the canonical `/ci/<branch>/<hash>/` layout; branchless middleware CI snapshots remain valid without one. `GET /api/test-bugs/:bugId/verification-submissions/:submissionId/script?expireMinutes=30|60|120` rechecks tester/developer access and returns an ephemeral script; package URLs are signed only for that response, while cluster images run directly. |
 | Changelog | `GET /api/changelog` for authenticated readers; `GET /api/changelog/announcement` returns the latest unread login announcement and count; `PUT /api/changelog/announcement-read-state` advances the authenticated user's read cursor; writes require an active database-backed platform administrator grant |
-| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
+| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` with optional `todoId`, `limit` (1-200), and response-provided `snapshotMaxId`/`nextCursor` for stable follow-up pages |
 | Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images`; authenticated `GET /api/todos/:todoId/work-hours` returns the authorized todo's work-hour detail, summary, and `{ q, cursor, limit }` pagination; `POST /api/todos/:todoId/work-hours` records a pending entry; `POST /api/todos/:todoId/work-hours/submit`, `/accept`, and `/return` atomically update selected entry IDs without changing the todo's ordinary acceptance status; return moves only selected `submitted` entries back to `pending` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | Organization-context `GET /api/package-market/rules?organizationId=:id` (or `projectId=:id` for a project selector), package details, release versions, CI branches/versions; every market read is filtered by the resolved organization policy |
-| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), package-item download URLs, and timeline export |
+| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), mixed object-storage packages, encrypted container-image/offline-package addresses, per-item encrypted environment variables and Values YAML overlays, authorized `GET .../events/:eventId/delivery-artifacts` address and execution-script generation, package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu events | `/api/integrations/feishu/events` |
@@ -201,6 +202,13 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
 must remain bound to the authorized project ID.
+
+Each package, container image, or offline package in a delivery event owns an independent
+runtime configuration. Environment variables become repeated `sealos run --env KEY=VALUE`
+arguments. A Values target must be an absolute file path below
+`/root/.sealos/cloud/values/`; its bounded YAML mapping is merged into the existing file by
+the generated script immediately before that item runs. The script passes no Values argument
+to `sealos run`, serializes access with `flock`, and restores the original file on exit.
 
 `GET /api/navigation-counts` returns only `openTodoCount`, `assignedBugCount`, and the
 requested organization context. It rechecks active organization membership and applies

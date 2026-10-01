@@ -1,4 +1,8 @@
 import type { ProjectDeliveryMember } from '../shared/project-delivery'
+import {
+  emptyDeliveryRuntimeConfig,
+  normalizeDeliveryRuntimeConfig,
+} from '../shared/delivery-artifact'
 import type { WeeklyReportItemSources, WeeklyReportSourceResult } from '../shared/weekly-report-profile'
 import type {
   InboxItem,
@@ -22,10 +26,12 @@ import type {
   Priority,
   Project,
   ProjectPackageEventStatus,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   ProjectPackageEventType,
   ProjectMembership,
   ProjectStatus,
@@ -1864,9 +1870,24 @@ export function createAiTurnDocument(conversationId: string, turnId: string) {
   )
 }
 
-export function fetchTodoActivity(projectId: number, todoId?: number) {
-  const query = todoId == null ? '' : `?todoId=${encodeURIComponent(todoId)}`
-  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity${query}`)
+export function fetchTodoActivity(
+  projectId: number,
+  todoId?: number,
+  pagination?: { cursor?: string; limit?: number; snapshotMaxId?: number },
+) {
+  const search = new URLSearchParams()
+  if (todoId != null) search.set('todoId', String(todoId))
+  if (pagination?.limit != null) search.set('limit', String(pagination.limit))
+  if (pagination?.cursor != null) search.set('cursor', pagination.cursor)
+  if (pagination?.snapshotMaxId != null) search.set('snapshotMaxId', String(pagination.snapshotMaxId))
+  const query = search.size ? `?${search.toString()}` : ''
+  return request<{
+    departedUserIds: number[]
+    events: TodoActivityEvent[]
+    nextCursor: string | null
+    snapshotMaxId: number | null
+    total: number | null
+  }>(`/api/projects/${projectId}/todo-activity${query}`)
 }
 
 export function fetchNotificationSubscription() {
@@ -2029,20 +2050,63 @@ export function deleteAiConversation(conversationId: string) {
   )
 }
 
-export function fetchProjectPackageTimeline(projectId: number, options: { limit?: number; offset?: number; q?: string } = {}) {
+function normalizeWireDeliveryRuntimeConfig(value: unknown) {
+  if (value == null) return emptyDeliveryRuntimeConfig()
+  const result = normalizeDeliveryRuntimeConfig(value)
+  if (!result.valid) throw new Error(result.error)
+  return result.value
+}
+
+export function normalizeProjectPackageTimelineRuntimeConfigs(timeline: ProjectPackageTimeline) {
+  return {
+    ...timeline,
+    events: timeline.events.map((event) => ({
+      ...event,
+      containerImages: event.containerImages.map((item) => ({
+        ...item,
+        runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+      })),
+      groups: event.groups.map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({
+          ...item,
+          runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+        })),
+      })),
+      offlinePackages: event.offlinePackages.map((item) => ({
+        ...item,
+        runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+      })),
+    })),
+  }
+}
+
+async function requestProjectPackageTimeline(path: string, options?: RequestInit) {
+  return normalizeProjectPackageTimelineRuntimeConfigs(
+    await request<ProjectPackageTimeline>(path, options),
+  )
+}
+
+export function fetchProjectPackageTimeline(projectId: number, options: ProjectPackageTimelineQuery = {}) {
   const params = new URLSearchParams()
+  if (options.assignedUserId != null) params.set('assignedUserId', String(options.assignedUserId))
+  if (options.eventId != null) params.set('eventId', String(options.eventId))
+  if (options.filters?.length) params.set('filters', JSON.stringify(options.filters))
+  if (options.includeDetails === false) params.set('includeDetails', 'false')
+  if (options.join) params.set('join', options.join)
   if (options.limit != null) params.set('limit', String(options.limit))
   if (options.offset != null) params.set('offset', String(options.offset))
   if (options.q?.trim()) params.set('q', options.q.trim())
+  if (options.sort) params.set('sort', options.sort)
   const query = params.toString() ? `?${params.toString()}` : ''
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline${query}`)
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline${query}`)
 }
 
 export function createProjectPackageEvent(
   projectId: number,
   payload: ProjectPackageEventSavePayload,
 ) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/events`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -2053,7 +2117,7 @@ export function saveProjectPackageEventDraft(
   eventId: number,
   payload: ProjectPackageEventSavePayload,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'PUT',
@@ -2067,14 +2131,14 @@ export function completeProjectPackageEvent(
   eventId: number,
   payload: { result: 'success' | 'failed'; failureReason?: string },
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/complete`,
     { method: 'POST', body: JSON.stringify(payload) },
   )
 }
 
 export function addPackageEventComment(projectId: number, eventId: number, content: string) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments`,
     {
       method: 'POST',
@@ -2089,7 +2153,7 @@ export function updatePackageEventComment(
   commentId: number,
   content: string,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
     {
       method: 'PATCH',
@@ -2103,7 +2167,7 @@ export function deletePackageEventComment(
   eventId: number,
   commentId: number,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
     { method: 'DELETE' },
   )
@@ -2122,7 +2186,7 @@ export function updateProjectPackageEvent(
     type: ProjectPackageEventType
   }>,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'PATCH',
@@ -2132,7 +2196,7 @@ export function updateProjectPackageEvent(
 }
 
 export function removeProjectPackageEvent(projectId: number, eventId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'DELETE',
@@ -2158,7 +2222,7 @@ export function addProjectPackageItems(
     }>
   },
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/packages`,
     {
       method: 'POST',
@@ -2168,7 +2232,7 @@ export function addProjectPackageItems(
 }
 
 export function removeProjectPackageGroup(projectId: number, groupId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/package-groups/${groupId}`,
     {
       method: 'DELETE',
@@ -2191,7 +2255,7 @@ export function createProjectPackageOperation(
     relatedTodoNotes?: Record<number, string>
   },
 ) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/operations`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/operations`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -2210,7 +2274,7 @@ export function updateProjectPackageOperation(
     relatedTodoNotes: Record<number, string>
   }>,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
     {
       method: 'PATCH',
@@ -2220,7 +2284,7 @@ export function updateProjectPackageOperation(
 }
 
 export function removeProjectPackageOperation(projectId: number, operationId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
     {
       method: 'DELETE',
@@ -2245,6 +2309,16 @@ export function fetchProjectPackageItemDownloadUrl(
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return request<{ downloadUrl: string; expiresAt: string; expiresInSeconds: number }>(
     `/api/projects/${projectId}/package-items/${itemId}/download-url${suffix}`,
+  )
+}
+
+export function fetchProjectPackageEventDeliveryArtifacts(
+  projectId: number,
+  eventId: number,
+  expireMinutes: 30 | 60 | 120 = 30,
+) {
+  return request<ProjectPackageDeliveryArtifacts>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/delivery-artifacts?expireMinutes=${expireMinutes}`,
   )
 }
 
@@ -2389,7 +2463,7 @@ export function saveProjectDeliveryConfiguration(organizationId: number, project
 export function reassignProjectPackageEvent(projectId: number, eventId: number, payload: {
   assigneeUserId: number; previousAssigneeUserId: number | null; reason: string
 }) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events/${eventId}/reassign`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/events/${eventId}/reassign`, {
     method: 'POST', body: JSON.stringify(payload),
   })
 }

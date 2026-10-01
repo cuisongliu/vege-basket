@@ -126,7 +126,6 @@ export async function getMyWork(
             $7::boolean = true
             and ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
             and not t.done
-            and work_hours.submitted_minutes > 0
           )
         )
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
@@ -192,10 +191,7 @@ export async function getMyWork(
         or ($5::text = '__unrecorded__' and work.creator_name is null)
         or work.creator_name = $5::text
       )
-      and (
-        $7::boolean = false
-        or (work.kind = 'todo' and work.submitted_work_minutes > 0)
-      )
+      and ($7::boolean = false or work.kind = 'todo')
       and (
         $2::text = 'all'
         or work.status = $2::text

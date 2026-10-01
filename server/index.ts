@@ -98,8 +98,10 @@ import {
   ensureProjectPackageOperationKind,
   ensureProjectPackageOperationStatus,
   exportProjectPackageTimeline,
+  getProjectPackageEventDeliveryArtifacts,
   getProjectPackageItemDownloadSource,
   getProjectPackageTimeline,
+  parseProjectPackageEventFilters,
   ProjectPackageEventError,
   resolvePackageEventMentionUserIds,
   saveProjectPackageEvent,
@@ -5552,10 +5554,89 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
   if (!userId) return
   const projectId = Number(request.params.projectId)
   const todoId = request.query.todoId == null ? null : Number(request.query.todoId)
+  const limit = request.query.limit == null ? 200 : Number(request.query.limit)
+  const requestedSnapshotMaxId = request.query.snapshotMaxId == null ? null : Number(request.query.snapshotMaxId)
+  const cursor = typeof request.query.cursor === 'string' ? request.query.cursor : null
+  let cursorOccurredAt: string | null = null
+  let cursorId: number | null = null
+  if (cursor && cursor.length <= 256) {
+    try {
+      const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
+      const separator = decoded.lastIndexOf('|')
+      const occurredAt = separator > 0 ? decoded.slice(0, separator) : ''
+      const parsedId = separator > 0 ? Number(decoded.slice(separator + 1)) : Number.NaN
+      const timestampMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{6}Z$/u.exec(occurredAt)
+      const year = Number(timestampMatch?.[1])
+      const month = Number(timestampMatch?.[2])
+      const day = Number(timestampMatch?.[3])
+      const hour = Number(timestampMatch?.[4])
+      const minute = Number(timestampMatch?.[5])
+      const second = Number(timestampMatch?.[6])
+      const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+      const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0
+      if (
+        !timestampMatch
+        || year < 1
+        || month < 1
+        || month > 12
+        || day < 1
+        || day > daysInMonth
+        || hour > 23
+        || minute > 59
+        || second > 59
+        || !Number.isSafeInteger(parsedId)
+        || parsedId <= 0
+      ) {
+        throw new Error('Invalid cursor')
+      }
+      cursorOccurredAt = occurredAt
+      cursorId = parsedId
+    } catch {
+      response.status(400).json({ error: 'Valid todo activity cursor is required' })
+      return
+    }
+  } else if (request.query.cursor != null) {
+    response.status(400).json({ error: 'Valid todo activity cursor is required' })
+    return
+  }
+  if (
+    (todoId != null && (!Number.isSafeInteger(todoId) || todoId <= 0))
+    || !Number.isSafeInteger(limit)
+    || limit < 1
+    || limit > 200
+    || (requestedSnapshotMaxId != null && (!Number.isSafeInteger(requestedSnapshotMaxId) || requestedSnapshotMaxId <= 0))
+    || (cursor != null && requestedSnapshotMaxId == null)
+  ) {
+    response.status(400).json({ error: 'Valid todo activity pagination is required' })
+    return
+  }
   const access = await getProjectReadAccess(projectId, userId)
   if (!access) {
     response.status(404).json({ error: 'Project not found' })
     return
+  }
+
+  let snapshotMaxId = requestedSnapshotMaxId
+  let total: number | null = null
+  if (!cursor) {
+    const snapshotResult = await query<{
+      snapshot_max_id: string | null
+      total_count: string
+    }>(
+      `
+      select max(event.id)::text as snapshot_max_id,
+             count(*)::text as total_count
+      from todo_activity_events event
+      where event.project_id = $1
+        and ($2::bigint is null or event.todo_id = $2)
+        and ($3::bigint is null or event.id <= $3)
+      `,
+      [projectId, todoId, requestedSnapshotMaxId],
+    )
+    snapshotMaxId = requestedSnapshotMaxId ?? (
+      snapshotResult.rows[0]?.snapshot_max_id ? Number(snapshotResult.rows[0].snapshot_max_id) : null
+    )
+    total = Number(snapshotResult.rows[0]?.total_count ?? 0)
   }
 
   const result = await query<{
@@ -5569,6 +5650,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     event_type: TodoActivityEventType
     id: string
     occurred_at: Date
+    occurred_at_cursor: string
     priority: Priority
     title: string
     todo_id: string | null
@@ -5583,6 +5665,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
            event.due_date,
            event.priority,
            event.occurred_at,
+           to_char(event.occurred_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as occurred_at_cursor,
            actor.email as actor_email,
            actor.display_name as actor_display_name,
            assignee.email as assignee_email,
@@ -5592,11 +5675,18 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     left join users assignee on assignee.id = event.assignee_user_id
     where event.project_id = $1
       and ($2::bigint is null or event.todo_id = $2)
+      and ($3::bigint is null or event.id <= $3)
+      and ($4::timestamptz is null or (event.occurred_at, event.id) < ($4::timestamptz, $5::bigint))
     order by event.occurred_at desc, event.id desc
-    limit 200
+    limit $6
     `,
-    [projectId, todoId != null && Number.isSafeInteger(todoId) && todoId > 0 ? todoId : null],
+    [projectId, todoId, snapshotMaxId, cursorOccurredAt, cursorId, limit],
   )
+
+  const lastEvent = result.rows[result.rows.length - 1]
+  const nextCursor = lastEvent
+    ? Buffer.from(`${lastEvent.occurred_at_cursor}|${lastEvent.id}`).toString('base64url')
+    : null
 
   response.json({
     departedUserIds: await getDepartedUserIds(),
@@ -5625,6 +5715,9 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
       priority: event.priority,
       occurredAt: formatDateTime(event.occurred_at),
     })),
+    nextCursor,
+    snapshotMaxId,
+    total,
   })
 }))
 
@@ -9694,13 +9787,6 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
         where p.organization_id is not distinct from $2::bigint
           and not t.done
           and ${managedOrganizationReadScopeSql('p.organization_id', '$1::bigint')}
-          and exists (
-            select 1
-              from todo_work_hours hours
-             where hours.todo_id = t.id
-               and hours.project_id = t.project_id
-               and hours.status = 'submitted'
-          )
           and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
       ) as work_hour_confirmation_count,
       (
@@ -12424,6 +12510,7 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
           objectKey: String(value.objectKey ?? ''),
           objectLastModified: value.objectLastModified ? String(value.objectLastModified) : undefined,
           sizeBytes: typeof value.sizeBytes === 'number' ? value.sizeBytes : undefined,
+          runtimeConfig: value.runtimeConfig,
         }
       })
     : []
@@ -12445,8 +12532,24 @@ function parseProjectPackageEventAggregateBody(body: Record<string, unknown>) {
     : []
   return {
     action: body.action === 'publish' ? 'publish' as const : 'save_draft' as const,
+    containerImages: Array.isArray(body.containerImages)
+      ? body.containerImages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : null
+          return value
+            ? { image: String(value.image ?? ''), runtimeConfig: value.runtimeConfig }
+            : { image: String(item) }
+        })
+      : undefined,
     documents,
     items,
+    offlinePackages: Array.isArray(body.offlinePackages)
+      ? body.offlinePackages.map((item) => {
+          const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+          return { runtimeConfig: value.runtimeConfig, url: String(value.url ?? '') }
+        })
+      : Array.isArray(body.offlinePackageUrls)
+        ? body.offlinePackageUrls.map((url) => ({ url: String(url) }))
+        : undefined,
   }
 }
 
@@ -12474,13 +12577,24 @@ app.get('/api/projects/:projectId/package-timeline', asyncHandler(async (request
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const rawLimit = Number(request.query.limit)
   const rawOffset = Number(request.query.offset)
-  response.json(await getProjectPackageTimeline(projectId, userId, {
+  const assignedUserId = Number(request.query.assignedUserId)
+  const eventId = Number(request.query.eventId)
+  const includeDetails = request.query.includeDetails !== 'false'
+  const timeline = await runProjectPackageEventMutation(response, () => getProjectPackageTimeline(projectId, userId, {
+    assignedUserId: Number.isSafeInteger(assignedUserId) && assignedUserId > 0 ? assignedUserId : undefined,
+    eventId: Number.isSafeInteger(eventId) && eventId > 0 ? eventId : undefined,
+    filters: parseProjectPackageEventFilters(request.query.filters),
+    includeDetails,
+    join: request.query.join === 'or' ? 'or' : 'and',
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
     offset: Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : undefined,
     q: typeof request.query.q === 'string' ? request.query.q : undefined,
+    sort: request.query.sort === 'asc' ? 'asc' : 'desc',
   }))
+  if (timeline.ok) response.json(timeline.value)
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async (request, response) => {
@@ -12492,6 +12606,7 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const assigneeUserId = request.body.assigneeUserId == null ? null : Number(request.body.assigneeUserId)
   const aggregate = parseProjectPackageEventAggregateBody(request.body)
   const rejectedItem = aggregate.items.find((item) => !isSafePackageMarketObjectKey(item.objectKey))
@@ -12509,7 +12624,9 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
     deliveryEndAt: request.body.deliveryEndAt ? String(request.body.deliveryEndAt) : undefined,
     deliveryStartAt: request.body.deliveryStartAt ? String(request.body.deliveryStartAt) : undefined,
     documents: aggregate.documents,
+    containerImages: aggregate.containerImages,
     items: aggregate.items,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12523,7 +12640,10 @@ app.post('/api/projects/:projectId/package-timeline/events', asyncHandler(async 
   if (!saved.ok) return
   const result = saved.value
   if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
-  response.status(201).json(await getProjectPackageTimeline(projectId, userId))
+  response.status(201).json({
+    ...await getProjectPackageTimeline(projectId, userId),
+    savedEventId: result.eventId,
+  })
 }))
 
 app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandler(async (request, response) => {
@@ -12535,6 +12655,7 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     response.status(404).json({ error: 'Project not found' })
     return
   }
+  response.set('Cache-Control', 'private, no-store')
   const assigneeUserId = request.body.assigneeUserId == null ? null : Number(request.body.assigneeUserId)
   const aggregate = parseProjectPackageEventAggregateBody(request.body)
   if (aggregate.items.some((item) => !isSafePackageMarketObjectKey(item.objectKey))) {
@@ -12551,8 +12672,10 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
     deliveryEndAt: request.body.deliveryEndAt ? String(request.body.deliveryEndAt) : undefined,
     deliveryStartAt: request.body.deliveryStartAt ? String(request.body.deliveryStartAt) : undefined,
     documents: aggregate.documents,
+    containerImages: aggregate.containerImages,
     eventId: Number(request.params.eventId),
     items: aggregate.items,
+    offlinePackages: aggregate.offlinePackages,
     projectId,
     title: String(request.body.title ?? ''),
     type: ensureProjectPackageEventType(request.body.type),
@@ -12566,7 +12689,10 @@ app.put('/api/projects/:projectId/package-timeline/events/:eventId', asyncHandle
   if (!saved.ok) return
   const result = saved.value
   if (result.published) enqueueLatestAssignedPackageEventDelivery(result.eventId)
-  response.json(await getProjectPackageTimeline(projectId, userId))
+  response.json({
+    ...await getProjectPackageTimeline(projectId, userId),
+    savedEventId: result.eventId,
+  })
 }))
 
 app.post('/api/projects/:projectId/package-timeline/events/:eventId/reassign', asyncHandler(async (request, response) => {
@@ -12998,6 +13124,24 @@ app.get('/api/projects/:projectId/package-timeline/export', asyncHandler(async (
     }
     throw error
   }
+}))
+
+app.get('/api/projects/:projectId/package-timeline/events/:eventId/delivery-artifacts', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const projectId = Number(request.params.projectId)
+  const access = await getProjectReadAccess(projectId, userId)
+  if (!access) {
+    response.status(404).json({ error: 'Project not found' })
+    return
+  }
+  response.set('Cache-Control', 'private, no-store')
+  const result = await runProjectPackageEventMutation(response, () => getProjectPackageEventDeliveryArtifacts({
+    eventId: Number(request.params.eventId),
+    expireMinutes: ensurePackageMarketExpireMinutes(request.query.expireMinutes),
+    projectId,
+  }))
+  if (result.ok) response.json(result.value)
 }))
 
 app.get('/api/projects/:projectId/package-items/:itemId/download-url', asyncHandler(async (request, response) => {

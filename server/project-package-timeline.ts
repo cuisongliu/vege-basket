@@ -4,6 +4,7 @@ import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
 import {
+  createPackageItemDownloadLink,
   createPackageItemDownloadUrl,
   isPackageMarketObjectKeyAllowedForRule,
   type PackageMarketRule,
@@ -11,6 +12,16 @@ import {
 import { getDepartedUserIds } from './user-lifecycle.ts'
 import { getPlatformConfigSnapshot } from './platform-config-runtime.ts'
 import { getPackageMarketRulesForConfigRevision } from './platform-package-rules.ts'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../shared/container-image-reference.ts'
+import {
+  emptyDeliveryRuntimeConfig,
+  maxDeliveryArtifactEntries,
+  normalizeDeliveryRuntimeConfig,
+  normalizeOfflinePackageUrl,
+  offlinePackageFileName,
+  type DeliveryRuntimeConfig,
+} from '../shared/delivery-artifact.ts'
+import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
@@ -29,7 +40,11 @@ export type ProjectPackageItemInput = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: unknown
 }
+
+export type ProjectPackageContainerImageInput = { image: string; runtimeConfig?: unknown }
+export type ProjectPackageOfflinePackageInput = { runtimeConfig?: unknown; url: string }
 
 export type ProjectPackageDocumentInput = {
   content: string
@@ -40,6 +55,8 @@ export type ProjectPackageDocumentInput = {
 }
 
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
+export type ProjectPackageEventContainerImage = { id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }
+export type ProjectPackageEventOfflinePackage = { id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }
 
 export class ProjectPackageEventError extends Error {
   readonly status: 400 | 403 | 404 | 409
@@ -65,6 +82,7 @@ export type ProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -115,18 +133,21 @@ export type ProjectPackageEvent = {
   completedAt?: string
   deliveryFailureReason?: string
   deliveryResult?: ProjectPackageDeliveryResult
+  deliveryDelayDays?: number
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: ProjectPackageEventContainerImage[]
   createdAt: string
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
   groups: ProjectPackageGroup[]
   id: number
+  offlinePackages: ProjectPackageEventOfflinePackage[]
   operations: ProjectPackageOperation[]
   publishedAt?: string
   publishedByUserId?: number
@@ -134,6 +155,10 @@ export type ProjectPackageEvent = {
   title: string
   type: ProjectPackageEventType
   updatedAt: string
+  commentCount?: number
+  detailsLoaded?: boolean
+  operationCount?: number
+  packageCount?: number
 }
 
 export type ProjectPackageTimeline = {
@@ -144,12 +169,64 @@ export type ProjectPackageTimeline = {
   pagination?: { limit: number; offset: number; total: number }
   mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
+  savedEventId?: number
 }
 
 export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: ProjectPackageEventFilterCondition[]
+  join?: 'and' | 'or'
   limit?: number
   offset?: number
   q?: string
+  sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
+}
+
+export type ProjectPackageEventFilterCondition = {
+  field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+  operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+  value: string
+}
+
+const projectPackageEventFilterFields = new Set<ProjectPackageEventFilterCondition['field']>([
+  'title', 'assignee', 'deliveryDate', 'status', 'type',
+])
+const projectPackageEventFilterOperators = new Set<ProjectPackageEventFilterCondition['operator']>([
+  'contains', 'not_contains', 'equals', 'not_equals', 'is_empty', 'is_not_empty', 'before', 'after', 'between',
+])
+
+export function parseProjectPackageEventFilters(value: unknown): ProjectPackageEventFilterCondition[] {
+  if (value == null || value === '') return []
+  let parsed: unknown
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value } catch {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  if (!Array.isArray(parsed) || parsed.length > 10) {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  return parsed.map((condition) => {
+    if (!condition || typeof condition !== 'object') {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    const candidate = condition as Record<string, unknown>
+    if (
+      typeof candidate.field !== 'string' ||
+      !projectPackageEventFilterFields.has(candidate.field as ProjectPackageEventFilterCondition['field']) ||
+      typeof candidate.operator !== 'string' ||
+      !projectPackageEventFilterOperators.has(candidate.operator as ProjectPackageEventFilterCondition['operator']) ||
+      typeof candidate.value !== 'string' ||
+      candidate.value.length > 200
+    ) {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    return {
+      field: candidate.field as ProjectPackageEventFilterCondition['field'],
+      operator: candidate.operator as ProjectPackageEventFilterCondition['operator'],
+      value: candidate.value,
+    }
+  })
 }
 
 type EventRow = {
@@ -178,7 +255,31 @@ type EventRow = {
   title: string
   type: ProjectPackageEventType
   updated_at: Date
-  total_count?: string
+}
+
+type EventSummaryCountRow = {
+  id: string
+  package_count: string
+  operation_count: string
+  comment_count: string
+}
+
+type ContainerImageRow = {
+  environment_variables: string | null
+  id: string
+  image_ref: string
+  project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
+}
+
+type OfflinePackageRow = {
+  download_url: string
+  environment_variables: string | null
+  id: string
+  project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
 }
 
 type GroupRow = {
@@ -202,6 +303,9 @@ type ItemRow = {
   source_package_id: string
   source_package_name: string
   version: string
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
 }
 
 type OperationRow = {
@@ -276,6 +380,7 @@ type NormalizedProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: DeliveryRuntimeConfig
 }
 
 type NormalizedProjectPackageDocument = {
@@ -329,6 +434,12 @@ function formatDate(value: Date | string) {
   const pick = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function calendarDayDifference(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
+  return Math.round((leftTime - rightTime) / 86_400_000)
 }
 
 function normalizeDeliveryDate(value: unknown) {
@@ -525,6 +636,87 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
       sourcePackageId: normalizeText(item.sourcePackageId, 120),
       sourcePackageName: normalizeText(item.sourcePackageName || packageName, 160),
       version: normalizeText(item.version, 80),
+      runtimeConfig: item.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(item.runtimeConfig, `安装包 ${index + 1}`),
+    }
+  })
+}
+
+function requireDeliveryRuntimeConfig(value: unknown, label: string) {
+  const result = normalizeDeliveryRuntimeConfig(value)
+  if (!result.valid) throw new ProjectPackageEventError(`${label}：${result.error}`, 400)
+  return result.value
+}
+
+function readDeliveryRuntimeConfig(row: {
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
+}) {
+  let environmentVariables: unknown[] = []
+  if (row.environment_variables) {
+    try {
+      const parsed = JSON.parse(decryptText(row.environment_variables))
+      if (Array.isArray(parsed)) environmentVariables = parsed
+    } catch {
+      throw new ProjectPackageEventError('交付运行配置无法读取', 409)
+    }
+  }
+  const result = normalizeDeliveryRuntimeConfig({
+    environmentVariables,
+    valuesPath: row.values_path ? decryptText(row.values_path) : '',
+    valuesPatch: row.values_patch ? decryptText(row.values_patch) : '',
+  })
+  if (!result.valid) throw new ProjectPackageEventError('交付运行配置无效', 409)
+  return result.value
+}
+
+function encryptedDeliveryRuntimeConfig(runtimeConfig: DeliveryRuntimeConfig) {
+  return {
+    environmentVariables: runtimeConfig.environmentVariables.length > 0
+      ? encryptText(JSON.stringify(runtimeConfig.environmentVariables))
+      : null,
+    valuesPath: runtimeConfig.valuesPath ? encryptText(runtimeConfig.valuesPath) : null,
+    valuesPatch: runtimeConfig.valuesPatch ? encryptText(runtimeConfig.valuesPatch) : null,
+  }
+}
+
+function normalizeContainerImages(values: ProjectPackageContainerImageInput[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`镜像地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const image = normalizeContainerImageReference(value.image, { requireTagOrDigest: true })
+    if (!image.valid) throw new ProjectPackageEventError(`镜像地址 ${index + 1}：${image.error}`, 400)
+    const key = containerImageReferenceKey(image.value)
+    if (seen.has(key)) throw new ProjectPackageEventError('镜像地址不能重复', 400)
+    seen.add(key)
+    return {
+      image: image.value,
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `镜像 ${index + 1}`),
+    }
+  })
+}
+
+function normalizeOfflinePackages(values: ProjectPackageOfflinePackageInput[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`离线包地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const url = normalizeOfflinePackageUrl(value.url)
+    if (!url.valid) throw new ProjectPackageEventError(`离线包地址 ${index + 1}：${url.error}`, 400)
+    if (seen.has(url.value)) throw new ProjectPackageEventError('离线包地址不能重复', 400)
+    seen.add(url.value)
+    return {
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `离线包 ${index + 1}`),
+      url: url.value,
     }
   })
 }
@@ -1294,71 +1486,140 @@ function buildProjectPackageEventMarkdown(
   return lines
 }
 
+function packageEventFilterValue(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  if (condition.field === 'title') return decryptText(row.title)
+  if (condition.field === 'assignee') return row.assignee_user_id ?? ''
+  if (condition.field === 'deliveryDate') return row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at)
+  if (condition.field === 'status') return ensureProjectPackageEventStatus(row.status, row.published_at)
+  return row.type
+}
+
+function matchesProjectPackageEventFilter(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  const fieldValue = packageEventFilterValue(row, condition)
+  const targetValue = condition.value.trim()
+  if (condition.operator === 'is_empty') return !fieldValue
+  if (condition.operator === 'is_not_empty') return Boolean(fieldValue)
+  if (condition.operator === 'contains') return fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'not_contains') return !fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'equals') return fieldValue === targetValue
+  if (condition.operator === 'not_equals') return fieldValue !== targetValue
+  if (condition.operator === 'before') return Boolean(fieldValue) && fieldValue < targetValue
+  if (condition.operator === 'after') return Boolean(fieldValue) && fieldValue > targetValue
+  if (condition.operator === 'between') {
+    const [rawStart, rawEnd] = targetValue.split('..')
+    const start = rawStart || rawEnd || ''
+    const end = rawEnd || rawStart || ''
+    const lower = start <= end ? start : end
+    const upper = start <= end ? end : start
+    return Boolean(fieldValue) && fieldValue >= lower && fieldValue <= upper
+  }
+  return true
+}
+
+function projectPackageEventMatchesQuery(row: EventRow, options: ProjectPackageTimelineQuery, normalizedQuery: string) {
+  if (options.assignedUserId && Number(row.assignee_user_id) !== options.assignedUserId) return false
+  if (normalizedQuery) {
+    const searchable = [
+      decryptText(row.title),
+      row.type,
+      ensureProjectPackageEventStatus(row.status, row.published_at),
+      row.assignee_user_id
+        ? displayUserName({ email: row.assignee_email, display_name: row.assignee_display_name })
+        : '',
+    ].join(' ').toLocaleLowerCase('zh-CN')
+    if (!searchable.includes(normalizedQuery)) return false
+  }
+  const filters = options.filters ?? []
+  if (filters.length === 0) return true
+  return options.join === 'or'
+    ? filters.some((condition) => matchesProjectPackageEventFilter(row, condition))
+    : filters.every((condition) => matchesProjectPackageEventFilter(row, condition))
+}
+
 export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
   const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
-  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 100)))
+  const includeDetails = options.includeDetails !== false
+  // Keep the server-side safety cap at 500 while the workbench requests 10 per page.
+  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 10)))
   const requestedOffset = Math.max(0, Math.floor(options.offset ?? 0))
-  const databasePageRequested = !normalizedQuery && (options.limit != null || options.offset != null)
-  let selectedEventIds: number[] | null = null
-  if (databasePageRequested) {
-    const pageResult = await query<{ id: string }>(
-      `select id
-         from project_package_events
-        where project_id = $1
-        order by created_at asc, id asc
-        limit $2 offset $3`,
-      [projectId, requestedLimit, requestedOffset],
-    )
-    selectedEventIds = pageResult.rows.map((row) => Number(row.id))
-  }
-  const eventScope = selectedEventIds ? 'and e.id = any($2::bigint[])' : ''
-  const scopedValues = selectedEventIds ? [projectId, selectedEventIds] : [projectId]
-  const [
-    eventsResult,
-    groupsResult,
-    itemsResult,
-    operationsResult,
-    operationTodosResult,
-    commentsResult,
-    mentionableMembersResult,
-  ] = await Promise.all([
-    query<EventRow>(
-      `
-      select e.id,
-             coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
-             coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
-             coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
-             e.completed_by_user_id, e.completed_at,
-             e.delivery_result, e.delivery_failure_reason,
-             e.type,
-             e.status,
-             e.title,
-             e.assignee_user_id,
-             e.assigned_by_user_id,
-             e.assigned_at,
-             e.delivery_date,
-             e.delivery_start_at,
-             e.delivery_end_at,
-             e.published_at,
-             e.published_by_user_id,
-             e.created_at,
-             e.updated_at,
-             assignee.email as assignee_email,
-             assignee.display_name as assignee_display_name,
-             assigner.email as assigner_email,
-             assigner.display_name as assigner_display_name
+  const eventIdClause = options.eventId == null ? '' : ' and e.id = $2'
+  const eventSelect = `
+    select e.id,
+           coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
+           coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
+           coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
+           e.completed_by_user_id, e.completed_at,
+           e.delivery_result, e.delivery_failure_reason,
+           e.type, e.status, e.title, e.assignee_user_id, e.assigned_by_user_id, e.assigned_at,
+           e.delivery_date, e.delivery_start_at, e.delivery_end_at,
+           e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
+           assignee.email as assignee_email, assignee.display_name as assignee_display_name,
+           assigner.email as assigner_email, assigner.display_name as assigner_display_name
       from project_package_events e
       left join users creator on creator.id = e.created_by_user_id
       left join users publisher on publisher.id = e.published_by_user_id
       left join users completer on completer.id = e.completed_by_user_id
       left join users assignee on assignee.id = e.assignee_user_id
       left join users assigner on assigner.id = e.assigned_by_user_id
-      where e.project_id = $1
-        ${eventScope}
-      order by e.created_at asc, e.id asc
-      `,
-      scopedValues,
-    ),
+     where e.project_id = $1${eventIdClause}
+  `
+  const canUseDatabasePage = includeDetails === false && !normalizedQuery &&
+    !options.assignedUserId && (options.filters?.length ?? 0) === 0 && options.eventId == null
+  const databasePageResult = canUseDatabasePage
+    ? await query<EventRow>(
+      `${eventSelect}
+       order by coalesce(e.delivery_date, e.created_at::date) ${options.sort === 'asc' ? 'asc' : 'desc'}, e.created_at ${options.sort === 'asc' ? 'asc' : 'desc'}, e.id ${options.sort === 'asc' ? 'asc' : 'desc'}
+       limit $2 offset $3`,
+      options.eventId == null
+        ? [projectId, requestedLimit, requestedOffset]
+        : [projectId, options.eventId, requestedLimit, requestedOffset],
+    )
+    : null
+  const databaseTotalResult = databasePageResult
+    ? await query<{ total: string }>(
+      'select count(*)::text as total from project_package_events where project_id = $1',
+      [projectId],
+    )
+    : null
+  const allEventsResult = databasePageResult ?? await query<EventRow>(
+    `
+    ${eventSelect}
+     order by e.created_at asc, e.id asc
+    `,
+    options.eventId == null ? [projectId] : [projectId, options.eventId],
+  )
+  const direction = options.sort === 'asc' ? 1 : -1
+  const filteredEventRows = databasePageResult
+    ? databasePageResult.rows
+    : allEventsResult.rows
+    .filter((row) => projectPackageEventMatchesQuery(row, options, normalizedQuery))
+    .sort((left, right) => {
+      const leftDate = left.delivery_date ? formatDate(left.delivery_date) : formatDate(left.created_at)
+      const rightDate = right.delivery_date ? formatDate(right.delivery_date) : formatDate(right.created_at)
+      const comparison = leftDate.localeCompare(rightDate) || left.created_at.getTime() - right.created_at.getTime() || Number(left.id) - Number(right.id)
+      return comparison * direction
+    })
+  const total = databasePageResult
+    ? Number(databaseTotalResult?.rows[0]?.total ?? 0)
+    : filteredEventRows.length
+  const pageEventRows = databasePageResult
+    ? filteredEventRows
+    : filteredEventRows.slice(requestedOffset, requestedOffset + requestedLimit)
+  const limit = requestedLimit
+  const offset = requestedOffset
+  const selectedEventIds = pageEventRows.map((row) => Number(row.id))
+  const eventsResult = { rows: pageEventRows }
+  const eventScope = 'and e.id = any($2::bigint[])'
+  const scopedValues: [number, number[]] = [projectId, selectedEventIds]
+  const [
+    groupsResult,
+    itemsResult,
+    containerImagesResult,
+    offlinePackagesResult,
+    operationsResult,
+    operationTodosResult,
+    commentsResult,
+  ] = includeDetails ? await Promise.all([
     query<GroupRow>(
       `
       select g.id, g.project_package_event_id, g.package_name, g.created_at
@@ -1384,6 +1645,9 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
              i.object_last_modified,
              i.size_bytes::text,
              i.source_config_revision,
+             i.environment_variables,
+             i.values_path,
+             i.values_patch,
              i.created_at
       from project_package_items i
       join project_package_groups g on g.id = i.project_package_group_id
@@ -1392,6 +1656,24 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         ${eventScope}
       order by i.created_at asc, i.id asc
       `,
+      scopedValues,
+    ),
+    query<ContainerImageRow>(
+      `select image.id, image.project_package_event_id, image.image_ref,
+              image.environment_variables, image.values_path, image.values_patch
+         from project_package_event_container_images image
+         join project_package_events e on e.id = image.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by image.position, image.id`,
+      scopedValues,
+    ),
+    query<OfflinePackageRow>(
+      `select package.id, package.project_package_event_id, package.download_url,
+              package.environment_variables, package.values_path, package.values_patch
+         from project_package_event_offline_packages package
+         join project_package_events e on e.id = package.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by package.position, package.id`,
       scopedValues,
     ),
     query<OperationRow>(
@@ -1458,27 +1740,67 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       `,
       scopedValues,
     ),
-    query<MentionableMemberRow>(
+  ]) : [
+    { rows: [] as GroupRow[] },
+    { rows: [] as ItemRow[] },
+    { rows: [] as ContainerImageRow[] },
+    { rows: [] as OfflinePackageRow[] },
+    { rows: [] as OperationRow[] },
+    { rows: [] as OperationTodoRow[] },
+    { rows: [] as PackageEventCommentRow[] },
+  ]
+
+  const summaryCountsResult = includeDetails
+    ? { rows: [] as EventSummaryCountRow[] }
+    : await query<EventSummaryCountRow>(
       `
-      select u.id, u.email, u.display_name
-      from users u
-      where (
-        u.id = (select p.user_id from projects p where p.id = $1)
-        or exists (
-          select 1 from project_memberships pm
-          where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
-        )
-        or exists (
-          select 1 from projects p
-          join organization_memberships om on om.organization_id = p.organization_id
-          where p.id = $1 and om.user_id = u.id and om.status = 'active'
-        )
-      )
-      order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+      select e.id,
+             (
+               select count(*)
+               from project_package_groups g
+               join project_package_items i on i.project_package_group_id = g.id
+               where g.project_package_event_id = e.id
+             )::text as package_count,
+             (
+               select count(*)
+               from project_package_operations o
+               where o.project_package_event_id = e.id
+             )::text as operation_count,
+             (
+               select count(*)
+               from project_package_event_comments c
+               where c.project_package_event_id = e.id
+             )::text as comment_count
+        from project_package_events e
+       where e.project_id = $1
+         ${selectedEventIds.length > 0 ? 'and e.id = any($2::bigint[])' : 'and false'}
       `,
-      [projectId],
-    ),
-  ])
+      selectedEventIds.length > 0 ? scopedValues : [projectId],
+    )
+
+  const mentionableMembersResult = await query<MentionableMemberRow>(
+    `
+    select u.id, u.email, u.display_name
+    from users u
+    where (
+      u.id = (select p.user_id from projects p where p.id = $1)
+      or exists (
+        select 1 from project_memberships pm
+        where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
+      )
+      or exists (
+        select 1 from projects p
+        join organization_memberships om on om.organization_id = p.organization_id
+        where p.id = $1 and om.user_id = u.id and om.status = 'active'
+      )
+    )
+    order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+    `,
+    [projectId],
+  )
+
+  const summaryCountsByEvent = new Map<number, EventSummaryCountRow>()
+  for (const row of summaryCountsResult.rows) summaryCountsByEvent.set(Number(row.id), row)
 
   const groupsByEvent = new Map<number, ProjectPackageGroup[]>()
   const groupMap = new Map<number, ProjectPackageGroup>()
@@ -1517,7 +1839,32 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       sizeBytes: row.size_bytes ? Number(row.size_bytes) : undefined,
       sourceConfigRevision: row.source_config_revision ? Number(row.source_config_revision) : undefined,
       createdAt: formatDateTime(row.created_at),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
     })
+  }
+
+  const containerImagesByEvent = new Map<number, ProjectPackageEventContainerImage[]>()
+  for (const row of containerImagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const images = containerImagesByEvent.get(eventId) ?? []
+    images.push({
+      id: Number(row.id),
+      image: decryptText(row.image_ref),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
+    containerImagesByEvent.set(eventId, images)
+  }
+
+  const offlinePackagesByEvent = new Map<number, ProjectPackageEventOfflinePackage[]>()
+  for (const row of offlinePackagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const packages = offlinePackagesByEvent.get(eventId) ?? []
+    packages.push({
+      id: Number(row.id),
+      url: decryptText(row.download_url),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
+    offlinePackagesByEvent.set(eventId, packages)
   }
 
   const relatedTodoIdsByOperation = new Map<number, number[]>()
@@ -1612,6 +1959,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       comments: commentsByEvent.get(Number(row.id)) ?? [],
+      containerImages: containerImagesByEvent.get(Number(row.id)) ?? [],
       id: Number(row.id),
       publishedAt: row.published_at ? formatDateTime(row.published_at) : undefined,
       publishedByUserId: row.published_by_user_id ? Number(row.published_by_user_id) : undefined,
@@ -1620,31 +1968,36 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0, o
       title: decryptText(row.title),
       createdAt: formatDateTime(row.created_at),
       deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
+      deliveryDelayDays: row.published_at
+        ? calendarDayDifference(
+            row.completed_at ? formatDate(row.completed_at) : formatDate(new Date()),
+            row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.delivery_end_at),
+          )
+        : undefined,
       deliveryEndAt: formatDateTime(row.delivery_end_at),
       deliveryStartAt: formatDateTime(row.delivery_start_at),
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
+      offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
+      detailsLoaded: includeDetails,
+      packageCount: includeDetails
+        ? groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.items.length, 0) ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.package_count ?? 0),
+      operationCount: includeDetails
+        ? (eventOperationsByEvent.get(Number(row.id))?.length ?? 0) +
+          (groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.operations.length, 0) ?? 0)
+        : Number(summaryCountsByEvent.get(Number(row.id))?.operation_count ?? 0),
+      commentCount: includeDetails
+        ? commentsByEvent.get(Number(row.id))?.length ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.comment_count ?? 0),
     }))
-  const filteredEvents = normalizedQuery
-    ? allEvents.filter((event) => [event.title, event.type, event.status, event.assigneeName ?? ''].join(' ').toLocaleLowerCase('zh-CN').includes(normalizedQuery))
-    : allEvents
-  const total = databasePageRequested
-    ? Number((await query<{ count: string }>('select count(*)::bigint as count from project_package_events where project_id = $1', [projectId])).rows[0]?.count ?? 0)
-    : filteredEvents.length
-  const limit = requestedLimit
-  const offset = requestedOffset
-  const events = databasePageRequested
-    ? allEvents
-    : options.limit == null && options.offset == null && !normalizedQuery
-    ? filteredEvents
-    : filteredEvents.slice(offset, offset + limit)
   return {
     canPlanDelivery: access.canPlan,
     deliveryMembers,
     departedUserIds: await getDepartedUserIds(),
     projectId,
-    events,
+    events: allEvents,
     pagination: { limit, offset, total },
     mentionableMembers,
   } satisfies ProjectPackageTimeline
@@ -1660,7 +2013,9 @@ export async function saveProjectPackageEvent(params: {
   deliveryStartAt?: string
   documents: ProjectPackageDocumentInput[]
   eventId?: number
+  containerImages?: ProjectPackageContainerImageInput[]
   items: ProjectPackageItemInput[]
+  offlinePackages?: ProjectPackageOfflinePackageInput[]
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -1673,6 +2028,8 @@ export async function saveProjectPackageEvent(params: {
   if (!title) throw new ProjectPackageEventError('Event title is required', 400)
   const deliveryWindow = normalizeDeliveryWindow(params)
   const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
+  const containerImages = params.containerImages == null ? undefined : normalizeContainerImages(params.containerImages)
+  const offlinePackages = params.offlinePackages == null ? undefined : normalizeOfflinePackages(params.offlinePackages)
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
@@ -1763,6 +2120,39 @@ export async function saveProjectPackageEvent(params: {
     if (eventId == null) throw new ProjectPackageEventError('Event could not be saved', 409)
     const persistedEventId = eventId
 
+    const existingItemConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingImageConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingOfflineConfigs = new Map<string, DeliveryRuntimeConfig>()
+    if (params.eventId != null) {
+      const [existingItems, existingImages, existingOfflinePackages] = await Promise.all([
+        client.query<Pick<ItemRow, 'environment_variables' | 'object_key' | 'values_patch' | 'values_path'>>(
+          `select item.object_key, item.environment_variables, item.values_path, item.values_patch
+             from project_package_items item
+             join project_package_groups group_row on group_row.id = item.project_package_group_id
+            where group_row.project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+          `select image_ref, environment_variables, values_path, values_patch
+             from project_package_event_container_images where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+          `select download_url, environment_variables, values_path, values_patch
+             from project_package_event_offline_packages where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+      ])
+      existingItems.rows.forEach((row) => existingItemConfigs.set(row.object_key, readDeliveryRuntimeConfig(row)))
+      existingImages.rows.forEach((row) => {
+        const image = decryptText(row.image_ref)
+        existingImageConfigs.set(containerImageReferenceKey(image), readDeliveryRuntimeConfig(row))
+      })
+      existingOfflinePackages.rows.forEach((row) => {
+        existingOfflineConfigs.set(decryptText(row.download_url), readDeliveryRuntimeConfig(row))
+      })
+    }
+
     await client.query(
       'delete from project_package_operations where project_package_event_id = $1',
       [persistedEventId],
@@ -1771,6 +2161,12 @@ export async function saveProjectPackageEvent(params: {
       'delete from project_package_groups where project_package_event_id = $1',
       [persistedEventId],
     )
+    if (params.eventId == null || containerImages != null) {
+      await client.query('delete from project_package_event_container_images where project_package_event_id = $1', [persistedEventId])
+    }
+    if (params.eventId == null || offlinePackages != null) {
+      await client.query('delete from project_package_event_offline_packages where project_package_event_id = $1', [persistedEventId])
+    }
 
     const groupIds = new Map<string, number>()
     for (const item of items) {
@@ -1794,10 +2190,17 @@ export async function saveProjectPackageEvent(params: {
           size_bytes,
           created_by_user_id,
           source_config_revision
+          , environment_variables
+          , values_path
+          , values_patch
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         `,
-        [
+        (() => {
+          const runtimeConfig = encryptedDeliveryRuntimeConfig(
+            item.runtimeConfig ?? existingItemConfigs.get(item.objectKey) ?? emptyDeliveryRuntimeConfig(),
+          )
+          return [
           groupId,
           item.sourcePackageId,
           item.sourcePackageName,
@@ -1810,12 +2213,39 @@ export async function saveProjectPackageEvent(params: {
           item.sizeBytes,
           params.createdByUserId,
           sourceConfigRevision,
-        ],
+          runtimeConfig.environmentVariables,
+          runtimeConfig.valuesPath,
+          runtimeConfig.valuesPatch,
+          ]
+        })(),
       )
     }
 
     for (const groupId of groupIds.values()) {
       await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
+    }
+
+    for (const [position, item] of (containerImages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingImageConfigs.get(containerImageReferenceKey(item.image)) ?? emptyDeliveryRuntimeConfig(),
+      )
+      await client.query(
+        `insert into project_package_event_container_images
+          (project_package_event_id, position, image_ref, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.image), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
+      )
+    }
+    for (const [position, item] of (offlinePackages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingOfflineConfigs.get(item.url) ?? emptyDeliveryRuntimeConfig(),
+      )
+      await client.query(
+        `insert into project_package_event_offline_packages
+          (project_package_event_id, position, download_url, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.url), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
+      )
     }
 
     await client.query(
@@ -2350,6 +2780,115 @@ export async function getProjectPackageItemObjectKey(params: {
   projectId: number
 }) {
   return (await getProjectPackageItemDownloadSource(params))?.objectKey ?? ''
+}
+
+export async function getProjectPackageEventDeliveryArtifacts(params: {
+  eventId: number
+  expireMinutes: number
+  projectId: number
+}) {
+  const event = await query<{ id: string }>(
+    'select id from project_package_events where id = $1 and project_id = $2',
+    [params.eventId, params.projectId],
+  )
+  if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
+
+  const [packageRows, imageRows, offlineRows] = await Promise.all([
+    query<{
+      environment_variables: string | null
+      object_key: string
+      source_config_revision: string | null
+      source_package_id: string
+      channel: string
+      values_patch: string | null
+      values_path: string | null
+    }>(
+      `select i.object_key, i.source_config_revision, i.source_package_id, i.channel,
+              i.environment_variables, i.values_path, i.values_patch
+         from project_package_items i
+         join project_package_groups g on g.id = i.project_package_group_id
+        where g.project_package_event_id = $1
+        order by i.created_at, i.id`,
+      [params.eventId],
+    ),
+    query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+      `select image_ref, environment_variables, values_path, values_patch from project_package_event_container_images
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+    query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+      `select download_url, environment_variables, values_path, values_patch from project_package_event_offline_packages
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+  ])
+
+  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; objectKey: string; runtimeConfig: DeliveryRuntimeConfig }>
+  const rulesByRevision = new Map<number | null, Awaited<ReturnType<typeof getPackageMarketRulesForConfigRevision>>>()
+  for (const item of packageRows.rows) {
+    const revision = item.source_config_revision ? Number(item.source_config_revision) : null
+    let rules = rulesByRevision.get(revision)
+    if (!rulesByRevision.has(revision)) {
+      rules = await getPackageMarketRulesForConfigRevision(revision)
+      rulesByRevision.set(revision, rules)
+    }
+    if (!isPackageMarketObjectKeyAllowedForRule({
+      channel: item.channel === 'ci' ? 'ci' : 'release',
+      objectKey: item.object_key,
+      packageId: item.source_package_id,
+      rules,
+    })) {
+      throw new ProjectPackageEventError('交付安装包已不符合当前对象规则，无法生成下载地址', 409)
+    }
+    packageLinks.push({
+      ...createPackageItemDownloadLink(item.object_key, params.expireMinutes),
+      objectKey: item.object_key,
+      runtimeConfig: readDeliveryRuntimeConfig(item),
+    })
+  }
+
+  const images = imageRows.rows.map((row) => ({
+    image: decryptText(row.image_ref),
+    runtimeConfig: readDeliveryRuntimeConfig(row),
+  }))
+  const offlinePackages = offlineRows.rows.map((row, index) => {
+    const downloadUrl = decryptText(row.download_url)
+    return {
+      downloadUrl,
+      fileName: offlinePackageFileName(downloadUrl, index),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    }
+  })
+  const addresses = [
+    ...packageLinks.map((item) => ({ expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl })),
+    ...offlinePackages.map((item) => ({ kind: 'offline-package' as const, value: item.downloadUrl })),
+    ...images.map((item) => ({ kind: 'container-image' as const, value: item.image })),
+  ]
+  return {
+    addresses,
+    items: [
+      ...packageLinks.map((item) => ({
+        address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] }),
+      })),
+      ...offlinePackages.map((item) => ({
+        address: { kind: 'offline-package' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] }),
+      })),
+      ...images.map((item) => ({
+        address: { kind: 'container-image' as const, value: item.image },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] }),
+      })),
+    ],
+    script: createDeliveryExecutionScript({
+      images,
+      offlinePackages,
+      packages: packageLinks,
+    }),
+  }
 }
 
 export async function exportProjectPackageTimeline(projectId: number, eventId?: number) {

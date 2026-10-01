@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowClockwise,
   ArrowCounterClockwise,
@@ -29,37 +29,90 @@ export function TodoActivityPanel({
   todoId?: number
 }) {
   const [events, setEvents] = useState<TodoActivityEvent[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(false)
+  const requestVersionRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestVersion = ++requestVersionRef.current
     setLoading(true)
     setError('')
+    setExpanded(false)
     try {
-      const result = await fetchTodoActivity(projectId, todoId)
+      const result = await fetchTodoActivity(
+        projectId,
+        todoId,
+        previewLimit == null ? undefined : { limit: previewLimit },
+      )
+      if (requestVersion !== requestVersionRef.current) return
       setEvents(result.events)
+      setTotal(result.total ?? result.events.length)
     } catch (loadError) {
+      if (requestVersion !== requestVersionRef.current) return
       setError(
         loadError instanceof Error && loadError.message
           ? loadError.message
           : '无法加载待办动态，请稍后重试。',
       )
     } finally {
-      setLoading(false)
+      if (requestVersion === requestVersionRef.current) setLoading(false)
+    }
+  }, [previewLimit, projectId, todoId])
+
+  const expandAll = useCallback(async () => {
+    const requestVersion = ++requestVersionRef.current
+    setLoading(true)
+    setError('')
+    try {
+      const firstPage = await fetchTodoActivity(projectId, todoId, { limit: 200 })
+      const allEvents = [...firstPage.events]
+      let nextCursor = firstPage.nextCursor
+      while (allEvents.length < (firstPage.total ?? 0) && nextCursor && firstPage.snapshotMaxId != null) {
+        const nextPage = await fetchTodoActivity(projectId, todoId, {
+          cursor: nextCursor,
+          limit: 200,
+          snapshotMaxId: firstPage.snapshotMaxId,
+        })
+        if (requestVersion !== requestVersionRef.current) return
+        if (nextPage.events.length === 0) {
+          throw new Error('待办动态分页不完整，请刷新后重试。')
+        }
+        allEvents.push(...nextPage.events)
+        nextCursor = nextPage.nextCursor
+      }
+      if (allEvents.length < (firstPage.total ?? 0)) {
+        throw new Error('待办动态分页不完整，请刷新后重试。')
+      }
+      if (requestVersion !== requestVersionRef.current) return
+      setEvents(allEvents)
+      setTotal(allEvents.length)
+      setExpanded(true)
+    } catch (loadError) {
+      if (requestVersion !== requestVersionRef.current) return
+      setError(
+        loadError instanceof Error && loadError.message
+          ? loadError.message
+          : '无法加载全部待办动态，请稍后重试。',
+      )
+    } finally {
+      if (requestVersion === requestVersionRef.current) setLoading(false)
     }
   }, [projectId, todoId])
 
   useEffect(() => {
-    setExpanded(false)
     void load()
+    return () => {
+      requestVersionRef.current += 1
+    }
   }, [load])
 
   const visibleEvents = useMemo(
     () => (previewLimit == null || expanded ? events : events.slice(0, previewLimit)),
     [events, expanded, previewLimit],
   )
-  const canExpand = previewLimit != null && events.length > previewLimit
+  const canExpand = previewLimit != null && total > previewLimit
 
   return (
     <Card className="panel todo-activity-panel">
@@ -71,13 +124,13 @@ export function TodoActivityPanel({
           <h3>{todoId ? '任务动态' : '待办动态'}</h3>
           <p>{previewLimit == null
             ? (todoId ? '按时间记录当前任务的创建、编辑、工时和确认变化。' : '按时间记录创建、指派、确认或驳回、完成和重开，日总结与周总结会基于这些事实生成。')
-            : events.length
-              ? (expanded ? `已展开全部 ${events.length} 条` : `最近 ${Math.min(events.length, previewLimit)} 条${canExpand ? `，共 ${events.length} 条` : ''}`)
+            : total
+              ? (expanded ? `已展开全部 ${total} 条` : `最近 ${Math.min(total, previewLimit)} 条${canExpand ? `，共 ${total} 条` : ''}`)
               : '记录任务的创建、编辑、工时和确认变化。'}</p>
         </div>
         <div className="todo-activity-header-actions">
           {canExpand ? (
-            <Button className="todo-activity-toggle" type="button" variant="ghost" onClick={() => setExpanded((current) => !current)}>
+            <Button className="todo-activity-toggle" disabled={loading} type="button" variant="ghost" onClick={() => expanded ? setExpanded(false) : void expandAll()}>
               {expanded ? '收起动态' : '展开全部动态'}
             </Button>
           ) : null}
