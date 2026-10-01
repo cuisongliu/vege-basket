@@ -1,6 +1,7 @@
 import { clampListPage } from './list-pagination'
 import { reassignProjectPackageEvent } from './api'
 import type { MyWorkViewState } from './my-work-types'
+import { preserveLoadedPackageEventDetails } from './project-package-timeline-state'
 import { ListPagination } from './components/list-pagination'
 import {
   Activity,
@@ -550,28 +551,6 @@ function formatAiMessageTime(value: string) {
   }).format(date)
 }
 
-function preserveLoadedPackageEventDetails(
-  current: ProjectPackageTimeline,
-  incoming: ProjectPackageTimeline,
-) {
-  const currentEventsById = new Map(current.events.map((event) => [event.id, event]))
-  return {
-    ...incoming,
-    events: incoming.events.map((event) => {
-      const loadedEvent = currentEventsById.get(event.id)
-      if (loadedEvent?.detailsLoaded !== true) return event
-      return {
-        ...event,
-        comments: loadedEvent.comments,
-        containerImages: loadedEvent.containerImages,
-        groups: loadedEvent.groups,
-        offlinePackages: loadedEvent.offlinePackages,
-        operations: loadedEvent.operations,
-        detailsLoaded: true,
-      }
-    }),
-  }
-}
 type TodoUpdatePayload = Omit<
   Partial<Todo>,
   'assigneeUserId' | 'moduleId' | 'subprojectId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { resolveExistingOperationInteraction } from '../src/project-package-operation-access.ts'
+import { preserveLoadedPackageEventDetails } from '../src/project-package-timeline-state.ts'
+import type { ProjectPackageEvent, ProjectPackageTimeline } from '../src/types.ts'
 
 const workbenchSource = readFileSync(
   new URL('../src/components/project-package-workbench.tsx', import.meta.url),
@@ -385,8 +387,7 @@ test('delivery event summaries use database pagination and hydrate one selected 
   assert.match(timelineSource, /includeDetails \? 'e\.delivery_scripts' : 'null::text'/u)
   assert.match(timelineSource, /includeDetails && selectedEventIds\.length > 0/u)
   assert.match(timelineSource, /deliveryScripts: includeDetails \?/u)
-  assert.match(appSource, /containerImages: loadedEvent\.containerImages/u)
-  assert.match(appSource, /offlinePackages: loadedEvent\.offlinePackages/u)
+  assert.match(appSource, /preserveLoadedPackageEventDetails/u)
   assert.match(workbenchSource, /openLoadedDraftEventEditor/u)
   assert.match(workbenchSource, /await onLoadTimeline\(\{ eventId: event\.id, includeDetails: true, limit: 1, offset: 0 \}\)/u)
   assert.doesNotMatch(timelineSource, /packageCount:[\s\S]*?container_image_count/u)
@@ -395,6 +396,61 @@ test('delivery event summaries use database pagination and hydrate one selected 
   assert.match(timelineSource, /params\.eventId == null \|\| containerImages != null/u)
   assert.match(appSource, /const savedEventId = mutationResult\.savedEventId \?\? eventId/u)
   assert.match(appSource, /fetchProjectPackageTimeline\(projectId, \{ \.\.\.installTimelineQueryRef\.current, includeDetails: false \}\)/u)
+})
+
+test('delivery summary refresh preserves every loaded detail field only for the same event revision', () => {
+  const detailEvent = {
+    id: 7,
+    updatedAt: '2026-10-01 12:00:00',
+    detailsLoaded: true,
+    comments: [{ id: 1 }],
+    containerImages: [{ id: 2 }],
+    deliveryFailureReason: '整体失败详情',
+    deliveryScripts: [{ id: 'script-1', title: '检查', content: 'echo ok' }],
+    deliverySteps: [{ id: 'step-1', kind: 'shell-script', processName: '检查', reference: 'script-1' }],
+    groups: [{ id: 3 }],
+    latestRejectedAt: '2026-10-01 11:00:00',
+    latestRejectedByName: '执行人',
+    latestRejectionReason: '需要调整顺序',
+    offlinePackages: [{ id: 4 }],
+    operations: [{ id: 5 }],
+    other: { content: 'echo legacy', type: 'shell-script' },
+    rejections: [{ createdAt: '2026-10-01 11:00:00', reason: '需要调整顺序', rejectedByName: '执行人' }],
+  } as ProjectPackageEvent
+  const summaryEvent = {
+    ...detailEvent,
+    comments: [],
+    containerImages: [],
+    deliveryFailureReason: undefined,
+    deliveryScripts: [],
+    deliverySteps: [],
+    groups: [],
+    latestRejectedAt: undefined,
+    latestRejectedByName: undefined,
+    latestRejectionReason: undefined,
+    offlinePackages: [],
+    operations: [],
+    other: null,
+    rejections: [],
+    detailsLoaded: false,
+    rejectionCount: 1,
+  }
+  const timeline = (event: ProjectPackageEvent) => ({ events: [event] }) as ProjectPackageTimeline
+
+  const preserved = preserveLoadedPackageEventDetails(timeline(detailEvent), timeline(summaryEvent)).events[0]
+  assert.equal(preserved.detailsLoaded, true)
+  assert.deepEqual(preserved.deliverySteps, detailEvent.deliverySteps)
+  assert.deepEqual(preserved.deliveryScripts, detailEvent.deliveryScripts)
+  assert.deepEqual(preserved.rejections, detailEvent.rejections)
+  assert.equal(preserved.latestRejectionReason, detailEvent.latestRejectionReason)
+  assert.equal(preserved.deliveryFailureReason, detailEvent.deliveryFailureReason)
+  assert.equal(preserved.other, detailEvent.other)
+
+  const changedSummary = { ...summaryEvent, updatedAt: '2026-10-01 12:01:00' }
+  const invalidated = preserveLoadedPackageEventDetails(timeline(detailEvent), timeline(changedSummary)).events[0]
+  assert.equal(invalidated.detailsLoaded, false)
+  assert.deepEqual(invalidated.deliverySteps, [])
+  assert.deepEqual(invalidated.rejections, [])
 })
 
 test('delivery events support mixed encrypted artifacts and server-generated scripts', () => {
@@ -457,8 +513,7 @@ test('delivery workbench uses a full-width event list and a desktop right detail
   assert.match(workbenchCss, /grid-template-columns: var\(--delivery-event-content-columns\) 40px/u)
   assert.match(workbenchCss, /\.delivery-event-list-panel[\s\S]*grid-template-rows: auto auto auto auto auto minmax\(0, 1fr\) auto/u)
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
-  assert.match(appSource, /function preserveLoadedPackageEventDetails/u)
-  assert.match(appSource, /loadedEvent\?\.detailsLoaded !== true/u)
+  assert.match(appSource, /preserveLoadedPackageEventDetails/u)
   assert.match(appSource, /if \(options\.eventId == null\) installTimelineQueryRef\.current = options/u)
   assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px, calc\(100vw - 32px\)\) !important/u)
   assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*translate: none !important/u)
