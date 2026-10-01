@@ -3,6 +3,7 @@ import { reassignProjectPackageEvent } from './api'
 import type { MyWorkViewState } from './my-work-types'
 import { ListPagination } from './components/list-pagination'
 import {
+  Activity,
   Component,
   useCallback,
   useEffect,
@@ -5856,7 +5857,7 @@ ${packageTimelineText}`
           />
         )}
 
-        {view === 'my_work' && (
+        <Activity mode={view === 'my_work' ? 'visible' : 'hidden'}>
           <MyWorkWorkbench
             key={`${authUserId}:${selectedOrganizationId}`}
             scope={`${authUserId}:${selectedOrganizationId}`}
@@ -5872,9 +5873,9 @@ ${packageTimelineText}`
             }}
             onMilestoneClick={selectProject}
           />
-        )}
+        </Activity>
 
-        {view === 'my_work_review' && (
+        {canNavigateToReview ? <Activity mode={view === 'my_work_review' ? 'visible' : 'hidden'}>
           <MyWorkWorkbench
             key={`${authUserId}:${selectedOrganizationId}:review`}
             mode="review"
@@ -5888,9 +5889,9 @@ ${packageTimelineText}`
             onMilestoneClick={selectProject}
             onWorkHoursChanged={() => { void refreshNavigationCounts() }}
           />
-        )}
+        </Activity> : null}
 
-        {view === 'my_work_hours' && selectedOrganizationId !== null ? (
+        {selectedOrganizationId !== null ? <Activity mode={view === 'my_work_hours' ? 'visible' : 'hidden'}>
           <WorkHoursWorkbench
             mode="mine"
             projects={scopedProjects}
@@ -5903,9 +5904,9 @@ ${packageTimelineText}`
             onTodoClick={selectMyWorkTodo}
             onProjectClick={selectProjectWorkHours}
           />
-        ) : null}
+        </Activity> : null}
 
-        {view === 'work_hours' && selectedOrganizationId !== null && canManageSelectedOrganization ? (
+        {selectedOrganizationId !== null && canManageSelectedOrganization ? <Activity mode={view === 'work_hours' ? 'visible' : 'hidden'}>
           <WorkHoursWorkbench
             mode="organization"
             organizationId={selectedOrganizationId}
@@ -5914,7 +5915,7 @@ ${packageTimelineText}`
             currentUserName={authUser?.displayName}
             onProjectClick={selectProjectWorkHours}
           />
-        ) : null}
+        </Activity> : null}
 
         {view === 'notifications' && (
           <NotificationCenterView
@@ -5925,7 +5926,7 @@ ${packageTimelineText}`
           />
         )}
 
-        {view === 'search' && (
+        <Activity mode={view === 'search' ? 'visible' : 'hidden'}>
           <SearchView
             page={projectBasketPage.scope === projectBasketScope ? projectBasketPage.page : 0}
             onPageChange={(page) => setProjectBasketPage({ scope: projectBasketScope, page })}
@@ -5947,7 +5948,7 @@ ${packageTimelineText}`
             onTagChange={setTagFilter}
             onUpdateProjectStatus={updateProjectStatus}
           />
-        )}
+        </Activity>
 
         {view === 'organization' && authUser && canAccessOrganizationManagement(authUser) ? (
           <OrganizationWorkbench
@@ -11220,14 +11221,15 @@ function TodoPropertiesPanel({
   onAssigneeUserIdChange,
   onCreatedAtChange,
   onDueDateChange,
-  onInlineUpdate,
   onModuleIdChange,
   onPriorityChange,
   onReviewerUserIdChange,
+  onSubprojectIdChange,
   onWatcherUserIdsChange,
   priority,
   project,
   reviewerUserId,
+  subprojectId,
   todo,
   watcherUserIds,
 }: {
@@ -11241,53 +11243,19 @@ function TodoPropertiesPanel({
   onAssigneeUserIdChange: (value: number | null) => void
   onCreatedAtChange: (value: string) => void
   onDueDateChange: (value: string) => void
-  onInlineUpdate: (payload: TodoUpdatePayload) => Promise<boolean>
   onModuleIdChange: (value: number | null) => void
   onPriorityChange: (value: Priority) => void
   onReviewerUserIdChange: (value: number | null) => void
+  onSubprojectIdChange: (value: number | null) => void
   onWatcherUserIdsChange: (value: number[]) => void
   priority: Priority
   project: Project
   reviewerUserId: number | null
+  subprojectId: number | null
   todo: Todo
   watcherUserIds: number[]
 }) {
   const creatorName = todo.creatorName ?? project.ownerName
-
-  function updateDueDate(value: string) {
-    onDueDateChange(value)
-    onInlineUpdate({ dueDate: value })
-  }
-
-  function updateCreatedAt(value: string) {
-    onCreatedAtChange(value)
-    onInlineUpdate({ createdAt: value })
-  }
-
-  function updatePriority(value: Priority) {
-    onPriorityChange(value)
-    onInlineUpdate({ priority: value })
-  }
-
-  function updateModule(value: number | null) {
-    onModuleIdChange(value)
-    onInlineUpdate({ moduleId: value })
-  }
-
-  function updateAssignee(value: number | null) {
-    onAssigneeUserIdChange(value)
-    onInlineUpdate({ assigneeUserId: value })
-  }
-
-  function updateWatchers(value: number[]) {
-    onWatcherUserIdsChange(value)
-    onInlineUpdate({ watcherUserIds: value })
-  }
-
-  function updateReviewer(value: number | null) {
-    onReviewerUserIdChange(value)
-    onInlineUpdate({ reviewerUserId: value })
-  }
 
   return (
     <aside className="todo-properties-panel" aria-label="待办属性">
@@ -11296,19 +11264,19 @@ function TodoPropertiesPanel({
           <span className="todo-properties-kicker">属性</span>
           <strong>待办信息</strong>
         </div>
-        {canEdit ? <span className="todo-properties-editable">可直接编辑</span> : null}
+        {canEdit ? <span className="todo-properties-editable">编辑中</span> : null}
       </div>
       <div className="todo-properties-list">
         <div className="todo-property-row">
           <span>所属子项目</span>
-          <Select disabled={!canEdit} value={String(todo.subprojectId ?? 'none')}
-            onValueChange={(value) => onInlineUpdate({ subprojectId: value === 'none' ? null : Number(value) })}>
+          {canEdit ? <Select value={String(subprojectId ?? 'none')}
+            onValueChange={(value) => onSubprojectIdChange(value === 'none' ? null : Number(value))}>
             <SelectTrigger aria-label="所属子项目"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="none">无子项目</SelectItem>
               {(project.subprojects ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
             </SelectContent>
-          </Select>
+          </Select> : <strong>{todo.subprojectName ?? '无子项目'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>项目</span>
@@ -11316,18 +11284,17 @@ function TodoPropertiesPanel({
         </div>
         <div className="todo-property-row">
           <span>截止日期</span>
-          <JournalDatePicker
+          {canEdit ? <JournalDatePicker
             ariaLabel="待办截止日期"
             className="todo-property-control"
             datesWithEntries={[]}
-            disabled={!canEdit}
             value={dueDate}
-            onChange={updateDueDate}
-          />
+            onChange={onDueDateChange}
+          /> : <strong>{dueDate}</strong>}
         </div>
         <div className="todo-property-row">
           <span>优先级</span>
-          <Select disabled={!canEdit} value={priority} onValueChange={(value) => updatePriority(value as Priority)}>
+          {canEdit ? <Select value={priority} onValueChange={(value) => onPriorityChange(value as Priority)}>
             <SelectTrigger aria-label="待办优先级" className="todo-property-control">
               <SelectValue />
             </SelectTrigger>
@@ -11336,49 +11303,45 @@ function TodoPropertiesPanel({
               <SelectItem value="medium">中优先级</SelectItem>
               <SelectItem value="low">低优先级</SelectItem>
             </SelectContent>
-          </Select>
+          </Select> : <strong>{priorityCopy[priority]}</strong>}
         </div>
         <div className="todo-property-row">
           <span>所属模块</span>
-          <ProjectModulePicker
+          {canEdit ? <ProjectModulePicker
             organizationManaged={project.moduleManagement === 'organization'}
-            disabled={!canEdit}
             modules={modules}
             value={moduleId}
-            onChange={updateModule}
-          />
+            onChange={onModuleIdChange}
+          /> : <strong>{todo.moduleName ?? '无模块'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>负责人</span>
-          <ProjectMemberPicker
-            disabled={!canEdit}
+          {canEdit ? <ProjectMemberPicker
             members={members}
             value={assigneeUserId}
-            onChange={updateAssignee}
-          />
+            onChange={onAssigneeUserIdChange}
+          /> : <strong>{todo.assigneeName ?? '未分配'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>关注人</span>
-          <ProjectMemberMultiPicker
-            disabled={!canEdit}
+          {canEdit ? <ProjectMemberMultiPicker
             emptyLabel="未关注"
             label="待办关注人"
             members={members}
             values={watcherUserIds}
-            onChange={updateWatchers}
-          />
+            onChange={onWatcherUserIdsChange}
+          /> : <strong>{getTodoWatcherNames(todo).join('、') || '未关注'}</strong>}
         </div>
         {!project.organizationId ? (
           <div className="todo-property-row">
             <span>确认人</span>
-            <ProjectMemberPicker
-              disabled={!canEdit}
+            {canEdit ? <ProjectMemberPicker
               emptyLabel="待办创建人"
               label="指定确认人"
               members={members}
               value={reviewerUserId}
-              onChange={updateReviewer}
-            />
+              onChange={onReviewerUserIdChange}
+            /> : <strong>{todo.reviewerName ?? creatorName}</strong>}
           </div>
         ) : null}
         <div className="todo-property-row">
@@ -11393,7 +11356,7 @@ function TodoPropertiesPanel({
               className="todo-property-control"
               datesWithEntries={[]}
               value={createdAt}
-              onChange={updateCreatedAt}
+              onChange={onCreatedAtChange}
             />
           ) : <strong>{createdAt}</strong>}
         </div>
@@ -11418,6 +11381,7 @@ function TodoEditorDialog({
   canEdit = false,
   canEditProperties = canEdit,
   canRecordWorkHour = false,
+  canSubmitWorkHour = false,
   canShare = false,
   canCreateModule = false,
   clearDisabled = false,
@@ -11446,7 +11410,6 @@ function TodoEditorDialog({
   onStartEdit,
   onSubmit,
   onTitleChange,
-  onInlineUpdate,
   open,
   priority,
   project,
@@ -11467,6 +11430,7 @@ function TodoEditorDialog({
   canEdit?: boolean
   canEditProperties?: boolean
   canRecordWorkHour?: boolean
+  canSubmitWorkHour?: boolean
   canShare?: boolean
   canCreateModule?: boolean
   clearDisabled?: boolean
@@ -11495,7 +11459,6 @@ function TodoEditorDialog({
   onStartEdit?: () => void
   onSubmit: () => void
   onTitleChange: (value: string) => void
-  onInlineUpdate?: (payload: TodoUpdatePayload) => Promise<boolean>
   open: boolean
   priority: Priority
   project: Project
@@ -11571,30 +11534,14 @@ function TodoEditorDialog({
           {todo && (canEdit || canShare) ? (
             <div className="todo-detail-overview-actions">
               {canEdit ? (
-                <Button className="todo-detail-primary-edit" type="button" variant="outline" onClick={onStartEdit}>
-                  <PencilSimple size={16} /> 编辑
+                <Button aria-label="编辑待办" className="todo-detail-primary-edit" size="icon" title="编辑" type="button" variant="outline" onClick={onStartEdit}>
+                  <PencilSimple size={17} />
                 </Button>
               ) : null}
               {canShare ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      aria-label="更多待办操作"
-                      className="todo-detail-more-button"
-                      size="icon"
-                      title="更多待办操作"
-                      type="button"
-                      variant="outline"
-                    >
-                      <DotsThree size={20} weight="bold" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="todo-detail-more-menu">
-                    <DropdownMenuItem onSelect={() => setShareOpen(true)}>
-                      <LinkSimple size={16} /> 分享待办
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <Button aria-label="分享待办" className="todo-detail-share-button" size="icon" title="分享" type="button" variant="outline" onClick={() => setShareOpen(true)}>
+                  <LinkSimple size={17} />
+                </Button>
               ) : null}
             </div>
           ) : null}
@@ -11808,6 +11755,7 @@ function TodoEditorDialog({
         {showDetailOverview && todo && project.organizationId ? (
           <TodoWorkHoursPanel
             canRecord={canRecordWorkHour}
+            canSubmit={canSubmitWorkHour}
             currentUserId={currentUserId}
             todo={todo}
             onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
@@ -11830,14 +11778,15 @@ function TodoEditorDialog({
             onAssigneeUserIdChange={onAssigneeUserIdChange}
             onCreatedAtChange={onCreatedAtChange}
             onDueDateChange={onDueDateChange}
-            onInlineUpdate={onInlineUpdate ?? (() => Promise.resolve(false))}
             onModuleIdChange={onModuleIdChange}
             onPriorityChange={onPriorityChange}
             onReviewerUserIdChange={onReviewerUserIdChange}
+            onSubprojectIdChange={onSubprojectIdChange ?? (() => undefined)}
             onWatcherUserIdsChange={onWatcherUserIdsChange}
             priority={priority}
             project={project}
             reviewerUserId={reviewerUserId}
+            subprojectId={subprojectId ?? null}
             todo={todo}
             watcherUserIds={watcherUserIds}
           />
@@ -12004,6 +11953,9 @@ function TodoList({
   )
   const [todoEditModuleId, setTodoEditModuleId] = useState<number | null>(
     initialTodo?.moduleId ?? null,
+  )
+  const [todoEditSubprojectId, setTodoEditSubprojectId] = useState<number | null>(
+    initialTodo?.subprojectId ?? null,
   )
   const [isTodoDetailEditing, setIsTodoDetailEditing] = useState(false)
   const { markTodoNotesRead } = useTodoNoteReadState(currentUserId)
@@ -12174,8 +12126,6 @@ function TodoList({
       canManageOrganizationTodos || canUpdateOrganizationTodoFields || editingCanManageTodo
     ),
   )
-  const editingCanRespondToTodo = editingTodo ? canRespondToTodo(editingTodo) : false
-
   function canShareTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
     return Boolean(currentUserId != null && project)
@@ -12210,7 +12160,14 @@ function TodoList({
       project.organizationId &&
       currentUserId != null &&
       !todo.done &&
-      todo.confirmationStatus !== 'pending_review' &&
+      todo.confirmationStatus !== 'pending_review',
+    )
+  }
+
+  function canSubmitWorkHour(todo: Todo) {
+    return Boolean(
+      currentUserId != null &&
+      !todo.done &&
       (todo.assigneeUserId === currentUserId || (
         todo.assigneeUserId == null && project.ownerUserId === currentUserId
       )),
@@ -12267,6 +12224,7 @@ function TodoList({
     setTodoEditWatcherUserIds([])
     setTodoEditReviewerUserId(null)
     setTodoEditModuleId(null)
+    setTodoEditSubprojectId(null)
     setIsTodoDetailEditing(false)
   }
 
@@ -12280,6 +12238,7 @@ function TodoList({
     setTodoEditWatcherUserIds(getTodoWatcherUserIds(todo))
     setTodoEditReviewerUserId(todo.reviewerUserId ?? null)
     setTodoEditModuleId(todo.moduleId ?? null)
+    setTodoEditSubprojectId(todo.subprojectId ?? null)
   }
 
   function openTodoEditDialog(todo: Todo) {
@@ -12345,6 +12304,7 @@ function TodoList({
       watcherUserIds: todoEditWatcherUserIds,
       reviewerUserId: todoEditReviewerUserId,
       moduleId: todoEditModuleId,
+      subprojectId: todoEditSubprojectId,
     })
     if (updated === false) return
     setIsTodoDetailEditing(false)
@@ -12400,8 +12360,9 @@ function TodoList({
           priority={todoEditPriority}
           project={editingProject}
           canEdit={editingCanManageTodo}
-          canEditProperties={editingCanManageTodoFields}
+          canEditProperties={isTodoDetailEditing && editingCanManageTodoFields}
           canRecordWorkHour={canRecordWorkHour(editingTodo)}
+          canSubmitWorkHour={canSubmitWorkHour(editingTodo)}
           departedUserIds={departedUserIds}
           canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
@@ -12418,6 +12379,7 @@ function TodoList({
           onDetailChange={setTodoEditDetail}
           onDueDateChange={setTodoEditDueDate}
           onModuleIdChange={setTodoEditModuleId}
+          onSubprojectIdChange={setTodoEditSubprojectId}
           onOpenChange={(open) => {
             if (!open) closeEditDialog()
           }}
@@ -12426,10 +12388,7 @@ function TodoList({
           onStartEdit={() => setIsTodoDetailEditing(true)}
           onSubmit={saveTodoEdit}
           onTitleChange={setTodoEditDraft}
-          onInlineUpdate={(payload) => {
-            if ((!editingCanManageTodoFields && !editingCanRespondToTodo) || !onUpdateTodo) return Promise.resolve(false)
-            return onUpdateTodo(editingTodo.id, payload)
-          }}
+          subprojectId={todoEditSubprojectId}
         />
       </div>
     )

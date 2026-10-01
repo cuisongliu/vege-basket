@@ -269,6 +269,19 @@ async function projectMember(client: PoolClient, projectId: number, userId: numb
   return Boolean(row && (Number(row.owner_user_id) === userId || row.member_id))
 }
 
+async function organizationMember(client: PoolClient, organizationId: number, userId: number) {
+  const result = await client.query(
+    `select 1
+       from organization_memberships
+      where organization_id = $1
+        and user_id = $2
+        and status = 'active'
+      for key share`,
+    [organizationId, userId],
+  )
+  return result.rows.length > 0
+}
+
 async function getTodoForWork(client: PoolClient, todoId: number, userId: number, lock = false) {
   const result = await client.query<{
     id: string
@@ -353,6 +366,7 @@ async function loadEntries(userId: number, filters: {
         and (
           p.user_id = $1
           or exists (select 1 from project_memberships pm where pm.project_id = p.id and pm.invited_user_id = $1 and pm.status = 'active')
+          or exists (select 1 from organization_memberships om where om.organization_id = p.organization_id and om.user_id = $1 and om.status = 'active')
           or ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
         )
       order by entry.work_date desc, entry.created_at desc, entry.id desc`,
@@ -505,42 +519,41 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
   const minutes = parseWorkMinutes(rawMinutes)
   if (minutes == null) throw new WorkHoursError('WORK_MINUTES_REQUIRED', '工时不能为空。', 400)
   const workDate = parseWorkDate(body.workDate ?? body.date)
-  const description = typeof body.description === 'string' ? body.description.trim() : ''
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    const todo = await getTodoForWork(client, todoId, userId, true)
-    if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
-      throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
-    }
-    if (!description) throw new WorkHoursError('WORK_DESCRIPTION_REQUIRED', '工作说明不能为空。', 400)
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
-    if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
-    if (workDate < formatDate(todo.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
-    if (todo.done || todo.confirmation_status === 'pending_review') throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能新增工时。', 409)
-    if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
-      throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能为自己负责的任务记录工时。', 403)
-    }
-    if (!todo.assignee_user_id && Number(todo.owner_user_id) !== userId) {
-      throw new WorkHoursError('TODO_NOT_ASSIGNED', '任务尚未分配给你。', 403)
-    }
-    await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [`work-day:${userId}:${workDate}`])
-    const existing = await client.query<{ total: string }>(
-      `select coalesce(sum(minutes), 0)::bigint as total from todo_work_hours where user_id = $1 and work_date = $2`,
-      [userId, workDate],
-    )
-    if (Number(existing.rows[0]?.total ?? 0) + minutes > WORK_MINUTES_DAY_LIMIT) {
-      throw new WorkHoursError('WORK_DAY_LIMIT', '同一工作日跨项目累计工时不能超过 24 小时。', 409)
-    }
-    const result = await client.query<WorkHourRow>(
-      `insert into todo_work_hours (project_id, todo_id, user_id, work_date, minutes, status, description)
-       values ($1, $2, $3, $4, $5, 'pending', $6)
-       returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
-      [Number(todo.project_id), todoId, userId, workDate, minutes, encryptText(description)],
-    )
-    await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_added')
-    await client.query('commit')
-    return serializeEntry(result.rows[0])
+    const description = typeof body.description === 'string' ? body.description.trim() : ''
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const organization = await lockTodoOrganization(client, todoId, userId)
+      const todo = await getTodoForWork(client, todoId, userId, true)
+      if (
+        !todo || !todo.organization_id || !organization ||
+        Number(todo.organization_id) !== organization.organizationId ||
+        !(await organizationMember(client, organization.organizationId, userId))
+      ) {
+        throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
+      }
+      if (!description) throw new WorkHoursError('WORK_DESCRIPTION_REQUIRED', '工作说明不能为空。', 400)
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+      if (workDate > today) throw new WorkHoursError('WORK_DATE_FUTURE', '工作日期不能晚于今天。', 400)
+      if (workDate < formatDate(todo.project_created_at)) throw new WorkHoursError('WORK_DATE_BEFORE_PROJECT', '工作日期不能早于项目创建日期。', 400)
+      if (todo.done || todo.confirmation_status === 'pending_review') throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能新增工时。', 409)
+      await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [`work-day:${userId}:${workDate}`])
+      const existing = await client.query<{ total: string }>(
+        `select coalesce(sum(minutes), 0)::bigint as total from todo_work_hours where user_id = $1 and work_date = $2`,
+        [userId, workDate],
+      )
+      if (Number(existing.rows[0]?.total ?? 0) + minutes > WORK_MINUTES_DAY_LIMIT) {
+        throw new WorkHoursError('WORK_DAY_LIMIT', '同一工作日跨项目累计工时不能超过 24 小时。', 409)
+      }
+      const result = await client.query<WorkHourRow>(
+        `insert into todo_work_hours (project_id, todo_id, user_id, work_date, minutes, status, description)
+         values ($1, $2, $3, $4, $5, 'pending', $6)
+         returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
+        [Number(todo.project_id), todoId, userId, workDate, minutes, encryptText(description)],
+      )
+      await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_added')
+      await client.query('commit')
+      return serializeEntry(result.rows[0])
   } catch (error) {
     await client.query('rollback')
     throw error
@@ -620,8 +633,15 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       try {
         const todo = await getTodoForWork(client, todoId, userId)
         const managed = todo ? await managedProject(userId, Number(todo.project_id), client) : null
-        const canRead = todo && (await projectMember(client, Number(todo.project_id), userId) || managed)
-        canReadAll = Boolean(todo && (managed || Number(todo.created_by_user_id) === userId))
+        const organizationId = todo?.organization_id ? Number(todo.organization_id) : null
+        const isOrganizationMember = organizationId
+          ? await organizationMember(client, organizationId, userId)
+          : false
+        const canRead = todo && (isOrganizationMember || await projectMember(client, Number(todo.project_id), userId) || managed)
+        const assigneeId = todo?.assignee_user_id
+          ? Number(todo.assignee_user_id)
+          : todo ? Number(todo.owner_user_id) : null
+        canReadAll = Boolean(todo && (managed || Number(todo.created_by_user_id) === userId || assigneeId === userId))
         if (!todo || !todo.organization_id || !canRead) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
@@ -668,15 +688,15 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const organization = await lockTodoOrganization(client, todoId, userId)
       await lockWorkHoursRole(client, userId)
       const todo = await getTodoForWork(client, todoId, userId, true)
-      const isProjectMember = todo
-        ? await projectMember(client, Number(todo.project_id), userId)
+      const isOrganizationMember = todo?.organization_id
+        ? await organizationMember(client, Number(todo.organization_id), userId)
         : false
       if (
         !todo ||
         !todo.organization_id ||
         !organization ||
         Number(todo.organization_id) !== organization.organizationId ||
-        (action === 'submit' ? !isProjectMember : !organization.isManager)
+        (action === 'submit' ? !isOrganizationMember : !organization.isManager)
       ) {
         throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
       }
@@ -688,7 +708,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         throw new WorkHoursError('WORK_HOUR_REVIEW_FORBIDDEN', '只有组织管理员可以确认或退回工时。', 403)
       }
       const expectedStatus: WorkHourStatus = action === 'submit' ? 'pending' : 'submitted'
-      const selectedOwnerId = action === 'submit' ? userId : null
+      const selectedOwnerId = null
       const selected = await client.query<{ id: string }>(
         `select id
            from todo_work_hours
@@ -930,8 +950,13 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         )
         const reference = entryReference.rows[0]
         if (!reference || Number(reference.user_id) !== userId) throw new WorkHoursError('ENTRY_NOT_FOUND', '工时记录不存在。', 404)
+        const organization = await lockTodoOrganization(client, Number(reference.todo_id), userId)
         const todo = await getTodoForWork(client, Number(reference.todo_id), userId, true)
-        if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
+        if (
+          !todo || !todo.organization_id || !organization ||
+          Number(todo.organization_id) !== organization.organizationId ||
+          !(await organizationMember(client, organization.organizationId, userId))
+        ) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
         if (todo.done || todo.confirmation_status === 'pending_review') {
@@ -944,12 +969,6 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         const row = existing.rows[0]
         if (!row || Number(row.user_id) !== userId) throw new WorkHoursError('ENTRY_NOT_FOUND', '工时记录不存在。', 404)
         if (row.status !== 'pending') throw new WorkHoursError('ENTRY_CONFIRMED', '已确认工时不能修改。', 409)
-        if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
-          throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能修改自己负责任务的工时。', 403)
-        }
-        if (!todo.assignee_user_id && Number(todo.owner_user_id) !== userId) {
-          throw new WorkHoursError('TODO_NOT_ASSIGNED', '任务尚未分配给你。', 403)
-        }
         if (minutes == null && !workDate && typeof request.body.description !== 'string') throw new WorkHoursError('ENTRY_EMPTY', '没有可保存的修改。', 400)
         const targetDate = workDate ?? formatDate(row.work_date)
         const targetMinutes = minutes ?? Number(row.minutes)
@@ -999,8 +1018,13 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         if (!reference || Number(reference.user_id) !== userId) {
           throw new WorkHoursError('ENTRY_NOT_FOUND', '工时不存在、已确认或不属于当前用户。', 409)
         }
+        const organization = await lockTodoOrganization(client, Number(reference.todo_id), userId)
         const todo = await getTodoForWork(client, Number(reference.todo_id), userId, true)
-        if (!todo || !todo.organization_id || !(await projectMember(client, Number(todo.project_id), userId))) {
+        if (
+          !todo || !todo.organization_id || !organization ||
+          Number(todo.organization_id) !== organization.organizationId ||
+          !(await organizationMember(client, organization.organizationId, userId))
+        ) {
           throw new WorkHoursError('TODO_NOT_ACCESSIBLE', '待办不存在或你无权访问。', 404)
         }
         if (todo.done || todo.confirmation_status === 'pending_review') {
@@ -1013,12 +1037,6 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         const row = entry.rows[0]
         if (!row || Number(row.user_id) !== userId || row.status !== 'pending') {
           throw new WorkHoursError('ENTRY_NOT_FOUND', '工时不存在、已确认或不属于当前用户。', 409)
-        }
-        if (todo.assignee_user_id && Number(todo.assignee_user_id) !== userId) {
-          throw new WorkHoursError('TODO_NOT_ASSIGNED', '只能删除自己负责任务的工时。', 403)
-        }
-        if (!todo.assignee_user_id && Number(todo.owner_user_id) !== userId) {
-          throw new WorkHoursError('TODO_NOT_ASSIGNED', '任务尚未分配给你。', 403)
         }
         await client.query('delete from todo_work_hours where id = $1', [entryId])
         await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_deleted')

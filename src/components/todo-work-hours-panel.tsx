@@ -49,11 +49,13 @@ function workHourStatus(status: WorkHourEntry['status']) {
 
 export function TodoWorkHoursPanel({
   canRecord,
+  canSubmit,
   currentUserId,
   onRecord,
   todo,
 }: {
   canRecord: boolean
+  canSubmit: boolean
   currentUserId?: number
   onRecord: () => void
   todo: Todo
@@ -180,7 +182,7 @@ export function TodoWorkHoursPanel({
     setAcceptanceOpen(true)
   }
 
-  const selectableEntries = uniqueAcceptanceEntries.filter((entry) => entry.status === 'pending' && entry.userId === currentUserId)
+  const selectableEntries = uniqueAcceptanceEntries.filter((entry) => entry.status === 'pending')
   const currentDateEntries = selectableEntries.filter((entry) => !historicalEntryIds.has(entry.id))
   const selectableEntryIds = new Set(selectableEntries.map((entry) => entry.id))
   const selectableBatch = selectableEntries.slice(0, MAX_SELECTED_ENTRIES)
@@ -196,7 +198,7 @@ export function TodoWorkHoursPanel({
         </div>
         <div className="todo-work-hours-actions">
           {canRecord ? <Button type="button" variant="outline" onClick={onRecord}><Plus size={15} />记录工时</Button> : null}
-          {canRecord && !todo.done ? <Button type="button" onClick={openAcceptance}>提交工时</Button> : null}
+          {canSubmit && !todo.done ? <Button type="button" onClick={openAcceptance}>提交工时</Button> : null}
         </div>
       </div>
 
@@ -246,7 +248,7 @@ export function TodoWorkHoursPanel({
       </Dialog>
       <Dialog open={acceptanceOpen} onOpenChange={(open) => { if (!saving) setAcceptanceOpen(open) }}>
         <DialogContent className="todo-work-hours-acceptance-dialog">
-          <DialogHeader><DialogTitle>提交工时</DialogTitle><DialogDescription>选择本次需要提交的工时，未选择的记录仍可继续修改。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>提交工时</DialogTitle><DialogDescription>负责人可选择组织成员为当前待办记录的工时，未选择的记录仍可继续修改。</DialogDescription></DialogHeader>
           <div className="todo-work-hours-acceptance-summary">
             <div><span>预估工时</span><strong>{formatHours(todo.estimatedWorkMinutes)}</strong></div>
             <div><span>实际工时</span><strong>{formatHours(summary.totalMinutes)}</strong></div>

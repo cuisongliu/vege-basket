@@ -9762,21 +9762,48 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
     `
     select
       (
-        select count(*)
-        from todos t
-        join projects p on p.id = t.project_id
-        left join project_memberships mine
-          on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
-        where p.organization_id is not distinct from $2::bigint
-          and (
-            (
-              t.assignee_user_id = $1::bigint
-              and t.confirmation_status <> 'pending_review'
-            )
-          )
-          and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
-          and not t.done
-          and t.confirmation_status <> 'rejected'
+        select count(*) from (
+          select distinct t.id
+            from todos t
+            join projects p on p.id = t.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and (
+               (t.assignee_user_id = $1::bigint and t.confirmation_status <> 'pending_review')
+               or t.reviewer_user_id = $1::bigint
+             )
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+             and not t.done
+             and t.confirmation_status <> 'rejected'
+          union all
+          select event.id
+            from project_package_events event
+            join projects p on p.id = event.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and event.assignee_user_id = $1::bigint
+             and event.status not in ('delivered', 'cancelled')
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+          union all
+          select milestone.id
+            from project_milestones milestone
+            join projects p on p.id = milestone.project_id
+            left join project_memberships mine
+              on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
+           where p.organization_id is not distinct from $2::bigint
+             and milestone.responsible_user_id = $1::bigint
+             and milestone.status not in ('achieved', 'cancelled')
+             and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
+          union all
+          select bug.id
+            from test_bugs bug
+            join test_spaces space on space.id = bug.test_space_id
+           where space.organization_id is not distinct from $2::bigint
+             and bug.assignee_user_id = $1::bigint
+             and bug.status not in ('closed', 'rejected', 'duplicate')
+        ) actionable_work
       ) as open_todo_count,
       (
         select count(*)

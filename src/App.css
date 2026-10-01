@@ -2197,6 +2197,7 @@ textarea:focus {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -13444,9 +13445,11 @@ textarea:focus {
   color: var(--muted-text);
 }
 
-.todo-detail-primary-edit {
-  min-height: 36px;
-  padding-inline: 13px;
+.todo-detail-primary-edit,
+.todo-detail-share-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
 }
 
 .todo-detail-more-button:hover,

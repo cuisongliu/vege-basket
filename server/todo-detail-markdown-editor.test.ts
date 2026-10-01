@@ -149,6 +149,7 @@ test('assigned enterprise todos expose the work-hour entry with locked context',
   assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /!todo\.done/u)
   assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
+  assert.match(todoListSource, /function canSubmitWorkHour\(todo: Todo\)/u)
   assert.match(todoListSource, /todo\.assigneeUserId === currentUserId/u)
   assert.match(
     readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
@@ -184,6 +185,14 @@ test('todo details expose paginated work-hour submission without confirmation ac
   assert.match(todoWorkHoursPanelSource, /const MAX_SELECTED_ENTRIES = 100/u)
   assert.match(todoWorkHoursPanelSource, /disabled=\{!selectedEntryIds\.includes\(entry\.id\) && selectedEntryIds\.length >= MAX_SELECTED_ENTRIES\}/u)
   assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
+})
+
+test('todo details require explicit edit mode and expose share beside edit', () => {
+  assert.match(todoListSource, /isTodoDetailEditing && editingCanManageTodoFields/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onInlineUpdate=\{/u)
+  assert.match(todoEditorDialogSource, /aria-label="编辑待办"/u)
+  assert.match(todoEditorDialogSource, /aria-label="分享待办"/u)
+  assert.doesNotMatch(todoEditorDialogSource, /更多待办操作/u)
 })
 
 test('todo detail shows five recent activity entries before expanding the complete history', () => {
