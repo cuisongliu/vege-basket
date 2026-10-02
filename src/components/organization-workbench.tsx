@@ -130,6 +130,10 @@ import { OrganizationTestSpaces } from './organization-resource-actions'
 import { OrganizationProjectModulesPanel } from './organization-project-modules-panel'
 import './organization-workbench.css'
 import { ProjectSubprojectsPanel } from './project-subprojects-panel'
+import {
+  OrganizationPermissionErrorDialog,
+} from './organization-permission-error-dialog'
+import { isOrganizationPermissionError, organizationPermissionErrorMessage } from './organization-permission-error'
 
 type OrganizationTab =
   | 'overview'
@@ -426,6 +430,7 @@ export function OrganizationWorkbench({
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
+  const [organizationPermissionError, setOrganizationPermissionError] = useState('')
   const [organizationSettingsError, setOrganizationSettingsError] = useState('')
   const [packageMarketCatalog, setPackageMarketCatalog] = useState<OrganizationPackageMarketCatalogRule[]>([])
   const [packageMarketPolicyDraft, setPackageMarketPolicyDraft] = useState<OrganizationPackageMarketPolicy | null>(null)
@@ -467,6 +472,12 @@ export function OrganizationWorkbench({
   const loadedPackageMarketCatalogOrganizationId = useRef(0)
   const detailSectionRefreshVersions = useRef<Record<string, number>>({})
   const canAccessOrganizationManagement = hasOrganizationAdminRole(currentUser.roles)
+
+  const showOrganizationPermissionError = useCallback((failure: unknown) => {
+    if (!isOrganizationPermissionError(failure)) return false
+    setOrganizationPermissionError(organizationPermissionErrorMessage(failure))
+    return true
+  }, [])
 
   useEffect(() => {
     if (tab !== 'reports') setWeeklyAdminTab('collection')
@@ -664,7 +675,7 @@ export function OrganizationWorkbench({
       return true
     } catch (mutationError) {
       if (confirmed) throw mutationError
-      setError(errorMessage(mutationError))
+      if (!showOrganizationPermissionError(mutationError)) setError(errorMessage(mutationError))
       return false
     } finally {
       setBusy(false)
@@ -709,7 +720,7 @@ export function OrganizationWorkbench({
       )))
       onOrganizationsChanged?.()
     } catch (renameError) {
-      setOrganizationSettingsError(errorMessage(renameError))
+      if (!showOrganizationPermissionError(renameError)) setOrganizationSettingsError(errorMessage(renameError))
     } finally {
       setBusy(false)
     }
@@ -754,7 +765,7 @@ export function OrganizationWorkbench({
         packageMarketPolicyHasVisibleChannel(nextDetail.packageMarketPolicy),
       )
     } catch (policyError) {
-      setOrganizationSettingsError(errorMessage(policyError))
+      if (!showOrganizationPermissionError(policyError)) setOrganizationSettingsError(errorMessage(policyError))
     } finally {
       setPackageMarketPolicySaving(false)
     }
@@ -788,7 +799,9 @@ export function OrganizationWorkbench({
       setWeeklyCollectionRefresh((value) => value + 1)
       setWeeklyAdminTab('collection')
     } catch (saveError) {
-      if (scope === actionScopeRef.current) setWeeklyRulesError(errorMessage(saveError))
+      if (scope === actionScopeRef.current && !showOrganizationPermissionError(saveError)) {
+        setWeeklyRulesError(errorMessage(saveError))
+      }
     } finally {
       setBusy(false)
     }
@@ -956,10 +969,14 @@ export function OrganizationWorkbench({
       const collection = await fetchWeeklyReportCollection(weeklyOrganizationId, weekStart)
       if (request === weeklyCollectionRequest.current.version) setWeeklyCollection(collection)
     } catch (loadError) {
-      if (request === weeklyCollectionRequest.current.version) setError(errorMessage(loadError))
+      if (request === weeklyCollectionRequest.current.version && !showOrganizationPermissionError(loadError)) {
+        setError(errorMessage(loadError))
+      }
     } finally {
       if (request === weeklyCollectionRequest.current.version) setWeeklyCollectionLoading(false)
     }
+  // The permission handler is stable and deliberately not part of this refresh scope.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canManageWeeklyReports, weekStart, weeklyOrganizationId])
 
   useEffect(() => {
@@ -987,7 +1004,7 @@ export function OrganizationWorkbench({
       ].filter(Boolean).join('，') || '没有需要提醒的成员')
       await loadWeeklyCollection()
     } catch (reminderError) {
-      setError(errorMessage(reminderError))
+      if (!showOrganizationPermissionError(reminderError)) setError(errorMessage(reminderError))
     } finally {
       setBusy(false)
     }
@@ -1134,6 +1151,10 @@ export function OrganizationWorkbench({
   return (
     <div className="organization-workbench">
       {confirmationDialog}
+      <OrganizationPermissionErrorDialog
+        message={organizationPermissionError}
+        onOpenChange={(open) => { if (!open) setOrganizationPermissionError('') }}
+      />
       {organizationTopbarActions}
       {organizationSidebarNavigation}
 
@@ -1269,7 +1290,7 @@ export function OrganizationWorkbench({
 
         {tab === 'testSpaces' && activeDetailSectionLoaded ? <>
           {testResourceTab === 'spaces' ? <section className="organization-section organization-resource-panel">
-            <OrganizationTestSpaces key={detail.id} detail={detail} onRefresh={refreshResources} heading={<TestResourceTabs value={testResourceTab} onChange={setTestResourceTab} detail={detail} />} />
+            <OrganizationTestSpaces key={detail.id} detail={detail} onRefresh={refreshResources} onPermissionError={showOrganizationPermissionError} heading={<TestResourceTabs value={testResourceTab} onChange={setTestResourceTab} detail={detail} />} />
             {detail.attachableTestSpaces.length > 0 ? <div className="organization-attach-list">{detail.attachableTestSpaces.map(space=><Button disabled={busy} key={space.id} variant="outline" onClick={()=>void mutate(()=>attachTestSpaceToOrganization(detail.id,space.id))}><Plus size={15}/>{space.name}</Button>)}</div>:null}
           </section> : <OrganizationTestEnvironmentPanel busy={busy} detail={detail} onMutate={mutate} heading={<TestResourceTabs value={testResourceTab} onChange={setTestResourceTab} detail={detail} />} />}
         </> : null}
@@ -1479,6 +1500,7 @@ export function OrganizationWorkbench({
                     setDetail(current => current?.id === nextDetail.id ? nextDetail : current)
                     onProjectModulesChanged?.()
                   }}
+                  onError={showOrganizationPermissionError}
                 />
               ) : null}
             </div>
