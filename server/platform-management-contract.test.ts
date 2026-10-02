@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { schemaSql } from './schema.ts'
 
 const apiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
 const clientAppSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
@@ -223,7 +225,11 @@ test('maintenance mode blocks business APIs while keeping administrator recovery
 })
 
 test('automatic database migrations are serialized, checksummed, and recorded', () => {
-  assert.match(migrationsSource, /const migrationId = '20261001_schema_v22'/u)
+  assert.match(migrationsSource, /const migrationId = '20261002_schema_v22'/u)
+  assert.equal(
+    crypto.createHash('sha256').update(schemaSql).digest('hex'),
+    '6a8e34d22aff12003a8541358e9be150347b85ac3825794ce593d767dc83967d',
+  )
   assert.match(migrationsSource, /pg_try_advisory_lock/u)
   assert.match(migrationsSource, /createHash\('sha256'\)\.update\(schemaSql\)/u)
   assert.match(migrationsSource, /DATABASE_MIGRATION_CHECKSUM_MISMATCH/u)
@@ -251,5 +257,5 @@ test('restart acceptance is explicitly opt-in and owns only a temporary schema',
   assert.match(source, /VEGES_INTEGRATION_DATABASE_URL must explicitly authorize/u)
   assert.match(source, /create schema/u)
   assert.match(source, /drop schema if exists/u)
-  assert.match(source, /20260929_schema_v11/u)
+  assert.match(source, /20261002_schema_v22/u)
 })
