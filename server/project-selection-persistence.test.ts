@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const organizationWorkbenchSource = readFileSync(
+  new URL('../src/components/organization-workbench.tsx', import.meta.url),
+  'utf8',
+)
 
 test('project basket selection is restored after a browser refresh', () => {
   assert.match(appSource, /const selectedProjectStorageKey = 'veges\.selectedProject\.v1'/u)
@@ -25,7 +29,16 @@ test('project basket hides completed todos by default while preserving explicit 
   const todoListSource = appSource.slice(todoListStart)
 
   assert.ok(todoListStart >= 0)
-  assert.match(todoListSource, /const hasExplicitDoneFilter = todoFilterConditions\.some\(\(condition\) => condition\.field === 'done'\)/u)
-  assert.match(todoListSource, /const useDefaultDoneFilter = !todoFilterPersistenceEnabled && !hasExplicitDoneFilter/u)
-  assert.match(todoListSource, /\(!useDefaultDoneFilter \|\| !todo\.done\)/u)
+  assert.match(todoListSource, /const hasExplicitStatusFilter = todoFilterConditions\.some\(\(condition\) => condition\.field === 'status'\)/u)
+  assert.match(todoListSource, /const useDefaultOpenFilter = !todoFilterPersistenceEnabled && !hasExplicitStatusFilter/u)
+  assert.match(todoListSource, /\(!useDefaultOpenFilter \|\| compact \|\| !todo\.done\)/u)
+})
+
+test('project creation is available only from organization project management', () => {
+  assert.doesNotMatch(appSource, /isNewProjectDialogOpen/u)
+  assert.doesNotMatch(appSource, /function NewProjectForm\(/u)
+  assert.doesNotMatch(appSource, /<DialogTitle>新建项目<\/DialogTitle>/u)
+  assert.match(organizationWorkbenchSource, /\{detail\.canManageProjects \? \(/u)
+  assert.match(organizationWorkbenchSource, /<DialogTitle>新建项目<\/DialogTitle>/u)
+  assert.match(organizationWorkbenchSource, /await createProject\(\{/u)
 })

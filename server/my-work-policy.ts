@@ -8,6 +8,7 @@ const statuses = new Set([
 ])
 
 export function parseMyWorkFilters(query: Record<string, unknown>): MyWorkFilters {
+  const review = query.review === 'true' || query.review === '1'
   const kind = typeof query.kind === 'string' && kinds.has(query.kind as MyWorkKind)
     ? query.kind as MyWorkKind
     : undefined
@@ -24,6 +25,7 @@ export function parseMyWorkFilters(query: Record<string, unknown>): MyWorkFilter
       || (statusKind && kinds.has(statusKind as MyWorkKind) && statusValue && statuses.has(statusValue))
     : false
   return {
+    review,
     due: typeof query.due === 'string' && ['overdue', 'today', 'this_week', 'later', 'unscheduled'].includes(query.due)
       ? query.due as MyWorkDueFilter : undefined,
     cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? String(cursor) : undefined,
@@ -35,7 +37,7 @@ export function parseMyWorkFilters(query: Record<string, unknown>): MyWorkFilter
       ? requestedStatus
       : 'open',
     sort,
-    limit: Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : 50,
+    limit: Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 50) : review ? 10 : 50,
   }
 }
 

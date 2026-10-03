@@ -181,11 +181,11 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 | Workspace | Compatibility `GET /api/workspace`; live scoped reads under `GET /api/workspace/{catalog,overview,inbox,documents,search}`, `GET /api/projects/:projectId/{overview,journals,todos}`, and `GET /api/todos/:todoId/detail`; `GET /api/my-work?organizationId=:id|personal`; lightweight `GET /api/navigation-counts?organizationId=:id|personal`; `GET /api/notifications`, notification read/dismiss routes, `GET/PUT /api/notification-subscription` |
 | Assigned Bugs | `GET /api/test-bugs/assigned?organizationId=:id|personal` and all `/api/test-bugs/:bugId/assigned*` mutations require the same active organization context; verification submissions require either package snapshots or one or more validated, pinned cluster-image references, and create an immutable acceptance comment in the same transaction. CI package snapshots retain their validated branch when the object path uses the canonical `/ci/<branch>/<hash>/` layout; branchless middleware CI snapshots remain valid without one. `GET /api/test-bugs/:bugId/verification-submissions/:submissionId/script?expireMinutes=30|60|120` rechecks tester/developer access and returns an ephemeral script; package URLs are signed only for that response, while cluster images run directly. |
 | Changelog | `GET /api/changelog` for authenticated readers; `GET /api/changelog/announcement` returns the latest unread login announcement and count; `PUT /api/changelog/announcement-read-state` advances the authenticated user's read cursor; writes require an active database-backed platform administrator grant |
-| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` |
-| Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images` |
+| Projects | `/api/projects`, journals, risks, modules, invitations, expiring invite links, Feishu project settings, `GET /api/projects/:projectId/todo-activity` with optional `todoId`, `limit` (1-200), and response-provided `snapshotMaxId`/`nextCursor` for stable follow-up pages |
+| Todos | `/api/todos`, todo notes, `POST /api/todo-images`, signed `GET /api/todo-images`; authenticated `GET /api/todos/:todoId/work-hours` returns the authorized todo's work-hour detail, summary, and `{ q, cursor, limit }` pagination; `POST /api/todos/:todoId/work-hours` records a pending entry; `POST /api/todos/:todoId/work-hours/submit`, `/accept`, and `/return` atomically update selected entry IDs without changing the todo's ordinary acceptance status; return moves only selected `submitted` entries back to `pending` |
 | Drafts and summaries | `/api/drafts`, journal/todo draft archive and delete, `/api/summaries` |
 | Package market | Organization-context `GET /api/package-market/rules?organizationId=:id` (or `projectId=:id` for a project selector), package details, release versions, CI branches/versions; every market read is filtered by the resolved organization policy |
-| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft replace or publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete`, per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), package-item download URLs, and timeline export |
+| Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft or rejected-plan replace/publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete` (`success`, `partial`, `failed`, or reasoned `rejected` plus per-process results), per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), mixed object-storage packages, encrypted container-image/offline-package addresses, reusable Shell scripts and explicitly ordered duplicate process references, per-item encrypted environment variables and Values YAML overlays, authorized `GET .../events/:eventId/delivery-artifacts` address, ordered process and execution-script generation, package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
 | AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu events | `/api/integrations/feishu/events` |
@@ -202,6 +202,13 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 Authentication and authorization rules are defined in `server/index.ts`; route presence
 does not imply every project member can perform every action. Nested resource lookups
 must remain bound to the authorized project ID.
+
+Each package, container image, or offline package in a delivery event owns an independent
+runtime configuration. Environment variables become repeated `sealos run --env KEY=VALUE`
+arguments. A Values target must be an absolute file path below
+`/root/.sealos/cloud/values/`; its bounded YAML mapping is merged into the existing file by
+the generated script immediately before that item runs. The script passes no Values argument
+to `sealos run`, serializes access with `flock`, and restores the original file on exit.
 
 `GET /api/navigation-counts` returns only `openTodoCount`, `assignedBugCount`, and the
 requested organization context. It rechecks active organization membership and applies
@@ -686,7 +693,7 @@ Bug 分享接口：`POST /api/test-bugs/:bugId/share-link` 创建或复用当前
 以及同时拥有 `organization_admin` 账号角色和该项目所属组织有效 Owner/Admin 成员身份的
 组织管理员。
 `GET /api/todo-shares/:token` 为公开只读接口，`POST /api/todo-shares/:token/comments`
-要求登录后添加留言备注。公开 DTO 包含待办展示字段及未绑定交付操作的普通/验收备注，
+要求登录后添加留言备注。公开 DTO 包含待办展示字段及未绑定交付操作的普通/确认备注，
 匿名或非项目成员的登录响应不包含 `@` 候选；项目成员响应仅以项目 Owner 和有效项目成员中
 唯一、非空的展示名作为候选，不返回邮箱或内部用户 ID；服务端只为原本拥有项目访问权的
 留言人解析 mentions。留言请求需携带 UUID `requestId`，写入现有加密待办
@@ -810,4 +817,9 @@ requests accept `assigneeUserId: null`; publication requires an active executor.
 organization-project grants. Feedback writes require planning permission or the assigned executor's
 permission; edits/deletion additionally require authorship. Published content stays immutable; execution
 links/notes require the current executor. Todo completion retains its own authorization. Ordinary todo-note
-PATCH also checks delivery permission when `source_operation_id` is present.
+PATCH also checks delivery permission when `source_operation_id` is present. Rejected events expose
+`rejectionCount`, the latest rejection and immutable `rejections` history; their plans are editable
+until explicitly resubmitted. `partially_delivered` and `failed` are terminal statuses. Published
+detail drawers are read-only: execution actions and feedback stay under basic information, while
+ordered processes, package downloads, generated scripts and copy/export actions stay under delivery
+content.

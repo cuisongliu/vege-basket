@@ -162,7 +162,7 @@ export class PrototypeStore {
           const caseIds = payload.caseIds as number[] ?? []
           const sourceCases = caseIds.map(caseId => this.data.cases.find(item => item.id === caseId && item.testSpaceId === spaceId && item.status === 'active') ?? fail('所选用例不存在。'))
           const next: TestPlan = {
-            id: old?.id ?? ++this.nextId, name: String(payload.name), status: old?.status ?? 'draft', canManage: true,
+            id: old?.id ?? ++this.nextId, name: String(payload.name), status: old?.status ?? 'draft', canDelete: true, canManage: true,
             testSpaceId: spaceId, testSubjectId: (payload.testSubjectIds as number[])[0], testSubjectIds: payload.testSubjectIds as number[],
             projectId: payload.projectId as number | undefined, ownerUserId: payload.ownerUserId as number | undefined,
             startsOn: payload.startsOn as string | undefined, endsOn: payload.endsOn as string | undefined,

@@ -190,6 +190,12 @@ test('platform organization search does not silently truncate the directory', ()
   assert.doesNotMatch(listSource, /limit 1000/u)
 })
 
+test('platform organization creation is hidden without organization-admin permission', () => {
+  assert.match(clientAppSource, /canCreateOrganizations=\{isOrganizationAdmin\}/u)
+  assert.match(workbenchSource, /canCreateOrganizations \? <Button onClick=\{\(\) => setCreateOpen\(true\)\}/u)
+  assert.match(workbenchSource, /if \(!canCreateOrganizations\) return/u)
+})
+
 test('maintenance mode blocks business APIs while keeping administrator recovery routes', () => {
   assert.match(appSource, /app\.use\('\/api', platformMaintenanceMiddleware\)/u)
   assert.match(maintenanceSource, /code: 'PLATFORM_MAINTENANCE'/u)
@@ -219,10 +225,10 @@ test('maintenance mode blocks business APIs while keeping administrator recovery
 })
 
 test('automatic database migrations are serialized, checksummed, and recorded', () => {
-  assert.match(migrationsSource, /const migrationId = '20261002_schema_v14'/u)
+  assert.match(migrationsSource, /const migrationId = '20261002_schema_v22'/u)
   assert.equal(
     crypto.createHash('sha256').update(schemaSql).digest('hex'),
-    'e65b95e34bb99dbdbbc88b25370c206b0a565fdc749f380b30ee4a6c1e18d8eb',
+    '6a8e34d22aff12003a8541358e9be150347b85ac3825794ce593d767dc83967d',
   )
   assert.match(migrationsSource, /pg_try_advisory_lock/u)
   assert.match(migrationsSource, /createHash\('sha256'\)\.update\(schemaSql\)/u)
@@ -251,5 +257,5 @@ test('restart acceptance is explicitly opt-in and owns only a temporary schema',
   assert.match(source, /VEGES_INTEGRATION_DATABASE_URL must explicitly authorize/u)
   assert.match(source, /create schema/u)
   assert.match(source, /drop schema if exists/u)
-  assert.match(source, /20261002_schema_v14/u)
+  assert.match(source, /20261002_schema_v22/u)
 })

@@ -11,13 +11,28 @@ const todoDetailEditorSource = appSource.slice(
   appSource.indexOf('function TodoDetailEditor('),
   appSource.indexOf('function TodoDetailViewer('),
 )
-const todoNotesPanelSource = appSource.slice(
-  appSource.indexOf('function TodoNotesPanel('),
-  appSource.indexOf('function TodoPropertiesPanel('),
-)
 const todoEditorDialogSource = appSource.slice(
   appSource.indexOf('function TodoEditorDialog('),
   appSource.indexOf('function TodoList('),
+)
+const projectDetailSource = appSource.slice(
+  appSource.indexOf('function ProjectDetail('),
+  appSource.indexOf('function formatInviteDurationLabel('),
+)
+const todoListSource = appSource.slice(appSource.indexOf('function TodoList('))
+const todoWorkHoursPanelSource = readFileSync(
+  new URL('../src/components/todo-work-hours-panel.tsx', import.meta.url),
+  'utf8',
+)
+const todoActivityPanelSource = readFileSync(
+  new URL('../src/components/todo-activity-panel.tsx', import.meta.url),
+  'utf8',
+)
+const appApiSource = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
+const serverIndexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+const workHoursCssSource = readFileSync(
+  new URL('../src/components/work-hours-workbench.css', import.meta.url),
+  'utf8',
 )
 
 test('todo details use the stable shared Markdown editor without a page reload', () => {
@@ -60,18 +75,144 @@ test('shared Markdown editor tolerates an unready Tiptap instance', () => {
 
 test('opening a todo keeps creation bound to the project that rendered the editor', () => {
   assert.match(appSource, /onAddTodo\(project\.id\)/u)
-  assert.match(appSource, /onAddTodo: \(projectId: number\) => void \| Promise<void>/u)
+  assert.match(appSource, /onAddTodo: \(projectId: number\) => Promise<boolean>/u)
 })
 
-test('todo notes remain visible when the viewer has no note write callbacks', () => {
-  assert.match(todoEditorDialogSource, /const showNotesSidebar = Boolean\(isDetailMode && todo\)/u)
-  assert.doesNotMatch(
-    todoEditorDialogSource,
-    /const showNotesSidebar[\s\S]{0,160}onCreateTodoNote[\s\S]{0,80}onUpdateTodoNote/u,
+test('todo details remove the standalone note editor while preserving legacy history', () => {
+  assert.match(todoEditorDialogSource, /const showNotesSidebar = false/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onCreateNote=\{onCreateTodoNote\}/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onUpdateNote=\{onUpdateTodoNote\}/u)
+  assert.match(todoEditorDialogSource, /历史补充信息/u)
+  assert.match(todoEditorDialogSource, /TodoNoteContent value=\{note\.content\}/u)
+})
+
+test('todo creation uses a modal and status filtering has one merged field', () => {
+  assert.match(appSource, /<Dialog open onOpenChange=\{\(open\) => \{ if \(!open\) closeTodoCreateDialog\(\) \}\}>/u)
+  assert.match(appSource, /className="todo-create-dialog"/u)
+  assert.match(projectDetailSource, /const isProjectTodoFocusOpen = isProjectTodoDetailOpen/u)
+  assert.doesNotMatch(projectDetailSource, /isProjectTodoDetailOpen \|\| isTodoCreateDialogOpen/u)
+  assert.ok(
+    projectDetailSource.indexOf('<TodoList') <
+      projectDetailSource.indexOf('{isTodoCreateDialogOpen ? ('),
+    'the todo list must remain mounted behind the create dialog',
   )
-  assert.match(todoNotesPanelSource, /onCreateNote\?: \(todoId: number, content: string\)/u)
-  assert.match(todoNotesPanelSource, /onUpdateNote\?: \(todoId: number, noteId: number, content: string\)/u)
-  assert.match(todoNotesPanelSource, /\{onCreateNote \? \(/u)
-  assert.match(todoNotesPanelSource, /<div className="todo-notes-list">/u)
-  assert.match(todoNotesPanelSource, /const canEdit = Boolean\(onUpdateNote\)/u)
+  assert.match(appSource, /field === 'status'/u)
+  assert.doesNotMatch(appSource, /field === 'confirmationStatus'/u)
+  assert.doesNotMatch(appSource, /field === 'done'/u)
+  assert.match(todoEditorDialogSource, /待办标题[\s\S]*field-required[\s\S]*优先级/u)
+  assert.match(todoEditorDialogSource, /预估工时（小时）[\s\S]*field-required/u)
+})
+
+test('project basket keeps work-hour recording in the current project surface', () => {
+  assert.match(appSource, /function selectMyWorkHour\(projectId: number, todoId: number\)[\s\S]*?setProjectDetailTab\('tasks'\)[\s\S]*?setView\('project'\)/u)
+  assert.match(appSource, /recorderOnly[\s\S]*recorderRequest=\{workHourRecorderContext\}/u)
+  const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+  assert.match(workHoursSource, /recorderRequest\?: .*projectId: number; todoId: number.*null/u)
+  assert.match(workHoursSource, /onRecorderDismiss\?: \(\) => void/u)
+  assert.match(workHoursSource, /openRecorderForTodo\(recorderRequest.todoId, recorderRequest.projectId\)/u)
+  assert.match(appSource, /workHourRecorderContext &&[\s\S]*view !== 'project'[\s\S]*selectedProjectId !== workHourRecorderContext.projectId/u)
+  assert.match(appSource, /workHourRecorderContext\?\.projectId === selectedProject.id/u)
+})
+
+test('task work-hour details have an independent paginated scroll surface', () => {
+  const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
+  assert.match(workHoursSource, /fetchTodoWorkHours\(selectedTaskId, \{[\s\S]*?cursor: selectedTaskEntryPage \* 10[\s\S]*?limit: 10/u)
+  assert.match(workHoursSource, /任务投入明细分页/u)
+  assert.match(workHoursSource, /setSelectedTaskEntryPage\(\(page\) => Math.min\(page, Math.max\(0, Math.ceil\(total \/ 10\) - 1\)\)\)/u)
+  assert.match(workHoursCssSource, /work-hours-drawer-list \{[^}]*overflow-y: auto/u)
+})
+
+test('project detail keeps tabs and task actions in one aligned bar', () => {
+  assert.match(appSource, /className="project-detail-tabbar"/u)
+  assert.match(appSource, /className="project-detail-tab-actions"/u)
+  const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+  assert.match(
+    appCssSource,
+    /project-detail-tabbar[\s\S]*display: flex[\s\S]*project-detail-tabs[\s\S]*flex: 1 1 auto/u,
+  )
+  assert.match(appCssSource, /detail-layout\.packages-mode \.project-detail-main \{\s*grid-column: 1 \/ -1;/u)
+})
+
+test('project work-hour layout grows with content instead of forcing a fixed panel height', () => {
+  assert.match(appSource, /detail-layout work-hours-mode/u)
+  assert.match(
+    readFileSync(new URL('../src/App.css', import.meta.url), 'utf8'),
+    /detail-layout\.work-hours-mode[\s\S]*?height: auto;[\s\S]*?overflow: visible/u,
+  )
+  assert.match(workHoursCssSource, /work-hours-workbench\.mode-project[^}]*height: auto/u)
+  assert.match(workHoursCssSource, /work-hours-overview-chart, \.work-hours-overview-members \{ min-height: 0; \}/u)
+})
+
+test('assigned enterprise todos expose the work-hour entry with locked context', () => {
+  assert.doesNotMatch(todoEditorDialogSource, /todo-detail-work-hour-button/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onRecordWorkHour\(project\.id, todo\.id\)/u)
+  assert.match(todoListSource, /function canRecordWorkHour\(todo: Todo\)/u)
+  assert.match(todoListSource, /!todo\.done/u)
+  assert.match(todoListSource, /todo\.assigneeUserId != null/u)
+  assert.match(todoListSource, /todo\.confirmationStatus !== 'pending_review'/u)
+  assert.match(todoListSource, /function canSubmitWorkHour\(todo: Todo\)/u)
+  assert.match(todoListSource, /todo\.assigneeUserId === currentUserId/u)
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /initialProjectId\?: number \| null[\s\S]*?initialTodoId\?: number \| null[\s\S]*?autoOpenRecorder\?: boolean/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /setSelectedProjectId\(initialProjectId \?\? project\?\.id \?\? null\)/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /recorderContextLocked[\s\S]*?disabled=\{Boolean\(editingEntry\) \|\| recorderContextLocked\}/u,
+  )
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /todo\.assigneeUserId != null[\s\S]*?confirmationStatus !== 'pending_review'/u,
+  )
+})
+
+test('todo details expose paginated work-hour submission without confirmation actions', () => {
+  assert.match(appSource, /<TodoWorkHoursPanel/u)
+  assert.match(appSource, /待办标题[\s\S]*负责人[\s\S]*预估时间[\s\S]*已记录[\s\S]*状态[\s\S]*操作/u)
+  const compactTodoSource = todoListSource.slice(
+    todoListSource.indexOf("className={compact ? 'todo-list compact todo-workflow-table'"),
+    todoListSource.indexOf('            return (', todoListSource.indexOf("className={compact ? 'todo-list compact todo-workflow-table'")),
+  )
+  assert.doesNotMatch(compactTodoSource, /TodoConfirmSelect/u)
+  assert.match(todoWorkHoursPanelSource, /fetchTodoWorkHours\(todo\.id/u)
+  assert.match(todoWorkHoursPanelSource, /ListPagination label="待办工时明细分页"/u)
+  assert.match(todoWorkHoursPanelSource, /removeWorkHour\(deletingEntry\.id\)/u)
+  assert.match(todoWorkHoursPanelSource, />提交工时</u)
+  assert.match(todoWorkHoursPanelSource, /status === 'submitted' \? '待确认'/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /提交工时验收/u)
+  assert.match(todoWorkHoursPanelSource, /submitWorkHours\(todo\.id, selectedEntryIds\)/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /acceptWorkHours/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, />验收工时</u)
+  assert.match(todoWorkHoursPanelSource, /const MAX_SELECTED_ENTRIES = 100/u)
+  assert.match(todoWorkHoursPanelSource, /disabled=\{!selectedEntryIds\.includes\(entry\.id\) && selectedEntryIds\.length >= MAX_SELECTED_ENTRIES\}/u)
+  assert.doesNotMatch(todoWorkHoursPanelSource, /confirmationStatus: 'pending_review'/u)
+})
+
+test('todo details require explicit edit mode and expose share beside edit', () => {
+  assert.match(todoListSource, /isTodoDetailEditing && editingCanManageTodoFields/u)
+  assert.doesNotMatch(todoEditorDialogSource, /onInlineUpdate=\{/u)
+  assert.match(todoEditorDialogSource, /aria-label="编辑待办"/u)
+  assert.match(todoEditorDialogSource, /aria-label="分享待办"/u)
+  assert.doesNotMatch(todoEditorDialogSource, /更多待办操作/u)
+})
+
+test('todo detail shows five recent activity entries before expanding the complete history', () => {
+  assert.match(todoEditorDialogSource, /<TodoActivityPanel[\s\S]*?previewLimit=\{5\}/u)
+  assert.match(todoActivityPanelSource, /previewLimit == null \|\| expanded[\s\S]*?events\.slice\(0, previewLimit\)/u)
+  assert.match(todoActivityPanelSource, /const canExpand = previewLimit != null && total > previewLimit/u)
+  assert.match(todoActivityPanelSource, /while \(allEvents\.length < \(firstPage\.total \?\? 0\) && nextCursor && firstPage\.snapshotMaxId != null\)/u)
+  assert.match(todoActivityPanelSource, /requestVersion !== requestVersionRef\.current/u)
+  assert.match(todoActivityPanelSource, /throw new Error\('待办动态分页不完整，请刷新后重试。'\)/u)
+  assert.match(todoActivityPanelSource, /const load = useCallback[\s\S]*?setExpanded\(false\)/u)
+  assert.match(todoActivityPanelSource, /展开全部动态/u)
+  assert.match(todoActivityPanelSource, /收起动态/u)
+  assert.match(appApiSource, /pagination\?: \{ cursor\?: string; limit\?: number; snapshotMaxId\?: number \}/u)
+  assert.match(serverIndexSource, /occurred_at, event\.id\) < \(\$4::timestamptz, \$5::bigint\)[\s\S]*?limit \$6/u)
+  assert.match(serverIndexSource, /to_char\(event\.occurred_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US"Z"'\)/u)
+  assert.match(serverIndexSource, /const daysInMonth = \[31, leapYear \? 29 : 28,[\s\S]*?year < 1[\s\S]*?day > daysInMonth/u)
+  assert.match(serverIndexSource, /snapshotMaxId,[\s\S]*?total,/u)
 })

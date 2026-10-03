@@ -4,6 +4,7 @@ import type { PoolClient, QueryResultRow } from 'pg'
 import { decryptText, encryptText } from './crypto.ts'
 import { pool, query } from './db.ts'
 import {
+  createPackageItemDownloadLink,
   createPackageItemDownloadUrl,
   isPackageMarketObjectKeyAllowedForRule,
   type PackageMarketRule,
@@ -11,9 +12,22 @@ import {
 import { getDepartedUserIds } from './user-lifecycle.ts'
 import { getPlatformConfigSnapshot } from './platform-config-runtime.ts'
 import { getPackageMarketRulesForConfigRevision } from './platform-package-rules.ts'
+import { containerImageReferenceKey, normalizeContainerImageReference } from '../shared/container-image-reference.ts'
+import {
+  emptyDeliveryRuntimeConfig,
+  maxDeliveryArtifactEntries,
+  normalizeDeliveryOther,
+  normalizeDeliveryRuntimeConfig,
+  normalizeOfflinePackageUrl,
+  offlinePackageFileName,
+  type DeliveryOther,
+  type DeliveryRuntimeConfig,
+} from '../shared/delivery-artifact.ts'
+import { createDeliveryExecutionScript, createOfflineDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
-export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'rejected' | 'partially_delivered' | 'delivered' | 'failed'
+export type ProjectPackageDeliveryResult = 'success' | 'partial' | 'rejected' | 'failed'
 export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 
@@ -28,6 +42,17 @@ export type ProjectPackageItemInput = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: unknown
+}
+
+export type ProjectPackageContainerImageInput = { image: string; runtimeConfig?: unknown }
+export type ProjectPackageOfflinePackageInput = { runtimeConfig?: unknown; url: string }
+export type ProjectPackageDeliveryStepInput = {
+  content?: unknown
+  id?: unknown
+  kind?: unknown
+  processName?: unknown
+  reference?: unknown
 }
 
 export type ProjectPackageDocumentInput = {
@@ -39,6 +64,19 @@ export type ProjectPackageDocumentInput = {
 }
 
 export type ProjectPackageEventSaveAction = 'publish' | 'save_draft'
+export type ProjectPackageEventContainerImage = { id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }
+export type ProjectPackageEventOfflinePackage = { id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }
+
+export type ProjectPackageDeliveryStep = {
+  content?: string
+  id: string
+  kind: 'package' | 'container-image' | 'offline-package' | 'shell-script'
+  processName: string
+  reference: string
+  result?: 'pending' | 'success' | 'failed' | 'skipped'
+  failureDetail?: string
+}
+export type ProjectPackageDeliveryScript = { content: string; id: string; title: string }
 
 export class ProjectPackageEventError extends Error {
   readonly status: 400 | 403 | 404 | 409
@@ -64,6 +102,7 @@ export type ProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -100,6 +139,12 @@ export type ProjectPackageEventComment = {
   updatedAt: string
 }
 
+export type ProjectPackageEventRejection = {
+  createdAt: string
+  reason: string
+  rejectedByName: string
+}
+
 export type ProjectPackageMentionableMember = {
   id: number
   name: string
@@ -112,18 +157,32 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryFailureReason?: string
+  rejectionCount?: number
+  latestRejectionReason?: string
+  latestRejectedByName?: string
+  latestRejectedAt?: string
+  rejections: ProjectPackageEventRejection[]
+  deliveryResult?: ProjectPackageDeliveryResult
+  detailRevision: string
+  deliveryDelayDays?: number
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: ProjectPackageEventContainerImage[]
   createdAt: string
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
+  deliverySteps: ProjectPackageDeliveryStep[]
+  deliveryScripts: ProjectPackageDeliveryScript[]
   groups: ProjectPackageGroup[]
   id: number
+  offlinePackages: ProjectPackageEventOfflinePackage[]
+  other?: DeliveryOther | null
   operations: ProjectPackageOperation[]
   publishedAt?: string
   publishedByUserId?: number
@@ -131,6 +190,10 @@ export type ProjectPackageEvent = {
   title: string
   type: ProjectPackageEventType
   updatedAt: string
+  commentCount?: number
+  detailsLoaded?: boolean
+  operationCount?: number
+  packageCount?: number
 }
 
 export type ProjectPackageTimeline = {
@@ -138,8 +201,67 @@ export type ProjectPackageTimeline = {
   deliveryMembers: ProjectDeliveryMember[]
   departedUserIds: number[]
   events: ProjectPackageEvent[]
+  pagination?: { limit: number; offset: number; total: number }
   mentionableMembers: ProjectPackageMentionableMember[]
   projectId: number
+  savedEventId?: number
+}
+
+export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: ProjectPackageEventFilterCondition[]
+  join?: 'and' | 'or'
+  limit?: number
+  offset?: number
+  q?: string
+  sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
+}
+
+export type ProjectPackageEventFilterCondition = {
+  field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+  operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+  value: string
+}
+
+const projectPackageEventFilterFields = new Set<ProjectPackageEventFilterCondition['field']>([
+  'title', 'assignee', 'deliveryDate', 'status', 'type',
+])
+const projectPackageEventFilterOperators = new Set<ProjectPackageEventFilterCondition['operator']>([
+  'contains', 'not_contains', 'equals', 'not_equals', 'is_empty', 'is_not_empty', 'before', 'after', 'between',
+])
+
+export function parseProjectPackageEventFilters(value: unknown): ProjectPackageEventFilterCondition[] {
+  if (value == null || value === '') return []
+  let parsed: unknown
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value } catch {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  if (!Array.isArray(parsed) || parsed.length > 10) {
+    throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+  }
+  return parsed.map((condition) => {
+    if (!condition || typeof condition !== 'object') {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    const candidate = condition as Record<string, unknown>
+    if (
+      typeof candidate.field !== 'string' ||
+      !projectPackageEventFilterFields.has(candidate.field as ProjectPackageEventFilterCondition['field']) ||
+      typeof candidate.operator !== 'string' ||
+      !projectPackageEventFilterOperators.has(candidate.operator as ProjectPackageEventFilterCondition['operator']) ||
+      typeof candidate.value !== 'string' ||
+      candidate.value.length > 200
+    ) {
+      throw new ProjectPackageEventError('交付事件筛选条件无效', 400)
+    }
+    return {
+      field: candidate.field as ProjectPackageEventFilterCondition['field'],
+      operator: candidate.operator as ProjectPackageEventFilterCondition['operator'],
+      value: candidate.value,
+    }
+  })
 }
 
 type EventRow = {
@@ -148,6 +270,8 @@ type EventRow = {
   completer_name: string | null
   completed_by_user_id: string | null
   completed_at: Date | null
+  delivery_failure_reason: string | null
+  delivery_result: ProjectPackageDeliveryResult | null
   assigned_at: Date | null
   assigned_by_user_id: string | null
   assignee_display_name: string | null
@@ -159,6 +283,11 @@ type EventRow = {
   delivery_date: Date | string | null
   delivery_end_at: Date
   delivery_start_at: Date
+  delivery_steps: string | null
+  delivery_scripts: string | null
+  delivery_step_results: string | null
+  detail_revision: string
+  other_script: string | null
   id: string
   published_at: Date | null
   published_by_user_id: string | null
@@ -166,6 +295,129 @@ type EventRow = {
   title: string
   type: ProjectPackageEventType
   updated_at: Date
+}
+
+type EventSummaryCountRow = {
+  id: string
+  package_count: string
+  operation_count: string
+  comment_count: string
+  rejection_count: string
+}
+
+type RejectionRow = {
+  created_at: Date
+  display_name: string | null
+  email: string | null
+  event_id: string
+  reason: string
+}
+
+function normalizeDeliverySteps(
+  value: unknown,
+  items: NormalizedProjectPackageItem[],
+  containerImages: Array<{ image: string }>,
+  offlinePackages: Array<{ url: string }>,
+  deliveryScripts: ProjectPackageDeliveryScript[],
+) {
+  const available = new Set<string>([
+    ...items.map((item) => `package:${item.objectKey}`),
+    ...containerImages.map((item) => `container-image:${item.image}`),
+    ...offlinePackages.map((item) => `offline-package:${item.url}`),
+    ...deliveryScripts.map((script) => `shell-script:${script.id}`),
+  ])
+  const rawSteps = Array.isArray(value) ? value : []
+  if (rawSteps.length > 100) throw new ProjectPackageEventError('交付流程最多添加 100 步', 400)
+  const seenStepIds = new Set<string>()
+  const steps = rawSteps.map((raw, index) => {
+    const input = raw && typeof raw === 'object' ? raw as ProjectPackageDeliveryStepInput : {}
+    const kind = input.kind
+    if (kind !== 'package' && kind !== 'container-image' && kind !== 'offline-package' && kind !== 'shell-script') {
+      throw new ProjectPackageEventError(`交付流程 ${index + 1} 的交付内容类型无效`, 400)
+    }
+    const reference = String(input.reference ?? '').trim()
+    const processName = normalizeText(input.processName, 120)
+    if (!processName || /[\r\n]/u.test(processName)) throw new ProjectPackageEventError(`交付流程 ${index + 1} 必须填写单行流程名称`, 400)
+    const id = String(input.id ?? `step-${index + 1}`).trim()
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(id) || seenStepIds.has(id)) throw new ProjectPackageEventError('交付流程标识无效或重复', 400)
+    seenStepIds.add(id)
+    if (kind === 'shell-script') {
+      if (!available.has(`shell-script:${reference}`)) throw new ProjectPackageEventError(`交付流程 ${processName} 引用的 Shell 脚本不存在`, 400)
+      return {
+        id,
+        kind,
+        processName,
+        reference,
+      } satisfies ProjectPackageDeliveryStep
+    }
+    if (!available.has(`${kind}:${reference}`)) {
+      throw new ProjectPackageEventError(`交付流程 ${processName} 引用的交付内容不存在`, 400)
+    }
+    return {
+      id,
+      kind,
+      processName,
+      reference,
+    } satisfies ProjectPackageDeliveryStep
+  })
+  if (value != null) return steps
+  return [
+    ...items.map((item, index) => ({ id: `package-${index + 1}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
+    ...offlinePackages.map((item, index) => ({ id: `offline-${index + 1}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
+    ...containerImages.map((item, index) => ({ id: `image-${index + 1}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+    ...deliveryScripts.map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
+  ]
+}
+
+function normalizeDeliveryScripts(value: unknown, normalizedOther: DeliveryOther | null | undefined) {
+  const rawScripts = Array.isArray(value) ? value : normalizedOther ? [{ id: 'script-1', title: 'Shell 脚本', content: normalizedOther.content }] : []
+  if (rawScripts.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`Shell 脚本最多添加 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seenIds = new Set<string>()
+  return rawScripts.map((raw, index): ProjectPackageDeliveryScript => {
+    const script = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const id = String(script.id ?? `script-${index + 1}`).trim()
+    const title = normalizeText(script.title, 120)
+    const normalized = normalizeDeliveryOther({ type: 'shell-script', content: script.content })
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(id) || seenIds.has(id)) throw new ProjectPackageEventError('Shell 脚本标识无效或重复', 400)
+    if (!title || /[\r\n]/u.test(title)) throw new ProjectPackageEventError(`Shell 脚本 ${index + 1} 必须填写单行名称`, 400)
+    if (!normalized.valid || !normalized.value) throw new ProjectPackageEventError(normalized.valid ? 'Shell 脚本不能为空' : normalized.error, 400)
+    seenIds.add(id)
+    return { content: normalized.value.content, id, title }
+  })
+}
+
+function buildFallbackDeliverySteps(params: {
+  items: Array<{ id: string | number; objectKey: string }>
+  offlinePackages: Array<{ id: string | number; url: string }>
+  containerImages: Array<{ id: string | number; image: string }>
+  deliveryScripts: ProjectPackageDeliveryScript[]
+}) {
+  return [
+    ...params.items.map((item, index) => ({ id: `package-${item.id}`, kind: 'package' as const, processName: `交付安装包 ${index + 1}`, reference: item.objectKey })),
+    ...params.offlinePackages.map((item, index) => ({ id: `offline-${item.id}`, kind: 'offline-package' as const, processName: `交付离线包 ${index + 1}`, reference: item.url })),
+    ...params.containerImages.map((item, index) => ({ id: `image-${item.id}`, kind: 'container-image' as const, processName: `交付镜像 ${index + 1}`, reference: item.image })),
+    ...params.deliveryScripts.map((script, index) => ({ id: `script-step-${index + 1}`, kind: 'shell-script' as const, processName: script.title, reference: script.id })),
+  ] satisfies ProjectPackageDeliveryStep[]
+}
+
+type ContainerImageRow = {
+  environment_variables: string | null
+  id: string
+  image_ref: string
+  project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
+}
+
+type OfflinePackageRow = {
+  download_url: string
+  environment_variables: string | null
+  id: string
+  project_package_event_id: string
+  values_patch: string | null
+  values_path: string | null
 }
 
 type GroupRow = {
@@ -189,6 +441,9 @@ type ItemRow = {
   source_package_id: string
   source_package_name: string
   version: string
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
 }
 
 type OperationRow = {
@@ -263,6 +518,7 @@ type NormalizedProjectPackageItem = {
   sourcePackageId: string
   sourcePackageName: string
   version: string
+  runtimeConfig?: DeliveryRuntimeConfig
 }
 
 type NormalizedProjectPackageDocument = {
@@ -316,6 +572,12 @@ function formatDate(value: Date | string) {
   const pick = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function calendarDayDifference(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
+  return Math.round((leftTime - rightTime) / 86_400_000)
 }
 
 function normalizeDeliveryDate(value: unknown) {
@@ -453,8 +715,14 @@ export function ensureProjectPackageEventStatus(
 ): ProjectPackageEventStatus {
   if (publishedAt !== undefined) {
     if (!publishedAt) return 'draft'
+    if (value === 'rejected') return 'rejected'
+    if (value === 'partially_delivered' || value === 'partial') return 'partially_delivered'
+    if (value === 'failed') return 'failed'
     return value === 'delivered' || value === 'success' ? 'delivered' : 'delivering'
   }
+  if (value === 'rejected') return 'rejected'
+  if (value === 'partially_delivered' || value === 'partial') return 'partially_delivered'
+  if (value === 'failed') return 'failed'
   if (value === 'delivered' || value === 'success') return 'delivered'
   if (value === 'delivering' || value === 'failed') return 'delivering'
   return 'draft'
@@ -512,36 +780,166 @@ function normalizeProjectPackageItems(items: ProjectPackageItemInput[]) {
       sourcePackageId: normalizeText(item.sourcePackageId, 120),
       sourcePackageName: normalizeText(item.sourcePackageName || packageName, 160),
       version: normalizeText(item.version, 80),
+      runtimeConfig: item.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(item.runtimeConfig, `安装包 ${index + 1}`),
+    }
+  })
+}
+
+function requireDeliveryRuntimeConfig(value: unknown, label: string) {
+  const result = normalizeDeliveryRuntimeConfig(value)
+  if (!result.valid) throw new ProjectPackageEventError(`${label}：${result.error}`, 400)
+  return result.value
+}
+
+function readDeliveryRuntimeConfig(row: {
+  environment_variables: string | null
+  values_patch: string | null
+  values_path: string | null
+}) {
+  let environmentVariables: unknown[] = []
+  if (row.environment_variables) {
+    try {
+      const parsed = JSON.parse(decryptText(row.environment_variables))
+      if (Array.isArray(parsed)) environmentVariables = parsed
+    } catch {
+      throw new ProjectPackageEventError('交付运行配置无法读取', 409)
+    }
+  }
+  const result = normalizeDeliveryRuntimeConfig({
+    environmentVariables,
+    valuesPath: row.values_path ? decryptText(row.values_path) : '',
+    valuesPatch: row.values_patch ? decryptText(row.values_patch) : '',
+  })
+  if (!result.valid) throw new ProjectPackageEventError('交付运行配置无效', 409)
+  return result.value
+}
+
+function readDeliverySteps(value: string | null) {
+  if (!value) return [] as ProjectPackageDeliveryStep[]
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!Array.isArray(parsed)) return []
+    const valid = parsed.every((step) => Boolean(
+      step && typeof step === 'object' && typeof step.id === 'string' &&
+      (step.kind === 'package' || step.kind === 'container-image' || step.kind === 'offline-package' || step.kind === 'shell-script') &&
+      typeof step.processName === 'string' && typeof step.reference === 'string',
+    ))
+    if (!valid) throw new Error('invalid delivery step')
+    return parsed as ProjectPackageDeliveryStep[]
+  } catch {
+    throw new ProjectPackageEventError('交付流程无法读取', 409)
+  }
+}
+
+function readDeliveryScripts(value: string | null, legacyOther: string | null) {
+  if (!value) {
+    return legacyOther
+      ? [{ id: 'script-1', title: 'Shell 脚本', content: decryptText(legacyOther) }]
+      : []
+  }
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!Array.isArray(parsed) || !parsed.every((script) => Boolean(
+      script && typeof script === 'object' && typeof script.id === 'string' &&
+      typeof script.title === 'string' && typeof script.content === 'string',
+    ))) throw new Error('invalid delivery scripts')
+    return parsed as ProjectPackageDeliveryScript[]
+  } catch {
+    throw new ProjectPackageEventError('Shell 脚本无法读取', 409)
+  }
+}
+
+function readDeliveryStepResults(value: string | null) {
+  if (!value) return {} as Record<string, { failureDetail?: string; result: 'success' | 'failed' | 'skipped' }>
+  try {
+    const parsed = JSON.parse(decryptText(value))
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('invalid delivery step results')
+    const entries = Object.entries(parsed as Record<string, unknown>)
+    const valid = entries.every(([, raw]) => {
+      if (!raw || Array.isArray(raw) || typeof raw !== 'object') return false
+      const result = raw as Record<string, unknown>
+      return (result.result === 'success' || result.result === 'failed' || result.result === 'skipped') &&
+        (result.failureDetail == null || typeof result.failureDetail === 'string')
+    })
+    if (!valid) throw new Error('invalid delivery step results')
+    return parsed as Record<string, { failureDetail?: string; result: 'success' | 'failed' | 'skipped' }>
+  } catch {
+    throw new ProjectPackageEventError('交付流程结果无法读取', 409)
+  }
+}
+
+function encryptedDeliveryRuntimeConfig(runtimeConfig: DeliveryRuntimeConfig) {
+  return {
+    environmentVariables: runtimeConfig.environmentVariables.length > 0
+      ? encryptText(JSON.stringify(runtimeConfig.environmentVariables))
+      : null,
+    valuesPath: runtimeConfig.valuesPath ? encryptText(runtimeConfig.valuesPath) : null,
+    valuesPatch: runtimeConfig.valuesPatch ? encryptText(runtimeConfig.valuesPatch) : null,
+  }
+}
+
+function normalizeContainerImages(values: ProjectPackageContainerImageInput[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`镜像地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const image = normalizeContainerImageReference(value.image, { requireTagOrDigest: true })
+    if (!image.valid) throw new ProjectPackageEventError(`镜像地址 ${index + 1}：${image.error}`, 400)
+    const key = containerImageReferenceKey(image.value)
+    if (seen.has(key)) throw new ProjectPackageEventError('镜像地址不能重复', 400)
+    seen.add(key)
+    return {
+      image: image.value,
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `镜像 ${index + 1}`),
+    }
+  })
+}
+
+function normalizeOfflinePackages(values: ProjectPackageOfflinePackageInput[]) {
+  if (values.length > maxDeliveryArtifactEntries) {
+    throw new ProjectPackageEventError(`离线包地址最多填写 ${maxDeliveryArtifactEntries} 项`, 400)
+  }
+  const seen = new Set<string>()
+  return values.map((value, index) => {
+    const url = normalizeOfflinePackageUrl(value.url)
+    if (!url.valid) throw new ProjectPackageEventError(`离线包地址 ${index + 1}：${url.error}`, 400)
+    if (seen.has(url.value)) throw new ProjectPackageEventError('离线包地址不能重复', 400)
+    seen.add(url.value)
+    return {
+      runtimeConfig: value.runtimeConfig == null
+        ? undefined
+        : requireDeliveryRuntimeConfig(value.runtimeConfig, `离线包 ${index + 1}`),
+      url: url.value,
     }
   })
 }
 
 function normalizeProjectPackageDocuments(
   documents: ProjectPackageDocumentInput[],
-  packageNames: Set<string>,
+  _packageNames: Set<string>,
   allowIncomplete: boolean,
 ) {
+  if (documents.some((document) => document.scope === 'package')) {
+    throw new ProjectPackageEventError('交付事件只允许一个事件级变更记录，安装包不单独创建文档', 400)
+  }
   const normalized = documents.map((document, index): NormalizedProjectPackageDocument => {
-    const scope = document.scope === 'package' ? 'package' : 'event'
+    const scope = 'event' as const
     const title = normalizeText(document.title, 120)
     const content = String(document.content ?? '').trim()
-    const packageName = scope === 'package' ? normalizeText(document.packageName, 160) : ''
-    const relatedTodoIds = normalizeTodoIds(document.relatedTodoIds)
+    const packageName = ''
+    const relatedTodoIds: number[] = []
     if (!allowIncomplete && (!title || !content)) {
       throw new ProjectPackageEventError(`Document ${index + 1} requires title and content`, 400)
-    }
-    if (scope === 'package' && (!packageName || !packageNames.has(packageName))) {
-      throw new ProjectPackageEventError(`Document ${index + 1} references an unavailable package`, 400)
     }
     return { content, packageName, relatedTodoIds, scope, title }
   })
 
-  const scopes = new Set<string>()
-  for (const document of normalized) {
-    const key = document.scope === 'event' ? 'event' : `package:${document.packageName}`
-    if (scopes.has(key)) throw new ProjectPackageEventError(`Only one document is allowed for ${key}`, 400)
-    scopes.add(key)
-  }
+  if (normalized.length > 1) throw new ProjectPackageEventError('每个交付事件只能有一个变更记录', 400)
   return normalized
 }
 
@@ -590,14 +988,22 @@ async function findEventMeta(eventId: number, projectId: number, client?: PoolCl
     ${client ? 'for update' : ''}
   `
   const result = client
-    ? await client.query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
-    : await query<{ id: string; published_at: Date | null; type: ProjectPackageEventType }>(sql, [eventId, projectId])
+    ? await client.query<{ id: string; published_at: Date | null; status: ProjectPackageEventStatus; type: ProjectPackageEventType }>(sql.replace('select id, type, published_at', 'select id, type, published_at, status'), [eventId, projectId])
+    : await query<{ id: string; published_at: Date | null; status: ProjectPackageEventStatus; type: ProjectPackageEventType }>(sql.replace('select id, type, published_at', 'select id, type, published_at, status'), [eventId, projectId])
   return result.rows[0] ?? null
 }
 
 function ensureUnpublishedEvent<T extends { published_at: Date | null }>(event: T | null): T {
   if (!event) throw new ProjectPackageEventError('Event not found', 404)
   if (event.published_at) throw new ProjectPackageEventError('Published events are read-only', 409)
+  return event
+}
+
+function ensureEditableEvent<T extends { published_at: Date | null; status: ProjectPackageEventStatus }>(event: T | null): T {
+  if (!event) throw new ProjectPackageEventError('Event not found', 404)
+  if (event.published_at && event.status !== 'rejected') {
+    throw new ProjectPackageEventError('当前交付事件不可编辑', 409)
+  }
   return event
 }
 
@@ -1235,11 +1641,20 @@ function buildProjectPackageEventMarkdown(
     `### ${textValue(event.title, '未命名事件')}`,
     '',
     `- 交付人：${textValue(event.assigneeName, '未指派')}`,
-    `- 交付时间：${event.deliveryStartAt} ~ ${event.deliveryEndAt}`,
+    `- 交付日期：${event.deliveryDate}`,
+    `- 交付状态：${event.status}`,
+    `- 拒绝次数：${event.rejectionCount ?? 0}`,
     '',
-    '### 1. 操作文档',
+    '### 1. 基础信息与变更记录',
     '',
   ]
+  if (event.rejections.length > 0) {
+    lines.push('#### 拒绝记录', '')
+    event.rejections.forEach((rejection, index) => {
+      lines.push(`- ${index + 1}. ${rejection.createdAt} · ${textValue(rejection.rejectedByName, '未知人员')}：${normalizeExportNoteText(rejection.reason)}`)
+    })
+    lines.push('')
+  }
   if (event.operations.length === 0) {
     lines.push('暂无操作文档。', '')
   } else {
@@ -1266,6 +1681,20 @@ function buildProjectPackageEventMarkdown(
     })
   }
 
+  lines.push('### 2. 交付内容', '')
+  if (event.deliverySteps.length === 0) {
+    lines.push('暂无交付内容。', '')
+  } else {
+    event.deliverySteps.forEach((step, index) => {
+      lines.push(`${index + 1}. **${textValue(step.processName, `流程 ${index + 1}`)}** · ${step.kind} · ${step.reference}`)
+      if (step.kind === 'shell-script') {
+        const script = event.deliveryScripts.find((item) => item.id === step.reference)
+        if (script?.content) lines.push('', '```sh', `# 流程 ${index + 1}：${step.processName}`, script.content, '```')
+      }
+    })
+    lines.push('')
+  }
+
   if (event.groups.length === 0) {
     lines.push('暂无安装包。', '')
     return lines
@@ -1278,7 +1707,7 @@ function buildProjectPackageEventMarkdown(
       lines.push(
         ...buildPackageTimelineMarkdown(group, relatedTodoDetailsByOperation, rulesByRevision, {
           headingLevel: '###',
-          sectionNumber: String(groupIndex + 2),
+          sectionNumber: String(groupIndex + 3),
         }),
         '',
       )
@@ -1286,60 +1715,155 @@ function buildProjectPackageEventMarkdown(
   return lines
 }
 
-export async function getProjectPackageTimeline(projectId: number, userId = 0) {
-  const [
-    eventsResult,
-    groupsResult,
-    itemsResult,
-    operationsResult,
-    operationTodosResult,
-    commentsResult,
-    mentionableMembersResult,
-  ] = await Promise.all([
-    query<EventRow>(
-      `
-      select e.id,
-             coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
-             coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
-             coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
-             e.completed_by_user_id, e.completed_at,
-             e.type,
-             e.status,
-             e.title,
-             e.assignee_user_id,
-             e.assigned_by_user_id,
-             e.assigned_at,
-             e.delivery_date,
-             e.delivery_start_at,
-             e.delivery_end_at,
-             e.published_at,
-             e.published_by_user_id,
-             e.created_at,
-             e.updated_at,
-             assignee.email as assignee_email,
-             assignee.display_name as assignee_display_name,
-             assigner.email as assigner_email,
-             assigner.display_name as assigner_display_name
+function packageEventFilterValue(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  if (condition.field === 'title') return decryptText(row.title)
+  if (condition.field === 'assignee') return row.assignee_user_id ?? ''
+  if (condition.field === 'deliveryDate') return row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at)
+  if (condition.field === 'status') return ensureProjectPackageEventStatus(row.status, row.published_at)
+  return row.type
+}
+
+function matchesProjectPackageEventFilter(row: EventRow, condition: ProjectPackageEventFilterCondition) {
+  const fieldValue = packageEventFilterValue(row, condition)
+  const targetValue = condition.value.trim()
+  if (condition.operator === 'is_empty') return !fieldValue
+  if (condition.operator === 'is_not_empty') return Boolean(fieldValue)
+  if (condition.operator === 'contains') return fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'not_contains') return !fieldValue.toLocaleLowerCase('zh-CN').includes(targetValue.toLocaleLowerCase('zh-CN'))
+  if (condition.operator === 'equals') return fieldValue === targetValue
+  if (condition.operator === 'not_equals') return fieldValue !== targetValue
+  if (condition.operator === 'before') return Boolean(fieldValue) && fieldValue < targetValue
+  if (condition.operator === 'after') return Boolean(fieldValue) && fieldValue > targetValue
+  if (condition.operator === 'between') {
+    const [rawStart, rawEnd] = targetValue.split('..')
+    const start = rawStart || rawEnd || ''
+    const end = rawEnd || rawStart || ''
+    const lower = start <= end ? start : end
+    const upper = start <= end ? end : start
+    return Boolean(fieldValue) && fieldValue >= lower && fieldValue <= upper
+  }
+  return true
+}
+
+function projectPackageEventMatchesQuery(row: EventRow, options: ProjectPackageTimelineQuery, normalizedQuery: string) {
+  if (options.assignedUserId && Number(row.assignee_user_id) !== options.assignedUserId) return false
+  if (normalizedQuery) {
+    const searchable = [
+      decryptText(row.title),
+      row.type,
+      ensureProjectPackageEventStatus(row.status, row.published_at),
+      row.assignee_user_id
+        ? displayUserName({ email: row.assignee_email, display_name: row.assignee_display_name })
+        : '',
+    ].join(' ').toLocaleLowerCase('zh-CN')
+    if (!searchable.includes(normalizedQuery)) return false
+  }
+  const filters = options.filters ?? []
+  if (filters.length === 0) return true
+  return options.join === 'or'
+    ? filters.some((condition) => matchesProjectPackageEventFilter(row, condition))
+    : filters.every((condition) => matchesProjectPackageEventFilter(row, condition))
+}
+
+export async function getProjectPackageTimeline(projectId: number, userId = 0, options: ProjectPackageTimelineQuery = {}) {
+  const normalizedQuery = options.q?.trim().toLocaleLowerCase('zh-CN') ?? ''
+  const includeDetails = options.includeDetails !== false
+  // Keep the server-side safety cap at 500 while the workbench requests 10 per page.
+  const requestedLimit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 10)))
+  const requestedOffset = Math.max(0, Math.floor(options.offset ?? 0))
+  const eventIdClause = options.eventId == null ? '' : ' and e.id = $2'
+  const eventSelect = `
+    select e.id,
+           coalesce(nullif(creator.display_name, ''), creator.email) as creator_name,
+           coalesce(nullif(publisher.display_name, ''), publisher.email) as publisher_name,
+           coalesce(nullif(completer.display_name, ''), completer.email) as completer_name,
+           e.completed_by_user_id, e.completed_at,
+           e.delivery_result, ${includeDetails ? 'e.delivery_failure_reason' : 'null::text'} as delivery_failure_reason,
+           e.type, e.status, e.title, e.assignee_user_id, e.assigned_by_user_id, e.assigned_at,
+           e.delivery_date, e.delivery_start_at, e.delivery_end_at,
+           ${includeDetails ? 'e.other_script' : 'null::text'} as other_script,
+           ${includeDetails ? 'e.delivery_steps' : 'null::text'} as delivery_steps,
+           ${includeDetails ? 'e.delivery_scripts' : 'null::text'} as delivery_scripts,
+           ${includeDetails ? 'e.delivery_step_results' : 'null::text'} as delivery_step_results,
+           e.published_at, e.published_by_user_id, e.created_at, e.updated_at,
+           extract(epoch from e.updated_at)::text as detail_revision,
+           assignee.email as assignee_email, assignee.display_name as assignee_display_name,
+           assigner.email as assigner_email, assigner.display_name as assigner_display_name
       from project_package_events e
       left join users creator on creator.id = e.created_by_user_id
       left join users publisher on publisher.id = e.published_by_user_id
       left join users completer on completer.id = e.completed_by_user_id
       left join users assignee on assignee.id = e.assignee_user_id
       left join users assigner on assigner.id = e.assigned_by_user_id
-      where e.project_id = $1
-      order by e.created_at asc, e.id asc
-      `,
+     where e.project_id = $1${eventIdClause}
+  `
+  const canUseDatabasePage = includeDetails === false && !normalizedQuery &&
+    !options.assignedUserId && (options.filters?.length ?? 0) === 0 && options.eventId == null
+  const databasePageResult = canUseDatabasePage
+    ? await query<EventRow>(
+      `${eventSelect}
+       order by coalesce(e.delivery_date, e.created_at::date) ${options.sort === 'asc' ? 'asc' : 'desc'}, e.created_at ${options.sort === 'asc' ? 'asc' : 'desc'}, e.id ${options.sort === 'asc' ? 'asc' : 'desc'}
+       limit $2 offset $3`,
+      options.eventId == null
+        ? [projectId, requestedLimit, requestedOffset]
+        : [projectId, options.eventId, requestedLimit, requestedOffset],
+    )
+    : null
+  const databaseTotalResult = databasePageResult
+    ? await query<{ total: string }>(
+      'select count(*)::text as total from project_package_events where project_id = $1',
       [projectId],
-    ),
+    )
+    : null
+  const allEventsResult = databasePageResult ?? await query<EventRow>(
+    `
+    ${eventSelect}
+     order by e.created_at asc, e.id asc
+    `,
+    options.eventId == null ? [projectId] : [projectId, options.eventId],
+  )
+  const direction = options.sort === 'asc' ? 1 : -1
+  const filteredEventRows = databasePageResult
+    ? databasePageResult.rows
+    : allEventsResult.rows
+    .filter((row) => projectPackageEventMatchesQuery(row, options, normalizedQuery))
+    .sort((left, right) => {
+      const leftDate = left.delivery_date ? formatDate(left.delivery_date) : formatDate(left.created_at)
+      const rightDate = right.delivery_date ? formatDate(right.delivery_date) : formatDate(right.created_at)
+      const comparison = leftDate.localeCompare(rightDate) || left.created_at.getTime() - right.created_at.getTime() || Number(left.id) - Number(right.id)
+      return comparison * direction
+    })
+  const total = databasePageResult
+    ? Number(databaseTotalResult?.rows[0]?.total ?? 0)
+    : filteredEventRows.length
+  const pageEventRows = databasePageResult
+    ? filteredEventRows
+    : filteredEventRows.slice(requestedOffset, requestedOffset + requestedLimit)
+  const limit = requestedLimit
+  const offset = requestedOffset
+  const selectedEventIds = pageEventRows.map((row) => Number(row.id))
+  const eventsResult = { rows: pageEventRows }
+  const eventScope = 'and e.id = any($2::bigint[])'
+  const scopedValues: [number, number[]] = [projectId, selectedEventIds]
+  const [
+    groupsResult,
+    itemsResult,
+    containerImagesResult,
+    offlinePackagesResult,
+    operationsResult,
+    operationTodosResult,
+    commentsResult,
+  ] = includeDetails ? await Promise.all([
     query<GroupRow>(
       `
       select g.id, g.project_package_event_id, g.package_name, g.created_at
       from project_package_groups g
       join project_package_events e on e.id = g.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by g.created_at asc, g.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<ItemRow>(
       `
@@ -1355,14 +1879,36 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
              i.object_last_modified,
              i.size_bytes::text,
              i.source_config_revision,
+             i.environment_variables,
+             i.values_path,
+             i.values_patch,
              i.created_at
       from project_package_items i
       join project_package_groups g on g.id = i.project_package_group_id
       join project_package_events e on e.id = g.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by i.created_at asc, i.id asc
       `,
-      [projectId],
+      scopedValues,
+    ),
+    query<ContainerImageRow>(
+      `select image.id, image.project_package_event_id, image.image_ref,
+              image.environment_variables, image.values_path, image.values_patch
+         from project_package_event_container_images image
+         join project_package_events e on e.id = image.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by image.position, image.id`,
+      scopedValues,
+    ),
+    query<OfflinePackageRow>(
+      `select package.id, package.project_package_event_id, package.download_url,
+              package.environment_variables, package.values_path, package.values_patch
+         from project_package_event_offline_packages package
+         join project_package_events e on e.id = package.project_package_event_id
+        where e.project_id = $1 ${eventScope}
+        order by package.position, package.id`,
+      scopedValues,
     ),
     query<OperationRow>(
       `
@@ -1381,6 +1927,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       from project_package_operations o
       join project_package_events e on e.id = o.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
         and (
           o.project_package_group_id is null
           or exists (
@@ -1392,7 +1939,7 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
         )
       order by o.created_at asc, o.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<OperationTodoRow>(
       `
@@ -1403,9 +1950,10 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       join project_package_operations o on o.id = t.project_package_operation_id
       join project_package_events e on e.id = o.project_package_event_id
       where e.project_id = $1
+        ${eventScope}
       order by t.created_at asc, t.todo_id asc
       `,
-      [projectId],
+      scopedValues,
     ),
     query<PackageEventCommentRow>(
       `
@@ -1421,31 +1969,95 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       join project_package_events e on e.id = c.project_package_event_id
       left join users author on author.id = c.author_user_id
       where e.project_id = $1
+        ${eventScope}
       order by c.created_at asc, c.id asc
       `,
-      [projectId],
+      scopedValues,
     ),
-    query<MentionableMemberRow>(
+  ]) : [
+    { rows: [] as GroupRow[] },
+    { rows: [] as ItemRow[] },
+    { rows: [] as ContainerImageRow[] },
+    { rows: [] as OfflinePackageRow[] },
+    { rows: [] as OperationRow[] },
+    { rows: [] as OperationTodoRow[] },
+    { rows: [] as PackageEventCommentRow[] },
+  ]
+
+  const summaryCountsResult = includeDetails
+    ? { rows: [] as EventSummaryCountRow[] }
+    : await query<EventSummaryCountRow>(
       `
-      select u.id, u.email, u.display_name
-      from users u
-      where (
-        u.id = (select p.user_id from projects p where p.id = $1)
-        or exists (
-          select 1 from project_memberships pm
-          where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
-        )
-        or exists (
-          select 1 from projects p
-          join organization_memberships om on om.organization_id = p.organization_id
-          where p.id = $1 and om.user_id = u.id and om.status = 'active'
-        )
-      )
-      order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+      select e.id,
+             (
+               select count(*)
+               from project_package_groups g
+               join project_package_items i on i.project_package_group_id = g.id
+               where g.project_package_event_id = e.id
+             )::text as package_count,
+             (
+               select count(*)
+               from project_package_operations o
+               where o.project_package_event_id = e.id
+             )::text as operation_count,
+             (
+               select count(*)
+               from project_package_event_comments c
+               where c.project_package_event_id = e.id
+             )::text as comment_count,
+             (
+               select count(*)
+               from project_package_event_rejections r
+               where r.project_package_event_id = e.id
+             )::text as rejection_count
+        from project_package_events e
+       where e.project_id = $1
+         ${selectedEventIds.length > 0 ? 'and e.id = any($2::bigint[])' : 'and false'}
       `,
-      [projectId],
-    ),
-  ])
+      selectedEventIds.length > 0 ? scopedValues : [projectId],
+    )
+
+  const rejectionRowsResult = includeDetails && selectedEventIds.length > 0
+    ? await query<RejectionRow>(
+      `select r.project_package_event_id as event_id, r.reason, r.created_at,
+              u.email, u.display_name
+         from project_package_event_rejections r
+         left join users u on u.id = r.rejected_by_user_id
+        where r.project_package_event_id = any($1::bigint[])
+        order by r.created_at desc, r.id desc`,
+      [selectedEventIds],
+    )
+    : { rows: [] as RejectionRow[] }
+  const rejectionsByEvent = new Map<number, RejectionRow[]>()
+  for (const row of rejectionRowsResult.rows) {
+    const eventRejections = rejectionsByEvent.get(Number(row.event_id)) ?? []
+    eventRejections.push(row)
+    rejectionsByEvent.set(Number(row.event_id), eventRejections)
+  }
+
+  const mentionableMembersResult = await query<MentionableMemberRow>(
+    `
+    select u.id, u.email, u.display_name
+    from users u
+    where (
+      u.id = (select p.user_id from projects p where p.id = $1)
+      or exists (
+        select 1 from project_memberships pm
+        where pm.project_id = $1 and pm.invited_user_id = u.id and pm.status = 'active'
+      )
+      or exists (
+        select 1 from projects p
+        join organization_memberships om on om.organization_id = p.organization_id
+        where p.id = $1 and om.user_id = u.id and om.status = 'active'
+      )
+    )
+    order by lower(coalesce(nullif(u.display_name, ''), u.email)), u.id
+    `,
+    [projectId],
+  )
+
+  const summaryCountsByEvent = new Map<number, EventSummaryCountRow>()
+  for (const row of summaryCountsResult.rows) summaryCountsByEvent.set(Number(row.id), row)
 
   const groupsByEvent = new Map<number, ProjectPackageGroup[]>()
   const groupMap = new Map<number, ProjectPackageGroup>()
@@ -1484,7 +2096,32 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       sizeBytes: row.size_bytes ? Number(row.size_bytes) : undefined,
       sourceConfigRevision: row.source_config_revision ? Number(row.source_config_revision) : undefined,
       createdAt: formatDateTime(row.created_at),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
     })
+  }
+
+  const containerImagesByEvent = new Map<number, ProjectPackageEventContainerImage[]>()
+  for (const row of containerImagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const images = containerImagesByEvent.get(eventId) ?? []
+    images.push({
+      id: Number(row.id),
+      image: decryptText(row.image_ref),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
+    containerImagesByEvent.set(eventId, images)
+  }
+
+  const offlinePackagesByEvent = new Map<number, ProjectPackageEventOfflinePackage[]>()
+  for (const row of offlinePackagesResult.rows) {
+    const eventId = Number(row.project_package_event_id)
+    const packages = offlinePackagesByEvent.get(eventId) ?? []
+    packages.push({
+      id: Number(row.id),
+      url: decryptText(row.download_url),
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    })
+    offlinePackagesByEvent.set(eventId, packages)
   }
 
   const relatedTodoIdsByOperation = new Map<number, number[]>()
@@ -1560,34 +2197,27 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
 
   const access = await deliveryAccess(projectId, userId)
   const deliveryMembers = await listDeliveryMembers(projectId)
-  return {
-    canPlanDelivery: access.canPlan,
-    deliveryMembers,
-    departedUserIds: await getDepartedUserIds(),
-    projectId,
-    events: eventsResult.rows.map((row) => ({
-      capabilities: deliveryCapabilities(access, { published: Boolean(row.published_at), delivered: row.status === 'delivered', assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : null }, userId),
+  const allEvents = eventsResult.rows.map((row) => ({
+      capabilities: deliveryCapabilities(access, { published: Boolean(row.published_at), delivered: ['delivered', 'failed', 'partially_delivered'].includes(row.status), editable: row.status === 'rejected', assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : null }, userId),
       createdByName: row.creator_name ?? undefined,
       publishedByName: row.publisher_name ?? undefined,
       completedByName: row.completer_name ?? undefined,
       completedByUserId: row.completed_by_user_id ? Number(row.completed_by_user_id) : undefined,
       completedAt: row.completed_at ? formatDateTime(row.completed_at) : undefined,
+      deliveryFailureReason: row.delivery_failure_reason ? decryptText(row.delivery_failure_reason) : undefined,
+      deliveryResult: row.delivery_result ?? (row.status === 'delivered' ? 'success' : row.status === 'rejected' ? 'rejected' : row.status === 'failed' ? 'failed' : row.status === 'partially_delivered' ? 'partial' : undefined),
+      detailRevision: row.detail_revision,
       assignedAt: row.assigned_at ? formatDateTime(row.assigned_at) : undefined,
       assignedByName: row.assigned_by_user_id
-        ? displayUserName({
-            email: row.assigner_email,
-            display_name: row.assigner_display_name,
-          })
+        ? displayUserName({ email: row.assigner_email, display_name: row.assigner_display_name })
         : undefined,
       assignedByUserId: row.assigned_by_user_id ? Number(row.assigned_by_user_id) : undefined,
       assigneeName: row.assignee_user_id
-        ? displayUserName({
-            email: row.assignee_email,
-            display_name: row.assignee_display_name,
-          })
+        ? displayUserName({ email: row.assignee_email, display_name: row.assignee_display_name })
         : undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       comments: commentsByEvent.get(Number(row.id)) ?? [],
+      containerImages: containerImagesByEvent.get(Number(row.id)) ?? [],
       id: Number(row.id),
       publishedAt: row.published_at ? formatDateTime(row.published_at) : undefined,
       publishedByUserId: row.published_by_user_id ? Number(row.published_by_user_id) : undefined,
@@ -1596,12 +2226,65 @@ export async function getProjectPackageTimeline(projectId: number, userId = 0) {
       title: decryptText(row.title),
       createdAt: formatDateTime(row.created_at),
       deliveryDate: row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.created_at),
+      deliveryDelayDays: row.published_at
+        ? calendarDayDifference(
+            row.completed_at ? formatDate(row.completed_at) : formatDate(new Date()),
+            row.delivery_date ? formatDate(row.delivery_date) : formatDate(row.delivery_end_at),
+          )
+        : undefined,
       deliveryEndAt: formatDateTime(row.delivery_end_at),
       deliveryStartAt: formatDateTime(row.delivery_start_at),
+      deliverySteps: includeDetails ? (row.delivery_steps ? readDeliverySteps(row.delivery_steps) : buildFallbackDeliverySteps({
+        items: (groupsByEvent.get(Number(row.id)) ?? []).flatMap((group) => group.items),
+        offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
+        containerImages: containerImagesByEvent.get(Number(row.id)) ?? [],
+        deliveryScripts: readDeliveryScripts(row.delivery_scripts, row.other_script),
+      })).map((step) => {
+        const stepResult = readDeliveryStepResults(row.delivery_step_results)[step.id]
+        return stepResult ? { ...step, failureDetail: stepResult.failureDetail, result: stepResult.result } : { ...step, result: 'pending' as const }
+      }) : [],
+      deliveryScripts: includeDetails ? readDeliveryScripts(row.delivery_scripts, row.other_script) : [],
       updatedAt: formatDateTime(row.updated_at),
       operations: eventOperationsByEvent.get(Number(row.id)) ?? [],
+      offlinePackages: offlinePackagesByEvent.get(Number(row.id)) ?? [],
       groups: groupsByEvent.get(Number(row.id)) ?? [],
-    })),
+      other: includeDetails && row.other_script ? { content: decryptText(row.other_script), type: 'shell-script' as const } : null,
+      rejectionCount: includeDetails
+        ? rejectionsByEvent.get(Number(row.id))?.length ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.rejection_count ?? 0),
+      latestRejectionReason: rejectionsByEvent.get(Number(row.id))?.[0]?.reason
+        ? decryptText(rejectionsByEvent.get(Number(row.id))![0].reason)
+        : undefined,
+      latestRejectedByName: rejectionsByEvent.get(Number(row.id))?.[0]
+        ? displayUserName({ email: rejectionsByEvent.get(Number(row.id))![0].email, display_name: rejectionsByEvent.get(Number(row.id))![0].display_name })
+        : undefined,
+      latestRejectedAt: rejectionsByEvent.get(Number(row.id))?.[0]
+        ? formatDateTime(rejectionsByEvent.get(Number(row.id))![0].created_at)
+        : undefined,
+      rejections: (rejectionsByEvent.get(Number(row.id)) ?? []).map((rejection) => ({
+        createdAt: formatDateTime(rejection.created_at),
+        reason: decryptText(rejection.reason),
+        rejectedByName: displayUserName({ email: rejection.email, display_name: rejection.display_name }),
+      })),
+      detailsLoaded: includeDetails,
+      packageCount: includeDetails
+        ? groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.items.length, 0) ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.package_count ?? 0),
+      operationCount: includeDetails
+        ? (eventOperationsByEvent.get(Number(row.id))?.length ?? 0) +
+          (groupsByEvent.get(Number(row.id))?.reduce((total, group) => total + group.operations.length, 0) ?? 0)
+        : Number(summaryCountsByEvent.get(Number(row.id))?.operation_count ?? 0),
+      commentCount: includeDetails
+        ? commentsByEvent.get(Number(row.id))?.length ?? 0
+        : Number(summaryCountsByEvent.get(Number(row.id))?.comment_count ?? 0),
+    }))
+  return {
+    canPlanDelivery: access.canPlan,
+    deliveryMembers,
+    departedUserIds: await getDepartedUserIds(),
+    projectId,
+    events: allEvents,
+    pagination: { limit, offset, total },
     mentionableMembers,
   } satisfies ProjectPackageTimeline
 }
@@ -1616,7 +2299,12 @@ export async function saveProjectPackageEvent(params: {
   deliveryStartAt?: string
   documents: ProjectPackageDocumentInput[]
   eventId?: number
+  containerImages?: ProjectPackageContainerImageInput[]
   items: ProjectPackageItemInput[]
+  offlinePackages?: ProjectPackageOfflinePackageInput[]
+  other?: unknown
+  deliverySteps?: unknown
+  deliveryScripts?: unknown
   projectId: number
   title: string
   type: ProjectPackageEventType
@@ -1629,11 +2317,35 @@ export async function saveProjectPackageEvent(params: {
   if (!title) throw new ProjectPackageEventError('Event title is required', 400)
   const deliveryWindow = normalizeDeliveryWindow(params)
   const items = params.items.length > 0 ? normalizeProjectPackageItems(params.items) : []
+  const containerImages = params.containerImages == null ? undefined : normalizeContainerImages(params.containerImages)
+  const offlinePackages = params.offlinePackages == null ? undefined : normalizeOfflinePackages(params.offlinePackages)
+  const otherResult = params.other === undefined ? undefined : normalizeDeliveryOther(params.other)
+  if (otherResult && !otherResult.valid) {
+    throw new ProjectPackageEventError(otherResult.error, 400)
+  }
+  const normalizedOther = otherResult?.value
+  const hasDeliveryScripts = params.deliveryScripts !== undefined || normalizedOther !== undefined
+  const hasDeliverySteps = params.deliverySteps !== undefined
+  const deliveryScripts = hasDeliveryScripts ? normalizeDeliveryScripts(params.deliveryScripts, normalizedOther) : []
+  const deliverySteps = hasDeliverySteps ? normalizeDeliverySteps(
+    params.deliverySteps,
+    items,
+    containerImages ?? [],
+    offlinePackages ?? [],
+    deliveryScripts,
+  ) : []
   const duplicateObjectKeys = items.filter(
     (item, index) => items.findIndex((candidate) => candidate.objectKey === item.objectKey) !== index,
   )
   if (duplicateObjectKeys.length > 0) {
     throw new ProjectPackageEventError('Package items must be unique', 400)
+  }
+  const hasDeliveryContent = items.length > 0 ||
+    (containerImages?.length ?? 0) > 0 ||
+    (offlinePackages?.length ?? 0) > 0 ||
+    deliveryScripts.length > 0
+  if (params.eventId == null && !hasDeliveryContent) {
+    throw new ProjectPackageEventError('至少添加一种交付内容后才能创建交付事件', 400)
   }
   const packageNames = new Set(items.map((item) => item.packageName))
   const documents = normalizeProjectPackageDocuments(
@@ -1644,21 +2356,80 @@ export async function saveProjectPackageEvent(params: {
   if (params.action === 'publish' && !documents.some((document) => document.scope === 'event')) {
     throw new ProjectPackageEventError('An event document is required before publishing', 400)
   }
+  if (params.action === 'publish' && deliverySteps.length === 0) {
+    throw new ProjectPackageEventError('发布交付事件前必须定义至少一个交付流程', 400)
+  }
   const sourceConfigRevision = getPlatformConfigSnapshot().revision
 
   return withTransaction(async (client) => {
     await authorizeDelivery(client, params.projectId, params.createdByUserId, 'plan', params.eventId == null ? undefined : { eventId: params.eventId })
     await requireDeliveryAssignee(client, params.projectId, params.assigneeUserId, params.action === 'publish')
-    await ensureProjectTodoIds(
-      params.projectId,
-      documents.flatMap((document) => document.relatedTodoIds),
-      client,
-    )
     await params.validatePackageItems?.(client, items)
 
     let eventId = params.eventId
     if (eventId != null) {
-      ensureUnpublishedEvent(await findEventMeta(eventId, params.projectId, client))
+      ensureEditableEvent(await findEventMeta(eventId, params.projectId, client))
+      const existing = await client.query<{
+        delivery_scripts: string | null
+        delivery_steps: string | null
+        other_script: string | null
+      }>(
+        'select delivery_scripts, delivery_steps, other_script from project_package_events where id = $1 and project_id = $2 for update',
+        [eventId, params.projectId],
+      )
+      const existingRow = existing.rows[0]
+      if (!existingRow) throw new ProjectPackageEventError('Event not found', 404)
+      const storedScripts = readDeliveryScripts(existingRow.delivery_scripts, existingRow.other_script)
+      const storedSteps = readDeliverySteps(existingRow.delivery_steps)
+      const effectiveScripts = hasDeliveryScripts ? deliveryScripts : storedScripts
+      const effectiveSteps = hasDeliverySteps ? deliverySteps : storedSteps
+      if (!hasDeliverySteps && !existingRow.delivery_steps) {
+        const legacyItems = await client.query<{ id: string; object_key: string }>(
+          `select i.id, i.object_key from project_package_items i
+             join project_package_groups g on g.id = i.project_package_group_id
+            where g.project_package_event_id = $1 order by i.created_at, i.id`,
+          [eventId],
+        )
+        const legacyOffline = await client.query<{ id: string; url: string }>(
+          'select id, download_url as url from project_package_event_offline_packages where project_package_event_id = $1 order by position, id',
+          [eventId],
+        )
+        const legacyImages = await client.query<{ id: string; image: string }>(
+          'select id, image_ref as image from project_package_event_container_images where project_package_event_id = $1 order by position, id',
+          [eventId],
+        )
+        effectiveSteps.push(...buildFallbackDeliverySteps({
+          items: legacyItems.rows.map((row) => ({ id: row.id, objectKey: row.object_key })),
+          offlinePackages: legacyOffline.rows.map((row) => ({ id: row.id, url: decryptText(row.url) })),
+          containerImages: legacyImages.rows.map((row) => ({ id: row.id, image: decryptText(row.image) })),
+          deliveryScripts: effectiveScripts,
+        }))
+      }
+      const availableReferences = new Set([
+        ...items.map((item) => `package:${item.objectKey}`),
+        ...(containerImages ?? []).map((item) => `container-image:${item.image}`),
+        ...(offlinePackages ?? []).map((item) => `offline-package:${item.url}`),
+        ...effectiveScripts.map((script) => `shell-script:${script.id}`),
+      ])
+      if (!hasDeliverySteps && (items.length > 0 || containerImages != null || offlinePackages != null || hasDeliveryScripts)) {
+        const invalid = effectiveSteps.find((step) => !availableReferences.has(`${step.kind}:${step.reference}`))
+        if (invalid) throw new ProjectPackageEventError(`交付流程“${invalid.processName}”引用的交付内容已变更，请提交完整交付流程`, 409)
+      }
+      const otherValue = normalizedOther !== undefined ? normalizedOther : (existingRow.other_script ? { content: decryptText(existingRow.other_script) } : null)
+      const sqlValues = [
+        params.type,
+        encryptText(title),
+        params.assigneeUserId,
+        params.assignedByUserId,
+        deliveryWindow.deliveryDate,
+        deliveryWindow.deliveryStartAt,
+        deliveryWindow.deliveryEndAt,
+        eventId,
+        params.projectId,
+        otherValue?.content ? encryptText(otherValue.content) : null,
+        encryptText(JSON.stringify(effectiveSteps)),
+        encryptText(JSON.stringify(effectiveScripts)),
+      ]
       const updated = await client.query(
         `
         update project_package_events
@@ -1669,10 +2440,13 @@ export async function saveProjectPackageEvent(params: {
             delivery_date = $5::date,
             delivery_start_at = $6::timestamptz,
             delivery_end_at = $7::timestamptz,
+            other_script = $10,
+            delivery_steps = $11,
+            delivery_scripts = $12,
             updated_at = now()
         where id = $8
           and project_id = $9
-          and published_at is null
+          and (published_at is null or status = 'rejected')
         `,
         [
           params.type,
@@ -1684,6 +2458,7 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryEndAt,
           eventId,
           params.projectId,
+          ...sqlValues.slice(9),
         ],
       )
       if (updated.rowCount !== 1) {
@@ -1702,9 +2477,12 @@ export async function saveProjectPackageEvent(params: {
           assigned_by_user_id,
           delivery_date,
           delivery_start_at,
-          delivery_end_at
+          delivery_end_at,
+          other_script,
+          delivery_steps,
+          delivery_scripts
         )
-        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz)
+        values ($1, $2, 'draft', $3, $4, $5, $6, $7::date, $8::timestamptz, $9::timestamptz, $10, $11, $12)
         returning id
         `,
         [
@@ -1717,12 +2495,48 @@ export async function saveProjectPackageEvent(params: {
           deliveryWindow.deliveryDate,
           deliveryWindow.deliveryStartAt,
           deliveryWindow.deliveryEndAt,
+          normalizedOther?.content ? encryptText(normalizedOther.content) : null,
+          encryptText(JSON.stringify(deliverySteps)),
+          encryptText(JSON.stringify(deliveryScripts)),
         ],
       )
       eventId = Number(created.rows[0].id)
     }
     if (eventId == null) throw new ProjectPackageEventError('Event could not be saved', 409)
     const persistedEventId = eventId
+
+    const existingItemConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingImageConfigs = new Map<string, DeliveryRuntimeConfig>()
+    const existingOfflineConfigs = new Map<string, DeliveryRuntimeConfig>()
+    if (params.eventId != null) {
+      const [existingItems, existingImages, existingOfflinePackages] = await Promise.all([
+        client.query<Pick<ItemRow, 'environment_variables' | 'object_key' | 'values_patch' | 'values_path'>>(
+          `select item.object_key, item.environment_variables, item.values_path, item.values_patch
+             from project_package_items item
+             join project_package_groups group_row on group_row.id = item.project_package_group_id
+            where group_row.project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<ContainerImageRow, 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+          `select image_ref, environment_variables, values_path, values_patch
+             from project_package_event_container_images where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+        client.query<Pick<OfflinePackageRow, 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+          `select download_url, environment_variables, values_path, values_patch
+             from project_package_event_offline_packages where project_package_event_id = $1`,
+          [persistedEventId],
+        ),
+      ])
+      existingItems.rows.forEach((row) => existingItemConfigs.set(row.object_key, readDeliveryRuntimeConfig(row)))
+      existingImages.rows.forEach((row) => {
+        const image = decryptText(row.image_ref)
+        existingImageConfigs.set(containerImageReferenceKey(image), readDeliveryRuntimeConfig(row))
+      })
+      existingOfflinePackages.rows.forEach((row) => {
+        existingOfflineConfigs.set(decryptText(row.download_url), readDeliveryRuntimeConfig(row))
+      })
+    }
 
     await client.query(
       'delete from project_package_operations where project_package_event_id = $1',
@@ -1732,6 +2546,12 @@ export async function saveProjectPackageEvent(params: {
       'delete from project_package_groups where project_package_event_id = $1',
       [persistedEventId],
     )
+    if (params.eventId == null || containerImages != null) {
+      await client.query('delete from project_package_event_container_images where project_package_event_id = $1', [persistedEventId])
+    }
+    if (params.eventId == null || offlinePackages != null) {
+      await client.query('delete from project_package_event_offline_packages where project_package_event_id = $1', [persistedEventId])
+    }
 
     const groupIds = new Map<string, number>()
     for (const item of items) {
@@ -1755,10 +2575,17 @@ export async function saveProjectPackageEvent(params: {
           size_bytes,
           created_by_user_id,
           source_config_revision
+          , environment_variables
+          , values_path
+          , values_patch
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         `,
-        [
+        (() => {
+          const runtimeConfig = encryptedDeliveryRuntimeConfig(
+            item.runtimeConfig ?? existingItemConfigs.get(item.objectKey) ?? emptyDeliveryRuntimeConfig(),
+          )
+          return [
           groupId,
           item.sourcePackageId,
           item.sourcePackageName,
@@ -1771,7 +2598,11 @@ export async function saveProjectPackageEvent(params: {
           item.sizeBytes,
           params.createdByUserId,
           sourceConfigRevision,
-        ],
+          runtimeConfig.environmentVariables,
+          runtimeConfig.valuesPath,
+          runtimeConfig.valuesPatch,
+          ]
+        })(),
       )
     }
 
@@ -1779,10 +2610,37 @@ export async function saveProjectPackageEvent(params: {
       await maybeSeedGroupOperation(client, persistedEventId, groupId, params.type, params.createdByUserId)
     }
 
+    for (const [position, item] of (containerImages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingImageConfigs.get(containerImageReferenceKey(item.image)) ?? emptyDeliveryRuntimeConfig(),
+      )
+      await client.query(
+        `insert into project_package_event_container_images
+          (project_package_event_id, position, image_ref, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.image), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
+      )
+    }
+    for (const [position, item] of (offlinePackages ?? []).entries()) {
+      const runtimeConfig = encryptedDeliveryRuntimeConfig(
+        item.runtimeConfig ?? existingOfflineConfigs.get(item.url) ?? emptyDeliveryRuntimeConfig(),
+      )
+      await client.query(
+        `insert into project_package_event_offline_packages
+          (project_package_event_id, position, download_url, environment_variables, values_path, values_patch)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [persistedEventId, position, encryptText(item.url), runtimeConfig.environmentVariables, runtimeConfig.valuesPath, runtimeConfig.valuesPatch],
+      )
+    }
+
+    await client.query(
+      `delete from project_package_operations
+        where project_package_event_id = $1
+          and project_package_group_id is null
+          and kind = 'document'`,
+      [persistedEventId],
+    )
     for (const document of documents) {
-      const groupId = document.scope === 'package'
-        ? groupIds.get(document.packageName) ?? null
-        : null
       const insertedDocument = await client.query<{ id: string }>(
         `
         insert into project_package_operations (
@@ -1800,14 +2658,11 @@ export async function saveProjectPackageEvent(params: {
         values ($1, $2, 'document', 'pending', $3, '', $4, false, false, $5)
         returning id
         `,
-        [persistedEventId, groupId, encryptText(document.title), encryptText(document.content), params.createdByUserId],
+        [persistedEventId, null, encryptText(document.title), encryptText(document.content), params.createdByUserId],
       )
-      await replaceOperationTodoLinks(
-        client,
-        Number(insertedDocument.rows[0].id),
-        params.createdByUserId,
-        document.relatedTodoIds,
-      )
+      // Delivery documents are independent records. Legacy todo links remain
+      // readable for old events, but new and edited documents never create them.
+      await replaceOperationTodoLinks(client, Number(insertedDocument.rows[0].id), params.createdByUserId, [])
     }
 
     let published = false
@@ -1819,10 +2674,15 @@ export async function saveProjectPackageEvent(params: {
             published_at = now(),
             published_by_user_id = $1,
             assigned_at = now(),
+            delivery_result = null,
+            delivery_failure_reason = null,
+            delivery_step_results = null,
+            completed_by_user_id = null,
+            completed_at = null,
             updated_at = now()
         where id = $2
           and project_id = $3
-          and published_at is null
+          and (published_at is null or status = 'rejected')
         `,
         [params.assignedByUserId, persistedEventId, params.projectId],
       )
@@ -1836,15 +2696,114 @@ export async function saveProjectPackageEvent(params: {
   })
 }
 
-export async function completeProjectPackageEvent(params: { eventId: number; projectId: number; userId: number }) {
+export async function completeProjectPackageEvent(params: {
+  eventId: number
+  failureReason?: string
+  projectId: number
+  result?: unknown
+  stepResults?: unknown
+  userId: number
+}) {
+  const result = params.result ?? 'success'
+  if (result !== 'success' && result !== 'partial' && result !== 'rejected' && result !== 'failed') {
+    throw new ProjectDeliveryError('交付结果无效', 400)
+  }
+  const failureReason = String(params.failureReason ?? '').trim()
+  if ((result === 'failed' || result === 'rejected') && !failureReason) {
+    throw new ProjectDeliveryError(result === 'rejected' ? '拒绝交付时必须填写拒绝理由' : '交付失败时必须填写失败详情', 400)
+  }
+  if (failureReason.length > 4000) throw new ProjectDeliveryError('交付结果详情不能超过 4000 字', 400)
+  const rawStepResults = params.stepResults && typeof params.stepResults === 'object'
+    ? params.stepResults as Record<string, unknown>
+    : {}
+  const rawStepResultEntries = Object.entries(rawStepResults)
+  if (rawStepResultEntries.length > 100) throw new ProjectDeliveryError('交付流程结果最多提交 100 项', 400)
+  const stepResults = Object.fromEntries(rawStepResultEntries.map(([stepId, raw]) => {
+    if (!/^[A-Za-z0-9_-]{1,100}$/u.test(stepId)) throw new ProjectDeliveryError('交付流程结果标识无效', 400)
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const stepResult = value.result
+    if (stepResult !== 'success' && stepResult !== 'failed' && stepResult !== 'skipped') {
+      throw new ProjectDeliveryError(`流程 ${stepId} 的执行结果无效`, 400)
+    }
+    const failureDetail = String(value.failureDetail ?? '').trim()
+    if (failureDetail.length > 4000) throw new ProjectDeliveryError('流程失败详情不能超过 4000 字', 400)
+    if (stepResult === 'failed' && !failureDetail) {
+      throw new ProjectDeliveryError('失败流程必须填写失败详情', 400)
+    }
+    return [stepId, { failureDetail, result: stepResult }]
+  }))
+  const resultValues = Object.values(stepResults)
+  if (result === 'partial' && (!resultValues.some((item) => item.result === 'success') || !resultValues.some((item) => item.result !== 'success'))) {
+    throw new ProjectDeliveryError('部分交付必须同时包含成功和失败或未执行流程', 400)
+  }
+  if (result === 'failed' && (!resultValues.some((item) => item.result === 'failed') || resultValues.some((item) => item.result === 'success'))) {
+    throw new ProjectDeliveryError('交付失败必须包含失败流程，且不能包含成功流程', 400)
+  }
   await withTransaction(async (client) => {
-    await authorizeDelivery(client, params.projectId, params.userId, 'canComplete', { eventId: params.eventId })
-    const result = await client.query(`update project_package_events set status = 'delivered', completed_by_user_id = $1,
-      completed_at = now(), updated_at = now() where id = $2 and project_id = $3
+    await authorizeDelivery(
+      client,
+      params.projectId,
+      params.userId,
+      result === 'rejected' ? 'canReject' : 'canComplete',
+      { eventId: params.eventId },
+    )
+    const event = await client.query<{
+      delivery_scripts: string | null
+      delivery_steps: string | null
+      other_script: string | null
+    }>(
+      'select delivery_scripts, delivery_steps, other_script from project_package_events where id = $1 and project_id = $2 for update',
+      [params.eventId, params.projectId],
+    )
+    const eventRow = event.rows[0]
+    const scripts = readDeliveryScripts(eventRow?.delivery_scripts ?? null, eventRow?.other_script ?? null)
+    const steps = readDeliverySteps(eventRow?.delivery_steps ?? null)
+    const resolvedSteps = eventRow?.delivery_steps ? steps : buildFallbackDeliverySteps({
+      items: (await client.query<{ id: string; object_key: string }>(
+        `select i.id, i.object_key from project_package_items i
+           join project_package_groups g on g.id = i.project_package_group_id
+          where g.project_package_event_id = $1 order by i.created_at, i.id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, objectKey: item.object_key })),
+      offlinePackages: (await client.query<{ id: string; url: string }>(
+        `select id, download_url as url from project_package_event_offline_packages
+          where project_package_event_id = $1 order by position, id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, url: decryptText(item.url) })),
+      containerImages: (await client.query<{ id: string; image: string }>(
+        `select id, image_ref as image from project_package_event_container_images
+          where project_package_event_id = $1 order by position, id`,
+        [params.eventId],
+      )).rows.map((item) => ({ id: item.id, image: decryptText(item.image) })),
+      deliveryScripts: scripts,
+    })
+    const stepIds = new Set(resolvedSteps.map((step) => step.id))
+    if (Object.keys(stepResults).some((stepId) => !stepIds.has(stepId))) {
+      throw new ProjectDeliveryError('交付结果包含未知流程', 400)
+    }
+    if ((result === 'partial' || result === 'failed') && Object.keys(stepResults).length !== resolvedSteps.length) {
+      throw new ProjectDeliveryError('请填写每个交付流程的执行结果', 400)
+    }
+    const status = result === 'success' ? 'delivered' : result === 'partial' ? 'partially_delivered' : result === 'rejected' ? 'rejected' : 'failed'
+    const terminal = result !== 'rejected'
+    const completedStepResults = result === 'success'
+      ? Object.fromEntries(resolvedSteps.map((step) => [step.id, { result: 'success' }]))
+      : result === 'rejected' ? {} : stepResults
+    const updated = await client.query(`update project_package_events set status = $1, completed_by_user_id = $2,
+      completed_at = case when $3::boolean then now() else null end, delivery_result = $4, delivery_failure_reason = $5,
+      delivery_step_results = $6, updated_at = now() where id = $7 and project_id = $8
       and published_at is not null
       and status = 'delivering'`,
-    [params.userId, params.eventId, params.projectId])
-    if (result.rowCount !== 1) throw new ProjectDeliveryError('任务状态已变化，请刷新后重试', 409)
+    [status, terminal ? params.userId : null, terminal, result, result === 'failed' ? encryptText(failureReason) : null,
+      encryptText(JSON.stringify(completedStepResults)), params.eventId, params.projectId])
+    if (updated.rowCount !== 1) throw new ProjectDeliveryError('交付事件已结束，请新建事件继续交付', 409)
+    if (result === 'rejected') {
+      await client.query(
+        `insert into project_package_event_rejections (project_package_event_id, rejected_by_user_id, reason)
+         values ($1, $2, $3)`,
+        [params.eventId, params.userId, encryptText(failureReason)],
+      )
+    }
   })
 }
 
@@ -2056,12 +3015,26 @@ export async function createProjectPackageOperation(params: {
 
   if (kind === 'document' && !title) throw new Error('Operation title is required')
   if (kind === 'document' && !content) throw new Error('Operation content is required')
+  if (kind === 'document' && params.groupId != null) {
+    throw new Error('安装包仅展示安装包列表，不单独创建变更记录')
+  }
 
   await withTransaction(async (client) => {
     await authorizeDelivery(client, params.projectId, params.createdByUserId, 'plan', { eventId: params.eventId })
     const event = ensureUnpublishedEvent(
       await findEventMeta(params.eventId, params.projectId, client),
     )
+    if (kind === 'document') {
+      const existingDocument = await client.query<{ id: string }>(
+        `select id from project_package_operations
+          where project_package_event_id = $1
+            and project_package_group_id is null
+            and kind = 'document'
+          limit 1`,
+        [params.eventId],
+      )
+      if (existingDocument.rows[0]) throw new Error('每个交付事件只能有一个变更记录，请编辑现有记录')
+    }
     if (params.groupId) {
       const group = await findGroupMeta(params.groupId, params.projectId, client)
       if (!group || Number(group.event_id) !== params.eventId) {
@@ -2075,11 +3048,7 @@ export async function createProjectPackageOperation(params: {
     )
     if (kind === 'event' && !label) throw new Error('Operation label is required')
 
-    const relatedTodoIds = await ensureProjectTodoIds(
-      params.projectId,
-      params.relatedTodoIds ?? [],
-      client,
-    )
+    const relatedTodoIds: number[] = []
     const result = await client.query<{ id: string }>(
       `
       insert into project_package_operations (
@@ -2169,10 +3138,8 @@ export async function updateProjectPackageOperation(params: {
     values.push(ensureProjectPackageOperationStatus(params.status))
     updates.push(`status = $${values.length}`)
   }
-  const shouldUpdateRelatedTodos = params.relatedTodoIds != null
-  const relatedTodoNotes = shouldUpdateRelatedTodos
-    ? normalizeTodoNotes(params.relatedTodoNotes)
-    : {}
+  const shouldUpdateRelatedTodos = false
+  const relatedTodoNotes = {}
 
   if (updates.length === 0 && !shouldUpdateRelatedTodos) {
     throw new Error('No supported fields to update')
@@ -2291,6 +3258,192 @@ export async function getProjectPackageItemObjectKey(params: {
   projectId: number
 }) {
   return (await getProjectPackageItemDownloadSource(params))?.objectKey ?? ''
+}
+
+export async function getProjectPackageEventDeliveryArtifacts(params: {
+  eventId: number
+  expireMinutes: number
+  projectId: number
+}) {
+  const event = await query<{
+    delivery_scripts: string | null
+    delivery_steps: string | null
+    id: string
+    other_script: string | null
+  }>(
+    `select id, other_script, delivery_steps, delivery_scripts
+       from project_package_events where id = $1 and project_id = $2`,
+    [params.eventId, params.projectId],
+  )
+  if (!event.rows[0]) throw new ProjectPackageEventError('Event not found', 404)
+
+  const [packageRows, imageRows, offlineRows] = await Promise.all([
+    query<{
+      id: string
+      environment_variables: string | null
+      object_key: string
+      source_config_revision: string | null
+      source_package_id: string
+      channel: string
+      values_patch: string | null
+      values_path: string | null
+    }>(
+      `select i.id, i.object_key, i.source_config_revision, i.source_package_id, i.channel,
+              i.environment_variables, i.values_path, i.values_patch
+         from project_package_items i
+         join project_package_groups g on g.id = i.project_package_group_id
+        where g.project_package_event_id = $1
+        order by i.created_at, i.id`,
+      [params.eventId],
+    ),
+    query<Pick<ContainerImageRow, 'id' | 'environment_variables' | 'image_ref' | 'values_patch' | 'values_path'>>(
+      `select id, image_ref, environment_variables, values_path, values_patch from project_package_event_container_images
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+    query<Pick<OfflinePackageRow, 'id' | 'download_url' | 'environment_variables' | 'values_patch' | 'values_path'>>(
+      `select id, download_url, environment_variables, values_path, values_patch from project_package_event_offline_packages
+        where project_package_event_id = $1 order by position, id`,
+      [params.eventId],
+    ),
+  ])
+
+  const packageLinks = [] as Array<{ downloadUrl: string; expiresAt: string; id: string; objectKey: string; runtimeConfig: DeliveryRuntimeConfig }>
+  const rulesByRevision = new Map<number | null, Awaited<ReturnType<typeof getPackageMarketRulesForConfigRevision>>>()
+  for (const item of packageRows.rows) {
+    const revision = item.source_config_revision ? Number(item.source_config_revision) : null
+    let rules = rulesByRevision.get(revision)
+    if (!rulesByRevision.has(revision)) {
+      rules = await getPackageMarketRulesForConfigRevision(revision)
+      rulesByRevision.set(revision, rules)
+    }
+    if (!isPackageMarketObjectKeyAllowedForRule({
+      channel: item.channel === 'ci' ? 'ci' : 'release',
+      objectKey: item.object_key,
+      packageId: item.source_package_id,
+      rules,
+    })) {
+      throw new ProjectPackageEventError('交付安装包已不符合当前对象规则，无法生成下载地址', 409)
+    }
+    packageLinks.push({
+      ...createPackageItemDownloadLink(item.object_key, params.expireMinutes),
+      id: item.id,
+      objectKey: item.object_key,
+      runtimeConfig: readDeliveryRuntimeConfig(item),
+    })
+  }
+
+  const images = imageRows.rows.map((row) => ({
+    image: decryptText(row.image_ref),
+    id: row.id,
+    runtimeConfig: readDeliveryRuntimeConfig(row),
+  }))
+  const offlinePackages = offlineRows.rows.map((row, index) => {
+    const downloadUrl = decryptText(row.download_url)
+    return {
+      downloadUrl,
+      fileName: offlinePackageFileName(downloadUrl, index),
+      id: row.id,
+      runtimeConfig: readDeliveryRuntimeConfig(row),
+    }
+  })
+  const addresses = [
+    ...packageLinks.map((item) => ({ expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl })),
+    ...offlinePackages.map((item) => ({ kind: 'offline-package' as const, value: item.downloadUrl })),
+    ...images.map((item) => ({ kind: 'container-image' as const, value: item.image })),
+  ]
+  const scripts = readDeliveryScripts(event.rows[0].delivery_scripts, event.rows[0].other_script)
+  const packageByReference = new Map(packageLinks.map((item) => [item.objectKey, item]))
+  const imageByReference = new Map(images.map((item) => [item.image, item]))
+  const offlineByReference = new Map(offlinePackages.map((item) => [item.downloadUrl, item]))
+  const scriptByReference = new Map(scripts.map((item) => [item.id, item]))
+  const storedSteps = readDeliverySteps(event.rows[0].delivery_steps)
+  const deliverySteps = event.rows[0].delivery_steps
+    ? storedSteps
+    : buildFallbackDeliverySteps({
+        items: packageLinks.map((item) => ({ id: item.id, objectKey: item.objectKey })),
+        offlinePackages: offlinePackages.map((item) => ({ id: item.id, url: item.downloadUrl })),
+        containerImages: images.map((item) => ({ id: item.id, image: item.image })),
+        deliveryScripts: scripts,
+      })
+  const processes = deliverySteps.map((step, index) => {
+    const comment = `# 流程 ${index + 1}：${step.processName}`
+    if (step.kind === 'shell-script') {
+      const script = scriptByReference.get(step.reference)
+      if (!script) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的 Shell 脚本不存在`, 409)
+      return { content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
+    }
+    if (step.kind === 'package') {
+      const item = packageByReference.get(step.reference)
+      if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的安装包不存在`, 409)
+      const onlineCommand = createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })
+      const offlineCommand = createOfflineDeliveryExecutionScript({
+        fileName: item.objectKey.split('/').at(-1)?.replace(/[^A-Za-z0-9._-]/gu, '-') || 'package.tar',
+        runtimeConfig: item.runtimeConfig,
+      })
+      return {
+        address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
+        offlineCommand,
+        onlineCommand,
+        content: `${comment}\n${onlineCommand}`,
+        kind: step.kind,
+        processName: step.processName,
+        runtimeConfig: item.runtimeConfig,
+        stepId: step.id,
+      }
+    }
+    if (step.kind === 'offline-package') {
+      const item = offlineByReference.get(step.reference)
+      if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的离线包不存在`, 409)
+      const onlineCommand = createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })
+      const offlineCommand = createOfflineDeliveryExecutionScript({ fileName: item.fileName, runtimeConfig: item.runtimeConfig })
+      return {
+        address: { kind: 'offline-package' as const, value: item.downloadUrl },
+        offlineCommand,
+        onlineCommand,
+        content: `${comment}\n${onlineCommand}`,
+        kind: step.kind,
+        processName: step.processName,
+        runtimeConfig: item.runtimeConfig,
+        stepId: step.id,
+      }
+    }
+    const item = imageByReference.get(step.reference)
+    if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的镜像不存在`, 409)
+    return {
+      address: { kind: 'container-image' as const, value: item.image },
+      content: `${comment}\n${createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })}`,
+      kind: step.kind,
+      processName: step.processName,
+      runtimeConfig: item.runtimeConfig,
+      stepId: step.id,
+    }
+  })
+  return {
+    addresses,
+    other: event.rows[0].other_script
+      ? { content: decryptText(event.rows[0].other_script), type: 'shell-script' as const }
+      : null,
+    processes,
+    items: [
+      ...packageLinks.map((item) => ({
+        address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] }),
+      })),
+      ...offlinePackages.map((item) => ({
+        address: { kind: 'offline-package' as const, value: item.downloadUrl },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] }),
+      })),
+      ...images.map((item) => ({
+        address: { kind: 'container-image' as const, value: item.image },
+        runtimeConfig: item.runtimeConfig,
+        script: createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] }),
+      })),
+    ],
+    script: processes.map((process) => process.content).join('\n\n'),
+  }
 }
 
 export async function exportProjectPackageTimeline(projectId: number, eventId?: number) {

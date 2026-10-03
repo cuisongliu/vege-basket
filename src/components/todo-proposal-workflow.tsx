@@ -133,9 +133,11 @@ export const TodoProposalWorkflow = forwardRef<
 
   const invalidSelectedProposal = useMemo(
     () => proposals.find((proposal) => selectedIds.has(proposal.clientId) && (
-      !proposal.projectId || !proposal.title.trim() || !proposal.dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(proposal.dueDate)
+      !proposal.projectId || !proposal.title.trim() || !proposal.dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(proposal.dueDate) ||
+      (projects.find((project) => project.id === proposal.projectId)?.organizationId != null &&
+        (!proposal.estimatedWorkMinutes || proposal.estimatedWorkMinutes < 60 || proposal.estimatedWorkMinutes % 60 !== 0))
     )),
-    [proposals, selectedIds],
+    [projects, proposals, selectedIds],
   )
 
   const unavailableSelectedModule = proposals.some(proposal => selectedIds.has(proposal.clientId)
@@ -219,6 +221,7 @@ export const TodoProposalWorkflow = forwardRef<
         projectId: proposal.projectId,
         sourceExcerpt: proposal.sourceExcerpt,
         title: proposal.title,
+        ...(proposal.estimatedWorkMinutes == null ? {} : { estimatedWorkMinutes: proposal.estimatedWorkMinutes }),
       }))
     setConfirming(true)
     setError('')
@@ -385,6 +388,21 @@ export const TodoProposalWorkflow = forwardRef<
                         onChange={(event) => updateProposal(proposal.clientId, { dueDate: event.target.value || null })}
                       />
                     </Label>
+                    {project?.organizationId ? (
+                      <Label>
+                        预估工时（小时）
+                        <Input
+                          disabled={confirming || readOnly}
+                          min="1"
+                          step="1"
+                          type="number"
+                          value={proposal.estimatedWorkMinutes == null ? '' : proposal.estimatedWorkMinutes / 60}
+                          onChange={(event) => updateProposal(proposal.clientId, {
+                            estimatedWorkMinutes: event.target.value ? Number(event.target.value) * 60 : null,
+                          })}
+                        />
+                      </Label>
+                    ) : null}
                     <Label>
                       优先级
                       <Select

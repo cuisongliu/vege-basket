@@ -1,0 +1,228 @@
+/* Values and component geometry follow src/index.css and src/App.css.
+   Earlier sheets supply the prototype's tables/dialog primitives only. */
+:root {
+  --bg: oklch(.9934 .0017 174.535);
+  --surface: #fff;
+  --sidebar: #fff;
+  --ink: oklch(.2464 .0358 168.9829);
+  --muted: oklch(.3142 .0494 168.25);
+  --line: oklch(.9161 .0142 174.1306);
+  --brand: oklch(.5048 .0836 176.32);
+  --soft: oklch(.984 .004 174);
+  --tint: oklch(.965 .016 174);
+  --font-sans: Inter, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --r: 6px;
+}
+body {font-family:var(--font-sans);font-size:15px;letter-spacing:-.01em;font-synthesis:none;text-rendering:optimizeLegibility}
+* {letter-spacing:inherit}
+.mono,.number,.metric-value b,.drawer-summary b,.chart svg text,.dialog-header small {font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.shell {grid-template-columns:220px minmax(0,1fr);min-height:100dvh}
+.sidebar {padding:16px 12px;gap:18px;background:var(--sidebar);height:100dvh;border-color:oklch(.9302 .0118 174.2144)}
+.brand {padding:0 4px;gap:10px;min-height:34px}
+.brand img {width:30px;height:30px;border-radius:6px}
+.brand small {font-size:12px;line-height:1.3;letter-spacing:0;margin:0;color:var(--muted);font-weight:520}
+.brand b {font-size:16px;line-height:1.2;display:block;margin-top:1px;letter-spacing:-.01em}
+.bell {margin-left:auto;display:grid;place-items:center;border:1px solid var(--line);border-radius:50%;width:28px;height:28px;color:var(--muted)}
+.organization-label {display:flex;align-items:center;gap:8px;height:40px;padding:0 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:580;background:#fff}
+.organization-label span {flex:1}
+.organization-label svg:last-child {width:13px}
+.nav {gap:2px;display:flex;flex-direction:column}
+.nav a,.nav-existing {display:flex;align-items:center;gap:8px;min-height:32px;padding:0 9px;font-size:14px;font-weight:520;border-radius:6px;color:var(--ink)}
+.nav a.active {color:var(--brand);background:var(--soft);box-shadow:none;font-weight:600}
+.nav a small {font-size:12px;margin-left:auto}
+.nav .nav-label {display:flex;align-items:center;gap:8px;font-size:11px;font-weight:650;margin:14px 9px 5px;color:var(--muted)}
+.nav .nav-label:first-child {margin-top:0}
+.nav-label::after {content:'';height:1px;background:var(--line);flex:1}
+.nav-existing {cursor:default}
+.sidebar-bottom {margin-top:auto;padding:0 4px 2px;border:0}
+.account-card {display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.account-dot {width:8px;height:8px;background:var(--brand);border-radius:50%;box-shadow:0 0 0 3px color-mix(in oklch,var(--brand) 10%,transparent)}
+.account-card strong {display:block;font-size:14px;line-height:1.3;font-weight:680}
+.account-card small {display:block;font-size:13px;line-height:1.35;font-weight:450}
+.demo-role-label {display:block;font-size:11px;color:var(--muted);margin-top:12px}
+.sidebar-bottom .persona {height:32px;font-size:12px;margin-top:4px}
+.workspace {width:100%;min-width:0;max-width:1736px;padding:20px clamp(14px,1.6vw,28px) 36px;margin:0 auto}
+.page-head {margin:0 0 20px;gap:16px;align-items:center}
+.page-head h1 {font-size:28px;line-height:1.16;letter-spacing:-.02em;margin:3px 0 0;font-weight:650}
+.page-head p {font-size:13px;line-height:1.6;margin-top:8px;max-width:none}
+.head-actions {gap:8px}
+.btn,.page-head .btn {font-size:14px;min-height:32px;padding:4px 10px;border-radius:6px;font-weight:560;line-height:21px}
+.btn.icon {width:32px;min-width:32px;min-height:32px}
+.text-btn {font-size:13px;min-height:32px}
+.existing-action {display:inline-flex;gap:6px;align-items:center;font-size:14px;border:1px solid var(--line);border-radius:6px;height:32px;padding:0 10px;background:white}
+.panel {background:var(--surface);border:1px solid var(--line);border-radius:9.6px;min-width:0}
+.search-panel {padding:10px 12px 12px;overflow:hidden}
+.search-controls {display:grid;grid-template-columns:minmax(360px,1fr) 150px 150px;gap:8px;align-items:end;margin-bottom:10px}
+.search-field {font-size:13px;font-weight:550;display:grid;gap:6px;min-width:0}
+.search-box {height:34px;margin:0;background:#fff}
+.search-box input {font-size:14px;width:100%;font-weight:400}
+.search-box svg {width:16px}
+select.control {height:34px;font-size:14px;font-weight:400}
+.search-results {display:grid;gap:8px}
+.result-item {width:100%;border-radius:7px;border:1px solid var(--line);background:var(--surface);display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;text-align:left;overflow:visible}
+.result-main {min-width:0;border:0;background:transparent;color:inherit;padding:12px;text-align:left}
+.result-meta-row {display:flex;align-items:center;flex-wrap:wrap;gap:7px;color:var(--muted);font-size:12px;font-weight:560}
+.result-title-row {display:flex;align-items:center;gap:7px;min-width:0;margin:9px 0 5px;flex-wrap:wrap}
+.result-item h3 {font-size:15px;line-height:1.35;font-weight:620;overflow-wrap:anywhere}
+.project-tag {border:1px solid color-mix(in oklch,var(--brand) 18%,var(--line));border-radius:999px;padding:2px 7px;font-size:12px;font-weight:600;color:var(--brand)}
+.result-item p {font-size:14px;line-height:1.6}
+.result-actions {padding:12px 12px 12px 4px;display:flex;gap:8px;align-items:center}
+.chip {font-size:12px;padding:2px 7px}
+.list-caption {font-size:12px;padding-top:12px}
+.basket-footer {display:flex;gap:16px;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted);margin-top:16px}
+.basket-footer a {display:inline-flex;gap:6px;align-items:center;flex-shrink:0}
+.prototype-foot {font-size:11px;display:flex;align-items:center;gap:12px;color:var(--muted);padding-top:24px}
+.prototype-foot .text-btn {font-size:11px;min-height:24px}
+.hours-panel {padding:0 20px 20px}
+.subtabs {margin:0 0 20px;gap:24px}
+.subtabs button {font-size:14px;line-height:21px;padding:13px 0;min-height:46px}
+.period-row {font-size:13px;margin:0 0 20px}
+.segment button {font-size:13px;padding:4px 12px}
+.metric-label {font-size:13px}.metric p {font-size:12px;line-height:1.6}
+.metric-value b {font-size:30px;font-weight:500;letter-spacing:-1px}
+.metrics {padding:20px 0;margin-bottom:24px}
+.metric {padding:0 18px}
+.section-heading h2,.table-top h2 {font-size:16px}
+.section-heading p,.section-heading small {font-size:12px;line-height:1.6}
+.stats-grid {gap:24px;padding:0 0 24px;margin-bottom:24px}
+.stats-grid>section+section {padding-left:24px}
+.legend,.chart-foot {font-size:12px}
+.legend {gap:12px}
+.chart {height:auto}
+.chart svg text {font-size:12px}
+.allocation-row {margin-bottom:15px}
+.allocation-row .line {font-size:14px}.allocation-row .line small {font-size:12px}
+.bar {margin:0;height:5px;border-radius:3px}
+.mini-owner {font-size:13px;gap:8px}
+.avatar {height:26px;width:26px;font-size:12px}
+table {font-size:14px}
+.table-wrap th {font-size:12px;font-weight:550;padding:12px}
+.table-wrap td {padding:14px 12px}
+.table-wrap td p,.task-link small {font-size:12px;line-height:1.6}
+.table-wrap .text-btn {font-size:14px}
+.table-wrap .task-link {font-size:14px}
+.table-top {margin-top:0}
+.table-top .head-actions {flex-wrap:nowrap}
+.table-top .search-box {width:230px}
+.project-back {display:inline-flex;align-items:center;gap:6px;font-size:13px;margin:0 0 12px;color:var(--muted)}
+.cockpit-layout {display:grid;grid-template-columns:minmax(0,1.4fr) minmax(360px,1fr);gap:16px}
+.journal-panel,.todo-panel {padding:18px;align-self:start}
+.journal-panel>.section-heading h2,.todo-panel>.section-heading h2 {display:flex;align-items:center;gap:8px}
+.journal-panel>.section-heading>.muted {font-size:12px}
+.journal-composer textarea {width:100%;min-height:132px;border:1px solid var(--line);padding:12px;border-radius:6px;background:white;resize:none;font-size:14px}
+.journal-composer>span {display:block;font-size:12px;margin-top:6px}
+.journal-entry {border-top:1px solid var(--line);padding-top:18px;margin-top:22px;font-size:14px;line-height:1.8}
+.journal-meta {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;font-size:12px;color:var(--muted)}
+.journal-entry h3 {font-size:15px;margin-bottom:8px;font-weight:620}
+.journal-entry ul {padding-left:21px;margin:12px 0 0}
+.journal-entry li {margin:6px 0}
+.todo-caption {display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);padding-bottom:8px;border-bottom:1px solid var(--line)}
+.cockpit-todo {display:block;width:100%;text-align:left;padding:15px 0;border:0;border-bottom:1px solid var(--line);background:transparent}
+.cockpit-todo:last-child {border-bottom:0;padding-bottom:0}
+.todo-title {display:flex;align-items:flex-start;gap:8px}
+.todo-title>svg {margin-top:4px;color:var(--brand);width:15px}
+.todo-title strong {font-size:14px;line-height:1.6;flex:1;font-weight:560}
+.todo-title .chip {font-size:11px;padding:2px 6px}
+.todo-meta {display:flex;justify-content:space-between;font-size:12px;margin:8px 0 6px 23px;color:var(--muted)}
+.todo-hours {display:flex;flex-wrap:wrap;gap:6px 12px;margin-left:23px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.task-detail-meta,.detail-description,.dialog-header p,.log-row,.form-summary,.status-msg,.audit-row {font-size:13px}
+.drawer {width:min(580px,100vw)}
+.dialog-header h2 {font-size:20px}
+.dialog-header small,.drawer-summary label,.drawer-summary .text-btn {font-size:12px}
+.field {align-content:start}
+.field-row {align-items:start}
+.field label {font-size:14px}
+.field input,.field select,.field textarea {font-size:14px;padding:8px 10px}
+.field p,.hint,.error-field,.error {font-size:12px}
+.dialog-footer .btn {min-height:34px}
+.log-row .btn {font-size:12px;min-height:30px}
+.log-row small,.log-row .chip {font-size:12px}
+.log-row .date {font-size:11px}
+.event-row {font-size:12px}
+@media(hover:hover) {
+  .nav a:hover,.result-item:hover {background:white;box-shadow:0 3px 10px rgb(0 0 0 / 8%)}
+  .cockpit-todo:hover {background:var(--soft)}
+}
+@media(max-width:1360px) and (min-width:1101px) {
+  .shell {grid-template-columns:198px minmax(0,1fr)}
+  .workspace {padding:16px 14px 28px}
+  .metric {padding:0 12px}
+  .metric p {font-size:11px}
+}
+@media(max-width:1100px) {
+  .shell {display:block}
+  .sidebar {position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:16px}
+  .brand {grid-column:1}.organization-label {grid-column:2;grid-row:1}
+  .nav {grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(124px,1fr));gap:4px}
+  .nav .nav-label {grid-column:1/-1;margin:8px 9px 3px}
+  .sidebar-bottom {grid-column:1/-1;display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0;padding:0}
+  .account-card {display:none}.demo-role-label {margin:0}.sidebar-bottom .persona {width:150px;margin:0}
+  .workspace {padding:20px 16px 28px}
+  .cockpit-layout {grid-template-columns:minmax(0,1fr) minmax(340px,1fr)}
+}
+@media(max-width:760px) {
+  .sidebar {grid-template-columns:1fr;gap:12px;padding:16px}
+  .brand {grid-column:1;grid-row:1}.brand b {font-size:16px}.brand small {display:block}.brand img {width:30px;height:30px}.bell {margin-left:auto}
+  .organization-label {grid-column:1;grid-row:2}
+  .nav {grid-row:3;grid-template-columns:1fr 1fr;overflow:visible;gap:4px}
+  .nav a,.nav-existing {font-size:14px;min-height:36px;padding:0 9px}
+  .nav .nav-label {display:flex;margin:6px 9px 3px}
+  .nav .nav-label:first-child {margin-top:0}
+  .nav-existing {display:none}
+  .nav .nav-label:nth-of-type(2) {display:none}
+  .sidebar-bottom {grid-column:1;grid-row:4;justify-content:flex-start;padding:0 9px}
+  .demo-role-label {font-size:12px}.sidebar-bottom .persona {font-size:12px;width:152px;height:32px}
+  .workspace {padding:18px 16px 28px}
+  .page-head {gap:12px;flex-wrap:wrap;margin-bottom:18px;align-items:flex-start}
+  .page-head h1 {font-size:26px}.page-head p {font-size:13px;max-width:none}
+  .page-head .head-actions {justify-content:flex-start}
+  .btn,.page-head .btn,.btn.icon {min-height:36px;font-size:13px;padding:5px 9px}
+  .head-actions {gap:7px;flex-wrap:wrap}.existing-action {font-size:13px}
+  .search-controls {grid-template-columns:1fr 1fr;gap:10px}
+  .search-field:first-child {grid-column:1/-1}
+  .result-item {grid-template-columns:minmax(0,1fr)}
+  .result-actions {padding:0 12px 12px;justify-content:space-between}
+  .result-actions .btn {min-height:32px}
+  .result-item p {font-size:13px}
+  .result-title-row {gap:6px}.result-meta-row {gap:6px;font-size:11px}
+  .basket-footer {flex-direction:column;align-items:flex-start;gap:10px;font-size:12px}
+  .prototype-foot {flex-wrap:wrap;gap:8px;font-size:10px}
+  .hours-panel {padding:0 12px 16px}
+  .subtabs {gap:20px;margin-bottom:16px;overflow:auto}
+  .subtabs button {font-size:13px;flex:none}
+  .period-row {gap:8px;margin-bottom:16px}.period-row>.right {gap:6px}
+  .period-row>.right>.mono {font-size:10px;letter-spacing:-.03em}
+  .period-row .segment button {font-size:12px;padding:3px 8px}
+  .period-row .btn.icon {min-width:24px;width:24px;min-height:32px;padding:3px}
+  .period-row>.muted {font-size:11px}
+  .metrics {gap:20px 0;padding:18px 0;margin-bottom:20px}
+  .metric {padding:0 10px!important}.metric:nth-child(odd) {padding-left:0!important}
+  .metric-label {font-size:11px;gap:4px}.metric-label svg {width:13px}
+  .metric-value b {font-size:25px}.metric-value {gap:4px}.metric-value span {font-size:11px}
+  .metric p {font-size:10px}
+  .stats-grid {grid-template-columns:1fr;gap:20px}
+  .stats-grid>section+section {padding:20px 0 0;border-left:0}
+  .section-heading h2,.table-top h2 {font-size:15px}.section-heading p,.section-heading small {font-size:11px}
+  .legend {font-size:10px;gap:8px}
+  .chart-foot {font-size:10px}.chart svg text {font-size:11px}
+  .chart {height:auto}
+  .mobile-task b {font-size:14px}.mobile-task p {font-size:12px}
+  .mobile-task .numbers span {font:13px var(--font-mono)}.mobile-task .numbers small {font:11px var(--font-sans);margin-bottom:5px}
+  .table-top .head-actions {width:100%;gap:8px;flex-wrap:wrap}
+  .table-top .search-box {width:100%;flex:auto}.table-top select {width:100%}
+  .table-wrap table {min-width:570px}
+  .cockpit-layout {grid-template-columns:1fr;gap:16px}
+  .todo-panel {grid-row:1}.journal-panel,.todo-panel {padding:14px}
+  .journal-meta {flex-wrap:wrap}
+  .journal-entry {font-size:13px}
+  .todo-title .chip {font-size:10px}.todo-title strong {font-size:14px}
+  .todo-meta,.todo-hours {font-size:11px}
+  .drawer {width:100vw}.dialog-header {padding:18px 16px}.dialog-body {padding:16px}.dialog-footer {padding:12px 16px}
+  .dialog-header h2 {font-size:18px}.dialog-header p {font-size:12px}
+  .field input,.field select,.field textarea {font-size:14px}
+  .field label {font-size:13px}.field-row {gap:10px}
+  .form-summary,.status-msg,.hint {font-size:12px}
+  .log-row .actions {flex-wrap:wrap}
+  .drawer-summary b {font-size:23px}.drawer-summary label {font-size:11px}
+}

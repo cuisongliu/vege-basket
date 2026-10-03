@@ -843,6 +843,70 @@ on conflict (todo_id, user_id) do nothing;
 alter table todos
   add column if not exists reviewer_user_id bigint references users(id) on delete set null;
 
+-- Enterprise work-time tracking is deliberately additive. Personal projects keep
+-- the existing todo contract, while enterprise todos may opt in to the required
+-- estimate and review lifecycle below.
+alter table todos
+  add column if not exists estimated_work_minutes integer,
+  add column if not exists legacy_estimated_work_minutes boolean not null default false,
+  add column if not exists needs_revision boolean not null default false,
+  add column if not exists rejection_reason text,
+  add column if not exists submitted_at timestamptz,
+  add column if not exists accepted_at timestamptz,
+  add column if not exists accepted_by_user_id bigint references users(id) on delete set null,
+  add column if not exists acceptance_version integer not null default 0;
+
+alter table todos drop constraint if exists todos_estimated_work_minutes_check;
+update todos
+   set legacy_estimated_work_minutes = true
+ where estimated_work_minutes is not null
+   and estimated_work_minutes > 0
+   and estimated_work_minutes % 60 <> 0;
+alter table todos add constraint todos_estimated_work_minutes_check
+  check (estimated_work_minutes is null or (estimated_work_minutes > 0 and estimated_work_minutes <= 525600 and (legacy_estimated_work_minutes or estimated_work_minutes % 60 = 0)));
+
+create unique index if not exists idx_todos_id_project_id_unique
+  on todos(id, project_id);
+
+create table if not exists todo_work_hours (
+  id bigserial primary key,
+  project_id bigint not null references projects(id) on delete cascade,
+  todo_id bigint not null,
+  user_id bigint not null references users(id) on delete cascade,
+  work_date date not null,
+  minutes integer not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'submitted', 'confirmed')),
+  description text not null default '',
+  confirmed_by_user_id bigint references users(id) on delete set null,
+  confirmed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (minutes > 0 and minutes <= 1440 and minutes % 60 = 0),
+  foreign key (todo_id, project_id) references todos(id, project_id) on delete cascade
+);
+
+alter table todo_work_hours drop constraint if exists todo_work_hours_minutes_check;
+alter table todo_work_hours
+  add column if not exists legacy_minutes boolean not null default false;
+update todo_work_hours
+   set legacy_minutes = true
+ where minutes > 0
+   and minutes % 60 <> 0;
+alter table todo_work_hours add constraint todo_work_hours_minutes_check
+  check (minutes > 0 and minutes <= 1440 and (legacy_minutes or minutes % 60 = 0));
+
+create index if not exists idx_todo_work_hours_user_date
+  on todo_work_hours(user_id, work_date, status);
+create index if not exists idx_todo_work_hours_project_date
+  on todo_work_hours(project_id, work_date, status);
+create index if not exists idx_todo_work_hours_todo
+  on todo_work_hours(todo_id, created_at desc);
+
+alter table todo_work_hours drop constraint if exists todo_work_hours_status_check;
+alter table todo_work_hours add constraint todo_work_hours_status_check
+  check (status in ('pending', 'submitted', 'confirmed'));
+
 alter table todos
   add column if not exists project_module_id bigint references project_modules(id) on delete set null;
 
@@ -930,7 +994,7 @@ create table if not exists todo_activity_events (
   actor_user_id bigint references users(id) on delete set null,
   assignee_user_id bigint references users(id) on delete set null,
   event_type text not null
-    check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed')),
+    check (event_type in ('created', 'updated', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted')),
   title text not null,
   due_date date not null,
   priority text not null default 'medium',
@@ -942,7 +1006,7 @@ alter table todo_activity_events
 
 alter table todo_activity_events
   add constraint todo_activity_events_event_type_check
-  check (event_type in ('created', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed'));
+  check (event_type in ('created', 'updated', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted'));
 
 create table if not exists risks (
   id bigserial primary key,
@@ -1419,6 +1483,10 @@ create table if not exists project_package_events (
   delivery_date date not null default current_date,
   delivery_start_at timestamptz not null default (current_date::timestamp at time zone 'Asia/Shanghai'),
   delivery_end_at timestamptz not null default ((current_date::timestamp + interval '1 day' - interval '1 second') at time zone 'Asia/Shanghai'),
+  delivery_steps text,
+  delivery_scripts text,
+  delivery_step_results text,
+  other_script text,
   published_at timestamptz,
   published_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -1479,34 +1547,38 @@ alter table project_package_events
 
 alter table project_package_events
   add column if not exists published_at timestamptz,
-  add column if not exists published_by_user_id bigint references users(id) on delete set null;
+  add column if not exists published_by_user_id bigint references users(id) on delete set null,
+  add column if not exists other_script text,
+  add column if not exists delivery_steps text,
+  add column if not exists delivery_scripts text,
+  add column if not exists delivery_step_results text,
+  add column if not exists completed_by_user_id bigint references users(id) on delete set null,
+  add column if not exists completed_at timestamptz,
+  add column if not exists delivery_result text,
+  add column if not exists delivery_failure_reason text;
+
+alter table project_package_events drop constraint if exists project_package_events_lifecycle_check;
 
 update project_package_events
 set status = case
   when published_at is null then 'draft'
+  when delivery_result = 'failed' or status = 'failed' then 'failed'
+  when delivery_result = 'partial' or status = 'partially_delivered' then 'partially_delivered'
+  when delivery_result = 'rejected' or status = 'rejected' then 'rejected'
   when status in ('delivered', 'success') then 'delivered'
   else 'delivering'
 end
 where status not in ('draft', 'delivering', 'delivered')
+   or delivery_result in ('failed', 'partial', 'rejected')
    or (published_at is null and status <> 'draft')
    or (published_at is not null and status = 'draft');
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'project_package_events_lifecycle_check'
-      and conrelid = 'project_package_events'::regclass
-  ) then
-    alter table project_package_events
-      add constraint project_package_events_lifecycle_check
-      check (
-        (published_at is null and status = 'draft')
-        or (published_at is not null and status in ('delivering', 'delivered'))
-      );
-  end if;
-end $$;
+alter table project_package_events
+  add constraint project_package_events_lifecycle_check
+  check (
+    (published_at is null and status = 'draft')
+    or (published_at is not null and status in ('delivering', 'rejected', 'partially_delivered', 'delivered', 'failed'))
+  );
 
 do $$
 begin
@@ -1584,6 +1656,43 @@ create table if not exists project_package_items (
   created_by_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now()
 );
+
+create table if not exists project_package_event_container_images (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  position integer not null check (position >= 0),
+  image_ref text not null,
+  unique (project_package_event_id, position)
+);
+
+create table if not exists project_package_event_offline_packages (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  position integer not null check (position >= 0),
+  download_url text not null,
+  unique (project_package_event_id, position)
+);
+
+create index if not exists idx_project_package_event_container_images_event
+  on project_package_event_container_images(project_package_event_id, position);
+
+create index if not exists idx_project_package_event_offline_packages_event
+  on project_package_event_offline_packages(project_package_event_id, position);
+
+alter table project_package_items
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
+
+alter table project_package_event_container_images
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
+
+alter table project_package_event_offline_packages
+  add column if not exists environment_variables text,
+  add column if not exists values_path text,
+  add column if not exists values_patch text;
 
 create table if not exists project_package_operations (
   id bigserial primary key,
@@ -2816,8 +2925,46 @@ create table if not exists project_delivery_members (
 create index if not exists idx_project_delivery_member_user on project_delivery_members(user_id, organization_id);
 alter table project_package_events add column if not exists completed_by_user_id bigint references users(id) on delete set null;
 alter table project_package_events add column if not exists completed_at timestamptz;
+alter table project_package_events
+  add column if not exists delivery_result text;
+alter table project_package_events
+  add column if not exists delivery_failure_reason text;
 
+alter table project_package_events drop constraint if exists project_package_events_delivery_result_check;
+alter table project_package_events
+  add constraint project_package_events_delivery_result_check
+  check (
+    delivery_result is null
+    or delivery_result in ('success', 'partial', 'rejected')
+    or (delivery_result = 'failed' and length(btrim(coalesce(delivery_failure_reason, ''))) > 0)
+  );
 
+create table if not exists project_package_event_rejections (
+  id bigserial primary key,
+  project_package_event_id bigint not null references project_package_events(id) on delete cascade,
+  rejected_by_user_id bigint references users(id) on delete set null,
+  reason text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_project_package_event_rejections_event
+  on project_package_event_rejections(project_package_event_id, created_at desc, id desc);
+update project_package_events
+set delivery_result = 'success'
+where status = 'delivered' and delivery_result is null;
+update project_package_events
+set completed_at = coalesce(completed_at, updated_at, published_at, created_at)
+where status in ('partially_delivered', 'delivered', 'failed') and completed_at is null;
+
+alter table project_package_events drop constraint if exists project_package_events_terminal_result_check;
+alter table project_package_events
+  add constraint project_package_events_terminal_result_check
+  check (
+    (status in ('draft', 'delivering') and delivery_result is null and completed_at is null)
+    or (status = 'rejected' and delivery_result = 'rejected' and completed_at is null)
+    or (status = 'partially_delivered' and delivery_result = 'partial' and completed_at is not null)
+    or (status = 'delivered' and delivery_result = 'success' and completed_at is not null)
+    or (status = 'failed' and delivery_result = 'failed' and completed_at is not null)
+  );
 create or replace function revoke_project_delivery_membership() returns trigger language plpgsql as $$
 begin
   if TG_TABLE_NAME = 'project_memberships' then

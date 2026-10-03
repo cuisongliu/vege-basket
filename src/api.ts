@@ -1,4 +1,8 @@
 import type { ProjectDeliveryMember } from '../shared/project-delivery'
+import {
+  emptyDeliveryRuntimeConfig,
+  normalizeDeliveryRuntimeConfig,
+} from '../shared/delivery-artifact'
 import type { WeeklyReportItemSources, WeeklyReportSourceResult } from '../shared/weekly-report-profile'
 import type {
   InboxItem,
@@ -22,10 +26,12 @@ import type {
   Priority,
   Project,
   ProjectPackageEventStatus,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationKind,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   ProjectPackageEventType,
   ProjectMembership,
   ProjectStatus,
@@ -120,7 +126,58 @@ export type NotificationResponse = {
 export type NavigationCounts = {
   assignedBugCount: number
   openTodoCount: number
+  workHourConfirmationCount: number
   organizationId: OrganizationContext
+}
+
+export type WorkHourStatus = 'pending' | 'submitted' | 'confirmed'
+export type WorkHourEntry = {
+  id: number
+  projectId: number
+  todoId: number
+  userId: number
+  workDate: string
+  minutes: number
+  hours: number
+  status: WorkHourStatus
+  description: string
+  createdAt: string
+  updatedAt: string
+  projectName?: string
+  todoTitle?: string
+  userName?: string
+  estimatedWorkMinutes?: number | null
+}
+export type WorkHourTaskSummary = {
+  taskId: number
+  title: string
+  assigneeName?: string
+  assigneeUserId?: number | null
+  done: boolean
+  confirmationStatus: string
+  estimatedMinutes: number | null
+  confirmedMinutes: number
+  pendingMinutes: number
+  totalMinutes: number
+}
+export type WorkHourSummary = {
+  totalMinutes: number
+  totalHours: number
+  confirmedMinutes: number
+  pendingMinutes: number
+  projectCount: number
+  taskCount: number
+  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
+  byDate: Array<{ date: string; minutes: number; hours: number; pendingMinutes: number; confirmedMinutes: number }>
+  byUser: Array<{ userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; projectCount?: number; taskCount?: number }>
+  tasks?: WorkHourTaskSummary[]
+  estimatedMinutes?: number
+  estimatedHours?: number
+}
+export type WorkHoursResponse = {
+  entries: WorkHourEntry[]
+  pagination?: { offset: number; limit: number; total: number }
+  summary: WorkHourSummary
 }
 
 export type PackageMarketRulesResponse = {
@@ -542,6 +599,7 @@ export function markAllNotificationsRead() {
 export function fetchMyWork(organizationId: OrganizationContext, filters: MyWorkFilters = {}) {
   const params = new URLSearchParams()
   params.set('organizationId', serializeOrganizationContext(organizationId))
+  if (filters.review) params.set('review', 'true')
   if (filters.due) params.set('due', filters.due)
   if (filters.cursor) params.set('cursor', filters.cursor)
   if (filters.kind) params.set('kind', filters.kind)
@@ -553,6 +611,115 @@ export function fetchMyWork(organizationId: OrganizationContext, filters: MyWork
   if (filters.limit) params.set('limit', String(filters.limit))
   const query = params.toString()
   return request<MyWorkData>(`/api/my-work${query ? `?${query}` : ''}`)
+}
+
+function workHoursQuery(filters: {
+  endDate?: string
+  projectId?: number
+  startDate?: string
+  status?: WorkHourStatus | 'all'
+} = {}) {
+  const params = new URLSearchParams()
+  if (filters.startDate) params.set('startDate', filters.startDate)
+  if (filters.endDate) params.set('endDate', filters.endDate)
+  if (filters.projectId) params.set('projectId', String(filters.projectId))
+  if (filters.status && filters.status !== 'all') params.set('status', filters.status)
+  const queryString = params.toString()
+  return queryString ? `?${queryString}` : ''
+}
+
+export function fetchMyWorkHours(filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/my-work-hours${workHoursQuery(filters)}`)
+}
+
+export function createWorkHour(payload: {
+  description?: string
+  minutes?: number
+  todoId: number
+  workDate: string
+}) {
+  return request<{ entry: WorkHourEntry }>('/api/my-work-hours', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchTodoWorkHours(todoId: number, filters: { cursor?: number; limit?: number; q?: string } = {}) {
+  const params = new URLSearchParams()
+  if (filters.cursor) params.set('cursor', String(filters.cursor))
+  if (filters.limit) params.set('limit', String(filters.limit))
+  if (filters.q?.trim()) params.set('q', filters.q.trim())
+  const queryString = params.toString()
+  return request<WorkHoursResponse>(`/api/todos/${todoId}/work-hours${queryString ? `?${queryString}` : ''}`)
+}
+
+export function updateWorkHour(entryId: number, payload: Partial<Pick<WorkHourEntry, 'description' | 'minutes' | 'workDate'>>) {
+  return request<{ entry: WorkHourEntry }>(`/api/my-work-hours/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeWorkHour(entryId: number) {
+  return request<{ ok: true }>(`/api/my-work-hours/${entryId}`, { method: 'DELETE' })
+}
+
+export function submitWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function acceptWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/accept`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function returnWorkHours(todoId: number, entryIds: number[]) {
+  return request<{ ok: true; updatedCount: number }>(`/api/todos/${todoId}/work-hours/return`, {
+    method: 'POST',
+    body: JSON.stringify({ entryIds }),
+  })
+}
+
+export function completeTodoFromWorkHours(todoId: number) {
+  return request<{ ok: true; autoConfirmedCount: number }>(`/api/todos/${todoId}/work-hours/complete`, {
+    method: 'POST',
+  })
+}
+
+export function fetchOrganizationWorkHours(organizationId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/organizations/${organizationId}/work-hours${workHoursQuery(filters)}`)
+}
+
+export function fetchProjectWorkHours(projectId: number, filters?: Parameters<typeof workHoursQuery>[0]) {
+  return request<WorkHoursResponse>(`/api/projects/${projectId}/work-hours${workHoursQuery(filters)}`)
+}
+
+export function submitTodoForReview(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/submit-review`, { method: 'POST' })
+}
+
+export function withdrawTodoReview(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/withdraw-review`, { method: 'POST' })
+}
+
+export function acceptTodo(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/accept`, { method: 'POST' })
+}
+
+export function returnTodoForRevision(todoId: number, reason: string) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/return`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
+export function reopenTodo(todoId: number) {
+  return request<{ ok: true }>(`/api/todos/${todoId}/reopen`, { method: 'POST' })
 }
 
 export function fetchCurrentUser() {
@@ -907,6 +1074,13 @@ export function deletePlatformOrganization(organizationId: number, confirmationN
 
 export function fetchOrganizations(options: Pick<RequestInit, 'signal'> = {}) {
   return request<{ canCreate: boolean; organizations: OrganizationListItem[] }>('/api/organizations', options)
+}
+
+export function createOrganization(name: string) {
+  return request<{ id: number; name: string }>('/api/organizations', {
+    method: 'POST',
+    body: JSON.stringify({ name, requestId: crypto.randomUUID() }),
+  })
 }
 
 export function fetchOrganizationPackageMarketCatalog(organizationId: number) {
@@ -1570,6 +1744,7 @@ export function createTodo(payload: {
   priority: Priority
   projectId: number
   title: string
+  estimatedWorkMinutes?: number | null
 }) {
   return request<WorkspaceData>('/api/todos', {
     method: 'POST',
@@ -1711,8 +1886,24 @@ export function createAiTurnDocument(conversationId: string, turnId: string) {
   )
 }
 
-export function fetchTodoActivity(projectId: number) {
-  return request<{ departedUserIds: number[]; events: TodoActivityEvent[] }>(`/api/projects/${projectId}/todo-activity`)
+export function fetchTodoActivity(
+  projectId: number,
+  todoId?: number,
+  pagination?: { cursor?: string; limit?: number; snapshotMaxId?: number },
+) {
+  const search = new URLSearchParams()
+  if (todoId != null) search.set('todoId', String(todoId))
+  if (pagination?.limit != null) search.set('limit', String(pagination.limit))
+  if (pagination?.cursor != null) search.set('cursor', pagination.cursor)
+  if (pagination?.snapshotMaxId != null) search.set('snapshotMaxId', String(pagination.snapshotMaxId))
+  const query = search.size ? `?${search.toString()}` : ''
+  return request<{
+    departedUserIds: number[]
+    events: TodoActivityEvent[]
+    nextCursor: string | null
+    snapshotMaxId: number | null
+    total: number | null
+  }>(`/api/projects/${projectId}/todo-activity${query}`)
 }
 
 export function fetchNotificationSubscription() {
@@ -1875,15 +2066,63 @@ export function deleteAiConversation(conversationId: string) {
   )
 }
 
-export function fetchProjectPackageTimeline(projectId: number) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline`)
+function normalizeWireDeliveryRuntimeConfig(value: unknown) {
+  if (value == null) return emptyDeliveryRuntimeConfig()
+  const result = normalizeDeliveryRuntimeConfig(value)
+  if (!result.valid) throw new Error(result.error)
+  return result.value
+}
+
+export function normalizeProjectPackageTimelineRuntimeConfigs(timeline: ProjectPackageTimeline) {
+  return {
+    ...timeline,
+    events: timeline.events.map((event) => ({
+      ...event,
+      containerImages: event.containerImages.map((item) => ({
+        ...item,
+        runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+      })),
+      groups: event.groups.map((group) => ({
+        ...group,
+        items: group.items.map((item) => ({
+          ...item,
+          runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+        })),
+      })),
+      offlinePackages: event.offlinePackages.map((item) => ({
+        ...item,
+        runtimeConfig: normalizeWireDeliveryRuntimeConfig(item.runtimeConfig),
+      })),
+    })),
+  }
+}
+
+async function requestProjectPackageTimeline(path: string, options?: RequestInit) {
+  return normalizeProjectPackageTimelineRuntimeConfigs(
+    await request<ProjectPackageTimeline>(path, options),
+  )
+}
+
+export function fetchProjectPackageTimeline(projectId: number, options: ProjectPackageTimelineQuery = {}) {
+  const params = new URLSearchParams()
+  if (options.assignedUserId != null) params.set('assignedUserId', String(options.assignedUserId))
+  if (options.eventId != null) params.set('eventId', String(options.eventId))
+  if (options.filters?.length) params.set('filters', JSON.stringify(options.filters))
+  if (options.includeDetails === false) params.set('includeDetails', 'false')
+  if (options.join) params.set('join', options.join)
+  if (options.limit != null) params.set('limit', String(options.limit))
+  if (options.offset != null) params.set('offset', String(options.offset))
+  if (options.q?.trim()) params.set('q', options.q.trim())
+  if (options.sort) params.set('sort', options.sort)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline${query}`)
 }
 
 export function createProjectPackageEvent(
   projectId: number,
   payload: ProjectPackageEventSavePayload,
 ) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/events`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -1894,7 +2133,7 @@ export function saveProjectPackageEventDraft(
   eventId: number,
   payload: ProjectPackageEventSavePayload,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'PUT',
@@ -1903,15 +2142,19 @@ export function saveProjectPackageEventDraft(
   )
 }
 
-export function completeProjectPackageEvent(projectId: number, eventId: number) {
-  return request<ProjectPackageTimeline>(
+export function completeProjectPackageEvent(
+  projectId: number,
+  eventId: number,
+  payload: { result: 'success' | 'partial' | 'rejected' | 'failed'; failureReason?: string; stepResults?: Record<string, { result: 'success' | 'failed' | 'skipped'; failureDetail?: string }> },
+) {
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/complete`,
-    { method: 'POST' },
+    { method: 'POST', body: JSON.stringify(payload) },
   )
 }
 
 export function addPackageEventComment(projectId: number, eventId: number, content: string) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments`,
     {
       method: 'POST',
@@ -1926,7 +2169,7 @@ export function updatePackageEventComment(
   commentId: number,
   content: string,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
     {
       method: 'PATCH',
@@ -1940,7 +2183,7 @@ export function deletePackageEventComment(
   eventId: number,
   commentId: number,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/comments/${commentId}`,
     { method: 'DELETE' },
   )
@@ -1959,7 +2202,7 @@ export function updateProjectPackageEvent(
     type: ProjectPackageEventType
   }>,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'PATCH',
@@ -1969,7 +2212,7 @@ export function updateProjectPackageEvent(
 }
 
 export function removeProjectPackageEvent(projectId: number, eventId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}`,
     {
       method: 'DELETE',
@@ -1995,7 +2238,7 @@ export function addProjectPackageItems(
     }>
   },
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/events/${eventId}/packages`,
     {
       method: 'POST',
@@ -2005,7 +2248,7 @@ export function addProjectPackageItems(
 }
 
 export function removeProjectPackageGroup(projectId: number, groupId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/package-groups/${groupId}`,
     {
       method: 'DELETE',
@@ -2028,7 +2271,7 @@ export function createProjectPackageOperation(
     relatedTodoNotes?: Record<number, string>
   },
 ) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/operations`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/operations`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -2047,7 +2290,7 @@ export function updateProjectPackageOperation(
     relatedTodoNotes: Record<number, string>
   }>,
 ) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
     {
       method: 'PATCH',
@@ -2057,7 +2300,7 @@ export function updateProjectPackageOperation(
 }
 
 export function removeProjectPackageOperation(projectId: number, operationId: number) {
-  return request<ProjectPackageTimeline>(
+  return requestProjectPackageTimeline(
     `/api/projects/${projectId}/package-timeline/operations/${operationId}`,
     {
       method: 'DELETE',
@@ -2082,6 +2325,16 @@ export function fetchProjectPackageItemDownloadUrl(
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return request<{ downloadUrl: string; expiresAt: string; expiresInSeconds: number }>(
     `/api/projects/${projectId}/package-items/${itemId}/download-url${suffix}`,
+  )
+}
+
+export function fetchProjectPackageEventDeliveryArtifacts(
+  projectId: number,
+  eventId: number,
+  expireMinutes: 30 | 60 | 120 = 30,
+) {
+  return request<ProjectPackageDeliveryArtifacts>(
+    `/api/projects/${projectId}/package-timeline/events/${eventId}/delivery-artifacts?expireMinutes=${expireMinutes}`,
   )
 }
 
@@ -2226,7 +2479,7 @@ export function saveProjectDeliveryConfiguration(organizationId: number, project
 export function reassignProjectPackageEvent(projectId: number, eventId: number, payload: {
   assigneeUserId: number; previousAssigneeUserId: number | null; reason: string
 }) {
-  return request<ProjectPackageTimeline>(`/api/projects/${projectId}/package-timeline/events/${eventId}/reassign`, {
+  return requestProjectPackageTimeline(`/api/projects/${projectId}/package-timeline/events/${eventId}/reassign`, {
     method: 'POST', body: JSON.stringify(payload),
   })
 }

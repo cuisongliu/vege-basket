@@ -41,6 +41,7 @@ import {
   attachProjectToOrganization,
   ApiError,
   attachTestSpaceToOrganization,
+  createOrganization,
   createProject,
   createOrganizationInviteLink,
   createOrganizationProjectMilestone,
@@ -147,7 +148,7 @@ type OrganizationTab =
 type OrganizationTabGroup = 'governance' | 'operations'
 
 function organizationSectionForTab(tab: OrganizationTab): OrganizationDetailSection {
-  return tab
+  return (tab as string) === 'workHours' ? 'overview' : tab
 }
 
 function mergeOrganizationDetail(current: OrganizationDetail, next: OrganizationDetail) {
@@ -437,6 +438,9 @@ export function OrganizationWorkbench({
   const [packageMarketCatalogLoading, setPackageMarketCatalogLoading] = useState(false)
   const [packageMarketPolicySaving, setPackageMarketPolicySaving] = useState(false)
   const [organizationRenameDraft, setOrganizationRenameDraft] = useState('')
+  const [newOrganizationOpen, setNewOrganizationOpen] = useState(false)
+  const [newOrganizationError, setNewOrganizationError] = useState('')
+  const [newOrganizationName, setNewOrganizationName] = useState('')
   const [memberInviteOpen, setMemberInviteOpen] = useState(false)
   const [inviteUsername, setInviteUsername] = useState('')
   const [inviteExpiresInMinutes, setInviteExpiresInMinutes] = useState(10)
@@ -721,6 +725,28 @@ export function OrganizationWorkbench({
       onOrganizationsChanged?.()
     } catch (renameError) {
       if (!showOrganizationPermissionError(renameError)) setOrganizationSettingsError(errorMessage(renameError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitNewOrganization(event: FormEvent) {
+    event.preventDefault()
+    const organizationName = newOrganizationName.trim()
+    if (!organizationName) return
+    setBusy(true)
+    setError('')
+    setNewOrganizationError('')
+    try {
+      const created = await createOrganization(organizationName)
+      const result = await fetchOrganizations()
+      setOrganizations(result.organizations)
+      setSelectedOrganizationId(created.id)
+      setNewOrganizationName('')
+      setNewOrganizationOpen(false)
+      onOrganizationsChanged?.()
+    } catch (createError) {
+      setNewOrganizationError(errorMessage(createError))
     } finally {
       setBusy(false)
     }
@@ -1059,6 +1085,36 @@ export function OrganizationWorkbench({
             {organizationRoleLabel[selectedDetail.accessRole]}
           </span>
         ) : null}
+        <Dialog open={newOrganizationOpen} onOpenChange={(open) => {
+          if (!busy) {
+            setNewOrganizationOpen(open)
+            if (!open) setNewOrganizationError('')
+          }
+        }}>
+          <DialogTrigger asChild>
+            <Button disabled={busy} type="button"><Plus />新建组织</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>新建组织</DialogTitle>
+              <DialogDescription>创建后你将成为该组织的所有者。</DialogDescription>
+            </DialogHeader>
+            <form className="organization-dialog-form" onSubmit={(event) => void submitNewOrganization(event)}>
+              <Label htmlFor="new-organization-name">组织名称</Label>
+              <Input
+                id="new-organization-name"
+                maxLength={80}
+                value={newOrganizationName}
+                onChange={(event) => setNewOrganizationName(event.target.value)}
+              />
+              {newOrganizationError ? <p className="form-error" role="alert">{newOrganizationError}</p> : null}
+              <DialogFooter>
+                <Button disabled={busy} type="button" variant="outline" onClick={() => setNewOrganizationOpen(false)}>取消</Button>
+                <Button disabled={busy || !newOrganizationName.trim()} type="submit">创建组织</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>,
       topbarActionHost,
     )

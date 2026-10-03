@@ -1,16 +1,19 @@
 import { Button } from './ui/button'
 import './list-pagination.css'
 
-export function ListPagination({ label, page, pageSize, total, disabled = false, onPageChange, onPageSizeChange }: {
+export function ListPagination({ label, page, pageSize, pageSizeOptions = [20, 50], total, disabled = false, onPageChange, onPageSizeChange }: {
   label: string
   page: number
   pageSize: number
+  pageSizeOptions?: number[]
   total: number
   disabled?: boolean
   onPageChange: (page: number) => void
   onPageSizeChange?: (size: number) => void
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize))
+  const resolvedPageSizeOptions = Array.from(new Set([...pageSizeOptions, pageSize]))
+    .sort((left, right) => left - right)
   return (
     <nav className="list-pagination" aria-label={label}>
       <span className="list-pagination-summary" aria-live="polite">
@@ -19,8 +22,7 @@ export function ListPagination({ label, page, pageSize, total, disabled = false,
       <div className="list-pagination-controls">
         {onPageSizeChange ? (
           <select aria-label={`${label}每页条数`} value={pageSize} disabled={disabled} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
-            <option value={20}>20 条/页</option>
-            <option value={50}>50 条/页</option>
+            {resolvedPageSizeOptions.map((size) => <option key={size} value={size}>{size} 条/页</option>)}
           </select>
         ) : null}
         <Button type="button" variant="ghost" disabled={disabled || page === 0} onClick={() => onPageChange(page - 1)}>上一页</Button>

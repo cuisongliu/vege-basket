@@ -1862,6 +1862,7 @@ async function getTestWorkbench(
       ends_on: string | null
       environment: string
       environment_access_url: string
+      organization_admin_access: boolean
       test_environment_id: string | null
       id: string
       name: string
@@ -1876,6 +1877,14 @@ async function getTestWorkbench(
     }>(
       `
       select p.*
+           , exists (
+             select 1
+             from organization_memberships om
+             join user_roles ur on ur.user_id = om.user_id and ur.role = 'organization_admin'
+             where om.organization_id = space.organization_id
+               and om.user_id = $1
+               and om.status = 'active'
+           ) as organization_admin_access
       from test_plans p
       join test_spaces space on space.id = p.test_space_id
       left join test_space_memberships m
@@ -2635,6 +2644,7 @@ async function getTestWorkbench(
     })),
     plans: plans.rows.map((row) => ({
       canManage: canManageTestPlan(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
+      canDelete: canManageTestPlan(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId) || row.organization_admin_access,
       createdAt: row.created_at.toISOString(),
       createdByUserId: row.created_by_user_id ? Number(row.created_by_user_id) : undefined,
       endsOn: row.ends_on || undefined,
@@ -4523,9 +4533,33 @@ router.delete('/test-spaces/:spaceId/plans/:planId', asyncRoute(async (request, 
     return
   }
   if (!(await requireSpaceAccess(response, spaceId, session.userId))) return
-  const plan = await query<{ created_by_user_id: string | null }>(
-    'select created_by_user_id from test_plans where id = $1 and test_space_id = $2',
-    [planId, spaceId],
+  const plan = await query<{
+    created_by_user_id: string | null
+    status: string
+    has_execution: boolean
+    organization_admin_access: boolean
+  }>(
+    `
+    select p.created_by_user_id,
+           p.status,
+           exists (
+             select 1 from test_plan_cases pc
+             where pc.test_plan_id = p.id and pc.result <> 'untested'
+           ) as has_execution,
+           exists (
+             select 1
+             from organization_memberships om
+             join user_roles ur on ur.user_id = om.user_id
+             where om.organization_id = ts.organization_id
+               and om.user_id = $3
+               and om.status = 'active'
+               and ur.role = 'organization_admin'
+           ) as organization_admin_access
+    from test_plans p
+    join test_spaces ts on ts.id = p.test_space_id
+    where p.id = $1 and p.test_space_id = $2
+    `,
+    [planId, spaceId, session.userId],
   )
   if (!plan.rows[0]) {
     response.status(404).json({ error: 'Test plan not found' })
@@ -4534,8 +4568,12 @@ router.delete('/test-spaces/:spaceId/plans/:planId', asyncRoute(async (request, 
   const createdByUserId = plan.rows[0].created_by_user_id
     ? Number(plan.rows[0].created_by_user_id)
     : null
-  if (!canManageTestPlan(createdByUserId, session.userId)) {
-    response.status(403).json({ error: 'Only the test plan creator can delete it' })
+  if (!canManageTestPlan(createdByUserId, session.userId) && !plan.rows[0].organization_admin_access) {
+    response.status(403).json({ error: '只有执行计划制定人或组织管理员可以删除计划' })
+    return
+  }
+  if (plan.rows[0].status !== 'draft' || plan.rows[0].has_execution) {
+    response.status(409).json({ error: '只能删除草稿且尚未执行的计划' })
     return
   }
   const client = await pool.connect()
@@ -4545,10 +4583,44 @@ router.delete('/test-spaces/:spaceId/plans/:planId', asyncRoute(async (request, 
       'update test_bugs set test_plan_case_id = null, test_plan_id = null, updated_at = now() where test_plan_id = $1 and test_space_id = $2',
       [planId, spaceId],
     )
-    await client.query(
-      'delete from test_plans where id = $1 and test_space_id = $2 and created_by_user_id = $3',
+    const lockedPlan = await client.query<{
+      created_by_user_id: string | null
+      status: string
+      has_execution: boolean
+      organization_admin_access: boolean
+    }>(
+      `
+      select p.created_by_user_id,
+             p.status,
+             exists (
+               select 1 from test_plan_cases pc
+               where pc.test_plan_id = p.id and pc.result <> 'untested'
+             ) as has_execution,
+             exists (
+               select 1
+               from organization_memberships om
+               join user_roles ur on ur.user_id = om.user_id
+               where om.organization_id = ts.organization_id
+                 and om.user_id = $3
+                 and om.status = 'active'
+                 and ur.role = 'organization_admin'
+             ) as organization_admin_access
+      from test_plans p
+      join test_spaces ts on ts.id = p.test_space_id
+      where p.id = $1 and p.test_space_id = $2
+      for update of p
+      `,
       [planId, spaceId, session.userId],
     )
+    const currentPlan = lockedPlan.rows[0]
+    if (!currentPlan) throw Object.assign(new Error('Test plan not found'), { status: 404 })
+    if (!canManageTestPlan(currentPlan.created_by_user_id ? Number(currentPlan.created_by_user_id) : null, session.userId) && !currentPlan.organization_admin_access) {
+      throw Object.assign(new Error('只有执行计划制定人或组织管理员可以删除计划'), { status: 403 })
+    }
+    if (currentPlan.status !== 'draft' || currentPlan.has_execution) {
+      throw Object.assign(new Error('只能删除草稿且尚未执行的计划'), { status: 409 })
+    }
+    await client.query('delete from test_plans where id = $1 and test_space_id = $2', [planId, spaceId])
     await client.query('commit')
   } catch (error) {
     await client.query('rollback')

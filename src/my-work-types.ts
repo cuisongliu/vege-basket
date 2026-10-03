@@ -13,6 +13,9 @@ export type MyWorkItem = {
   title: string
   status: string
   priority?: 'high' | 'medium' | 'low'
+  estimatedWorkMinutes?: number | null
+  cumulativeWorkMinutes?: number
+  submittedWorkMinutes?: number
   offboardingTransferredFromName?: string
   dueAt?: string
   updatedAt: string
@@ -39,6 +42,7 @@ export type MyWorkData = {
 export type MyWorkDueFilter = 'overdue' | 'today' | 'this_week' | 'later' | 'unscheduled'
 
 export type MyWorkFilters = {
+  review?: boolean
   due?: MyWorkDueFilter
   cursor?: string
   kind?: MyWorkKind

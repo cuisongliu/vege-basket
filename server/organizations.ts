@@ -76,6 +76,10 @@ import {
   ProjectOrganizationTransferError,
 } from './project-organization-transfer.ts'
 import { lockProjectMutation } from './project-lock.ts'
+import {
+  createPlatformOrganization,
+  PlatformOrganizationError,
+} from './platform-organizations.ts'
 
 type OrganizationRouterDependencies = {
   fetchFeishuUserName: (openId: string) => Promise<string>
@@ -163,6 +167,7 @@ function normalizedEmail(value: unknown) {
 
 const defaultOrganizationInviteExpiresInMinutes = 10
 const organizationInviteExpiresInMinuteOptions = new Set([10, 30, 60, 240, 1440])
+const organizationRequestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 function normalizeOrganizationInviteExpiresInMinutes(value: unknown) {
   const minutes = Number(value)
@@ -1260,10 +1265,42 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       packageMarketEnabled: organization.package_market_enabled !== false,
       weeklyReportProfiles: organization.weekly_report_profiles,
     })).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+    const organizationAdmin = await query<{ allowed: boolean }>(
+      `select exists(
+         select 1 from user_roles
+          where user_id = $1 and role = 'organization_admin'
+       ) as allowed`,
+      [session.userId],
+    )
     response.json({
-      canCreate: false,
+      canCreate: organizationAdmin.rows[0]?.allowed === true,
       organizations: items,
     })
+  }))
+
+  router.post('/organizations', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const requestId = String(request.body?.requestId ?? '')
+    if (!organizationRequestIdPattern.test(requestId)) {
+      response.status(400).json({ error: '请求编号无效。' })
+      return
+    }
+    try {
+      const organization = await createPlatformOrganization({
+        actorUserId: session.userId,
+        name: request.body?.name,
+        ownerUserId: session.userId,
+        requestId,
+      })
+      response.status(201).json(organization)
+    } catch (error) {
+      if (error instanceof PlatformOrganizationError) {
+        response.status(error.status).json({ error: error.message, code: error.code })
+        return
+      }
+      throw error
+    }
   }))
 
   router.get('/organizations/:organizationId', asyncRoute(async (request, response) => {

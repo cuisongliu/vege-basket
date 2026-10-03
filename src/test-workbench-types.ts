@@ -158,6 +158,7 @@ export type TestCase = {
 }
 
 export type TestPlan = {
+  canDelete: boolean
   canManage: boolean
   createdAt: string
   createdByUserId?: number

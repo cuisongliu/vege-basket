@@ -131,6 +131,13 @@ Expected response: `{"ok":true}`. This liveness endpoint proves the process is s
 it does not prove database, OSS, Feishu, or AI workflows. Use `/api/ready` for migration readiness
 and `/api/platform-status` for maintenance and migration detail.
 
+Delivery scripts that use a Values YAML overlay run on the target host and require `yq` v4,
+`flock`, `realpath`, and `base64`. The configured Values file must already exist below
+`/root/.sealos/cloud/values/` and be writable by the script process. The script locks the
+target, writes a temporary deep-merged file over it for one delivery item, and uses an exit
+trap to restore the original. Verify those commands and file permissions on the delivery host
+before distributing or running the generated script.
+
 The application pool defaults to 10 clients and the digest worker deployment is capped at 2.
 Before changing `DB_POOL_MAX`, compare the sum across the maximum number of application replicas
 and concurrent workers with PostgreSQL `max_connections`, leaving at least 20 percent for database
@@ -195,7 +202,7 @@ This is an explicit operator action, never an automatic startup migration.
 
 `server/migrations/20260922_bug_discovery_difficulty.sql` and the corresponding startup
 schema first shipped in baseline `20260922_schema_v10` and remains present in the current
-`20261002_schema_v14` baseline. It adds `test_bugs.discovery_difficulty` (`high`, `medium`, `low`, non-null, default
+`20261002_schema_v22` baseline. It adds `test_bugs.discovery_difficulty` (`high`, `medium`, `low`, non-null, default
 `medium`) and `discovery_difficulty_reason`. Existing rows receive `medium` and an empty
 reason; rerunning the migration does not reset later assessments. The API requires an
 explicit level on creation despite the database compatibility default. Non-empty reasons

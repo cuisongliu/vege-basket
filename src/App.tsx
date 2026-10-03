@@ -1,9 +1,10 @@
 import { clampListPage } from './list-pagination'
 import { reassignProjectPackageEvent } from './api'
 import type { MyWorkViewState } from './my-work-types'
+import { preserveLoadedPackageEventDetails } from './project-package-timeline-state'
 import { ListPagination } from './components/list-pagination'
-import { addOrganizationProjectMember } from './api'
 import {
+  Activity,
   Component,
   useCallback,
   useEffect,
@@ -13,7 +14,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ClipboardEvent,
   type CSSProperties,
   type ComponentProps,
   type Dispatch,
@@ -39,14 +39,16 @@ import {
 } from '../shared/weekly-report-deep-link'
 import {
   Archive,
-  AddressBook,
   At,
   Bell,
   Buildings,
   Bug,
   CalendarBlank,
+  ChartLine,
   Check,
+  CheckCircle,
   ChatCircleDots,
+  Circle,
   CloudArrowUp,
   CopySimple,
   CornersIn,
@@ -54,6 +56,7 @@ import {
   DotsThree,
   CaretDown,
   ClockCounterClockwise,
+  Clock,
   ImageSquare,
   PencilSimple,
   DownloadSimple,
@@ -68,7 +71,6 @@ import {
   Paperclip,
   PaperPlaneTilt,
   Plus,
-  Question,
   ShoppingCartSimple,
   SignIn,
   SignOut,
@@ -134,12 +136,10 @@ import {
   createProjectPackageEvent,
   createProjectPackageOperation,
   createFeishuOAuthUrl,
-  createProject,
   createRiskFromJournal,
   createAiTurnDocument,
   createSummary,
   createTodo,
-  createTodoNote,
   declineProjectInvitation,
   exportProjectPackageTimeline,
   fetchPackageMarketBaseDetail,
@@ -149,7 +149,7 @@ import {
   fetchPackageMarketDetail,
   fetchPackageMarketReleaseVersions,
   fetchPackageMarketRules,
-  fetchProjectPackageItemDownloadUrl,
+  fetchProjectPackageEventDeliveryArtifacts,
   fetchProjectPackageTimeline,
   fetchProjectCatalog,
   fetchProjectJournals,
@@ -178,8 +178,6 @@ import {
   fetchProjectInviteLinkInfo,
   formatApiErrorDiagnostic,
   getAuthToken,
-  getProjectInviteLink,
-  inviteProjectMember,
   markAllNotificationsRead,
   loginAccount,
   clearAuthToken,
@@ -194,7 +192,6 @@ import {
   removeProjectPackageOperation,
   removeProject,
   removeProjectModule,
-  removeProjectMember,
   removeTodo,
   requestProjectTransfer,
   respondToProjectTransfer,
@@ -204,9 +201,7 @@ import {
   updateJournalEntry,
   updateProjectPackageOperation,
   updateProject,
-  updateProjectFeishuSettings,
   updateTodo,
-  updateTodoNote,
   uploadTodoImage,
   setAuthToken,
   classifyAiConversationTurnIntent,
@@ -244,9 +239,11 @@ import type {
   Project,
   ProjectModule,
   ProjectPackageEvent,
+  ProjectPackageDeliveryArtifacts,
   ProjectPackageEventSavePayload,
   ProjectPackageOperationStatus,
   ProjectPackageTimeline,
+  ProjectPackageTimelineQuery,
   ProjectPackageOperationKind,
   ProjectMembership,
   ProjectStatus,
@@ -258,8 +255,8 @@ import type {
   AiTurnOutcome,
   AiTurnRunResponse,
   ChangelogEntry,
+  JournalEntry,
   Todo,
-  TodoNote,
 } from './types'
 import { TodoActivityPanel } from './components/todo-activity-panel'
 import { UserName } from './components/user-name'
@@ -319,7 +316,6 @@ import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
 import { PlatformManagementWorkbench } from './components/platform-management-workbench'
-import { ProjectSubprojectsPanel } from './components/project-subprojects-panel'
 import { ProjectModulePicker } from './components/project-module-picker'
 import { ChangelogWorkbench } from './components/changelog-workbench'
 import { ChangelogAnnouncementDialog } from './components/changelog-announcement-dialog'
@@ -330,6 +326,8 @@ import {
   type WeeklyReportWorkbenchHandle,
 } from './components/weekly-report-workbench'
 import { MyWorkWorkbench } from './components/my-work-workbench'
+import { WorkHoursWorkbench } from './components/work-hours-workbench'
+import { TodoWorkHoursPanel } from './components/todo-work-hours-panel'
 import { stripMarkdownLinksToText } from './markdown-preview-policy'
 import { UserRoleSelectionDialog } from './components/user-role-dialogs'
 import {
@@ -383,6 +381,9 @@ type View =
   | 'project'
   | 'inbox'
   | 'my_work'
+  | 'my_work_review'
+  | 'my_work_hours'
+  | 'work_hours'
   | 'notifications'
   | 'organization'
   | 'platform'
@@ -396,7 +397,7 @@ type View =
   | 'assigned_bugs'
 
 const workspacePollingViews = new Set<View>(['project', 'inbox', 'search', 'ai'])
-type DetailEntrySource = 'project' | 'notifications' | 'my_work'
+type DetailEntrySource = 'project' | 'notifications' | 'my_work' | 'my_work_review'
 type DisplayAiAttachment = {
   id: number | string
   name: string
@@ -548,6 +549,7 @@ function formatAiMessageTime(value: string) {
     day: '2-digit',
   }).format(date)
 }
+
 type TodoUpdatePayload = Omit<
   Partial<Todo>,
   'assigneeUserId' | 'moduleId' | 'subprojectId' | 'reviewerUserId' | 'watcherUserId' | 'watcherUserIds'
@@ -576,7 +578,8 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'journal' | 'activity' | 'packages'
+type ProjectDetailTab = 'tasks' | 'journal' | 'activity' | 'packages' | 'work_hours'
+type WorkHourRecorderContext = { projectId: number; todoId: number }
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
   | 'title'
@@ -585,8 +588,7 @@ type TodoFilterField =
   | 'watcher'
   | 'creator'
   | 'priority'
-  | 'done'
-  | 'confirmationStatus'
+  | 'status'
   | 'dueDate'
   | 'createdAt'
 type TodoFilterOperator =
@@ -617,6 +619,9 @@ const appViews = [
   'project',
   'inbox',
   'my_work',
+  'my_work_review',
+  'my_work_hours',
+  'work_hours',
   'notifications',
   'organization',
   'platform',
@@ -633,6 +638,7 @@ const appViews = [
 type TodoCreateDraftSnapshot = {
   subprojectId: number | null
   assigneeUserId: number | null
+  estimatedWorkHours: string
   watcherUserIds: number[]
   reviewerUserId: number | null
   createdAt: string
@@ -721,11 +727,14 @@ function canAccessOrganizationManagement(user: Pick<AuthUser, 'roles'>) {
 }
 
 function canUseViewForUser(view: View, user: AuthUser) {
+  if (view === 'search') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
+  if (view === 'my_work_hours') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
   if (view === 'testing') return user.activeRole === 'tester'
   if (view === 'assigned_bugs') {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
   }
   if (view === 'organization') return canAccessOrganizationManagement(user)
+  if (view === 'work_hours') return canAccessOrganizationManagement(user)
   if (view === 'platform') return user.isSystemAdmin
   return true
 }
@@ -776,6 +785,7 @@ const todoNotesReadStoragePrefix = 'veges.todoNotesReadAt.v1'
 function getDefaultTodoCreateDraft(): TodoCreateDraftSnapshot {
   return {
     assigneeUserId: null,
+    estimatedWorkHours: '',
     watcherUserIds: [],
     reviewerUserId: null,
     createdAt: '',
@@ -842,6 +852,7 @@ function loadTodoCreateDraft(projectId: number, userId?: number) {
     const legacyWatcherUserId = normalizeNullableNumber((parsed as { watcherUserId?: unknown }).watcherUserId)
     return {
       assigneeUserId: normalizeNullableNumber(parsed.assigneeUserId),
+      estimatedWorkHours: typeof parsed.estimatedWorkHours === 'string' ? parsed.estimatedWorkHours : '',
       watcherUserIds: normalizeNumberArray(
         parsed.watcherUserIds ?? (legacyWatcherUserId == null ? [] : [legacyWatcherUserId]),
       ),
@@ -867,6 +878,7 @@ function isTodoCreateDraftEmpty(draft: TodoCreateDraftSnapshot) {
     draft.dueDate === today &&
     draft.priority === 'medium' &&
     draft.assigneeUserId == null &&
+    !draft.estimatedWorkHours &&
     draft.watcherUserIds.length === 0 &&
     draft.reviewerUserId == null &&
     draft.subprojectId == null &&
@@ -1003,15 +1015,6 @@ function useTodoNoteReadState(currentUserId?: number) {
   return { getTodoNoteBadge, markTodoNotesRead }
 }
 
-function buildProjectInviteUrl(token: string) {
-  if (typeof window === 'undefined') return `?invite=${encodeURIComponent(token)}`
-  const url = new URL(window.location.href)
-  url.search = ''
-  url.hash = ''
-  url.searchParams.set('invite', token)
-  return url.toString()
-}
-
 function getInitialTheme(): ThemeMode {
   if (typeof window === 'undefined') return 'dark'
 
@@ -1125,10 +1128,10 @@ const priorityCopy: Record<Priority, string> = {
 }
 
 const todoConfirmationCopy: Record<Todo['confirmationStatus'], string> = {
-  confirmed: '已确认',
-  pending_review: '待验收',
-  rejected: '已驳回',
-  acceptance_failed: '验收未通过',
+  confirmed: '进行中',
+  pending_review: '待确认',
+  rejected: '进行中',
+  acceptance_failed: '进行中',
 }
 
 type TodoAcceptanceDecision = 'passed' | 'failed'
@@ -1146,16 +1149,16 @@ function TodoAcceptanceDialog({ open, onOpenChange, onSubmit, title }: {
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={`验收待办「${title}」`}
+      title={`确认待办「${title}」`}
       description={decision === 'passed'
-        ? '验收通过后，待办将完成并退出未完成列表。可在项目待办的已完成筛选中查看。'
-        : '验收不通过后，待办保持未完成，并记录未通过原因。可在原项目待办中查看。'}
-      confirmLabel={decision === 'passed' ? '确认验收通过' : '确认验收不通过'}
+        ? '确认通过后，待办将完成并退出未完成列表。可在项目待办的已完成筛选中查看。'
+        : '确认未通过后，待办保持未完成，并记录未通过原因。可在原项目待办中查看。'}
+      confirmLabel={decision === 'passed' ? '确认通过' : '确认未通过'}
       variant={decision === 'passed' ? 'default' : 'destructive'}
       confirmDisabled={decision === 'failed' && !note.trim()}
       onConfirm={() => onSubmit(decision, note.trim())}
     >
-      <div className="todo-acceptance-decision" role="radiogroup" aria-label="验收结果">
+      <div className="todo-acceptance-decision" role="radiogroup" aria-label="确认结果">
         {([['passed', '通过'], ['failed', '不通过']] as const).map(([value, label]) => (
           <label className={decision === value ? 'todo-acceptance-choice is-selected' : 'todo-acceptance-choice'} key={value}>
             <input checked={decision === value} name="todo-acceptance-decision" type="radio" value={value} onChange={() => setDecision(value)} />
@@ -1164,8 +1167,8 @@ function TodoAcceptanceDialog({ open, onOpenChange, onSubmit, title }: {
         ))}
       </div>
       <Label className="todo-acceptance-note-field">
-        验收备注{decision === 'failed' ? '（必填）' : '（可选）'}
-        <Textarea placeholder={decision === 'failed' ? '请填写未通过原因...' : '可补充验收说明...'} value={note} onChange={(event) => setNote(event.target.value)} />
+        确认备注{decision === 'failed' ? '（必填）' : '（可选）'}
+        <Textarea placeholder={decision === 'failed' ? '请填写未通过原因...' : '可补充确认说明...'} value={note} onChange={(event) => setNote(event.target.value)} />
       </Label>
     </ConfirmDialog>
   )
@@ -1176,6 +1179,7 @@ function TodoConfirmSelect({
   done,
   status,
   disabled = false,
+  completionEnabled = true,
   onChange,
   onReject,
   onRequestAcceptance,
@@ -1184,6 +1188,7 @@ function TodoConfirmSelect({
   done: boolean
   status: Todo['confirmationStatus']
   disabled?: boolean
+  completionEnabled?: boolean
   onChange: (status: Todo['confirmationStatus']) => Promise<boolean>
   onReject: (reason: string) => Promise<boolean>
   onRequestAcceptance: () => void
@@ -1200,14 +1205,14 @@ function TodoConfirmSelect({
       setRejectDialogOpen(true)
       return
     }
-    if (nextStatus === 'acceptance_failed' || (nextStatus === 'confirmed' && status === 'pending_review')) {
+    if (completionEnabled && (nextStatus === 'acceptance_failed' || (nextStatus === 'confirmed' && status === 'pending_review'))) {
       onRequestAcceptance()
       return
     }
     if (nextStatus === 'pending_review') {
       void confirmAction({
-        title: `提交验收“${title}”？`, description: '待办将进入待验收状态，由验收人继续处理，可在原项目按待验收查看。',
-        confirmLabel: '提交验收', variant: 'default',
+        title: `提交确认“${title}”？`, description: '待办将进入待确认状态，由确认人继续处理，可在原项目按待确认查看。',
+        confirmLabel: '提交确认', variant: 'default',
       }, () => onChange(nextStatus))
     } else void onChange(nextStatus)
   }
@@ -1231,10 +1236,8 @@ function TodoConfirmSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="confirmed">{todoConfirmationCopy.confirmed}</SelectItem>
+          <SelectItem value="confirmed">进行中</SelectItem>
           <SelectItem value="pending_review">{todoConfirmationCopy.pending_review}</SelectItem>
-          <SelectItem value="rejected">{todoConfirmationCopy.rejected}</SelectItem>
-          <SelectItem value="acceptance_failed">{todoConfirmationCopy.acceptance_failed}</SelectItem>
         </SelectContent>
       </Select>
       {confirmationDialog}
@@ -1276,8 +1279,7 @@ const todoFilterFieldLabels: Record<TodoFilterField, string> = {
   watcher: '关注人',
   creator: '创建人',
   priority: '优先级',
-  done: '完成状态',
-  confirmationStatus: '确认状态',
+  status: '状态',
   dueDate: '截止日期',
   createdAt: '创建日期',
 }
@@ -1301,8 +1303,7 @@ const todoFilterFields: TodoFilterField[] = [
   'watcher',
   'creator',
   'priority',
-  'done',
-  'confirmationStatus',
+  'status',
   'dueDate',
   'createdAt',
 ]
@@ -1314,13 +1315,12 @@ const todoFilterOperatorsByField: Record<TodoFilterField, TodoFilterOperator[]> 
   watcher: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   creator: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   priority: ['equals', 'not_equals'],
-  done: ['equals', 'not_equals'],
-  confirmationStatus: ['equals', 'not_equals'],
+  status: ['equals', 'not_equals'],
   dueDate: ['equals', 'not_equals', 'before', 'after', 'between'],
   createdAt: ['equals', 'not_equals', 'before', 'after', 'between'],
 }
 
-function createTodoFilterCondition(field: TodoFilterField = 'done'): TodoFilterCondition {
+function createTodoFilterCondition(field: TodoFilterField = 'status'): TodoFilterCondition {
   const operator = todoFilterOperatorsByField[field][0]
   return {
     field,
@@ -1336,8 +1336,7 @@ function getDefaultTodoFilterValue(field: TodoFilterField, operator: TodoFilterO
     return `${today}..${today}`
   }
   if (field === 'priority') return 'medium'
-  if (field === 'done') return 'open'
-  if (field === 'confirmationStatus') return 'confirmed'
+  if (field === 'status') return 'open'
   if (field === 'dueDate' || field === 'createdAt') return today
   return ''
 }
@@ -1437,8 +1436,7 @@ function getTodoFilterFieldValue(todo: Todo, field: TodoFilterField) {
   if (field === 'watcher') return getTodoWatcherUserIds(todo).join(',')
   if (field === 'creator') return todo.createdByUserId ? String(todo.createdByUserId) : ''
   if (field === 'priority') return todo.priority
-  if (field === 'done') return todo.done ? 'done' : 'open'
-  if (field === 'confirmationStatus') return todo.confirmationStatus
+  if (field === 'status') return todo.done ? 'completed' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
   if (field === 'dueDate') return todo.dueDate
   return todo.createdAt.slice(0, 10)
 }
@@ -1856,6 +1854,7 @@ function App() {
   const [departedUserIds, setDepartedUserIds] = useState<number[]>([])
   const [notifications, setNotifications] = useState(emptyNotifications)
   const [openTodoCount, setOpenTodoCount] = useState(0)
+  const [workHourConfirmationCount, setWorkHourConfirmationCount] = useState(0)
   const [assignedBugCount, setAssignedBugCount] = useState(0)
   const [assignedBugCommentReadAtByBugId, setAssignedBugCommentReadAtByBugId] = useState<Record<number, string>>(() =>
     loadAssignedBugCommentReadAt(authUser?.id),
@@ -1863,6 +1862,11 @@ function App() {
   const [inbox, setInbox] = useState(initialInbox)
   const [summaries, setSummaries] = useState(initialSummaries)
   const [projectPackageTimelines, setProjectPackageTimelines] = useState<Record<number, ProjectPackageTimeline>>({})
+  const installTimelineQueryRef = useRef<ProjectPackageTimelineQuery>({
+    includeDetails: false,
+    limit: 10,
+    offset: 0,
+  })
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() =>
     loadStoredSelectedProjectId(),
   )
@@ -1873,6 +1877,7 @@ function App() {
   })
   const [requestedWeeklyReport, setRequestedWeeklyReport] = useState(() => parseWeeklyReportDeepLink(window.location.search))
   const [requestedTodoDetailId, setRequestedTodoDetailId] = useState<number | null>(null)
+  const [workHourRecorderContext, setWorkHourRecorderContext] = useState<WorkHourRecorderContext | null>(null)
   const [requestedPackageEventId, setRequestedPackageEventId] = useState<number | null>(null)
   const [requestedAssignedBugId, setRequestedAssignedBugId] = useState<number | null>(null)
   const [detailEntrySource, setDetailEntrySource] = useState<DetailEntrySource>('project')
@@ -1884,12 +1889,21 @@ function App() {
   const { confirmAction, confirmationDialog } = useConfirmAction(confirmationScope)
   const confirmationScopeRef = useRef(confirmationScope)
   useEffect(() => { confirmationScopeRef.current = confirmationScope }, [confirmationScope])
-  const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('journal')
+  const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>('tasks')
+  useEffect(() => {
+    if (
+      workHourRecorderContext &&
+      (view !== 'project' || selectedProjectId !== workHourRecorderContext.projectId)
+    ) {
+      setWorkHourRecorderContext(null)
+    }
+  }, [selectedProjectId, view, workHourRecorderContext])
   const [journalDraft, setJournalDraft] = useState('')
   const [inboxDraft, setInboxDraft] = useState('')
   const [todoDraft, setTodoDraft] = useState('')
   const [todoDetailDraft, setTodoDetailDraft] = useState('')
   const [todoDueDate, setTodoDueDate] = useState(today)
+  const [todoEstimatedWorkHours, setTodoEstimatedWorkHours] = useState('')
   const [todoCreatedAt, setTodoCreatedAt] = useState('')
   const [todoPriority, setTodoPriority] = useState<Priority>('medium')
   const [todoAssigneeUserId, setTodoAssigneeUserId] = useState<number | null>(null)
@@ -1898,10 +1912,6 @@ function App() {
   const [todoModuleId, setTodoModuleId] = useState<number | null>(null)
   const [todoSubprojectId, setTodoSubprojectId] = useState<number | null>(null)
   const isLoadingTodoCreateDraftRef = useRef(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [newProjectTags, setNewProjectTags] = useState('')
-  const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false)
-  const [isProjectMembersDialogOpen, setIsProjectMembersDialogOpen] = useState(false)
   const [isProjectModulesDialogOpen, setIsProjectModulesDialogOpen] = useState(false)
   const [projectModuleDraft, setProjectModuleDraft] = useState('')
   const [search, setSearch] = useState('')
@@ -2007,6 +2017,7 @@ function App() {
     isDeveloperRole || isOrganizationAdmin
   )
   const canNavigateToTestWorkbench = authUser?.activeRole === 'tester'
+  const canNavigateToProjectBasket = Boolean(authUser && (isOrganizationAdmin || authUser.roles.includes('developer') || authUser.roles.includes('tester')))
 
   useEffect(() => {
     setAssignedBugCommentReadAtByBugId(loadAssignedBugCommentReadAt(authUser?.id))
@@ -2938,6 +2949,23 @@ function App() {
   const selectedOrganizationName = selectedOrganizationId == null
     ? '个人项目'
     : organizations.find((organization) => organization.id === selectedOrganizationId)?.name ?? '组织项目'
+  const selectedOrganization = selectedOrganizationId == null
+    ? undefined
+    : organizations.find((organization) => organization.id === selectedOrganizationId)
+  const canManageSelectedOrganization = Boolean(
+    authUser &&
+    canAccessOrganizationManagement(authUser) &&
+    selectedOrganization &&
+    (selectedOrganization.accessRole === 'owner' || selectedOrganization.accessRole === 'admin'),
+  )
+  const canNavigateToReview = Boolean(selectedOrganizationId !== null && canManageSelectedOrganization)
+  useEffect(() => {
+    if (view === 'work_hours' && (selectedOrganizationId === null || !canManageSelectedOrganization)) {
+      setView('my_work_hours')
+    } else if (view === 'my_work_review' && !canNavigateToReview) {
+      setView('my_work_hours')
+    }
+  }, [canManageSelectedOrganization, canNavigateToReview, selectedOrganizationId, view])
   const selectedProjectDraftId = selectedProject?.id
   const activeInvitePassword =
     inviteToken && invitePasswordRequired && invitePasswordVerified
@@ -3012,6 +3040,7 @@ function App() {
     setTodoDueDate(draft.dueDate)
     setTodoCreatedAt(draft.createdAt)
     setTodoPriority(draft.priority)
+    setTodoEstimatedWorkHours(draft.estimatedWorkHours)
     setTodoAssigneeUserId(draft.assigneeUserId)
     setTodoWatcherUserIds(draft.watcherUserIds)
     setTodoReviewerUserId(draft.reviewerUserId)
@@ -3027,6 +3056,7 @@ function App() {
     }
     saveTodoCreateDraft(selectedProjectDraftId, authUser?.id, {
       assigneeUserId: todoAssigneeUserId,
+      estimatedWorkHours: todoEstimatedWorkHours,
       watcherUserIds: todoWatcherUserIds,
       reviewerUserId: todoReviewerUserId,
       createdAt: todoCreatedAt,
@@ -3041,6 +3071,7 @@ function App() {
     authUser?.id,
     selectedProjectDraftId,
     todoAssigneeUserId,
+    todoEstimatedWorkHours,
     todoWatcherUserIds,
     todoReviewerUserId,
     todoCreatedAt,
@@ -3051,47 +3082,6 @@ function App() {
     todoPriority,
     todoSubprojectId,
   ])
-
-  const packageTimelineProjectId = selectedProject?.id
-  useEffect(() => {
-    if (
-      !loggedIn ||
-      view !== 'project' ||
-      !packageTimelineProjectId ||
-      projectDetailTab !== 'packages'
-    ) return
-
-    const refreshTimeline = async () => {
-      try {
-        const timeline = await fetchProjectPackageTimeline(packageTimelineProjectId)
-        setProjectPackageTimelines((current) => ({
-          ...current,
-          [packageTimelineProjectId]: timeline,
-        }))
-        return true
-      } catch {
-        setWorkspaceError('安装升级时间线读取失败，请确认后端服务和 OSS 配置正常。')
-        return false
-      }
-    }
-    return startVisibleRefreshSchedule({
-      clearInterval: (handle) => window.clearInterval(handle),
-      intervalMs: workspaceRefreshIntervalMs,
-      isVisible: () => document.visibilityState === 'visible',
-      onFocus: (listener) => {
-        window.addEventListener('focus', listener)
-        return () => window.removeEventListener('focus', listener)
-      },
-      onVisibilityChange: (listener) => {
-        document.addEventListener('visibilitychange', listener)
-        return () => document.removeEventListener('visibilitychange', listener)
-      },
-      refresh: refreshTimeline,
-      refreshImmediately: true,
-      minRefreshGapMs: 1_000,
-      setInterval: (listener, delay) => window.setInterval(listener, delay),
-    })
-  }, [loggedIn, packageTimelineProjectId, projectDetailTab, view])
 
   useEffect(() => {
     if (!loggedIn || !workspaceLoaded || !authUser || !inviteToken) return
@@ -3183,7 +3173,7 @@ function App() {
         setRequestedPackageEventId(null)
         setSelectedProjectId(todo.projectId)
         setJournalDraft('')
-        setProjectDetailTab('journal')
+        setProjectDetailTab('tasks')
         setView('project')
       })
       .catch((error) => {
@@ -3274,10 +3264,12 @@ function App() {
       const result = await fetchNavigationCounts(selectedOrganizationId, { signal })
       if (navigationCountsRequestIdRef.current !== requestId) return
       setOpenTodoCount(result.openTodoCount)
+      setWorkHourConfirmationCount(result.workHourConfirmationCount)
       setAssignedBugCount(canShowDeveloperAssignedBugs ? result.assignedBugCount : 0)
     } catch {
       if (navigationCountsRequestIdRef.current !== requestId || signal?.aborted) return
       setOpenTodoCount(0)
+      setWorkHourConfirmationCount(0)
       setAssignedBugCount(0)
     }
   }, [canShowDeveloperAssignedBugs, selectedOrganizationId])
@@ -3286,6 +3278,7 @@ function App() {
     if (!loggedIn || !authUser?.id || !organizationContextReady) {
       navigationCountsRequestIdRef.current += 1
       setOpenTodoCount(0)
+      setWorkHourConfirmationCount(0)
       setAssignedBugCount(0)
       return
     }
@@ -3662,14 +3655,16 @@ function App() {
     setRequestedPackageEventId(null)
     setIsProjectTodoDetailActive(false)
     setDetailEntrySource('project')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
     if (
       view === 'project' ||
       (nextOrganizationId === null && (
         view === 'weekly_report' ||
         view === 'package_market' ||
         view === 'image_sync' ||
-        view === 'organization'
+        view === 'organization' ||
+        view === 'my_work_hours' ||
+        view === 'work_hours'
       )) ||
       (nextOrganizationId !== null && (view === 'inbox' || view === 'ai'))
     ) setView('search')
@@ -3697,18 +3692,39 @@ function App() {
     setOrganizationContextForProject(projectId)
     setSelectedProjectId(projectId)
     setJournalDraft('')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
     setView('project')
   }
 
-  function selectMyWorkTodo(projectId: number, todoId: number) {
-    setDetailEntrySource('my_work')
+  function selectProjectWorkHours(projectId: number) {
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setOrganizationContextForProject(projectId)
+    setSelectedProjectId(projectId)
+    setProjectDetailTab('work_hours')
+    setView('project')
+  }
+
+  function selectMyWorkTodo(projectId: number, todoId: number, source: 'my_work' | 'my_work_review' = 'my_work') {
+    setDetailEntrySource(source)
     setRequestedTodoDetailId(todoId)
     setRequestedPackageEventId(null)
     setOrganizationContextForProject(projectId)
     setSelectedProjectId(projectId)
     setJournalDraft('')
-    setProjectDetailTab('journal')
+    setProjectDetailTab('tasks')
+    setView('project')
+  }
+
+  function selectMyWorkHour(projectId: number, todoId: number) {
+    setDetailEntrySource('project')
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setOrganizationContextForProject(projectId)
+    setSelectedProjectId(projectId)
+    setWorkHourRecorderContext({ projectId, todoId })
+    setProjectDetailTab('tasks')
     setView('project')
   }
 
@@ -3740,6 +3756,14 @@ function App() {
     setView('my_work')
   }
 
+  function returnToMyWorkReview() {
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setIsProjectTodoDetailActive(false)
+    setDetailEntrySource('project')
+    setView('my_work_review')
+  }
+
   async function openNotificationCenter() {
     setDetailEntrySource('project')
     setView('notifications')
@@ -3768,38 +3792,22 @@ function App() {
     setView('my_work')
   }
 
-  function changeNewProjectDialogOpen(open: boolean) {
-    setIsNewProjectDialogOpen(open)
-    if (!open) {
-      setNewProjectName('')
-      setNewProjectTags('')
-    }
+  function openMyWorkReview() {
+    if (!canNavigateToReview) return
+    setDetailEntrySource('project')
+    setView('my_work_review')
   }
 
-  async function addProject() {
-    const name = newProjectName.trim()
-    if (!name) return
+  function openMyWorkHours() {
+    setDetailEntrySource('project')
+    setWorkHourRecorderContext(null)
+    setView('my_work_hours')
+  }
 
-    const tags = newProjectTags
-      .split(/[\s,，、]+/)
-      .map((tag) => tag.trim())
-      .filter(Boolean)
-
-    const data = await runMutation(() =>
-      createProject({
-        name,
-        organizationId: selectedOrganizationId ?? undefined,
-        tags: tags.length > 0 ? tags : ['新项目'],
-      }),
-    )
-    if (!data) return
-    const createdProject = data?.projects.find((project) => project.name === name)
-    if (createdProject) setSelectedProjectId(createdProject.id)
-    setNewProjectName('')
-    setNewProjectTags('')
-    setJournalDraft('')
-    setIsNewProjectDialogOpen(false)
-    setView(createdProject ? 'project' : 'search')
+  function openOrganizationWorkHours() {
+    if (selectedOrganizationId == null) return
+    setDetailEntrySource('project')
+    setView('work_hours')
   }
 
   async function saveJournal(createdAt?: string) {
@@ -3904,73 +3912,6 @@ function App() {
     setInboxDraft('')
   }
 
-  async function inviteMember(projectId: number, username: string) {
-    const nextUsername = username.trim()
-    if (!nextUsername) return
-    await runMutation(() => inviteProjectMember(projectId, { username: nextUsername }))
-  }
-
-  async function addMemberDirectly(projectId: number, username: string) {
-    return Boolean(await runMutation(async () => {
-      const project = projects.find((item) => item.id === projectId)
-      if (!project?.organizationId) throw new Error('请选择组织项目。')
-      const organization = await fetchOrganization(project.organizationId)
-      const member = organization.members.find((item) => item.username.toLowerCase() === username.trim().toLowerCase())
-      if (!member) throw new Error('请先将该账号加入项目所属组织。')
-      await addOrganizationProjectMember(project.organizationId, projectId, member.id)
-      return fetchWorkspace()
-    }))
-  }
-
-  async function deleteMember(projectId: number, membershipId: number) {
-    const member = memberships.find((item) => item.id === membershipId)
-    if (!member) return false
-    return confirmAction({
-      title: member.status === 'pending' ? '确认撤回邀请？' : '确认移除项目成员？',
-      description: `「${member.memberName || member.invitedUsername}」${member.status === 'pending' ? '的待接受邀请将被撤回' : '将失去当前项目的成员权限，相关待办负责人、验收人、关注关系和交付指派将按项目规则清理'}。当前项目的旧邀请链接也会失效。`,
-      confirmLabel: member.status === 'pending' ? '撤回邀请' : '移除成员',
-    }, () => runConfirmedMutation(() => removeProjectMember(projectId, membershipId),
-      (data) => !data.memberships.some((item) => item.id === membershipId)))
-  }
-
-  async function saveProjectFeishuSettings(projectId: number, payload: {
-    feishuChatEnabled: boolean
-    feishuChatId: string
-  }) {
-    await runMutation(() => updateProjectFeishuSettings(projectId, payload))
-  }
-
-  async function copyProjectInviteLink(
-    projectId: number,
-    payload: {
-      encryptedShare: boolean
-      expiresInMinutes: number
-      password?: string
-    },
-  ) {
-    const inviteLink = await getProjectInviteLink(projectId, {
-      expiresInMinutes: payload.expiresInMinutes,
-      password: payload.password,
-      rotate: true,
-    })
-    const { token } = inviteLink
-    const inviteUrl = buildProjectInviteUrl(token)
-    if (!navigator.clipboard) throw new Error('Clipboard is not available')
-    const project = projects.find((item) => item.id === projectId)
-    const inviterName = authUser?.displayName || authUser?.username || '项目成员'
-    const projectName = project?.name || 'Veges'
-    const shareText =
-      payload.encryptedShare && payload.password
-        ? `${inviterName} 邀请你加入 ${projectName} 项目，请点击此链接进入：${inviteUrl}，密码：${payload.password}`
-        : inviteUrl
-    await navigator.clipboard.writeText(shareText)
-    return {
-      ...inviteLink,
-      password: payload.password,
-      url: inviteUrl,
-    }
-  }
-
   async function createModule(projectId: number, rawName: string): Promise<ProjectModule | null> {
     const name = rawName.trim()
     if (!name) return null
@@ -4013,10 +3954,10 @@ function App() {
       (data) => !data.inbox.some((item) => item.id === itemId))
   }
 
-  async function addTodo(projectId?: number) {
+  async function addTodo(projectId?: number): Promise<boolean> {
     const targetProjectId = projectId ?? selectedProject?.id
     const title = stripTodoMentions(todoDraft, getProjectMentionOptions(targetProjectId, scopedProjects, memberships)).trim()
-    if (!title || !targetProjectId) return
+    if (!title || !targetProjectId) return false
     const data = await runMutation(() =>
       createTodo({
         assigneeUserId: todoAssigneeUserId ?? undefined,
@@ -4030,9 +3971,10 @@ function App() {
         createdAt: todoCreatedAt || undefined,
         dueDate: todoDueDate,
         priority: todoPriority,
+        estimatedWorkMinutes: todoEstimatedWorkHours ? Math.round(Number(todoEstimatedWorkHours) * 60) : undefined,
       }),
     )
-    if (!data) return
+    if (!data) return false
     clearTodoCreateDraft(projectId ?? targetProjectId, authUser?.id)
     setTodoSubprojectId(null)
     setTodoDraft('')
@@ -4040,10 +3982,12 @@ function App() {
     setTodoDueDate(today)
     setTodoCreatedAt('')
     setTodoPriority('medium')
+    setTodoEstimatedWorkHours('')
     setTodoAssigneeUserId(null)
     setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
     setTodoModuleId(null)
+    return true
   }
 
   function clearTodoCreateDraftState(projectId?: number) {
@@ -4057,6 +4001,7 @@ function App() {
     setTodoDueDate(today)
     setTodoCreatedAt('')
     setTodoPriority('medium')
+    setTodoEstimatedWorkHours('')
     setTodoAssigneeUserId(null)
     setTodoWatcherUserIds([])
     setTodoReviewerUserId(null)
@@ -4088,14 +4033,6 @@ function App() {
       return null
     }
   }, [applyWorkspace])
-
-  async function addTodoNote(todoId: number, content: string) {
-    await runMutation(() => createTodoNote(todoId, { content }))
-  }
-
-  async function editTodoNote(todoId: number, noteId: number, content: string) {
-    await runMutation(() => updateTodoNote(todoId, noteId, { content }))
-  }
 
   async function acceptInvitation(membershipId: number) {
     try {
@@ -4156,19 +4093,35 @@ function App() {
     payload: ProjectPackageEventSavePayload,
   ) {
     if (!selectedProject) return null
+    const projectId = selectedProject.id
     try {
-      const timeline = eventId == null
-        ? await createProjectPackageEvent(selectedProject.id, payload)
-        : await saveProjectPackageEventDraft(selectedProject.id, eventId, payload)
-      setProjectPackageTimelines((current) => ({
-        ...current,
-        [selectedProject.id]: timeline,
-      }))
+      const mutationResult = eventId == null
+        ? await createProjectPackageEvent(projectId, payload)
+        : await saveProjectPackageEventDraft(projectId, eventId, payload)
+      const savedEventId = mutationResult.savedEventId ?? eventId
+      if (savedEventId == null) throw new Error('Saved delivery event ID is missing')
+      const [detailTimeline, listTimeline] = await Promise.all([
+        fetchProjectPackageTimeline(projectId, { eventId: savedEventId, includeDetails: true, limit: 1, offset: 0 }),
+        fetchProjectPackageTimeline(projectId, { ...installTimelineQueryRef.current, includeDetails: false }),
+      ])
+      const savedEvent = detailTimeline.events.find((event) => event.id === savedEventId)
+      if (!savedEvent) throw new Error('Saved delivery event could not be loaded')
+      setProjectPackageTimelines((current) => {
+        const existing = current[projectId]
+        const refreshed = existing
+          ? preserveLoadedPackageEventDetails(existing, listTimeline)
+          : listTimeline
+        return {
+          ...current,
+          [projectId]: {
+            ...refreshed,
+            events: refreshed.events.map((event) => event.id === savedEventId ? savedEvent : event),
+          },
+        }
+      })
       if (payload.action === 'publish') await refreshNotifications()
       setWorkspaceError('')
-      return eventId == null
-        ? [...timeline.events].sort((left, right) => right.id - left.id)[0] ?? null
-        : timeline.events.find((event) => event.id === eventId) ?? null
+      return savedEvent
     } catch {
       setWorkspaceError(payload.action === 'publish'
         ? '交付事件发布失败，请检查必填内容后重试。'
@@ -4177,31 +4130,81 @@ function App() {
     }
   }
 
+  const loadInstallTimeline = useCallback(async (options: ProjectPackageTimelineQuery) => {
+    if (!selectedProject) throw new Error('Project not found')
+    if (options.eventId == null) installTimelineQueryRef.current = options
+    const timeline = await fetchProjectPackageTimeline(selectedProject.id, options)
+    setProjectPackageTimelines((current) => {
+      const existing = current[selectedProject.id]
+      if (!existing) {
+        return { ...current, [selectedProject.id]: timeline }
+      }
+      if (options.includeDetails === false) {
+        return {
+          ...current,
+          [selectedProject.id]: preserveLoadedPackageEventDetails(existing, timeline),
+        }
+      }
+      if (options.eventId == null) return { ...current, [selectedProject.id]: timeline }
+      const detailById = new Map(timeline.events.map((event) => [event.id, event]))
+      return {
+        ...current,
+        [selectedProject.id]: {
+          ...existing,
+          deliveryMembers: timeline.deliveryMembers,
+          departedUserIds: timeline.departedUserIds,
+          mentionableMembers: timeline.mentionableMembers,
+          events: existing.events.map((event) => detailById.get(event.id) ?? event),
+        },
+      }
+    })
+    return timeline
+  }, [selectedProject])
+
+  async function refreshInstallTimelineView(projectId: number) {
+    const options = { ...installTimelineQueryRef.current, includeDetails: false }
+    const timeline = await fetchProjectPackageTimeline(projectId, options)
+    setProjectPackageTimelines((current) => ({
+      ...current,
+      [projectId]: current[projectId]
+        ? preserveLoadedPackageEventDetails(current[projectId], timeline)
+        : timeline,
+    }))
+  }
+
   async function reassignInstallEvent(eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) {
     if (!selectedProject) return false
     const timeline = await reconcileAction(
       () => reassignProjectPackageEvent(selectedProject.id, eventId, payload),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       data => data.events.some(event => event.id === eventId && event.assigneeUserId === payload.assigneeUserId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines(current => ({ ...current, [selectedProject.id]: timeline }))
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
 
-  async function completeInstallEvent(eventId: number) {
+  async function completeInstallEvent(eventId: number, payload: {
+    result: 'success' | 'partial' | 'rejected' | 'failed'
+    failureReason?: string
+    stepResults?: Record<string, { result: 'success' | 'failed' | 'skipped'; failureDetail?: string }>
+  }) {
     if (!selectedProject) return false
     setWorkspaceError('')
     const timeline = await reconcileAction(
-      () => completeProjectPackageEvent(selectedProject.id, eventId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
-      (data) => data.events.some((event) => event.id === eventId && event.status === 'delivered'),
+      () => completeProjectPackageEvent(selectedProject.id, eventId, payload),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
+      (data) => data.events.some((event) => event.id === eventId && (
+        payload.result === 'success' ? event.status === 'delivered'
+          : payload.result === 'partial' ? event.status === 'partially_delivered'
+            : event.status === payload.result
+      )),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4214,6 +4217,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4230,6 +4234,7 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
       return true
     } catch {
@@ -4243,13 +4248,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => deletePackageEventComment(selectedProject.id, eventId, commentId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => data.events.some((event) => event.id === eventId && !event.comments.some((comment) => comment.id === commentId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4259,27 +4263,19 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageEvent(selectedProject.id, eventId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.id === eventId),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
 
-  async function loadInstallItemDownloadUrl(itemId: number) {
+  async function loadInstallEventDeliveryArtifacts(eventId: number, expireMinutes: 30 | 60 | 120) {
     if (!selectedProject) throw new Error('Project not found')
-    try {
-      const result = await fetchProjectPackageItemDownloadUrl(selectedProject.id, itemId)
-      setWorkspaceError('')
-      return result.downloadUrl
-    } catch (error) {
-      setWorkspaceError(formatApiErrorDiagnostic(error, '安装包链接生成失败，请稍后再试。'))
-      throw error
-    }
+    return fetchProjectPackageEventDeliveryArtifacts(selectedProject.id, eventId, expireMinutes)
   }
 
   async function deleteInstallGroup(groupId: number) {
@@ -4287,13 +4283,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageGroup(selectedProject.id, groupId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+      () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.groups.some((group) => group.id === groupId)),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -4317,14 +4312,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // The install record has already been persisted, so a follow-up
-        // workspace refresh failure should not surface as a save failure.
-      }
       if (payload.completed === true) {
         await refreshNotifications()
       }
@@ -4352,7 +4341,7 @@ function App() {
     try {
       const timeline = await reconcileAction(
         () => updateProjectPackageOperation(selectedProject.id, operationId, payload),
-        () => fetchProjectPackageTimeline(selectedProject.id),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
         (data) => {
           const operation = data.events.flatMap((event) => [...event.operations, ...event.groups.flatMap((group) => group.operations)]).find((item) => item.id === operationId)
           return Boolean(operation && Object.entries(payload).every(([key, value]) => JSON.stringify(operation[key as keyof typeof operation]) === JSON.stringify(value)))
@@ -4362,14 +4351,8 @@ function App() {
         ...current,
         [selectedProject.id]: timeline,
       }))
+      void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
       setWorkspaceError('')
-      try {
-        const workspace = await fetchWorkspace()
-        applyWorkspace(workspace)
-      } catch {
-        // Keep the successful mutation result on screen even if the
-        // background workspace sync temporarily fails.
-      }
       if (payload.completed !== undefined) {
         void refreshNotifications()
       }
@@ -4386,13 +4369,12 @@ function App() {
     setWorkspaceError('')
     const timeline = await reconcileAction(
       () => removeProjectPackageOperation(selectedProject.id, operationId),
-      () => fetchProjectPackageTimeline(selectedProject.id),
+        () => fetchProjectPackageTimeline(selectedProject.id, { limit: 10, offset: 0 }),
       (data) => !data.events.some((event) => event.operations.some((operation) => operation.id === operationId) || event.groups.some((group) => group.operations.some((operation) => operation.id === operationId))),
     )
     if (confirmationScopeRef.current !== confirmationScope) return false
     setProjectPackageTimelines((current) => ({ ...current, [selectedProject.id]: timeline }))
-    // The mutation is committed; refresh errors must not invite another write.
-    try { const data = await fetchWorkspace(); if (confirmationScopeRef.current === confirmationScope) applyWorkspace(data) } catch { /* Keep the canonical timeline. */ }
+    void refreshInstallTimelineView(selectedProject.id).catch(() => undefined)
     void refreshNotifications()
     return true
   }
@@ -5388,20 +5370,17 @@ ${packageTimelineText}`
     )
   }
 
-  const hideSidebar = view === 'project' && projectDetailTab === 'packages'
-
   return (
-    <main className={hideSidebar ? 'app-shell sidebar-hidden' : 'app-shell'}>
+    <main className="app-shell">
       {confirmationDialog}
       {roleSelectionDialog}
       {changelogAnnouncementDialog}
-      {!hideSidebar && (
-        <aside className="sidebar" aria-label="主导航">
+      <aside className="sidebar" aria-label="主导航">
           <div className="brand-block">
             <img className="brand-mark" src="/favicon.svg" alt="Veges" />
             <div>
               <p className="eyebrow">Veges</p>
-              <h1>项目篮子</h1>
+              <h1>Veges</h1>
             </div>
             <button className="sidebar-notifications-button" type="button" aria-label="消息" title="消息" onClick={openNotificationCenter}>
               <Bell size={18} weight="duotone" />
@@ -5428,15 +5407,23 @@ ${packageTimelineText}`
               />
               <nav className="nav-list">
                 <NavGroup label="日常工作" id="nav-group-daily">
-                  <NavButton active={view === 'search'} onClick={() => setView('search')}>
+                  {canNavigateToProjectBasket ? <NavButton active={view === 'search'} onClick={() => setView('search')}>
                     <Target size={18} weight="duotone" /> 项目篮子
-                  </NavButton>
+                  </NavButton> : null}
                   <NavButton active={view === 'my_work'} onClick={openMyWork}>
                     <ListChecks size={18} weight="duotone" /> 我的待办
                     {openTodoCount > 0 && (
                       <Badge className="nav-badge">{openTodoCount}</Badge>
                     )}
                   </NavButton>
+                  {canNavigateToReview ? (
+                    <NavButton active={view === 'my_work_review'} onClick={openMyWorkReview}>
+                      <CheckCircle size={18} weight="duotone" /> 工时确认
+                      {workHourConfirmationCount > 0 && (
+                        <Badge className="nav-badge">{workHourConfirmationCount}</Badge>
+                      )}
+                    </NavButton>
+                  ) : null}
                   {selectedOrganizationId === null ? (
                     <NavButton active={view === 'inbox'} onClick={() => setView('inbox')}>
                       <Tray size={18} weight="duotone" /> 草稿箱
@@ -5490,6 +5477,18 @@ ${packageTimelineText}`
                     </NavButton>
                   </NavGroup>
                 ) : null}
+                {selectedOrganizationId !== null ? (
+                  <NavGroup label="企业工时" id="nav-group-work-hours">
+                    {canManageSelectedOrganization ? (
+                      <NavButton active={view === 'work_hours'} onClick={openOrganizationWorkHours}>
+                        <ChartLine size={18} weight="duotone" /> 工时统计
+                      </NavButton>
+                    ) : null}
+                    <NavButton active={view === 'my_work_hours'} onClick={openMyWorkHours}>
+                      <Clock size={18} weight="duotone" /> 我的工时
+                    </NavButton>
+                  </NavGroup>
+                ) : null}
               </nav>
             </>
           )}
@@ -5506,8 +5505,7 @@ ${packageTimelineText}`
             onSignOut={signOut}
             onToggleTheme={toggleThemeMode}
           />
-        </aside>
-      )}
+      </aside>
 
       <Dialog
         open={Boolean(loggedIn && inviteToken && invitePasswordRequired && !invitePasswordVerified)}
@@ -5598,12 +5596,14 @@ ${packageTimelineText}`
                     size={detailEntrySource !== 'project' ? 'sm' : 'icon'}
                     aria-label={detailEntrySource === 'notifications'
                       ? '返回消息'
+                      : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
-                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回消息'
+                      : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
-                      : projectDetailTab !== 'journal' ? '返回项目日记' : '返回项目篮子'}
+                      : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
                         returnToNotifications()
@@ -5613,8 +5613,12 @@ ${packageTimelineText}`
                         returnToMyWork()
                         return
                       }
-                      if (projectDetailTab !== 'journal') {
-                        setProjectDetailTab('journal')
+                      if (detailEntrySource === 'my_work_review') {
+                        returnToMyWorkReview()
+                        return
+                      }
+                      if (projectDetailTab !== 'tasks') {
+                        setProjectDetailTab('tasks')
                         return
                       }
                       setView('search')
@@ -5665,21 +5669,11 @@ ${packageTimelineText}`
                       type="button"
                       variant={projectDetailTab === 'activity' ? 'default' : 'outline'}
                       onClick={() => setProjectDetailTab(
-                        projectDetailTab === 'activity' ? 'journal' : 'activity',
+                        projectDetailTab === 'activity' ? 'tasks' : 'activity',
                       )}
                     >
                       <ClockCounterClockwise size={17} />
-                      {projectDetailTab === 'activity' ? '返回项目日记' : '待办动态'}
-                    </Button>
-                  )}
-                  {view === 'project' && selectedProject && (
-                    <Button
-                      className="ghost-button"
-                      type="button"
-                      variant="outline"
-                      onClick={() => setProjectDetailTab('packages')}
-                    >
-                      交付工作台
+                      {projectDetailTab === 'activity' ? '返回项目待办' : '待办动态'}
                     </Button>
                   )}
                   {view === 'project' && selectedProject?.accessRole === 'owner' && selectedProject.moduleManagement === 'project' && (
@@ -5709,60 +5703,6 @@ ${packageTimelineText}`
                       </DialogContent>
                     </Dialog>
                   )}
-                  {view === 'project' && selectedProject && selectedProject.accessRole === 'owner' && (
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button className="ghost-button" type="button" variant="outline">
-                          <ListChecks size={16} /> 子项目管理
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="project-subprojects-dialog">
-                        <DialogHeader>
-                          <DialogTitle>子项目管理</DialogTitle>
-                          <DialogDescription>按客户或交付单元拆分当前大项目，任务可以归属到对应子项目。</DialogDescription>
-                        </DialogHeader>
-                        <ProjectSubprojectsPanel key={selectedProject.id} projectId={selectedProject.id} canManage onChange={applyWorkspace} />
-                      </DialogContent>
-                    </Dialog>
-                  )}
-                  {view === 'project' && selectedProject && (selectedProject.canManageMembers ?? selectedProject.accessRole === 'owner') && (
-                    <Dialog
-                      open={isProjectMembersDialogOpen}
-                      onOpenChange={setIsProjectMembersDialogOpen}
-                    >
-                      <DialogTrigger asChild>
-                        <Button className="ghost-button project-members-trigger" type="button" variant="outline">
-                          <AddressBook size={16} /> 邀请成员
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="project-members-dialog">
-                        <DialogHeader>
-                          <DialogTitle>邀请成员</DialogTitle>
-                          <DialogDescription>
-                            管理成员、邀请链接和项目群通知。
-                          </DialogDescription>
-                        </DialogHeader>
-                        <ProjectMembersPanel
-                          departedUserIds={departedUserIds}
-                          memberships={memberships.filter(
-                            (membership) => membership.projectId === selectedProject.id,
-                          )}
-                          onCopyInviteLink={(payload) =>
-                            copyProjectInviteLink(selectedProject.id, payload)
-                          }
-                          onSaveFeishuSettings={(payload) =>
-                            saveProjectFeishuSettings(selectedProject.id, payload)
-                          }
-                          onInvite={(email) => inviteMember(selectedProject.id, email)}
-                          onAddDirectMember={selectedProject.canManageOrganizationTodos
-                            ? (username) => addMemberDirectly(selectedProject.id, username)
-                            : undefined}
-                          onRemove={(membershipId) => deleteMember(selectedProject.id, membershipId)}
-                          project={selectedProject}
-                        />
-                      </DialogContent>
-                    </Dialog>
-                  )}
                   {view !== 'ai' && view !== 'organization' && view !== 'weekly_report' && view !== 'assigned_bugs' && view !== 'package_market' && view !== 'image_sync' && view !== 'changelog' ? (
                     <Button
                       className="ghost-button"
@@ -5777,34 +5717,6 @@ ${packageTimelineText}`
                   ) : null}
                 </>
               )}
-              {view === 'search' ? (
-                <Dialog
-                  open={isNewProjectDialogOpen}
-                  onOpenChange={changeNewProjectDialogOpen}
-                >
-                  <DialogTrigger asChild>
-                    <Button className="solid-button" type="button">
-                      <Plus size={17} /> 新建项目
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>新建项目</DialogTitle>
-                      <DialogDescription>
-                        先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
-                      </DialogDescription>
-                    </DialogHeader>
-                    <NewProjectForm
-                      newProjectName={newProjectName}
-                      newProjectTags={newProjectTags}
-                      onCancel={() => changeNewProjectDialogOpen(false)}
-                      onNewProjectNameChange={setNewProjectName}
-                      onNewProjectTagsChange={setNewProjectTags}
-                      onSubmit={addProject}
-                    />
-                  </DialogContent>
-                </Dialog>
-              ) : null}
             </div>
           </header>
         ) : null}
@@ -5837,6 +5749,11 @@ ${packageTimelineText}`
             departedUserIds={departedUserIds}
             packageWorkbenchRef={packageWorkbenchRef}
             projectDetailTab={projectDetailTab}
+            workHourRecorderContext={workHourRecorderContext?.projectId === selectedProject.id
+              ? workHourRecorderContext
+              : null}
+            canViewProjectWorkHours={canManageSelectedOrganization}
+            onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
             onAddInstallEventComment={addInstallEventComment}
             onReassignInstallEvent={reassignInstallEvent}
@@ -5849,14 +5766,21 @@ ${packageTimelineText}`
             onDraftChange={setJournalDraft}
             onExportInstallTimeline={exportInstallTimeline}
             onInstallLoadMarketDetail={loadPackageMarketDetail}
-            onInstallLoadItemDownloadUrl={loadInstallItemDownloadUrl}
+            onInstallLoadEventDeliveryArtifacts={loadInstallEventDeliveryArtifacts}
             onInstallLoadMarketCiBranches={loadPackageMarketCiBranches}
             onInstallLoadMarketRules={loadPackageMarketRules}
             onInstallLoadMarketVersions={loadPackageMarketVersions}
+            onLoadInstallTimeline={loadInstallTimeline}
             onSaveInstallEvent={saveInstallEvent}
             onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
-            onReturnToNotifications={detailEntrySource === 'my_work' ? returnToMyWork : returnToNotifications}
+            onWorkHoursTodoClick={selectMyWorkTodo}
+            onRecordWorkHour={selectMyWorkHour}
+            onReturnToNotifications={detailEntrySource === 'my_work'
+              ? returnToMyWork
+              : detailEntrySource === 'my_work_review'
+                ? returnToMyWorkReview
+                : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
             onDeleteJournalEntry={deleteJournalEntry}
@@ -5864,11 +5788,9 @@ ${packageTimelineText}`
             onToggleJournalRisk={toggleJournalRisk}
             onUpdateJournalVisibility={updateJournalVisibility}
             onDeleteTodo={deleteTodo}
-            onCreateTodoNote={addTodoNote}
             onCreateTodoModule={createModule}
             onLoadTodoDetail={loadTodoDetails}
             onUpdateTodo={updateTodoDetails}
-            onUpdateTodoNote={editTodoNote}
             onTodoCreateDraftClear={clearTodoCreateDraftState}
             onTodoAssigneeChange={setTodoAssigneeUserId}
             onTodoWatcherChange={setTodoWatcherUserIds}
@@ -5895,19 +5817,15 @@ ${packageTimelineText}`
             todoDraft={todoDraft}
             todoModuleId={todoModuleId}
             todoPriority={todoPriority}
+            todoEstimatedWorkHours={todoEstimatedWorkHours}
+            onTodoEstimatedWorkHoursChange={setTodoEstimatedWorkHours}
+            onWorkHourRecorderDismiss={() => setWorkHourRecorderContext(null)}
           />
         )}
 
         {view === 'project' && !selectedProject && (
           <EmptyWorkspace
-            isNewProjectDialogOpen={isNewProjectDialogOpen}
-            newProjectName={newProjectName}
-            newProjectTags={newProjectTags}
             scopeLabel={selectedOrganizationName}
-            onAddProject={addProject}
-            onNewProjectDialogOpenChange={changeNewProjectDialogOpen}
-            onNewProjectNameChange={setNewProjectName}
-            onNewProjectTagsChange={setNewProjectTags}
           />
         )}
 
@@ -5924,7 +5842,7 @@ ${packageTimelineText}`
           />
         )}
 
-        {view === 'my_work' && (
+        <Activity mode={view === 'my_work' ? 'visible' : 'hidden'}>
           <MyWorkWorkbench
             key={`${authUserId}:${selectedOrganizationId}`}
             scope={`${authUserId}:${selectedOrganizationId}`}
@@ -5940,7 +5858,49 @@ ${packageTimelineText}`
             }}
             onMilestoneClick={selectProject}
           />
-        )}
+        </Activity>
+
+        {canNavigateToReview ? <Activity mode={view === 'my_work_review' ? 'visible' : 'hidden'}>
+          <MyWorkWorkbench
+            key={`${authUserId}:${selectedOrganizationId}:review`}
+            mode="review"
+            scope={`${authUserId}:${selectedOrganizationId}:review`}
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
+            onViewChange={() => undefined}
+            onTodoClick={(projectId, todoId) => selectMyWorkTodo(projectId, todoId, 'my_work_review')}
+            onDeliveryClick={selectMyWorkPackageEvent}
+            onBugClick={() => undefined}
+            onMilestoneClick={selectProject}
+            onWorkHoursChanged={() => { void refreshNavigationCounts() }}
+          />
+        </Activity> : null}
+
+        {selectedOrganizationId !== null ? <Activity mode={view === 'my_work_hours' ? 'visible' : 'hidden'}>
+          <WorkHoursWorkbench
+            mode="mine"
+            projects={scopedProjects}
+            currentUserId={authUser?.id}
+            currentUserName={authUser?.displayName}
+            initialProjectId={workHourRecorderContext?.projectId ?? null}
+            initialTodoId={workHourRecorderContext?.todoId ?? null}
+            autoOpenRecorder={workHourRecorderContext !== null}
+            onRecorderContextConsumed={() => setWorkHourRecorderContext(null)}
+            onTodoClick={selectMyWorkTodo}
+            onProjectClick={selectProjectWorkHours}
+          />
+        </Activity> : null}
+
+        {selectedOrganizationId !== null && canManageSelectedOrganization ? <Activity mode={view === 'work_hours' ? 'visible' : 'hidden'}>
+          <WorkHoursWorkbench
+            mode="organization"
+            organizationId={selectedOrganizationId}
+            projects={scopedProjects}
+            currentUserId={authUser?.id}
+            currentUserName={authUser?.displayName}
+            onProjectClick={selectProjectWorkHours}
+          />
+        </Activity> : null}
 
         {view === 'notifications' && (
           <NotificationCenterView
@@ -5951,7 +5911,7 @@ ${packageTimelineText}`
           />
         )}
 
-        {view === 'search' && (
+        <Activity mode={view === 'search' ? 'visible' : 'hidden'}>
           <SearchView
             page={projectBasketPage.scope === projectBasketScope ? projectBasketPage.page : 0}
             onPageChange={(page) => setProjectBasketPage({ scope: projectBasketScope, page })}
@@ -5973,7 +5933,7 @@ ${packageTimelineText}`
             onTagChange={setTagFilter}
             onUpdateProjectStatus={updateProjectStatus}
           />
-        )}
+        </Activity>
 
         {view === 'organization' && authUser && canAccessOrganizationManagement(authUser) ? (
           <OrganizationWorkbench
@@ -6005,6 +5965,7 @@ ${packageTimelineText}`
         {view === 'platform' && authUser?.isSystemAdmin ? (
           <PlatformManagementWorkbench
             currentUserId={authUser.id}
+            canCreateOrganizations={isOrganizationAdmin}
             sidebarNavigationHost={platformSidebarHost}
             topbarActionHost={platformTopbarHost}
             onAuthorizationLost={() => {
@@ -6584,113 +6545,18 @@ function AccountMenu({
 }
 
 function EmptyWorkspace({
-  isNewProjectDialogOpen,
-  newProjectName,
-  newProjectTags,
   scopeLabel,
-  onAddProject,
-  onNewProjectDialogOpenChange,
-  onNewProjectNameChange,
-  onNewProjectTagsChange,
 }: {
-  isNewProjectDialogOpen: boolean
-  newProjectName: string
-  newProjectTags: string
   scopeLabel: string
-  onAddProject: () => void
-  onNewProjectDialogOpenChange: (open: boolean) => void
-  onNewProjectNameChange: (value: string) => void
-  onNewProjectTagsChange: (value: string) => void
 }) {
   return (
     <Card className="panel empty-workspace">
       <p className="eyebrow">{scopeLabel}工作区</p>
-      <h3>先创建第一个项目篮子。</h3>
+      <h3>当前还没有可查看的项目。</h3>
       <p>
-        每个项目都会拥有自己的日记、待办、风险和总结。创建后就可以开始记录今天的上下文。
+        请前往组织管理的项目管理页面创建项目。
       </p>
-      <Dialog
-        open={isNewProjectDialogOpen}
-        onOpenChange={onNewProjectDialogOpenChange}
-      >
-        <DialogTrigger asChild>
-          <Button className="solid-button" type="button">
-            <Plus size={17} /> 创建第一个项目
-          </Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新建项目</DialogTitle>
-            <DialogDescription>
-              先建立一个新的项目篮子，之后可以继续补充日记、待办和风险。
-            </DialogDescription>
-          </DialogHeader>
-          <NewProjectForm
-            newProjectName={newProjectName}
-            newProjectTags={newProjectTags}
-            onCancel={() => onNewProjectDialogOpenChange(false)}
-            onNewProjectNameChange={onNewProjectNameChange}
-            onNewProjectTagsChange={onNewProjectTagsChange}
-            onSubmit={onAddProject}
-          />
-        </DialogContent>
-      </Dialog>
     </Card>
-  )
-}
-
-function NewProjectForm({
-  newProjectName,
-  newProjectTags,
-  onCancel,
-  onNewProjectNameChange,
-  onNewProjectTagsChange,
-  onSubmit,
-}: {
-  newProjectName: string
-  newProjectTags: string
-  onCancel: () => void
-  onNewProjectNameChange: (value: string) => void
-  onNewProjectTagsChange: (value: string) => void
-  onSubmit: () => void
-}) {
-  return (
-    <form
-      className="new-project-dialog-form"
-      onSubmit={(event) => {
-        event.preventDefault()
-        onSubmit()
-      }}
-    >
-      <Label>
-        项目名称
-        <Input
-          autoFocus
-          aria-label="新项目名称"
-          placeholder="例如：增长实验复盘"
-          required
-          value={newProjectName}
-          onChange={(event) => onNewProjectNameChange(event.target.value)}
-        />
-      </Label>
-      <Label>
-        标签
-        <Input
-          aria-label="项目标签"
-          placeholder="可选，用逗号或空格分隔"
-          value={newProjectTags}
-          onChange={(event) => onNewProjectTagsChange(event.target.value)}
-        />
-      </Label>
-      <DialogFooter>
-        <Button className="ghost-button" variant="outline" type="button" onClick={onCancel}>
-          取消
-        </Button>
-        <Button className="solid-button" type="submit">
-          <Plus size={15} /> 创建项目
-        </Button>
-      </DialogFooter>
-    </form>
   )
 }
 
@@ -6702,6 +6568,8 @@ function ProjectDetail({
   packageTimeline,
   packageWorkbenchRef,
   projectDetailTab,
+  workHourRecorderContext,
+  canViewProjectWorkHours,
   onAddTodo,
   onAddInstallEventComment,
   onReassignInstallEvent,
@@ -6715,9 +6583,10 @@ function ProjectDetail({
   onExportInstallTimeline,
   onInstallLoadMarketCiBranches,
   onInstallLoadMarketDetail,
-  onInstallLoadItemDownloadUrl,
+  onInstallLoadEventDeliveryArtifacts,
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
+  onLoadInstallTimeline,
   onSaveInstallEvent,
   onUpdateInstallEventComment,
   onUpdateInstallOperation,
@@ -6726,12 +6595,10 @@ function ProjectDetail({
   onEditJournalEntry,
   onToggleJournalRisk,
   onUpdateJournalVisibility,
-  onCreateTodoNote,
   onCreateTodoModule,
   onDeleteTodo,
   onLoadTodoDetail,
   onUpdateTodo,
-  onUpdateTodoNote,
   onTodoCreateDraftClear,
   onTodoAssigneeChange,
   onTodoWatcherChange,
@@ -6745,6 +6612,8 @@ function ProjectDetail({
   todoSubprojectId,
   onTodoPriorityChange,
   onTodoDetailViewChange,
+  onWorkHoursTodoClick,
+  onRecordWorkHour,
   onReturnToNotifications,
   project,
   currentUser,
@@ -6760,6 +6629,10 @@ function ProjectDetail({
   todoDraft,
   todoModuleId,
   todoPriority,
+  todoEstimatedWorkHours,
+  onTodoEstimatedWorkHoursChange,
+  onWorkHourRecorderDismiss,
+  onProjectDetailTabChange,
 }: {
   departedUserIds: readonly number[]
   initialTodoId?: number | null
@@ -6768,10 +6641,17 @@ function ProjectDetail({
   packageTimeline: ProjectPackageTimeline | null
   packageWorkbenchRef: RefObject<ProjectPackageWorkbenchHandle | null>
   projectDetailTab: ProjectDetailTab
-  onAddTodo: (projectId: number) => void | Promise<void>
+  workHourRecorderContext: WorkHourRecorderContext | null
+  canViewProjectWorkHours: boolean
+  onProjectDetailTabChange: (tab: ProjectDetailTab) => void
+  onAddTodo: (projectId: number) => Promise<boolean>
   onAddInstallEventComment: (eventId: number, content: string) => Promise<boolean>
   onReassignInstallEvent: (eventId: number, payload: { assigneeUserId: number; previousAssigneeUserId: number | null; reason: string }) => Promise<boolean>
-  onCompleteInstallEvent: (eventId: number) => Promise<boolean>
+  onCompleteInstallEvent: (eventId: number, payload: {
+    result: 'success' | 'partial' | 'rejected' | 'failed'
+    failureReason?: string
+    stepResults?: Record<string, { result: 'success' | 'failed' | 'skipped'; failureDetail?: string }>
+  }) => Promise<boolean>
   onCreateInstallOperation: (payload: {
     eventId: number
     groupId?: number | null
@@ -6801,7 +6681,7 @@ function ProjectDetail({
     releaseVersion?: string
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
-  onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
+  onInstallLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
   onInstallLoadMarketVersions: (payload: {
@@ -6813,6 +6693,7 @@ function ProjectDetail({
     packageId: string
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketVersion[]>
+  onLoadInstallTimeline: (options: ProjectPackageTimelineQuery) => Promise<ProjectPackageTimeline>
   onSaveInstallEvent: (
     eventId: number | null,
     payload: ProjectPackageEventSavePayload,
@@ -6848,12 +6729,10 @@ function ProjectDetail({
     entryId: number,
     visibility: JournalVisibility,
   ) => void
-  onCreateTodoNote: (todoId: number, content: string) => void
   onCreateTodoModule: (projectId: number, name: string) => Promise<ProjectModule | null>
   onDeleteTodo: (todoId: number) => Promise<boolean>
   onLoadTodoDetail: (todoId: number) => Promise<Todo | null>
   onUpdateTodo: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
-  onUpdateTodoNote: (todoId: number, noteId: number, content: string) => void
   onTodoCreateDraftClear: (projectId?: number) => void
   onTodoAssigneeChange: (id: number | null) => void
   onTodoWatcherChange: (ids: number[]) => void
@@ -6867,6 +6746,8 @@ function ProjectDetail({
   todoSubprojectId: number | null
   onTodoPriorityChange: (value: Priority) => void
   onTodoDetailViewChange?: (active: boolean) => void
+  onWorkHoursTodoClick: (projectId: number, todoId: number) => void
+  onRecordWorkHour: (projectId: number, todoId: number) => void
   onReturnToNotifications: () => void
   project: Project
   currentUser: AuthUser | null
@@ -6882,44 +6763,50 @@ function ProjectDetail({
   todoDraft: string
   todoModuleId: number | null
   todoPriority: Priority
+  todoEstimatedWorkHours: string
+  onTodoEstimatedWorkHoursChange: (value: string) => void
+  onWorkHourRecorderDismiss: () => void
 }) {
   const [editingJournalId, setEditingJournalId] = useState<number | null>(null)
   const [journalEditDraft, setJournalEditDraft] = useState('')
   const [isJournalComposing, setIsJournalComposing] = useState(false)
+  const [journalPage, setJournalPage] = useState(0)
+  const [journalQuery, setJournalQuery] = useState('')
+  const journalPageSize = 10
   const [isTodoCreateDialogOpen, setIsTodoCreateDialogOpen] = useState(false)
   const initialTodoExists = initialTodoId != null && projectTodos.some((todo) => todo.id === initialTodoId)
   const [isProjectTodoDetailOpen, setIsProjectTodoDetailOpen] = useState(initialTodoExists)
   const [pastJournalDialogOpen, setPastJournalDialogOpen] = useState(false)
   const [pastJournalDate, setPastJournalDate] = useState(getPreviousDateStamp())
-  const isProjectTodoFocusOpen = isProjectTodoDetailOpen || isTodoCreateDialogOpen
-  const journalDates = useMemo(
-    () =>
-      Array.from(new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10))))
-        .sort((left, right) => right.localeCompare(left)),
+  const isProjectTodoFocusOpen = isProjectTodoDetailOpen
+  const journalGroups = useMemo(() => {
+    const grouped = new Map<string, JournalEntry[]>()
+    for (const entry of [...project.journals].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
+      const normalizedQuery = journalQuery.trim().toLocaleLowerCase('zh-CN')
+      if (normalizedQuery && ![entry.content, entry.speakerName, entry.createdAt]
+        .join(' ')
+        .toLocaleLowerCase('zh-CN')
+        .includes(normalizedQuery)) continue
+      const date = entry.createdAt.slice(0, 10)
+      grouped.set(date, [...(grouped.get(date) ?? []), entry])
+    }
+    return Array.from(grouped, ([date, entries]) => ({ date, entries }))
+  }, [journalQuery, project.journals])
+  const journalDates = journalGroups.map((group) => group.date)
+  const allJournalDates = useMemo(
+    () => [...new Set(project.journals.map((entry) => entry.createdAt.slice(0, 10)))].sort().reverse(),
     [project.journals],
   )
-  const defaultJournalDate = journalDates.includes(today)
-    ? today
-    : journalDates[0] ?? today
-  const [selectedJournalDate, setSelectedJournalDate] = useState(defaultJournalDate)
-  const activeJournalDate = journalDates.includes(selectedJournalDate)
-    ? selectedJournalDate
-    : defaultJournalDate
-  const visibleJournals = project.journals.filter((entry) =>
-    entry.createdAt.startsWith(activeJournalDate),
+  const filteredJournalCount = journalGroups.reduce((count, group) => count + group.entries.length, 0)
+  const journalPageCount = Math.max(1, Math.ceil(journalGroups.length / journalPageSize))
+  const safeJournalPage = Math.min(journalPage, journalPageCount - 1)
+  const visibleJournalGroups = journalGroups.slice(
+    safeJournalPage * journalPageSize,
+    (safeJournalPage + 1) * journalPageSize,
   )
-  const selectedJournalDateIndex = journalDates.indexOf(activeJournalDate)
-  const previousJournalDate =
-    selectedJournalDateIndex >= 0
-      ? journalDates[selectedJournalDateIndex + 1]
-      : undefined
-  const nextJournalDate =
-    selectedJournalDateIndex > 0
-      ? journalDates[selectedJournalDateIndex - 1]
-      : undefined
   const projectMembers = getProjectAssignableUsers(project, memberships)
   const projectModules = project.modules
-  const canWriteProject = !project.readOnly
+  const canWriteProject = !project.readOnly && (!project.organizationId || Boolean(project.canManageOrganizationTodos))
   const isOwner = project.accessRole === 'owner'
   const hasTodoCreateDraft = Boolean(
     todoDraft.trim() ||
@@ -6931,7 +6818,8 @@ function ProjectDetail({
       todoWatcherUserIds.length > 0 ||
       todoReviewerUserId != null ||
       todoModuleId != null ||
-      todoSubprojectId != null,
+      todoSubprojectId != null ||
+      todoEstimatedWorkHours,
   )
   const riskJournalEntryIds = useMemo(
     () => new Set(project.riskJournalEntryIds),
@@ -6964,14 +6852,12 @@ function ProjectDetail({
     if (!journalDraft.trim()) return
     const saved = await onSaveJournal(pastJournalDate)
     if (saved) {
-      setSelectedJournalDate(pastJournalDate)
       setPastJournalDialogOpen(false)
     }
   }
 
   async function saveTodayJournal() {
-    const saved = await onSaveJournal()
-    if (saved) setSelectedJournalDate(today)
+    await onSaveJournal()
   }
 
   function closeTodoCreateDialog() {
@@ -6979,19 +6865,28 @@ function ProjectDetail({
   }
 
   async function handleAddTodo() {
-    const hasDraft = Boolean(todoDraft.trim())
-    await Promise.resolve(onAddTodo(project.id))
-    if (hasDraft) {
+    const saved = await onAddTodo(project.id)
+    if (saved) {
       closeTodoCreateDialog()
     }
   }
 
   useEffect(() => {
-    if (projectDetailTab !== 'journal') {
+    if (projectDetailTab === 'work_hours' && !canViewProjectWorkHours) {
+      onProjectDetailTabChange('tasks')
+      return
+    }
+    if (projectDetailTab !== 'tasks') {
       setIsProjectTodoDetailOpen(false)
       setIsTodoCreateDialogOpen(false)
     }
-  }, [projectDetailTab])
+  }, [canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
+
+  useEffect(() => {
+    setJournalPage((page) => Math.min(page, journalPageCount - 1))
+  }, [journalPageCount])
+
+  useEffect(() => { setJournalPage(0) }, [journalQuery])
 
   useEffect(() => {
     onTodoDetailViewChange?.(isProjectTodoFocusOpen)
@@ -7007,14 +6902,44 @@ function ProjectDetail({
           ? 'detail-layout packages-mode'
           : projectDetailTab === 'activity'
             ? 'detail-layout activity-mode'
+          : projectDetailTab === 'tasks'
+            ? isProjectTodoFocusOpen ? 'detail-layout project-tasks-mode todo-detail-focus' : 'detail-layout project-tasks-mode'
+          : projectDetailTab === 'journal'
+            ? 'detail-layout project-journal-mode'
+          : projectDetailTab === 'work_hours'
+            ? 'detail-layout work-hours-mode'
           : isProjectTodoFocusOpen
             ? 'detail-layout todo-detail-focus'
             : 'detail-layout'
       }
     >
+      <div className="project-detail-tabbar">
+        <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
+          <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} /><span>项目待办</span><span className="project-detail-tab-count">{projectTodos.length}</span></button>
+          <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} /><span>项目日记</span></button>
+          <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} /><span>交付工作台</span></button>
+          {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} /><span>项目工时</span></button> : null}
+        </nav>
+        {projectDetailTab === 'tasks' && canWriteProject && !isProjectTodoFocusOpen ? (
+          <div className="project-detail-tab-actions">
+            <Button className="todo-create-trigger" type="button" onClick={() => setIsTodoCreateDialogOpen(true)}>
+              <Plus size={16} /><span>添加待办</span>
+            </Button>
+          </div>
+        ) : null}
+      </div>
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
+        ) : projectDetailTab === 'work_hours' && canViewProjectWorkHours ? (
+          <WorkHoursWorkbench
+            mode="project"
+            project={project}
+            projects={projects}
+            currentUserId={currentUser?.id}
+            currentUserName={currentUser?.displayName}
+            onTodoClick={onWorkHoursTodoClick}
+          />
         ) : projectDetailTab === 'packages' ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
@@ -7029,9 +6954,10 @@ function ProjectDetail({
             onExportTimeline={onExportInstallTimeline}
             onLoadPackageMarketDetail={onInstallLoadMarketDetail}
             onLoadPackageMarketCiBranches={onInstallLoadMarketCiBranches}
-            onLoadPackageItemDownloadUrl={onInstallLoadItemDownloadUrl}
+            onLoadEventDeliveryArtifacts={onInstallLoadEventDeliveryArtifacts}
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}
+            onLoadTimeline={onLoadInstallTimeline}
             onSaveEvent={onSaveInstallEvent}
             onUpdateEventComment={onUpdateInstallEventComment}
             onUpdateOperation={onUpdateInstallOperation}
@@ -7042,9 +6968,8 @@ function ProjectDetail({
             todos={projectTodos}
             timeline={packageTimeline}
           />
-        ) : !isProjectTodoFocusOpen ? (
+        ) : projectDetailTab === 'journal' ? (
           <Card className="panel journal-panel">
-            <PanelTitle icon={<FileText size={18} />} title="项目日记" />
             {canWriteProject ? <><Label className="textarea-label journal-entry-label">
               <MentionTextarea
                 members={projectMembers}
@@ -7077,7 +7002,7 @@ function ProjectDetail({
                   <JournalDatePicker
                     ariaLabel="选择既往日记日期"
                     className="past-journal-date-trigger"
-                    datesWithEntries={journalDates}
+                    datesWithEntries={allJournalDates}
                     maxDate={getPreviousDateStamp()}
                     value={pastJournalDate}
                     onChange={setPastJournalDate}
@@ -7094,9 +7019,16 @@ function ProjectDetail({
               </DialogContent>
             </Dialog></> : null}
 
+            <label className="journal-search-field">
+              <MagnifyingGlass size={15} />
+              <Input aria-label="搜索项目日记" placeholder="搜索内容、记录人或日期" value={journalQuery} onChange={(event) => setJournalQuery(event.target.value)} />
+            </label>
             <div className="history-list">
-              {visibleJournals.length > 0 ? (
-                visibleJournals.map((entry) => {
+              {journalGroups.length > 0 ? (
+                visibleJournalGroups.map(({ date, entries }) => (
+                  <section className="journal-date-group" key={date}>
+                    <h3>{date}</h3>
+                    {entries.map((entry) => {
                   const canEditEntry = canWriteProject && (
                     entry.authorUserId === currentUser?.id ||
                     (!entry.authorUserId && isOwner)
@@ -7242,78 +7174,58 @@ function ProjectDetail({
                       )}
                     </article>
                   )
-                })
+                    })}
+                  </section>
+                ))
               ) : (
-                <p className="empty-state">这一天还没有日记记录。</p>
+                <p className="empty-state">{journalQuery.trim() ? '没有符合搜索条件的项目日记。' : '还没有项目日记。'}</p>
               )}
             </div>
-            <div className="journal-pagination" aria-label="日记日期选择">
-              <Button
-                className="ghost-button"
-                disabled={!previousJournalDate}
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!previousJournalDate) return
-                  setSelectedJournalDate(previousJournalDate)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              >
-                上一天
-              </Button>
-              <JournalDatePicker
-                key={activeJournalDate}
-                datesWithEntries={journalDates}
-                value={activeJournalDate}
-                onChange={(date) => {
-                  setSelectedJournalDate(date)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              />
-              <span>{visibleJournals.length} 条</span>
-              <Button
-                className="ghost-button"
-                disabled={!nextJournalDate}
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!nextJournalDate) return
-                  setSelectedJournalDate(nextJournalDate)
-                  setEditingJournalId(null)
-                  setJournalEditDraft('')
-                }}
-              >
-                下一天
-              </Button>
+            <div className="journal-history-summary">
+              {journalQuery.trim() ? `找到 ${filteredJournalCount} 条日记，覆盖 ${journalDates.length} 个日期` : `共 ${project.journals.length} 条日记，覆盖 ${allJournalDates.length} 个日期`}
             </div>
+            <ListPagination
+              label="项目日记分页"
+              page={safeJournalPage}
+              pageSize={journalPageSize}
+              total={journalGroups.length}
+              onPageChange={setJournalPage}
+            />
           </Card>
         ) : null}
       </div>
 
-      {projectDetailTab === 'journal' ? (
+      {projectDetailTab === 'tasks' ? (
           <Card className={isProjectTodoFocusOpen ? 'side-panel todo-focus-panel' : 'panel side-panel'}>
-            <div className="todo-panel-header">
-              {!isProjectTodoFocusOpen ? (
-                <>
-                  <PanelTitle icon={<Check size={18} />} title="项目待办" />
-                  {canWriteProject ? <div className="project-todo-header-actions">
-                    <Button
-                      className="todo-create-trigger"
-                      type="button"
-                      onClick={() => setIsTodoCreateDialogOpen(true)}
-                    >
-                      <Plus size={16} /> 添加待办
-                    </Button>
-                  </div> : null}
-                </>
-              ) : null}
-            </div>
             <div className="side-panel-scroll-area">
+              <TodoList
+                canManageOrganizationTodos={project.canManageOrganizationTodos}
+                canUpdateOrganizationTodoFields={project.canUpdateOrganizationTodoFields}
+                departedUserIds={departedUserIds}
+                key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
+                currentUserId={currentUser?.id}
+                detailBackLabel={notificationDetailActive ? '返回' : undefined}
+                initialTodoId={initialTodoId}
+                memberships={memberships}
+                onDeleteTodo={canWriteProject || project.canManageOrganizationTodos ? onDeleteTodo : undefined}
+                onLoadTodoDetail={onLoadTodoDetail}
+                onDetailModeChange={setIsProjectTodoDetailOpen}
+                onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
+                onRecordWorkHour={onRecordWorkHour}
+                onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
+                project={project}
+                projects={projects}
+                todos={projectTodos}
+                compact
+              />
               {isTodoCreateDialogOpen ? (
-                <TodoEditorDialog
-                  departedUserIds={departedUserIds}
+                <Dialog open onOpenChange={(open) => { if (!open) closeTodoCreateDialog() }}>
+                  <DialogContent className="todo-create-dialog" showCloseButton>
+                    <DialogHeader>
+                      <DialogTitle>添加待办</DialogTitle>
+                      <DialogDescription>填写待办标题、详情和负责人，保存后会立即加入当前项目。</DialogDescription>
+                    </DialogHeader>
+                    <TodoEditorDialog
                   assigneeUserId={todoAssigneeUserId}
                   watcherUserIds={todoWatcherUserIds}
                   reviewerUserId={todoReviewerUserId}
@@ -7330,7 +7242,7 @@ function ProjectDetail({
                   open={isTodoCreateDialogOpen}
                   priority={todoPriority}
                   project={project}
-                  submitDisabled={!todoDraft.trim()}
+                  submitDisabled={!todoDraft.trim() || (Boolean(project.organizationId) && (!todoAssigneeUserId || !todoEstimatedWorkHours || !Number.isInteger(Number(todoEstimatedWorkHours)) || Number(todoEstimatedWorkHours) < 1))}
                   title={todoDraft}
                   onAssigneeUserIdChange={onTodoAssigneeChange}
                   onWatcherUserIdsChange={onTodoWatcherChange}
@@ -7341,39 +7253,33 @@ function ProjectDetail({
                   onCreateModule={(name) => onCreateTodoModule(project.id, name)}
                   onDetailChange={onTodoDetailDraftChange}
                   onDueDateChange={onTodoDueDateChange}
+                  estimatedWorkHours={todoEstimatedWorkHours}
+                  onEstimatedWorkHoursChange={onTodoEstimatedWorkHoursChange}
                   onModuleIdChange={onTodoModuleChange}
                   onOpenChange={(open) => {
                     if (!open) closeTodoCreateDialog()
                   }}
                   onPriorityChange={onTodoPriorityChange}
                   onSubmit={handleAddTodo}
-                  onTitleChange={onTodoDraftChange}
-                />
-              ) : (
-                <TodoList
-                  canManageOrganizationTodos={project.canManageOrganizationTodos}
-                  canUpdateOrganizationTodoFields={project.canUpdateOrganizationTodoFields}
-                  departedUserIds={departedUserIds}
-                  key={`project-todos-${project.id}-${project.accessRole}-${currentUser?.id ?? 'anonymous'}`}
-                  currentUserId={currentUser?.id}
-                  detailBackLabel={notificationDetailActive ? '返回' : undefined}
-                  initialTodoId={initialTodoId}
-                  memberships={memberships}
-                  onCreateTodoNote={canWriteProject ? onCreateTodoNote : undefined}
-                  onDeleteTodo={canWriteProject || project.canManageOrganizationTodos ? onDeleteTodo : undefined}
-                  onLoadTodoDetail={onLoadTodoDetail}
-                  onDetailModeChange={setIsProjectTodoDetailOpen}
-                  onDetailBack={notificationDetailActive ? onReturnToNotifications : undefined}
-                  onUpdateTodo={canWriteProject || project.canManageOrganizationTodos || project.canUpdateOrganizationTodoFields ? onUpdateTodo : undefined}
-                  onUpdateTodoNote={canWriteProject ? onUpdateTodoNote : undefined}
-                  project={project}
-                  projects={projects}
-                  todos={projectTodos}
-                  compact
-                />
-              )}
+                      onTitleChange={onTodoDraftChange}
+                    />
+                  </DialogContent>
+                </Dialog>
+              ) : null}
             </div>
           </Card>
+      ) : null}
+
+      {workHourRecorderContext ? (
+        <WorkHoursWorkbench
+          mode="mine"
+          projects={projects}
+          currentUserId={currentUser?.id}
+          currentUserName={currentUser?.displayName}
+          recorderOnly
+          recorderRequest={workHourRecorderContext}
+          onRecorderDismiss={onWorkHourRecorderDismiss}
+        />
       ) : null}
     </div>
   )
@@ -7398,7 +7304,7 @@ function generateInviteSharePassword(length = 8) {
   return Array.from(values, (value) => alphabet[value % alphabet.length]).join('')
 }
 
-function ProjectMembersPanel({
+export function ProjectMembersPanel({
   departedUserIds,
   memberships,
   onCopyInviteLink,
@@ -8253,34 +8159,6 @@ async function uploadImagesIntoTodoDetail(
   }
 }
 
-async function pasteImagesIntoTodoDetail(
-  event: ClipboardEvent<HTMLTextAreaElement>,
-  getCurrentValue: () => string,
-  onChange: (value: string) => void,
-  setUploadingImageSrcs?: Dispatch<SetStateAction<string[]>>,
-) {
-  const imageFiles = Array.from(event.clipboardData.items)
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
-  if (imageFiles.length === 0) return
-
-  event.preventDefault()
-  const textarea = event.currentTarget
-  const selectionStart = textarea.selectionStart ?? textarea.value.length
-  const upload = uploadImagesIntoTodoDetail(
-    imageFiles,
-    getCurrentValue,
-    onChange,
-    setUploadingImageSrcs,
-  )
-  window.requestAnimationFrame(() => {
-    textarea.focus()
-    textarea.setSelectionRange(selectionStart, selectionStart)
-  })
-  await upload
-}
-
 function TodoDetailEditor({
   onChange,
   value,
@@ -8440,140 +8318,6 @@ function TodoDetailViewer({
           ))}
         </div>
       ) : null}
-      <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
-        if (!open) setPreviewImageIndex(null)
-      }}>
-        <DialogContent className="todo-detail-image-preview-dialog" showCloseButton={false}>
-          <DialogTitle className="todo-detail-image-preview-title">图片预览</DialogTitle>
-          {previewImage ? (
-            <div className="todo-detail-image-preview-shell">
-              <img
-                className="todo-detail-image-preview"
-                src={previewImage.src}
-                alt={previewImage.alt}
-              />
-              <button
-                aria-label="关闭图片预览"
-                className="todo-detail-image-preview-close"
-                type="button"
-                onClick={() => setPreviewImageIndex(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
-}
-
-function TodoNoteComposer({
-  action,
-  members,
-  onChange,
-  placeholder,
-  value,
-}: {
-  action?: ReactNode
-  members?: Array<{ id: number; name: string }>
-  onChange: (value: string) => void
-  placeholder?: string
-  value: string
-}) {
-  const { images, text } = useMemo(() => parseTodoDetailContent(value), [value])
-  const [textDraft, setTextDraft] = useState(text)
-  const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
-  const [uploadingImageSrcs, setUploadingImageSrcs] = useState<string[]>([])
-  const lastSerializedValueRef = useRef<string | null>(null)
-  const latestValueRef = useRef(value)
-  const previewImage = previewImageIndex == null ? null : images[previewImageIndex] ?? null
-  const uploadingImageSrcSet = useMemo(() => new Set(uploadingImageSrcs), [uploadingImageSrcs])
-
-  useEffect(() => {
-    latestValueRef.current = value
-  }, [value])
-
-  useEffect(() => {
-    if (lastSerializedValueRef.current === value) return
-    setTextDraft(text)
-  }, [text, value])
-
-  useEffect(() => {
-    if (previewImageIndex != null && !images[previewImageIndex]) {
-      setPreviewImageIndex(null)
-    }
-  }, [images, previewImageIndex])
-
-  function commitValue(nextValue: string) {
-    latestValueRef.current = nextValue
-    lastSerializedValueRef.current = nextValue
-    onChange(nextValue)
-  }
-
-  function updateNoteContent(nextText: string, nextImages: TodoDetailImageAttachment[]) {
-    commitValue(serializeTodoDetailContent(nextText, nextImages))
-  }
-
-  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    await pasteImagesIntoTodoDetail(
-      event,
-      () => latestValueRef.current,
-      commitValue,
-      setUploadingImageSrcs,
-    )
-  }
-
-  return (
-    <div className={images.length > 0 ? 'todo-note-composer has-images' : 'todo-note-composer'}>
-      <div className="todo-detail-composer todo-note-composer-surface">
-        {images.length > 0 ? (
-          <div className="todo-detail-attachments" aria-label={`已插入 ${images.length} 张图片`}>
-            {images.map((image, index) => {
-              const uploading = uploadingImageSrcSet.has(image.src)
-              return (
-                <figure className="todo-detail-attachment" key={`${image.src.slice(0, 48)}-${index}`}>
-                  <button
-                    aria-label={`查看图片 ${index + 1}`}
-                    className={uploading ? 'todo-detail-attachment-preview uploading' : 'todo-detail-attachment-preview'}
-                    type="button"
-                    disabled={uploading}
-                    onClick={() => setPreviewImageIndex(index)}
-                  >
-                    <img src={image.src} alt={image.alt} loading="lazy" />
-                    {uploading ? <span>上传中</span> : null}
-                  </button>
-                  <button
-                    aria-label={`删除图片 ${index + 1}`}
-                    className="todo-detail-attachment-remove"
-                    type="button"
-                    onClick={() => updateNoteContent(
-                      textDraft,
-                      images.filter((_, imageIndex) => imageIndex !== index),
-                    )}
-                  >
-                    <X size={13} />
-                  </button>
-                </figure>
-              )
-            })}
-          </div>
-        ) : null}
-        <MentionTextarea
-          className="todo-note-composer-textarea"
-          members={members}
-          placeholder={placeholder}
-          value={textDraft}
-          onChange={(nextText) => {
-            setTextDraft(nextText)
-            updateNoteContent(nextText, images)
-          }}
-          onPaste={(event) => {
-            void handlePaste(event)
-          }}
-        />
-        {action}
-      </div>
       <Dialog open={Boolean(previewImage)} onOpenChange={(open) => {
         if (!open) setPreviewImageIndex(null)
       }}>
@@ -11258,37 +11002,19 @@ function TodoFilterBuilderDialog({
       )
     }
 
-    if (condition.field === 'done') {
+    if (condition.field === 'status') {
       return (
         <Select
           value={condition.value}
           onValueChange={(value) => updateCondition(condition.id, { value })}
         >
-          <SelectTrigger aria-label="筛选完成状态" className="todo-filter-condition-select">
+          <SelectTrigger aria-label="筛选状态" className="todo-filter-condition-select">
             <SelectValue placeholder="选择状态" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="open">未完成</SelectItem>
-            <SelectItem value="done">已完成</SelectItem>
-          </SelectContent>
-        </Select>
-      )
-    }
-
-    if (condition.field === 'confirmationStatus') {
-      return (
-        <Select
-          value={condition.value}
-          onValueChange={(value) => updateCondition(condition.id, { value })}
-        >
-          <SelectTrigger aria-label="筛选确认状态" className="todo-filter-condition-select">
-            <SelectValue placeholder="选择状态" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="confirmed">已确认</SelectItem>
-            <SelectItem value="pending_review">待验收</SelectItem>
-            <SelectItem value="rejected">已驳回</SelectItem>
-            <SelectItem value="acceptance_failed">验收未通过</SelectItem>
+            <SelectItem value="open">进行中</SelectItem>
+            <SelectItem value="review">待确认</SelectItem>
+            <SelectItem value="completed">已完成</SelectItem>
           </SelectContent>
         </Select>
       )
@@ -11475,155 +11201,9 @@ function TodoFilterBuilderDialog({
   )
 }
 
-function TodoNotesPanel({
-  departedUserIds,
-  currentUserId,
-  members,
-  onCreateNote,
-  onUpdateNote,
-  todo,
-}: {
-  departedUserIds: readonly number[]
-  currentUserId?: number
-  members?: Array<{ id: number; name: string }>
-  onCreateNote?: (todoId: number, content: string) => void
-  onUpdateNote?: (todoId: number, noteId: number, content: string) => void
-  todo: Todo
-}) {
-  const [draft, setDraft] = useState('')
-  const [editingNoteId, setEditingNoteId] = useState<number | null>(null)
-  const [editingDrafts, setEditingDrafts] = useState<Record<number, string>>({})
-  const notes = useMemo(
-    () => [...todo.notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
-    [todo.notes],
-  )
-
-  useEffect(() => {
-    setDraft('')
-    setEditingNoteId(null)
-    setEditingDrafts({})
-  }, [todo.id])
-
-  function saveNewNote() {
-    const content = draft.trim()
-    if (!content || !onCreateNote) return
-    onCreateNote(todo.id, content)
-    setDraft('')
-  }
-
-  function saveExistingNote(note: TodoNote) {
-    const nextContent = String(editingDrafts[note.id] ?? note.content).trim()
-    if (!nextContent || !onUpdateNote) return
-    onUpdateNote(todo.id, note.id, nextContent)
-    setEditingNoteId(null)
-  }
-
-  return (
-    <section className="todo-notes-panel" aria-label="待办备注">
-      <div className="todo-notes-panel-header">
-        <div>
-          <strong>待办备注</strong>
-        </div>
-        <span className="todo-notes-panel-count">{notes.length} 条</span>
-      </div>
-      {onCreateNote ? (
-        <div className="todo-note-composer-pane">
-          <div className="todo-note-create">
-            <TodoNoteComposer
-              action={(
-                <Button
-                  className="todo-note-submit"
-                  type="button"
-                  disabled={!draft.trim()}
-                  onClick={saveNewNote}
-                >
-                  添加备注
-                </Button>
-              )}
-              members={members}
-              placeholder="记录确认结果、未完成原因或其他补充说明..."
-              value={draft}
-              onChange={setDraft}
-            />
-          </div>
-        </div>
-      ) : null}
-      <div className="todo-notes-list">
-        {notes.length === 0 ? (
-          <div className="todo-notes-empty">还没有备注，直接写第一条即可。</div>
-        ) : (
-          notes.map((note) => {
-            const canEdit = Boolean(onUpdateNote) && currentUserId != null && (
-              note.authorUserId === currentUserId || note.sourceOperationId != null
-            )
-            const isEditing = editingNoteId === note.id
-            return (
-              <article className="todo-note-card" key={note.id}>
-                <header className="todo-note-card-header">
-                  <div className="todo-note-card-meta">
-                    <div className="todo-note-card-heading">
-                      <UserName departedUserIds={departedUserIds} name={note.authorName} userId={note.authorUserId} />
-                      <span>{note.createdAt}</span>
-                      {note.kind === 'acceptance' ? (
-                        <span className="todo-note-kind acceptance">验收备注</span>
-                      ) : null}
-                    </div>
-                  </div>
-                  {canEdit ? (
-                    <Button
-                      className="todo-note-inline-edit"
-                      variant="ghost"
-                      size="sm"
-                      type="button"
-                      onClick={() => {
-                        setEditingNoteId(note.id)
-                        setEditingDrafts((current) => ({
-                          ...current,
-                          [note.id]: note.content,
-                        }))
-                      }}
-                    >
-                      编辑
-                    </Button>
-                  ) : null}
-                </header>
-                {isEditing ? (
-                  <div className="todo-note-editor">
-                    <TodoNoteComposer
-                      members={members}
-                      value={editingDrafts[note.id] ?? note.content}
-                      onChange={(value) =>
-                        setEditingDrafts((current) => ({
-                          ...current,
-                          [note.id]: value,
-                        }))
-                      }
-                    />
-                    <div className="todo-note-editor-actions">
-                      <Button variant="outline" type="button" onClick={() => setEditingNoteId(null)}>
-                        取消
-                      </Button>
-                      <Button type="button" onClick={() => saveExistingNote(note)}>
-                        保存
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <TodoNoteContent value={note.content} />
-                )}
-              </article>
-            )
-          })
-        )}
-      </div>
-    </section>
-  )
-}
-
 function TodoPropertiesPanel({
   assigneeUserId,
   canEdit,
-  canRespondToTodo,
   createdAt,
   dueDate,
   members,
@@ -11632,22 +11212,20 @@ function TodoPropertiesPanel({
   onAssigneeUserIdChange,
   onCreatedAtChange,
   onDueDateChange,
-  onInlineUpdate,
   onModuleIdChange,
   onPriorityChange,
-  onReject,
-  onRequestAcceptance,
   onReviewerUserIdChange,
+  onSubprojectIdChange,
   onWatcherUserIdsChange,
   priority,
   project,
   reviewerUserId,
+  subprojectId,
   todo,
   watcherUserIds,
 }: {
   assigneeUserId: number | null
   canEdit: boolean
-  canRespondToTodo: boolean
   createdAt: string
   dueDate: string
   members: Array<{ id: number; name: string }>
@@ -11656,55 +11234,19 @@ function TodoPropertiesPanel({
   onAssigneeUserIdChange: (value: number | null) => void
   onCreatedAtChange: (value: string) => void
   onDueDateChange: (value: string) => void
-  onInlineUpdate: (payload: TodoUpdatePayload) => Promise<boolean>
   onModuleIdChange: (value: number | null) => void
   onPriorityChange: (value: Priority) => void
-  onReject: (reason: string) => Promise<boolean>
-  onRequestAcceptance: () => void
   onReviewerUserIdChange: (value: number | null) => void
+  onSubprojectIdChange: (value: number | null) => void
   onWatcherUserIdsChange: (value: number[]) => void
   priority: Priority
   project: Project
   reviewerUserId: number | null
+  subprojectId: number | null
   todo: Todo
   watcherUserIds: number[]
 }) {
   const creatorName = todo.creatorName ?? project.ownerName
-
-  function updateDueDate(value: string) {
-    onDueDateChange(value)
-    onInlineUpdate({ dueDate: value })
-  }
-
-  function updateCreatedAt(value: string) {
-    onCreatedAtChange(value)
-    onInlineUpdate({ createdAt: value })
-  }
-
-  function updatePriority(value: Priority) {
-    onPriorityChange(value)
-    onInlineUpdate({ priority: value })
-  }
-
-  function updateModule(value: number | null) {
-    onModuleIdChange(value)
-    onInlineUpdate({ moduleId: value })
-  }
-
-  function updateAssignee(value: number | null) {
-    onAssigneeUserIdChange(value)
-    onInlineUpdate({ assigneeUserId: value })
-  }
-
-  function updateWatchers(value: number[]) {
-    onWatcherUserIdsChange(value)
-    onInlineUpdate({ watcherUserIds: value })
-  }
-
-  function updateReviewer(value: number | null) {
-    onReviewerUserIdChange(value)
-    onInlineUpdate({ reviewerUserId: value })
-  }
 
   return (
     <aside className="todo-properties-panel" aria-label="待办属性">
@@ -11713,42 +11255,37 @@ function TodoPropertiesPanel({
           <span className="todo-properties-kicker">属性</span>
           <strong>待办信息</strong>
         </div>
-        {canEdit ? <span className="todo-properties-editable">可直接编辑</span> : null}
+        {canEdit ? <span className="todo-properties-editable">编辑中</span> : null}
       </div>
       <div className="todo-properties-list">
         <div className="todo-property-row">
           <span>所属子项目</span>
-          <Select disabled={!canEdit} value={String(todo.subprojectId ?? 'none')}
-            onValueChange={(value) => onInlineUpdate({ subprojectId: value === 'none' ? null : Number(value) })}>
+          {canEdit ? <Select value={String(subprojectId ?? 'none')}
+            onValueChange={(value) => onSubprojectIdChange(value === 'none' ? null : Number(value))}>
             <SelectTrigger aria-label="所属子项目"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="none">无子项目</SelectItem>
               {(project.subprojects ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}
             </SelectContent>
-          </Select>
+          </Select> : <strong>{todo.subprojectName ?? '无子项目'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>项目</span>
           <strong>{project.name}</strong>
         </div>
         <div className="todo-property-row">
-          <span>状态</span>
-          <strong>{todo.done ? '已完成' : '未完成'}</strong>
-        </div>
-        <div className="todo-property-row">
           <span>截止日期</span>
-          <JournalDatePicker
+          {canEdit ? <JournalDatePicker
             ariaLabel="待办截止日期"
             className="todo-property-control"
             datesWithEntries={[]}
-            disabled={!canEdit}
             value={dueDate}
-            onChange={updateDueDate}
-          />
+            onChange={onDueDateChange}
+          /> : <strong>{dueDate}</strong>}
         </div>
         <div className="todo-property-row">
           <span>优先级</span>
-          <Select disabled={!canEdit} value={priority} onValueChange={(value) => updatePriority(value as Priority)}>
+          {canEdit ? <Select value={priority} onValueChange={(value) => onPriorityChange(value as Priority)}>
             <SelectTrigger aria-label="待办优先级" className="todo-property-control">
               <SelectValue />
             </SelectTrigger>
@@ -11757,49 +11294,47 @@ function TodoPropertiesPanel({
               <SelectItem value="medium">中优先级</SelectItem>
               <SelectItem value="low">低优先级</SelectItem>
             </SelectContent>
-          </Select>
+          </Select> : <strong>{priorityCopy[priority]}</strong>}
         </div>
         <div className="todo-property-row">
           <span>所属模块</span>
-          <ProjectModulePicker
+          {canEdit ? <ProjectModulePicker
             organizationManaged={project.moduleManagement === 'organization'}
-            disabled={!canEdit}
             modules={modules}
             value={moduleId}
-            onChange={updateModule}
-          />
+            onChange={onModuleIdChange}
+          /> : <strong>{todo.moduleName ?? '无模块'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>负责人</span>
-          <ProjectMemberPicker
-            disabled={!canEdit}
+          {canEdit ? <ProjectMemberPicker
             members={members}
             value={assigneeUserId}
-            onChange={updateAssignee}
-          />
+            onChange={onAssigneeUserIdChange}
+          /> : <strong>{todo.assigneeName ?? '未分配'}</strong>}
         </div>
         <div className="todo-property-row">
           <span>关注人</span>
-          <ProjectMemberMultiPicker
-            disabled={!canEdit}
+          {canEdit ? <ProjectMemberMultiPicker
             emptyLabel="未关注"
             label="待办关注人"
             members={members}
             values={watcherUserIds}
-            onChange={updateWatchers}
-          />
+            onChange={onWatcherUserIdsChange}
+          /> : <strong>{getTodoWatcherNames(todo).join('、') || '未关注'}</strong>}
         </div>
-        <div className="todo-property-row">
-          <span>验收人</span>
-          <ProjectMemberPicker
-            disabled={!canEdit}
-            emptyLabel="待办创建人"
-            label="指定验收人"
-            members={members}
-            value={reviewerUserId}
-            onChange={updateReviewer}
-          />
-        </div>
+        {!project.organizationId ? (
+          <div className="todo-property-row">
+            <span>确认人</span>
+            {canEdit ? <ProjectMemberPicker
+              emptyLabel="待办创建人"
+              label="指定确认人"
+              members={members}
+              value={reviewerUserId}
+              onChange={onReviewerUserIdChange}
+            /> : <strong>{todo.reviewerName ?? creatorName}</strong>}
+          </div>
+        ) : null}
         <div className="todo-property-row">
           <span>创建人</span>
           <strong>{creatorName}</strong>
@@ -11812,21 +11347,9 @@ function TodoPropertiesPanel({
               className="todo-property-control"
               datesWithEntries={[]}
               value={createdAt}
-              onChange={updateCreatedAt}
+              onChange={onCreatedAtChange}
             />
           ) : <strong>{createdAt}</strong>}
-        </div>
-        <div className="todo-property-row">
-          <span>验收状态</span>
-          <TodoConfirmSelect
-            title={todo.title}
-            done={todo.done}
-            status={todo.confirmationStatus}
-            disabled={!canRespondToTodo}
-            onChange={(confirmationStatus) => onInlineUpdate({ confirmationStatus })}
-            onReject={onReject}
-            onRequestAcceptance={onRequestAcceptance}
-          />
         </div>
         {todo.done && todo.completedAt ? (
           <div className="todo-property-row">
@@ -11843,18 +11366,19 @@ function TodoEditorDialog({
   subprojectId,
   onSubprojectIdChange,
   assigneeUserId,
-  departedUserIds,
   watcherUserIds,
   reviewerUserId,
   backLabel = '返回待办列表',
   canEdit = false,
   canEditProperties = canEdit,
-  canRespondToTodo = false,
+  canRecordWorkHour = false,
+  canSubmitWorkHour = false,
   canShare = false,
   canCreateModule = false,
   clearDisabled = false,
   createdAt,
   currentUserId,
+  departedUserIds = [],
   detail,
   members,
   mode,
@@ -11866,7 +11390,6 @@ function TodoEditorDialog({
   onBack,
   onCancelEdit,
   onClear,
-  onCreateTodoNote,
   onCreateModule,
   onCreatedAtChange,
   onDetailChange,
@@ -11874,13 +11397,10 @@ function TodoEditorDialog({
   onModuleIdChange,
   onOpenChange,
   onPriorityChange,
-  onReject,
-  onRequestAcceptance,
+  onRecordWorkHour,
   onStartEdit,
   onSubmit,
   onTitleChange,
-  onUpdateTodoNote,
-  onInlineUpdate,
   open,
   priority,
   project,
@@ -11889,22 +11409,25 @@ function TodoEditorDialog({
   title,
   todo,
   dueDate,
+  estimatedWorkHours,
+  onEstimatedWorkHoursChange,
 }: {
   subprojectId?: number | null
   onSubprojectIdChange?: (id: number | null) => void
   assigneeUserId: number | null
-  departedUserIds: readonly number[]
   watcherUserIds: number[]
   reviewerUserId: number | null
   backLabel?: string
   canEdit?: boolean
   canEditProperties?: boolean
-  canRespondToTodo?: boolean
+  canRecordWorkHour?: boolean
+  canSubmitWorkHour?: boolean
   canShare?: boolean
   canCreateModule?: boolean
   clearDisabled?: boolean
   createdAt: string
   currentUserId?: number
+  departedUserIds?: readonly number[]
   detail: string
   members: Array<{ id: number; name: string }>
   mode: 'create' | 'detail'
@@ -11916,7 +11439,6 @@ function TodoEditorDialog({
   onBack?: () => void
   onCancelEdit?: () => void
   onClear?: () => void
-  onCreateTodoNote?: (todoId: number, content: string) => void
   onCreateModule?: (name: string) => Promise<ProjectModule | null>
   onCreatedAtChange: (value: string) => void
   onDetailChange: (value: string) => void
@@ -11924,13 +11446,10 @@ function TodoEditorDialog({
   onModuleIdChange: (value: number | null) => void
   onOpenChange: (open: boolean) => void
   onPriorityChange: (value: Priority) => void
-  onReject?: (reason: string) => Promise<boolean>
-  onRequestAcceptance?: () => void
+  onRecordWorkHour?: (projectId: number, todoId: number) => void
   onStartEdit?: () => void
   onSubmit: () => void
   onTitleChange: (value: string) => void
-  onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
-  onInlineUpdate?: (payload: TodoUpdatePayload) => Promise<boolean>
   open: boolean
   priority: Priority
   project: Project
@@ -11939,14 +11458,19 @@ function TodoEditorDialog({
   title: string
   todo?: Todo | null
   dueDate: string
+  estimatedWorkHours?: string
+  onEstimatedWorkHoursChange?: (value: string) => void
 }) {
   const isCreateMode = mode === 'create'
   const isDetailMode = mode === 'detail'
+  const requiresEnterpriseTodoFields = Boolean(project.organizationId)
   const editing = isCreateMode || isEditing
   const isDetailEditing = isDetailMode && editing
   const selectedModuleName = modules.find((item) => item.id === moduleId)?.name ?? '无模块'
-  const showNotesSidebar = Boolean(isDetailMode && todo)
-  const statusLabel = todo?.done ? '已完成' : '未完成'
+  const showNotesSidebar = false
+  const statusLabel = todo?.done
+    ? '已完成'
+    : todo?.confirmationStatus === 'pending_review' ? '待确认' : '进行中'
   const showFooterActions = isCreateMode || editing
   const showDetailOverview = isDetailMode && !editing
   const titleCharacterCount = Array.from(title).length
@@ -11995,17 +11519,21 @@ function TodoEditorDialog({
                   ) : null}
                 </div>
               </div>
+              {todo?.rejectionReason ? <p className="todo-acceptance-failure-note">最近一次确认未通过：{todo.rejectionReason}</p> : null}
             </div>
           </div>
-          {todo && canShare ? (
+          {todo && (canEdit || canShare) ? (
             <div className="todo-detail-overview-actions">
-              <Button
-                className="todo-detail-share-button"
-                type="button"
-                onClick={() => setShareOpen(true)}
-              >
-                <LinkSimple size={16} /> 分享待办
-              </Button>
+              {canEdit ? (
+                <Button aria-label="编辑待办" className="todo-detail-primary-edit" size="icon" title="编辑" type="button" variant="outline" onClick={onStartEdit}>
+                  <PencilSimple size={17} />
+                </Button>
+              ) : null}
+              {canShare ? (
+                <Button aria-label="分享待办" className="todo-detail-share-button" size="icon" title="分享" type="button" variant="outline" onClick={() => setShareOpen(true)}>
+                  <LinkSimple size={17} />
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -12014,7 +11542,7 @@ function TodoEditorDialog({
         {isCreateMode ? (
           <>
             <Label>
-              待办标题
+              <span className="todo-form-label">待办标题 <em aria-label="必填" className="field-required">*</em></span>
               <div className="todo-title-input-wrap">
                 <MentionInput
                   autoFocus
@@ -12035,6 +11563,35 @@ function TodoEditorDialog({
               </div>
             </Label>
             <div className="todo-editor-inline-grid">
+              <Label>
+                优先级
+                <Select
+                  value={priority}
+                  onValueChange={(value) => onPriorityChange(value as Priority)}
+                >
+                  <SelectTrigger aria-label="待办优先级" className="todo-form-field">
+                    <SelectValue placeholder="优先级" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="high">高优先级</SelectItem>
+                    <SelectItem value="medium">中优先级</SelectItem>
+                    <SelectItem value="low">低优先级</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Label>
+              <Label className="todo-inline-field-half">
+                <span className="todo-form-label">预估工时（小时） {requiresEnterpriseTodoFields ? <em aria-label="必填" className="field-required">*</em> : null}</span>
+                <Input
+                  aria-label="预估工时"
+                  min="1"
+                  step="1"
+                  type="number"
+                  value={estimatedWorkHours ?? ''}
+                  onChange={(event) => onEstimatedWorkHoursChange?.(event.target.value)}
+                  placeholder="例如 8"
+                />
+                <span className="field-hint">请输入整数小时，最少 1 小时</span>
+              </Label>
               <Label>
                 所属子项目
                 <Select value={String(subprojectId ?? 'none')} onValueChange={(value) => onSubprojectIdChange?.(value === 'none' ? null : Number(value))}>
@@ -12068,22 +11625,6 @@ function TodoEditorDialog({
                   />
                 </div>
               </div>
-              <Label>
-                优先级
-                <Select
-                  value={priority}
-                  onValueChange={(value) => onPriorityChange(value as Priority)}
-                >
-                  <SelectTrigger aria-label="待办优先级" className="todo-form-field">
-                    <SelectValue placeholder="优先级" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="high">高优先级</SelectItem>
-                    <SelectItem value="medium">中优先级</SelectItem>
-                    <SelectItem value="low">低优先级</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Label>
               <div className="todo-editor-field todo-inline-field-half">
                 <span>所属模块</span>
                 <ProjectModulePicker
@@ -12096,7 +11637,7 @@ function TodoEditorDialog({
                 />
               </div>
               <Label className="todo-inline-field-half">
-                负责人
+                <span className="todo-form-label">负责人 {requiresEnterpriseTodoFields ? <em aria-label="必填" className="field-required">*</em> : null}</span>
                 <ProjectMemberPicker
                   members={members}
                   value={assigneeUserId}
@@ -12113,29 +11654,18 @@ function TodoEditorDialog({
                   onChange={onWatcherUserIdsChange}
                 />
               </Label>
-              <Label className="todo-inline-field-half">
-                <span className="todo-reviewer-field-label">
-                  指定验收人
-                  <span
-                    aria-label="可以在此选择指定验收人，默认为待办创建人。"
-                    className="todo-reviewer-help"
-                    role="img"
-                    tabIndex={0}
-                  >
-                    <Question size={14} weight="bold" />
-                    <span className="todo-reviewer-tooltip" role="tooltip">
-                      可以在此选择指定验收人，默认为待办创建人。
-                    </span>
-                  </span>
-                </span>
-                <ProjectMemberPicker
-                  emptyLabel="待办创建人"
-                  label="指定验收人"
-                  members={members}
-                  value={reviewerUserId}
-                  onChange={onReviewerUserIdChange}
-                />
-              </Label>
+              {!project.organizationId ? (
+                <Label className="todo-inline-field-half">
+                  指定确认人
+                  <ProjectMemberPicker
+                    emptyLabel="待办创建人"
+                    label="指定确认人"
+                    members={members}
+                    value={reviewerUserId}
+                    onChange={onReviewerUserIdChange}
+                  />
+                </Label>
+              ) : null}
             </div>
             <div className="todo-editor-detail-field">
               <span className="todo-editor-field-label">待办详情</span>
@@ -12180,32 +11710,12 @@ function TodoEditorDialog({
                 />
               </div>
             </section>
-            {showNotesSidebar && todo ? (
-              <TodoNotesPanel
-                currentUserId={currentUserId}
-                departedUserIds={departedUserIds}
-                members={members}
-                onCreateNote={onCreateTodoNote}
-                onUpdateNote={onUpdateTodoNote}
-                todo={todo}
-              />
-            ) : null}
           </>
         ) : (
           <>
             <section className="todo-detail-block">
               <div className="todo-detail-section-header">
                 <span className="todo-detail-section-label">待办详情</span>
-                {canEdit ? (
-                  <Button
-                    className="ghost-button todo-detail-inline-edit"
-                    type="button"
-                    variant="outline"
-                    onClick={onStartEdit}
-                  >
-                    编辑
-                  </Button>
-                ) : null}
               </div>
               {detail.trim() ? (
                 <div className="todo-detail-rendered">
@@ -12215,25 +11725,42 @@ function TodoEditorDialog({
                 <div className="todo-detail-empty">暂无详情</div>
               )}
             </section>
-            {showNotesSidebar && todo ? (
-              <TodoNotesPanel
-                currentUserId={currentUserId}
-                departedUserIds={departedUserIds}
-                members={members}
-                onCreateNote={onCreateTodoNote}
-                onUpdateNote={onUpdateTodoNote}
-                todo={todo}
-              />
+            {showDetailOverview && todo?.notes.length ? (
+              <section className="todo-detail-history" aria-label="历史补充信息">
+                <div className="todo-detail-section-header">
+                  <span className="todo-detail-section-label">历史补充信息</span>
+                  <small>{todo.notes.length} 条</small>
+                </div>
+                <div className="todo-detail-history-list">
+                  {[...todo.notes].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map((note) => (
+                    <article key={note.id} className="todo-detail-history-item">
+                      <header><strong>{note.authorName}</strong><span>{note.createdAt}</span>{note.kind === 'acceptance' ? <em>验收记录</em> : null}</header>
+                      <TodoNoteContent value={note.content} />
+                    </article>
+                  ))}
+                </div>
+              </section>
             ) : null}
           </>
         )}
+        {showDetailOverview && todo && project.organizationId ? (
+          <TodoWorkHoursPanel
+            canRecord={canRecordWorkHour}
+            canSubmit={canSubmitWorkHour}
+            currentUserId={currentUserId}
+            todo={todo}
+            onRecord={() => onRecordWorkHour?.(project.id, todo.id)}
+          />
+        ) : null}
+        {showDetailOverview && todo ? (
+          <TodoActivityPanel departedUserIds={departedUserIds} previewLimit={5} projectId={project.id} todoId={todo.id} />
+        ) : null}
       </div>
       {isDetailMode && todo ? (
         <div className="todo-editor-sidebar">
           <TodoPropertiesPanel
             assigneeUserId={assigneeUserId}
             canEdit={canEditProperties}
-            canRespondToTodo={canRespondToTodo}
             createdAt={createdAt}
             dueDate={dueDate}
             members={members}
@@ -12242,16 +11769,15 @@ function TodoEditorDialog({
             onAssigneeUserIdChange={onAssigneeUserIdChange}
             onCreatedAtChange={onCreatedAtChange}
             onDueDateChange={onDueDateChange}
-            onInlineUpdate={onInlineUpdate ?? (() => Promise.resolve(false))}
             onModuleIdChange={onModuleIdChange}
             onPriorityChange={onPriorityChange}
-            onReject={onReject ?? (() => Promise.resolve(false))}
-            onRequestAcceptance={onRequestAcceptance ?? (() => undefined)}
             onReviewerUserIdChange={onReviewerUserIdChange}
+            onSubprojectIdChange={onSubprojectIdChange ?? (() => undefined)}
             onWatcherUserIdsChange={onWatcherUserIdsChange}
             priority={priority}
             project={project}
             reviewerUserId={reviewerUserId}
+            subprojectId={subprojectId ?? null}
             todo={todo}
             watcherUserIds={watcherUserIds}
           />
@@ -12337,12 +11863,11 @@ function TodoList({
   departedUserIds,
   detailBackLabel,
   initialTodoId,
-  onCreateTodoNote,
   onDetailBack,
   onDeleteTodo,
   onDetailModeChange,
+  onRecordWorkHour,
   onLoadTodoDetail,
-  onUpdateTodoNote,
   onUpdateTodo,
   memberships,
   project,
@@ -12356,19 +11881,17 @@ function TodoList({
   departedUserIds: readonly number[]
   detailBackLabel?: string
   initialTodoId?: number | null
-  onCreateTodoNote?: (todoId: number, content: string) => void
   onDetailBack?: () => void
   onDeleteTodo?: (id: number) => Promise<boolean>
   onDetailModeChange?: (active: boolean) => void
+  onRecordWorkHour?: (projectId: number, todoId: number) => void
   onLoadTodoDetail?: (id: number) => Promise<Todo | null>
-  onUpdateTodoNote?: (todoId: number, noteId: number, content: string) => void
   onUpdateTodo?: (id: number, payload: TodoUpdatePayload) => Promise<boolean>
   memberships: ProjectMembership[]
   project: Project
   projects: Project[]
   todos: Todo[]
 }) {
-  const { confirmAction: confirmTodoAction, confirmationDialog: todoConfirmationDialog } = useConfirmAction(`${currentUserId}:${project.id}`)
   const defaultTodoFilterState = useMemo(
     () => getDefaultProjectTodoFilterState(project, currentUserId),
     [currentUserId, project],
@@ -12386,10 +11909,12 @@ function TodoList({
   const todoListScrollRef = useRef(0)
   const [todoSearchQuery, setTodoSearchQuery] = useState('')
   const [subprojectFilter, setSubprojectFilter] = useState('all')
-	  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
-	  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
-	  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
-	  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(
+  const [quickStatus, setQuickStatus] = useState<'all' | 'open' | 'review' | 'done'>('all')
+  const [todoScope, setTodoScope] = useState<'all' | 'mine' | 'review'>('all')
+  const [todoFilterDialogOpen, setTodoFilterDialogOpen] = useState(false)
+  const [todoPendingReviewTarget, setTodoPendingReviewTarget] = useState<Todo | null>(null)
+  const [todoAcceptanceTarget, setTodoAcceptanceTarget] = useState<Todo | null>(null)
+  const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>(
     storedTodoFilterPreference?.join ?? defaultTodoFilterState.join,
   )
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>(() =>
@@ -12419,6 +11944,9 @@ function TodoList({
   )
   const [todoEditModuleId, setTodoEditModuleId] = useState<number | null>(
     initialTodo?.moduleId ?? null,
+  )
+  const [todoEditSubprojectId, setTodoEditSubprojectId] = useState<number | null>(
+    initialTodo?.subprojectId ?? null,
   )
   const [isTodoDetailEditing, setIsTodoDetailEditing] = useState(false)
   const { markTodoNotesRead } = useTodoNoteReadState(currentUserId)
@@ -12480,10 +12008,10 @@ function TodoList({
     () => getProjectAssignableUsers(project, memberships),
     [memberships, project],
   )
-  const filteredTodos = useMemo(() => {
+  const statusFilteredTodos = useMemo(() => {
     const query = todoSearchQuery.trim().toLowerCase()
-    const hasExplicitDoneFilter = todoFilterConditions.some((condition) => condition.field === 'done')
-    const useDefaultDoneFilter = !todoFilterPersistenceEnabled && !hasExplicitDoneFilter
+    const hasExplicitStatusFilter = todoFilterConditions.some((condition) => condition.field === 'status')
+    const useDefaultOpenFilter = !todoFilterPersistenceEnabled && !hasExplicitStatusFilter
     return sortedTodos.filter((todo) => {
       const matchesSearch = !query || [
         todo.title,
@@ -12498,13 +12026,23 @@ function TodoList({
         todo.dueDate,
         todo.createdAt,
         `${todoConfirmationCopy[todo.confirmationStatus]} ${todo.confirmationStatus}`,
-        todo.done ? '已完成 完成 done' : '未完成 待办 open',
+        todo.done ? '已完成 完成 completed' : todo.confirmationStatus === 'pending_review' ? '待确认 review' : '进行中 open',
       ]
         .join(' ')
         .toLowerCase()
         .includes(query)
+      const isMine = todo.assigneeUserId === currentUserId
+        || (todo.assigneeUserId == null && project.ownerUserId === currentUserId)
+      const isMyReview = todo.confirmationStatus === 'pending_review' && (
+        todo.createdByUserId === currentUserId
+        || (todo.createdByUserId == null && project.ownerUserId === currentUserId)
+      )
+      const matchesScope = !compact || todoScope === 'all'
+        || todoScope === 'mine' && isMine
+        || todoScope === 'review' && isMyReview
       return (
-        (!useDefaultDoneFilter || !todo.done) &&
+        (!useDefaultOpenFilter || compact || !todo.done) &&
+        matchesScope &&
         (subprojectFilter === 'all' || (subprojectFilter === 'none'
           ? todo.subprojectId == null
           : String(todo.subprojectId) === subprojectFilter)) &&
@@ -12512,7 +12050,20 @@ function TodoList({
         matchesTodoFilterConditions(todo, todoFilterConditions, todoFilterJoin)
       )
     })
-  }, [sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoSearchQuery, subprojectFilter])
+  }, [compact, currentUserId, project.ownerUserId, sortedTodos, todoFilterConditions, todoFilterJoin, todoFilterPersistenceEnabled, todoScope, todoSearchQuery, subprojectFilter])
+  const quickStatusCounts = useMemo(() => ({
+    all: statusFilteredTodos.length,
+    done: statusFilteredTodos.filter((todo) => todo.done).length,
+    open: statusFilteredTodos.filter((todo) => !todo.done && todo.confirmationStatus !== 'pending_review').length,
+    review: statusFilteredTodos.filter((todo) => !todo.done && todo.confirmationStatus === 'pending_review').length,
+  }), [statusFilteredTodos])
+  const filteredTodos = useMemo(() => statusFilteredTodos.filter((todo) => (
+    !compact
+    || quickStatus === 'all'
+    || quickStatus === 'done' && todo.done
+    || quickStatus === 'review' && !todo.done && todo.confirmationStatus === 'pending_review'
+    || quickStatus === 'open' && !todo.done && todo.confirmationStatus !== 'pending_review'
+  )), [compact, quickStatus, statusFilteredTodos])
   const pageSize = compact ? itemsPerPage : listPageSize
   const totalPages = Math.max(1, Math.ceil(filteredTodos.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
@@ -12566,8 +12117,6 @@ function TodoList({
       canManageOrganizationTodos || canUpdateOrganizationTodoFields || editingCanManageTodo
     ),
   )
-  const editingCanRespondToTodo = editingTodo ? canRespondToTodo(editingTodo) : false
-
   function canShareTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
     return Boolean(currentUserId != null && project)
@@ -12582,42 +12131,50 @@ function TodoList({
 
   function canRespondToTodo(todo: Todo) {
     const project = projectById.get(todo.projectId)
-    return Boolean(
-      currentUserId != null &&
-      !project?.readOnly &&
-      (
-        project?.accessRole === 'owner' ||
-        todo.assigneeUserId === currentUserId ||
-        todo.reviewerUserId === currentUserId
-      ),
-    )
-  }
-
-  function canSubmitTodoForReview(todo: Todo) {
-    return !todo.done && todo.confirmationStatus !== 'rejected' && canRespondToTodo(todo)
-  }
-
-  function canToggleTodoDone(todo: Todo) {
-    const project = projectById.get(todo.projectId)
-    const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
     const isTodoCreator = currentUserId != null && (
       todo.createdByUserId === currentUserId ||
       (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
     )
-    const isReviewer = currentUserId != null && (
-      isTodoCreator || effectiveReviewerUserId === currentUserId
+    const canRespond = project?.organizationId
+      ? isTodoCreator || todo.assigneeUserId === currentUserId
+      : project?.accessRole === 'owner' || todo.assigneeUserId === currentUserId || todo.reviewerUserId === currentUserId
+    return Boolean(
+      currentUserId != null &&
+      !project?.readOnly &&
+      canRespond,
     )
-    return (
-      (isTodoCreator || isReviewer && (
-        todo.reviewerUserId == null ||
-        todo.confirmationStatus === 'pending_review' ||
-        todo.done
-      ))
-    ) && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
   }
 
-  function canUseTodoCheckbox(todo: Todo) {
-    return canToggleTodoDone(todo) || canSubmitTodoForReview(todo)
+  function canRecordWorkHour(todo: Todo) {
+    return Boolean(
+      onRecordWorkHour &&
+      project.organizationId &&
+      currentUserId != null &&
+      todo.assigneeUserId != null &&
+      !todo.done &&
+      todo.confirmationStatus !== 'pending_review',
+    )
+  }
+
+  function canSubmitWorkHour(todo: Todo) {
+    return Boolean(
+      currentUserId != null &&
+      !todo.done &&
+      todo.assigneeUserId === currentUserId,
+    )
+  }
+
+  function canToggleTodoDone(todo: Todo) {
+    const project = projectById.get(todo.projectId)
+    const isTodoCreator = currentUserId != null && (
+      todo.createdByUserId === currentUserId ||
+      (todo.createdByUserId == null && project?.ownerUserId === currentUserId)
+    )
+    const effectiveReviewerUserId = todo.reviewerUserId ?? todo.createdByUserId ?? project?.ownerUserId
+    const canReview = project?.organizationId
+      ? isTodoCreator
+      : isTodoCreator || effectiveReviewerUserId === currentUserId
+    return canReview && todo.confirmationStatus !== 'rejected' && todo.confirmationStatus !== 'acceptance_failed'
   }
 
   useEffect(() => {
@@ -12644,29 +12201,6 @@ function TodoList({
     if (todoListRef.current) todoListRef.current.scrollTop = 0
   }, [safePage, pageSize, todoSearchQuery, todoFilterConditions, todoFilterJoin, subprojectFilter])
 
-  function handleTodoCheckboxClick(todo: Todo) {
-    if (canToggleTodoDone(todo)) {
-      if (!todo.done && todo.confirmationStatus === 'pending_review') {
-        setTodoAcceptanceTarget(todo)
-        return
-      }
-      if (!todo.done) {
-        void confirmTodoAction({
-          actionKey: `complete-todo:${todo.id}`,
-          title: '确认完成待办？',
-          description: `「${project.name}」的「${todo.title}」将退出未完成列表。可在项目待办的已完成筛选中查看。`,
-          confirmLabel: '确认完成', variant: 'default',
-        }, () => onUpdateTodo ? onUpdateTodo(todo.id, { done: true }) : Promise.resolve(false))
-      } else {
-        void onUpdateTodo?.(todo.id, { done: false })
-      }
-      return
-    }
-    if (canSubmitTodoForReview(todo)) {
-      setTodoPendingReviewTarget(todo)
-    }
-  }
-
   function closeEditDialog() {
     todoDetailRequestIdRef.current += 1
     setLoadingTodoDetailId(null)
@@ -12680,6 +12214,7 @@ function TodoList({
     setTodoEditWatcherUserIds([])
     setTodoEditReviewerUserId(null)
     setTodoEditModuleId(null)
+    setTodoEditSubprojectId(null)
     setIsTodoDetailEditing(false)
   }
 
@@ -12693,6 +12228,7 @@ function TodoList({
     setTodoEditWatcherUserIds(getTodoWatcherUserIds(todo))
     setTodoEditReviewerUserId(todo.reviewerUserId ?? null)
     setTodoEditModuleId(todo.moduleId ?? null)
+    setTodoEditSubprojectId(todo.subprojectId ?? null)
   }
 
   function openTodoEditDialog(todo: Todo) {
@@ -12758,6 +12294,7 @@ function TodoList({
       watcherUserIds: todoEditWatcherUserIds,
       reviewerUserId: todoEditReviewerUserId,
       moduleId: todoEditModuleId,
+      subprojectId: todoEditSubprojectId,
     })
     if (updated === false) return
     setIsTodoDetailEditing(false)
@@ -12798,7 +12335,6 @@ function TodoList({
           }}
         />
         <TodoEditorDialog
-          departedUserIds={departedUserIds}
           assigneeUserId={todoEditAssigneeUserId}
           watcherUserIds={todoEditWatcherUserIds}
           reviewerUserId={todoEditReviewerUserId}
@@ -12814,8 +12350,10 @@ function TodoList({
           priority={todoEditPriority}
           project={editingProject}
           canEdit={editingCanManageTodo}
-          canEditProperties={editingCanManageTodoFields}
-          canRespondToTodo={editingCanRespondToTodo}
+          canEditProperties={isTodoDetailEditing && editingCanManageTodoFields}
+          canRecordWorkHour={canRecordWorkHour(editingTodo)}
+          canSubmitWorkHour={canSubmitWorkHour(editingTodo)}
+          departedUserIds={departedUserIds}
           canShare={canShareTodo(editingTodo)}
           currentUserId={currentUserId}
           isEditing={isTodoDetailEditing}
@@ -12827,30 +12365,20 @@ function TodoList({
           onReviewerUserIdChange={setTodoEditReviewerUserId}
           onBack={onDetailBack}
           onCancelEdit={cancelTodoEdit}
-          onCreateTodoNote={onCreateTodoNote}
           onCreatedAtChange={setTodoEditCreatedAt}
           onDetailChange={setTodoEditDetail}
           onDueDateChange={setTodoEditDueDate}
           onModuleIdChange={setTodoEditModuleId}
+          onSubprojectIdChange={setTodoEditSubprojectId}
           onOpenChange={(open) => {
             if (!open) closeEditDialog()
           }}
           onPriorityChange={setTodoEditPriority}
-          onReject={(rejectionReason) => onUpdateTodo ? onUpdateTodo(editingTodo.id, {
-              confirmationStatus: 'rejected',
-              rejectionReason,
-            }) : Promise.resolve(false)}
-          onRequestAcceptance={() => {
-            if (canToggleTodoDone(editingTodo)) setTodoAcceptanceTarget(editingTodo)
-          }}
+          onRecordWorkHour={onRecordWorkHour}
           onStartEdit={() => setIsTodoDetailEditing(true)}
           onSubmit={saveTodoEdit}
           onTitleChange={setTodoEditDraft}
-          onInlineUpdate={(payload) => {
-            if ((!editingCanManageTodoFields && !editingCanRespondToTodo) || !onUpdateTodo) return Promise.resolve(false)
-            return onUpdateTodo(editingTodo.id, payload)
-          }}
-          onUpdateTodoNote={onUpdateTodoNote}
+          subprojectId={todoEditSubprojectId}
         />
       </div>
     )
@@ -12858,8 +12386,16 @@ function TodoList({
 
   return (
     <div className={compact ? 'todo-list-shell compact' : 'todo-list-shell'} ref={containerRef}>
-      {todoConfirmationDialog}
       <div className="todo-list-filters" aria-label="待办筛选">
+        {compact ? <div className="todo-quick-status" role="tablist" aria-label="待办状态">
+          {([['all', '全部'], ['open', '进行中'], ['review', '待确认'], ['done', '已完成']] as const).map(([value, label]) => {
+            return <button className={quickStatus === value ? 'is-active' : ''} key={value} onClick={() => { setQuickStatus(value); setPage(0) }} role="tab" aria-selected={quickStatus === value} type="button">{label} <span>{quickStatusCounts[value]}</span></button>
+          })}
+        </div> : null}
+        {compact ? <>
+          <label className="todo-scope-filter">待办范围<select aria-label="待办范围" value={todoScope} onChange={(event) => { setTodoScope(event.target.value as typeof todoScope); setPage(0) }}><option value="all">全部待办</option><option value="mine">我负责的</option><option value="review">待我确认</option></select></label>
+          <span className="todo-scope-note">提交后由创建人确认成果与工时</span>
+        </> : null}
         <Select value={subprojectFilter} onValueChange={(value) => { setSubprojectFilter(value); setPage(0) }}>
           <SelectTrigger aria-label="按子项目筛选" style={{ width: 160, flexShrink: 0 }}>
             <SelectValue />
@@ -12924,9 +12460,9 @@ function TodoList({
       <ConfirmDialog
         open={Boolean(todoPendingReviewTarget)}
         onOpenChange={(open) => { if (!open) setTodoPendingReviewTarget(null) }}
-        title="确认提交验收？"
-        description={`「${todoPendingReviewTarget?.title ?? ''}」将交给验收人处理，可能退出负责人的我的待办列表。仍可在原项目待办查看。`}
-        confirmLabel="确认提交验收"
+        title="确认提交？"
+        description={`「${todoPendingReviewTarget?.title ?? ''}」将交给确认人处理，可能退出负责人的我的待办列表。仍可在原项目待办查看。`}
+        confirmLabel="提交确认"
         variant="default"
         onConfirm={() => todoPendingReviewTarget && onUpdateTodo
           ? onUpdateTodo(todoPendingReviewTarget.id, { confirmationStatus: 'pending_review' }) : Promise.resolve(false)}
@@ -12953,16 +12489,54 @@ function TodoList({
       ) : filteredTodos.length === 0 ? (
         <p className="empty-state">没有符合筛选条件的待办。</p>
       ) : (
-        <div className={compact ? 'todo-list compact' : 'todo-list paginated-todo-list'} ref={todoListRef}>
+        <div className={compact ? 'todo-list compact todo-workflow-table' : 'todo-list paginated-todo-list'} ref={todoListRef} role={compact ? 'table' : undefined} aria-label={compact ? '项目待办列表' : undefined}>
+          {compact ? (
+            <div className="todo-workflow-table-header" role="row">
+              <span role="columnheader">待办标题</span>
+              <span role="columnheader">负责人</span>
+              <span role="columnheader">预估时间</span>
+              <span role="columnheader">已记录</span>
+        <span role="columnheader">状态</span>
+              <span role="columnheader">操作</span>
+            </div>
+          ) : null}
           {visibleTodos.map((todo) => {
             const project = projects.find((item) => item.id === todo.projectId)
             const rowCanManageTodo = canManageTodo(todo)
             const rowCanRespondToTodo = canRespondToTodo(todo)
-            const isCheckboxDisabled = !canUseTodoCheckbox(todo)
-            const checkboxLabel = canToggleTodoDone(todo)
-              ? (todo.done ? '标记为未完成' : '标记为已完成')
-              : '提交验收'
             const indicators = getTodoContentIndicators(todo)
+            const statusMarker = todo.done ? 'done' : todo.confirmationStatus === 'pending_review' ? 'review' : 'open'
+            const statusLabel = todo.done ? '已完成' : todo.confirmationStatus === 'pending_review' ? '待确认' : '进行中'
+            if (compact) return (
+              <div className={`todo-workflow-table-row is-${statusMarker}`} key={todo.id} role="row">
+                <button className="todo-workflow-title" type="button" role="cell" onClick={() => openTodoEditDialog(todo)}>
+                  <span className={`todo-status-marker is-${statusMarker}`} aria-label={`状态：${statusLabel}`}>
+                    {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : <Circle size={10} weight="fill" />}
+                  </span>
+                  <span>
+                    <strong>{todo.title}</strong>
+                    <small><code>{todoCode(todo.id)}</code>{todo.moduleName ? ` · ${todo.moduleName}` : ''}{todo.subprojectName ? ` · ${todo.subprojectName}` : ''}</small>
+                  </span>
+                </button>
+                <span className="todo-workflow-assignee" role="cell">{todo.assigneeName ? <UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /> : '未分配'}</span>
+                <span className="todo-workflow-number" role="cell">{todo.estimatedWorkMinutes == null ? '-' : formatInviteDurationLabel(todo.estimatedWorkMinutes)}</span>
+                <span className="todo-workflow-number" role="cell">{formatInviteDurationLabel(todo.recordedWorkMinutes ?? 0)}</span>
+                <span role="cell"><span className={`todo-workflow-status is-${statusMarker}`}>{statusLabel}</span></span>
+                <span className="todo-workflow-actions" role="cell" onClick={(event) => event.stopPropagation()}>
+                  <Button aria-label={`查看 ${todo.title}`} title="查看详情" size="icon" variant="ghost" type="button" onClick={() => openTodoEditDialog(todo)}><FileText size={15} /></Button>
+                  {rowCanManageTodo ? (
+                    <ConfirmDialog
+                      actionKey={`delete-todo:${todo.id}`}
+                      confirmLabel="删除待办"
+                      description={`删除「${todo.title}」后，这条待办将从当前项目移除。`}
+                      onConfirm={() => onDeleteTodo ? onDeleteTodo(todo.id) : Promise.resolve(false)}
+                      title="确认删除这条待办？"
+                      trigger={<Button aria-label={`删除 ${todo.title}`} title="删除待办" size="icon" variant="ghost" type="button"><Trash size={14} /></Button>}
+                    />
+                  ) : null}
+                </span>
+              </div>
+            )
             return (
               <article
                 className={[
@@ -12972,24 +12546,9 @@ function TodoList({
                 ].filter(Boolean).join(' ')}
                 key={todo.id}
               >
-                <button
-                  className={[
-                    'checkmark',
-                    'todo-select-checkbox',
-                    todo.done ? 'selected' : '',
-                  ].filter(Boolean).join(' ')}
-                  type="button"
-                  role="checkbox"
-                  aria-checked={todo.done}
-                  disabled={isCheckboxDisabled}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    handleTodoCheckboxClick(todo)
-                  }}
-                  aria-label={checkboxLabel}
-                >
-                  {todo.done ? <Check size={14} /> : null}
-                </button>
+                <span className={`todo-status-marker is-${statusMarker}`} aria-label={`状态：${todoConfirmationCopy[todo.confirmationStatus] ?? (todo.done ? '已完成' : '进行中')}`}>
+                  {statusMarker === 'done' ? <Check size={14} /> : statusMarker === 'review' ? <Clock size={13} /> : <Circle size={10} weight="fill" />}
+                </span>
                 <button className="todo-main" type="button" onClick={() => openTodoEditDialog(todo)}>
                   <span className="todo-title-row">
                     <code className="todo-code">{todoCode(todo.id)}</code>
@@ -13003,6 +12562,10 @@ function TodoList({
                     {todo.assigneeName && (
                       <span className="todo-assignee-inline">@<UserName departedUserIds={departedUserIds} name={todo.assigneeName} userId={todo.assigneeUserId} /></span>
                     )}
+                    <span className="todo-work-summary" aria-label="工时摘要">
+                      预估 {todo.estimatedWorkMinutes == null ? '未设置' : formatInviteDurationLabel(todo.estimatedWorkMinutes)}
+                      {' · '}已记录 {formatInviteDurationLabel(todo.recordedWorkMinutes ?? 0)}
+                    </span>
                     {getTodoWatcherNames(todo).length > 0 && (
                       <span className="todo-watcher-inline">
                         {formatTodoWatcherNames(todo)}
@@ -13063,6 +12626,7 @@ function TodoList({
                     done={todo.done}
                     status={todo.confirmationStatus}
                     disabled={!rowCanRespondToTodo}
+                    completionEnabled={!project?.organizationId}
                     onChange={(confirmationStatus) => onUpdateTodo ? onUpdateTodo(todo.id, { confirmationStatus }) : Promise.resolve(false)}
                     onReject={(rejectionReason) =>
                       onUpdateTodo ? onUpdateTodo(todo.id, {
@@ -13162,6 +12726,9 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
 function getViewTitle(view: View, projectName: string) {
   if (view === 'project') return projectName
   if (view === 'my_work') return '我的待办'
+  if (view === 'my_work_review') return '工时确认'
+  if (view === 'my_work_hours') return '我的工时'
+  if (view === 'work_hours') return '工时统计'
   if (view === 'notifications') return '通知中心'
   if (view === 'inbox') return '草稿箱'
   if (view === 'search') return '项目篮子'

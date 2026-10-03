@@ -99,12 +99,18 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
   session-scoped business personas, additive organization-administrator capability,
   and resource-scoped read/write authorization boundaries.
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
-  aggregate draft saves, one-way publication/completion transitions, encrypted timeline
-  fields, document-level todo links, and Markdown export. Publication atomically replaces
-  the draft's packages, documents, and document todo links, changes the event to `delivering`,
-  and makes document content and package structure read-only. For organization projects,
+  aggregate draft saves, ordered delivery processes, encrypted timeline fields, mixed
+  object-storage packages, container images, offline-package URLs, reusable Shell scripts,
+  immutable rejection history, per-process execution results, server-generated execution
+  scripts, and Markdown export. A process has a required name, explicit order, and an
+  independent process ID, so the same resource may be referenced more than once. Publication
+  atomically replaces the draft's packages, encrypted delivery addresses, ordered processes,
+  documents, and document todo links, changes the event to `delivering`, and makes published
+  plans read-only. Rejected events can be edited and resubmitted by planners; partial delivery
+  and delivery failure are terminal results, while rejection requires a reason and appends an
+  immutable history record. For organization projects,
   only the assigned executor may manage execution links/notes and complete the event;
-  ordinary todo completion retains its separate authorization. Only unpublished plans may
+  ordinary todo completion retains its separate authorization. Draft and rejected plans may
   be deleted through the timeline.
 - `shared/project-delivery.ts`, `server/project-delivery.ts`: independent project planning and
   execution grants, per-event capabilities, transactional authorization, and reassignment audit.
@@ -572,7 +578,11 @@ The schema is normalized around these groups:
   timeline falls back to the Bug row for creation when no event rows exist yet.
 - Package delivery: `project_package_events`, `project_package_groups`,
   `project_package_items`, `project_package_operations`,
-  `project_package_operation_todos`, and `project_package_event_comments`.
+  `project_package_operation_todos`, `project_package_event_comments`, and
+  `project_package_event_rejections`. Event details use separate read-only tabs for
+  basic information/change history and delivery content; execution controls remain in the
+  basic-information tab, while package selection/download and ordered generated scripts remain
+  in the delivery-content tab.
   Delivery feedback comments are author-owned and encrypted; `@` mentions resolve
   against the project's organization members plus its owner and active members, and
   mentioned users receive a personal Feishu message (never the project chat).
@@ -744,9 +754,9 @@ Bug 分享使用 `/share/bug/<token>` 单页链接。服务端仅保存令牌的
 SHA-256 哈希、加密原文、单资源有效链接和撤销模型。链接生成和撤销允许待办所在项目的
 Owner、任意有效项目成员，以及同时拥有 `organization_admin` 账号角色和该项目所属组织
 有效 Owner/Admin 成员身份的组织管理员。有效项目成员范围自然包含待办创建人、负责人、
-验收人、关注人和未承担待办字段角色的普通成员。
+确认人、关注人和未承担待办字段角色的普通成员。
 
-公开读取不要求登录，只返回待办的展示属性、详情和未绑定交付操作的普通/验收备注，且
+公开读取不要求登录，只返回待办的展示属性、详情和未绑定交付操作的普通/确认备注，且
 不返回邮箱、权限或活动历史。分享页文档和 API 响应使用 `private, no-store`、
 `no-referrer` 和 `noindex`，文档 CSP 仅允许同站图片。登录后可凭分享链接添加加密的普通
 待办备注，但不会获得项目成员身份或其他待办操作权限。仅当登录账号本来就拥有项目访问权
@@ -766,6 +776,16 @@ every future table, constraint, or index change must also add a forward-only fil
 `server/migrations/`. There is no automatic down migration. Starting the API can mutate the
 database and is not a read-only smoke test. The baseline schema contains no destructive cleanup for
 retired configuration tables; such cleanup remains an explicit, separately approved migration.
+
+### 企业待办工时明细
+
+企业待办详情通过 `GET /api/todos/:todoId/work-hours` 读取工时记录和预估、已确认、未确认汇总。
+服务端先按当前用户重新校验工作台角色、项目成员或组织管理员范围，再读取待办所属项目；
+浏览器传入的待办 ID 不会扩大项目访问权限。明细支持关键词和游标分页，工时创建、编辑、删除及
+提交工时、按记录确认或退回继续复用工时事务与待办状态锁；工时提交不会改变待办的成果确认状态。
+每条流水依次处于 `pending`、`submitted` 或 `confirmed`，负责人可只提交选中的 `pending` 记录，
+创建人也可只确认选中的 `submitted` 记录，或将选中记录退回为 `pending` 供负责人继续修改。“工时确认”队列列出当前组织内全部尚未完成且组织管理员有权管理的企业任务，不以是否已有工时或待确认工时作为入选条件，并展示任务预估、全状态累计与待确认工时。队列默认每页 10 条，导航角标统计未完成任务总数。没有工时的任务仍会显示，但需要先记录至少一条工时才能从该队列完成；存在 `submitted` 工时时则必须先确认或退回。未选记录保持原状态并继续遵循编辑权限。组织管理员和任务创建人可以查看任务
+的完整投入记录，普通开发/测试账号只能查看自己的记录和汇总，不能读取其他成员的工作说明或工时。
 
 Platform maintenance state is stored independently from configuration history. Manual maintenance,
 an incomplete or failed database migration, or a missing platform configuration blocks ordinary

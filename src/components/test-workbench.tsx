@@ -2644,10 +2644,10 @@ function PlansView({ busy, data, onCreate, onCreateBug, onDelete, onEdit, onRemo
                     <SelectContent><SelectItem value="draft">草稿</SelectItem><SelectItem value="in_progress">执行中</SelectItem><SelectItem value="completed">已完成</SelectItem><SelectItem value="aborted">已终止</SelectItem></SelectContent>
                   </Select>
                 </div>
-                {selected.canManage && !readOnly ? <>
+                {(selected.canManage || selected.canDelete) && !readOnly ? <>
                   <div className="test-plan-manage-actions">
-                    <Button variant="outline" disabled={busy} onClick={() => onEdit(selected)}><PencilSimple /> 编辑</Button>
-                    <Button variant="destructive" disabled={busy} onClick={() => onDelete(selected)}><Trash /> 删除</Button>
+                    {selected.canManage ? <Button variant="outline" disabled={busy} onClick={() => onEdit(selected)}><PencilSimple /> 编辑</Button> : null}
+                    {selected.canDelete ? <Button variant="destructive" disabled={busy} onClick={() => onDelete(selected)}><Trash /> 删除</Button> : null}
                   </div>
                 </> : null}
               </div>

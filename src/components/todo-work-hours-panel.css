@@ -1,0 +1,169 @@
+.todo-work-hours-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.todo-work-hours-heading,
+.todo-work-hours-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.todo-work-hours-heading {
+  justify-content: space-between;
+}
+
+.todo-work-hours-heading > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.todo-work-hours-heading span,
+.todo-work-hours-list small {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.todo-work-hours-heading strong {
+  color: var(--strong);
+  font-size: 15px;
+}
+
+.todo-work-hours-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--line);
+}
+
+.todo-work-hours-metrics > div {
+  display: grid;
+  gap: 5px;
+  padding: 13px 16px;
+}
+
+.todo-work-hours-metrics > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.todo-work-hours-metrics span {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.todo-work-hours-metrics strong,
+.todo-work-hours-list b {
+  color: var(--strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-work-hours-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  color: var(--muted-text);
+}
+
+.todo-work-hours-list {
+  border-top: 1px solid var(--line);
+}
+
+.todo-work-hours-list article {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) 64px auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 66px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 2px;
+}
+
+.todo-work-hours-list time {
+  color: var(--muted-text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-work-hours-list article > div {
+  min-width: 0;
+}
+
+.todo-work-hours-list p {
+  overflow: hidden;
+  margin: 3px 0;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-work-hours-list article > span {
+  display: inline-flex;
+}
+
+.todo-work-hours-empty,
+.todo-work-hours-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 13px;
+}
+
+.todo-work-hours-message.is-error { color: var(--destructive); }
+.todo-work-hours-message.is-success { color: var(--brand); }
+
+.todo-work-hours-edit-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.todo-work-hours-edit-form label:last-child {
+  grid-column: 1 / -1;
+}
+
+.todo-work-hours-acceptance-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.todo-work-hours-acceptance-summary > div { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 7px; padding: 10px; }
+.todo-work-hours-acceptance-summary span { color: var(--muted-text); font-size: 11px; }
+.todo-work-hours-acceptance-summary strong { font-variant-numeric: tabular-nums; }
+.todo-work-hours-acceptance-summary .is-over strong { color: var(--destructive); }
+.todo-work-hours-history-records { display: grid; gap: 0; max-height: 240px; overflow: auto; }
+.todo-work-hours-history-records h4 { margin: 0 0 6px; font-size: 13px; }
+.todo-work-hours-history-row { display: grid; grid-template-columns: 18px 88px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding: 9px 0; }
+.todo-work-hours-history-row:has(input:not(:disabled)) { cursor: pointer; }
+.todo-work-hours-history-row time { color: var(--muted-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.todo-work-hours-history-row > div { min-width: 0; }
+.todo-work-hours-history-records p { margin: 0; white-space: pre-wrap; }
+.todo-work-hours-status { border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; color: var(--muted-text); font-size: 11px; white-space: nowrap; }
+.todo-work-hours-status.is-submitted { border-color: color-mix(in srgb, var(--brand) 40%, var(--line)); color: var(--brand); }
+.todo-work-hours-status.is-confirmed { color: var(--strong); }
+.todo-work-hours-selection { display: grid; gap: 8px; max-height: 320px; overflow: auto; }
+.todo-work-hours-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.todo-work-hours-selection-heading h4 { margin: 0 0 3px; font-size: 13px; }
+.todo-work-hours-selection-heading span { color: var(--muted-text); font-size: 11px; }
+.todo-work-hours-selection-heading label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-text); font-size: 12px; }
+.todo-work-hours-selection-row { display: grid; grid-template-columns: 18px 88px minmax(0, 1fr) auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding: 9px 0; cursor: pointer; }
+.todo-work-hours-selection-row time { color: var(--muted-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.todo-work-hours-selection-row div { min-width: 0; }
+.todo-work-hours-selection-row p { overflow: hidden; margin: 3px 0 0; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.todo-work-hours-selection-row b { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 720px) {
+  .todo-work-hours-heading { align-items: flex-start; flex-direction: column; }
+  .todo-work-hours-actions { width: 100%; flex-wrap: wrap; }
+  .todo-work-hours-list article { grid-template-columns: 82px minmax(0, 1fr) auto; }
+  .todo-work-hours-list article > span { grid-column: 2 / -1; }
+  .todo-work-hours-edit-form { grid-template-columns: 1fr; }
+  .todo-work-hours-edit-form label:last-child { grid-column: auto; }
+  .todo-work-hours-acceptance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .todo-work-hours-selection-row { grid-template-columns: 18px 72px minmax(0, 1fr) auto; gap: 7px; }
+  .todo-work-hours-history-row { grid-template-columns: 18px 72px minmax(0, 1fr) auto; gap: 7px; }
+  .todo-work-hours-history-row .todo-work-hours-status { grid-column: 3; justify-self: start; }
+  .todo-work-hours-history-row > b { grid-column: 4; grid-row: 1 / span 2; }
+}

@@ -1,4 +1,5 @@
 import type { DeliveryCapabilities, ProjectDeliveryMember } from '../shared/project-delivery'
+import type { DeliveryRuntimeConfig } from '../shared/delivery-artifact'
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
 export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
@@ -88,6 +89,12 @@ export type Todo = {
   completedByUserId?: number
   completedByName?: string
   confirmationStatus: TodoConfirmationStatus
+  estimatedWorkMinutes?: number | null
+  recordedWorkMinutes?: number
+  confirmedWorkMinutes?: number
+  pendingWorkMinutes?: number
+  needsRevision?: boolean
+  rejectionReason?: string
   linkedToDeliveryEvent: boolean
   moduleId?: number
   moduleName?: string
@@ -311,7 +318,7 @@ export type TodoActivityEvent = {
   id: number
   todoId?: number
   projectId: number
-  eventType: 'created' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed'
+  eventType: 'created' | 'updated' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
   todoTitle: string
   actorUserId?: number
   actorName: string
@@ -338,10 +345,12 @@ export type TodoProposal = {
   priority: Priority
   confidence: number
   sourceExcerpt: string
+  estimatedWorkMinutes?: number | null
 }
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
-export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'delivered'
+export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'rejected' | 'partially_delivered' | 'delivered' | 'failed'
+export type ProjectPackageDeliveryResult = 'success' | 'partial' | 'rejected' | 'failed'
 export type ProjectPackageOperationStatus = 'failed' | 'pending' | 'success'
 export type ProjectPackageOperationKind = 'document' | 'event'
 export type PackageMarketChannel = 'release' | 'ci'
@@ -360,6 +369,7 @@ export type ProjectPackageItem = {
   sizeBytes?: number
   sourceConfigRevision?: number
   createdAt: string
+  runtimeConfig: DeliveryRuntimeConfig
 }
 
 export type ProjectPackageOperation = {
@@ -396,6 +406,12 @@ export type ProjectPackageEventComment = {
   updatedAt: string
 }
 
+export type ProjectPackageEventRejection = {
+  createdAt: string
+  reason: string
+  rejectedByName: string
+}
+
 export type ProjectPackageEvent = {
   capabilities: DeliveryCapabilities
   createdByName?: string
@@ -403,12 +419,22 @@ export type ProjectPackageEvent = {
   completedByName?: string
   completedByUserId?: number
   completedAt?: string
+  deliveryDelayDays?: number
+  deliveryResult?: ProjectPackageDeliveryResult
+  detailRevision: string
+  deliveryFailureReason?: string
+  rejectionCount?: number
+  latestRejectionReason?: string
+  latestRejectedByName?: string
+  latestRejectedAt?: string
+  rejections: ProjectPackageEventRejection[]
   assignedAt?: string
   assignedByName?: string
   assignedByUserId?: number
   assigneeName?: string
   assigneeUserId?: number
   comments: ProjectPackageEventComment[]
+  containerImages: Array<{ id: number; image: string; runtimeConfig: DeliveryRuntimeConfig }>
   id: number
   type: ProjectPackageEventType
   status: ProjectPackageEventStatus
@@ -417,11 +443,19 @@ export type ProjectPackageEvent = {
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
+  deliverySteps: ProjectPackageDeliveryStep[]
+  deliveryScripts: ProjectPackageDeliveryScript[]
   updatedAt: string
   operations: ProjectPackageOperation[]
+  offlinePackages: Array<{ id: number; url: string; runtimeConfig: DeliveryRuntimeConfig }>
+  other?: ProjectPackageEventOther | null
   publishedAt?: string
   publishedByUserId?: number
   groups: ProjectPackageGroup[]
+  detailsLoaded?: boolean
+  packageCount?: number
+  operationCount?: number
+  commentCount?: number
 }
 
 export type ProjectPackageEventDocumentInput = {
@@ -432,9 +466,31 @@ export type ProjectPackageEventDocumentInput = {
   title: string
 }
 
+export type ProjectPackageEventOther = {
+  content: string
+  type: 'shell-script'
+}
+
+export type ProjectPackageDeliveryStep = {
+  id: string
+  kind: 'package' | 'container-image' | 'offline-package' | 'shell-script'
+  processName: string
+  reference: string
+  content?: string
+  result?: 'pending' | 'success' | 'failed' | 'skipped'
+  failureDetail?: string
+}
+
+export type ProjectPackageDeliveryScript = {
+  id: string
+  title: string
+  content: string
+}
+
 export type ProjectPackageEventSavePayload = {
   action: 'publish' | 'save_draft'
   assigneeUserId: number | null
+  containerImages: Array<{ image: string; runtimeConfig: DeliveryRuntimeConfig }>
   deliveryDate: string
   deliveryEndAt: string
   deliveryStartAt: string
@@ -450,9 +506,47 @@ export type ProjectPackageEventSavePayload = {
     objectKey: string
     objectLastModified?: string
     sizeBytes?: number
+    runtimeConfig: DeliveryRuntimeConfig
   }>
+  offlinePackages: Array<{ runtimeConfig: DeliveryRuntimeConfig; url: string }>
+  other?: ProjectPackageEventOther | null
+  deliverySteps?: ProjectPackageDeliveryStep[]
+  deliveryScripts?: ProjectPackageDeliveryScript[]
   title: string
   type: ProjectPackageEventType
+}
+
+export type ProjectPackageDeliveryArtifacts = {
+  processes: Array<{
+    address?: {
+      expiresAt?: string
+      kind: 'object-storage' | 'offline-package' | 'container-image'
+      value: string
+    }
+    offlineCommand?: string
+    onlineCommand?: string
+    content: string
+    kind: ProjectPackageDeliveryStep['kind']
+    processName: string
+    runtimeConfig?: DeliveryRuntimeConfig
+    stepId: string
+  }>
+  items?: Array<{
+    address: {
+      expiresAt?: string
+      kind: 'object-storage' | 'offline-package' | 'container-image'
+      value: string
+    }
+    runtimeConfig: DeliveryRuntimeConfig
+    script: string
+  }>
+  addresses: Array<{
+    expiresAt?: string
+    kind: 'object-storage' | 'offline-package' | 'container-image'
+    value: string
+  }>
+  other?: ProjectPackageEventOther | null
+  script: string
 }
 
 export type ProjectPackageTimeline = {
@@ -461,7 +555,25 @@ export type ProjectPackageTimeline = {
   departedUserIds: number[]
   projectId: number
   events: ProjectPackageEvent[]
+  pagination?: { limit: number; offset: number; total: number }
+  savedEventId?: number
   mentionableMembers: Array<{ id: number; name: string }>
+}
+
+export type ProjectPackageTimelineQuery = {
+  assignedUserId?: number
+  filters?: Array<{
+    field: 'title' | 'assignee' | 'deliveryDate' | 'status' | 'type'
+    operator: 'contains' | 'not_contains' | 'equals' | 'not_equals' | 'is_empty' | 'is_not_empty' | 'before' | 'after' | 'between'
+    value: string
+  }>
+  join?: 'and' | 'or'
+  limit?: number
+  offset?: number
+  q?: string
+  sort?: 'asc' | 'desc'
+  eventId?: number
+  includeDetails?: boolean
 }
 
 export type PackageMarketPageKind = {
@@ -532,6 +644,7 @@ export type Project = {
   moduleManagement: 'organization' | 'project'
   canManageOrganizationTodos?: boolean
   canUpdateOrganizationTodoFields?: boolean
+  canViewOrganizationWorkHours?: boolean
   readOnly?: boolean
   status: ProjectStatus
   feishuChatEnabled?: boolean

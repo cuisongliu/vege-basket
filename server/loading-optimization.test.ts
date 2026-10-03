@@ -41,6 +41,12 @@ test('role and view changes do not invalidate unrelated application data', () =>
   assert.doesNotMatch(appSource, /refreshToken=/u)
 })
 
+test('primary workbench views stay mounted while switching modules', () => {
+  assert.match(appSource, /<Activity mode=\{view === 'my_work' \? 'visible' : 'hidden'\}>/u)
+  assert.match(appSource, /<Activity mode=\{view === 'my_work_hours' \? 'visible' : 'hidden'\}>/u)
+  assert.match(appSource, /<Activity mode=\{view === 'search' \? 'visible' : 'hidden'\}>/u)
+})
+
 test('background refreshes preserve workbench content and editor state', () => {
   assert.doesNotMatch(organizationClientSource, /refreshToken/u)
   assert.doesNotMatch(myWorkClientSource, /refreshToken/u)
