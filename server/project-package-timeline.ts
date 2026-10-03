@@ -1641,7 +1641,7 @@ function buildProjectPackageEventMarkdown(
     `### ${textValue(event.title, '未命名事件')}`,
     '',
     `- 交付人：${textValue(event.assigneeName, '未指派')}`,
-    `- 交付日期：${event.deliveryStartAt} ~ ${event.deliveryEndAt}`,
+    `- 交付日期：${event.deliveryDate}`,
     `- 交付状态：${event.status}`,
     `- 拒绝次数：${event.rejectionCount ?? 0}`,
     '',
@@ -3371,14 +3371,16 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     if (step.kind === 'shell-script') {
       const script = scriptByReference.get(step.reference)
       if (!script) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的 Shell 脚本不存在`, 409)
-      return { content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
+      return { command: script.content, content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
     }
     if (step.kind === 'package') {
       const item = packageByReference.get(step.reference)
       if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的安装包不存在`, 409)
+      const command = createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })
       return {
         address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
-        content: `${comment}\n${createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })}`,
+        command,
+        content: `${comment}\n${command}`,
         kind: step.kind,
         processName: step.processName,
         runtimeConfig: item.runtimeConfig,
@@ -3388,9 +3390,11 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     if (step.kind === 'offline-package') {
       const item = offlineByReference.get(step.reference)
       if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的离线包不存在`, 409)
+      const command = createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })
       return {
         address: { kind: 'offline-package' as const, value: item.downloadUrl },
-        content: `${comment}\n${createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })}`,
+        command,
+        content: `${comment}\n${command}`,
         kind: step.kind,
         processName: step.processName,
         runtimeConfig: item.runtimeConfig,
@@ -3399,9 +3403,11 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     }
     const item = imageByReference.get(step.reference)
     if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的镜像不存在`, 409)
+    const command = createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })
     return {
       address: { kind: 'container-image' as const, value: item.image },
-      content: `${comment}\n${createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })}`,
+      command,
+      content: `${comment}\n${command}`,
       kind: step.kind,
       processName: step.processName,
       runtimeConfig: item.runtimeConfig,

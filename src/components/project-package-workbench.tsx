@@ -3195,7 +3195,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }
 
   function renderDeliveryArtifacts() {
-    if (deliveryArtifactsLoading) return <section className="delivery-artifacts-panel" aria-live="polite"><p>正在生成交付地址和执行脚本...</p></section>
+    if (deliveryArtifactsLoading) return <section className="delivery-artifacts-panel" aria-live="polite"><p>正在准备交付链接和命令...</p></section>
     if (deliveryArtifactsError) return <section className="delivery-artifacts-panel"><p className="delivery-artifact-error" role="alert">{deliveryArtifactsError}</p></section>
     if (!deliveryArtifacts || deliveryArtifacts.processes.length === 0) {
       return <section className="delivery-empty-state"><strong>暂无交付内容</strong><span>该事件没有可展示的交付流程。</span></section>
@@ -3204,7 +3204,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     return (
       <section className="delivery-artifacts-panel">
         <div className="delivery-artifacts-heading">
-          <div><h4>有序交付流程</h4><p>重复引用会按独立流程展示和记录结果。</p></div>
+          <div><h4>交付项</h4><p>按计划顺序执行，重复引用会独立记录结果。</p></div>
           <Label>对象存储有效期
             <Select value={String(deliveryArtifactsExpireMinutes)} onValueChange={(value) => setDeliveryArtifactsExpireMinutes(Number(value) as 30 | 60 | 120)}>
               <SelectTrigger aria-label="对象存储下载地址有效期"><SelectValue /></SelectTrigger>
@@ -3215,41 +3215,26 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         <div className="delivery-process-list">
           {deliveryArtifacts.processes.map((process, index) => {
             const addressKey = `delivery-address-${process.stepId}`
-            const scriptKey = `delivery-process-script-${process.stepId}`
-            const configured = Boolean(process.runtimeConfig && (
-              process.runtimeConfig.environmentVariables.length > 0 || process.runtimeConfig.valuesPath
-            ))
+            const commandKey = `delivery-command-${process.stepId}`
+            const copyKey = `delivery-copy-${process.stepId}`
+            const isDownloadable = process.kind === 'package' || process.kind === 'offline-package'
             const step = selectedEvent?.deliverySteps.find((candidate) => candidate.id === process.stepId)
-            return <article className="delivery-address-item delivery-process-item" key={process.stepId}>
+            return <article className="delivery-process-item" key={process.stepId}>
               <div className="delivery-process-title">
                 <span>{index + 1}</span>
                 <div><strong>{process.processName}</strong><small>{kindLabel[process.kind]}</small></div>
                 {step?.result && step.result !== 'pending' ? <span className={`delivery-step-result ${step.result}`}>{step.result === 'success' ? '成功' : step.result === 'failed' ? '失败' : '未执行'}</span> : null}
               </div>
-              {step?.failureDetail ? <p className="delivery-step-failure">失败详情：{step.failureDetail}</p> : null}
-              {process.address ? (
-              <div className="delivery-address-row">
-                <code>{process.address.value}</code>
-                {process.address.expiresAt ? <small>有效至 {process.address.expiresAt}</small> : null}
-                <Button size="icon" variant="ghost" type="button" title="复制原始地址" aria-label={`复制${process.processName}地址`} onClick={() => void copyToClipboard(process.address?.value ?? '', addressKey)}>{copiedValue === addressKey ? <Check size={15} /> : <Copy size={15} />}</Button>
+              <div className="delivery-process-actions">
+                {isDownloadable && process.address ? <>
+                  <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.address?.value ?? '', addressKey)}><Copy size={14} />{copiedValue === addressKey ? '已复制链接' : '链接'}</Button>
+                  <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.command, commandKey)}><TerminalWindow size={14} />{copiedValue === commandKey ? '已复制命令' : '命令'}</Button>
+                </> : <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.content, copyKey)}><Copy size={14} />{copiedValue === copyKey ? '已复制' : '复制'}</Button>}
+                {process.address?.expiresAt ? <small>链接有效至 {process.address.expiresAt}</small> : null}
               </div>
-              ) : null}
-              {configured && process.runtimeConfig ? <div className="delivery-runtime-config-summary">
-                {process.runtimeConfig.environmentVariables.length > 0 ? <div><strong>环境变量</strong><code>{process.runtimeConfig.environmentVariables.map((variable) => `${variable.name}=${variable.value}`).join('\n')}</code></div> : null}
-                {process.runtimeConfig.valuesPath ? <div><strong>Values 文件</strong><code>{process.runtimeConfig.valuesPath}</code></div> : null}
-                {process.runtimeConfig.valuesPatch ? <div><strong>Values 增量</strong><pre><code>{process.runtimeConfig.valuesPatch}</code></pre></div> : null}
-              </div> : null}
-              <div className="delivery-item-script-heading"><span>流程内容</span><Button size="sm" type="button" variant="ghost" onClick={() => void copyToClipboard(process.content, scriptKey)}><Copy size={14} />{copiedValue === scriptKey ? '已复制' : '复制'}</Button></div>
-              <pre className="delivery-item-execution-script"><code>{process.content}</code></pre>
             </article>
           })}
         </div>
-        {deliveryArtifacts.script ? (
-          <>
-            <div className="delivery-script-heading"><strong>完整执行脚本</strong><div><Button type="button" variant="outline" onClick={() => downloadMarkdownFile(`${selectedEvent?.title || '交付事件'}-执行脚本.sh`, deliveryArtifacts.script)}>下载</Button><Button type="button" variant="outline" onClick={() => void copyToClipboard(deliveryArtifacts.script, 'delivery-execution-script')}><TerminalWindow size={15} />{copiedValue === 'delivery-execution-script' ? '已复制' : '复制'}</Button></div></div>
-            <pre className="delivery-execution-script"><code>{deliveryArtifacts.script}</code></pre>
-          </>
-        ) : null}
       </section>
     )
   }
@@ -3972,9 +3957,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         <div className="delivery-members-actions"><Button variant="outline" onClick={() => setReassignEventId(null)}>取消</Button><ConfirmActionDialog actionKey={`delivery-reassign:${project.id}:${selectedEvent.id}`} title={`确认转交“${selectedEvent.title}”的执行负责人？`} description="确认后原负责人将失去执行权限。" confirmLabel="确认转交" variant="default" confirmDisabled={!nextAssignee || !reassignReason.trim()} onConfirm={async () => { const saved = await onReassignEvent(selectedEvent.id, { assigneeUserId: Number(nextAssignee), previousAssigneeUserId: selectedEvent.assigneeUserId ?? null, reason: reassignReason }); if (saved) setReassignEventId(null); return saved }} trigger={<Button disabled={!nextAssignee || !reassignReason.trim()}>转交执行人</Button>} /></div>
                       </div> : null}
                       <dl className="delivery-basic-grid">
-                        <div><dt>事件类型</dt><dd>{eventTypeLabel(selectedEvent.type)}</dd></div><div><dt>交付日期</dt><dd>{selectedEvent.deliveryStartAt} 至 {selectedEvent.deliveryEndAt}</dd></div><div><dt>制定人</dt><dd>{selectedEvent.createdByName || '未知'}</dd></div><div><dt>执行负责人</dt><dd><UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></dd></div><div><dt>发布人</dt><dd>{selectedEvent.publishedByName || '未发布'}</dd></div><div><dt>拒绝次数</dt><dd>{selectedEvent.rejectionCount ?? 0}</dd></div>
+                        <div><dt>事件类型</dt><dd>{eventTypeLabel(selectedEvent.type)}</dd></div><div><dt>交付日期</dt><dd>{formatEventDeliveryDate(selectedEvent)}</dd></div><div><dt>制定人</dt><dd>{selectedEvent.createdByName || '未知'}</dd></div><div><dt>执行负责人</dt><dd><UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></dd></div><div><dt>发布人</dt><dd>{selectedEvent.publishedByName || '未发布'}</dd></div><div><dt>拒绝次数</dt><dd>{selectedEvent.rejectionCount ?? 0}</dd></div>
                       </dl>
-                      {selectedEvent.deliveryResult && selectedEvent.deliveryResult !== 'success' ? <section className="delivery-result-summary"><strong>{selectedEvent.deliveryResult === 'partial' ? '部分交付失败记录' : selectedEvent.deliveryResult === 'rejected' ? '拒绝交付记录' : '交付失败记录'}</strong>{selectedEvent.deliveryFailureReason ? <p>{selectedEvent.deliveryFailureReason}</p> : null}{selectedEvent.deliverySteps.filter((step) => step.result === 'failed').map((step) => <p key={step.id}><strong>{step.processName}</strong>：{step.failureDetail || '未填写失败详情'}</p>)}</section> : null}
+                      {selectedEvent.deliveryResult === 'partial' || selectedEvent.deliveryResult === 'failed' ? <section className="delivery-result-summary"><strong>交付失败记录</strong>{selectedEvent.deliveryFailureReason ? <p>{selectedEvent.deliveryFailureReason}</p> : null}{selectedEvent.deliverySteps.filter((step) => step.result === 'failed').map((step) => <p key={step.id}><strong>{step.processName}</strong>：{step.failureDetail || '未填写失败详情'}</p>)}</section> : null}
                       {selectedEvent.rejections.length > 0 ? <section className="delivery-rejection-history"><h4>拒绝记录</h4>{selectedEvent.rejections.map((rejection, index) => <article key={`${rejection.createdAt}-${index}`}><div><strong>第 {selectedEvent.rejections.length - index} 次拒绝</strong><span>{rejection.rejectedByName} · {rejection.createdAt}</span></div><p>{rejection.reason}</p></article>)}</section> : null}
                       <section className="delivery-changelog"><h4>变更记录</h4>{selectedEvent.operations.length === 0 ? <div className="delivery-empty-state"><strong>暂无变更记录</strong></div> : sortByCreatedAt(selectedEvent.operations).map((operation) => <article key={operation.id}><div><strong>{operationHeading(operation)}</strong><span>{operation.createdAt}</span></div><div className="delivery-changelog-content">{operation.content || '暂无内容'}</div></article>)}</section>
                     </section>

@@ -144,7 +144,10 @@ test('event details separate read-only overview and delivery content tabs', () =
   assert.match(workbenchSource, /<TabsTrigger value="delivery">交付内容<\/TabsTrigger>/u)
   assert.match(workbenchSource, /暂无变更记录/u)
   assert.match(workbenchSource, /暂无交付内容/u)
-  assert.match(workbenchSource, /有序交付流程/u)
+  assert.match(workbenchSource, /<h4>交付项<\/h4>/u)
+  assert.match(workbenchSource, /formatEventDeliveryDate\(selectedEvent\)/u)
+  assert.match(workbenchSource, /交付失败记录/u)
+  assert.doesNotMatch(workbenchSource, /部分交付失败记录/u)
   assert.match(workbenchSource, /eventDetailTab !== 'delivery'/u)
 })
 
@@ -489,7 +492,12 @@ test('delivery events support mixed encrypted artifacts and server-generated scr
   assert.match(indexSource, /delivery-artifacts/u)
   assert.match(workbenchSource, /集群镜像/u)
   assert.match(workbenchSource, /离线包地址/u)
-  assert.match(workbenchSource, /完整执行脚本/u)
+  assert.match(workbenchSource, /delivery-process-actions/u)
+  assert.match(workbenchSource, /已复制链接/u)
+  assert.match(workbenchSource, /已复制命令/u)
+  assert.match(timelineSource, /command,\n\s+content:/u)
+  assert.doesNotMatch(workbenchSource, /完整执行脚本/u)
+  assert.doesNotMatch(workbenchSource, /流程内容/u)
   assert.match(workbenchSource, /deliveryArtifacts\.processes\.map/u)
   for (const table of [
     'project_package_event_container_images',

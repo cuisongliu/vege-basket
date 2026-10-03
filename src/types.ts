@@ -523,6 +523,7 @@ export type ProjectPackageDeliveryArtifacts = {
       kind: 'object-storage' | 'offline-package' | 'container-image'
       value: string
     }
+    command: string
     content: string
     kind: ProjectPackageDeliveryStep['kind']
     processName: string
