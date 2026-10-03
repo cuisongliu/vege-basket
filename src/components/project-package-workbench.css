@@ -518,6 +518,17 @@
   gap: 8px;
 }
 .delivery-process-actions small { color: var(--muted-text); font-size: 11px; }
+.delivery-command-requirements {
+  display: grid;
+  gap: 5px;
+  border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--line));
+  border-radius: 8px;
+  padding: 11px 14px;
+  background: color-mix(in oklch, var(--brand) 6%, var(--surface));
+}
+.delivery-command-requirements strong { color: var(--strong); font-size: 12px; }
+.delivery-command-requirements p { margin: 0; color: var(--muted-text); font-size: 12px; line-height: 1.55; }
+.delivery-command-requirements code { color: var(--strong); font-family: var(--mono); font-size: 11px; }
 .delivery-package-browser { border-bottom: 1px solid var(--line); padding-bottom: 18px; }
 
 .delivery-artifact-note {

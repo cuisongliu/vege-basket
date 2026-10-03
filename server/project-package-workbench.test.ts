@@ -140,6 +140,10 @@ test('delivery workbench enforces one event-level change record and package-only
 })
 
 test('event details separate read-only overview and delivery content tabs', () => {
+  const detailDrawerSource = workbenchSource.slice(
+    workbenchSource.indexOf('<Dialog open={eventDetailOpen'),
+    workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
+  )
   assert.match(workbenchSource, /基础信息与变更记录/u)
   assert.match(workbenchSource, /<TabsTrigger value="delivery">交付内容<\/TabsTrigger>/u)
   assert.match(workbenchSource, /暂无变更记录/u)
@@ -148,6 +152,11 @@ test('event details separate read-only overview and delivery content tabs', () =
   assert.match(workbenchSource, /formatEventDeliveryDate\(selectedEvent\)/u)
   assert.match(workbenchSource, /交付失败记录/u)
   assert.doesNotMatch(workbenchSource, /部分交付失败记录/u)
+  assert.doesNotMatch(detailDrawerSource, /<h3>安装包<\/h3>/u)
+  assert.match(workbenchSource, /在线命令/u)
+  assert.match(workbenchSource, /离线命令/u)
+  assert.match(workbenchSource, /所有交付项需要 <code>sealos<\/code>；在线命令还需要 <code>wget<\/code>/u)
+  assert.match(workbenchSource, /yq v4/u)
   assert.match(workbenchSource, /eventDetailTab !== 'delivery'/u)
 })
 
@@ -366,12 +375,12 @@ test('delivery workbench keeps feedback beside delivery result actions', () => {
   assert.match(appCssSource, /\.mention-menu-floating:hover::-webkit-scrollbar-thumb[\s\S]*?background:/u)
 })
 
-test('delivery event and package lists keep searchable paginated surfaces with the global menu', () => {
-  assert.match(workbenchSource, /const \[packageQuery, setPackageQuery\]/u)
-  assert.match(workbenchSource, /visiblePackageGroups/u)
+test('delivery event lists keep searchable paginated surfaces with the global menu', () => {
+  assert.doesNotMatch(workbenchSource, /const \[packageQuery, setPackageQuery\]/u)
+  assert.doesNotMatch(workbenchSource, /visiblePackageGroups/u)
   assert.match(workbenchSource, /ListPagination label="交付事件分页"/u)
   assert.match(workbenchSource, /onPageSizeChange=\{\(size\) => \{ setEventPage\(0\); setEventPageSize\(size\) \}\}/u)
-  assert.match(workbenchSource, /ListPagination label="安装包列表分页"/u)
+  assert.doesNotMatch(workbenchSource, /ListPagination label="安装包列表分页"/u)
   assert.match(paginationSource, /pageSizeOptions = \[20, 50\]/u)
   assert.match(paginationSource, /new Set\(\[\.\.\.pageSizeOptions, pageSize\]\)/u)
   assert.doesNotMatch(workbenchSource, /const isEmptyState/u)
@@ -494,8 +503,10 @@ test('delivery events support mixed encrypted artifacts and server-generated scr
   assert.match(workbenchSource, /离线包地址/u)
   assert.match(workbenchSource, /delivery-process-actions/u)
   assert.match(workbenchSource, /已复制链接/u)
-  assert.match(workbenchSource, /已复制命令/u)
-  assert.match(timelineSource, /command,\n\s+content:/u)
+  assert.match(workbenchSource, /已复制在线命令/u)
+  assert.match(workbenchSource, /已复制离线命令/u)
+  assert.match(timelineSource, /onlineCommand,\n\s+content:/u)
+  assert.match(timelineSource, /offlineCommand/u)
   assert.doesNotMatch(workbenchSource, /完整执行脚本/u)
   assert.doesNotMatch(workbenchSource, /流程内容/u)
   assert.match(workbenchSource, /deliveryArtifacts\.processes\.map/u)

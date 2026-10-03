@@ -149,7 +149,6 @@ import {
   fetchPackageMarketDetail,
   fetchPackageMarketReleaseVersions,
   fetchPackageMarketRules,
-  fetchProjectPackageItemDownloadUrl,
   fetchProjectPackageEventDeliveryArtifacts,
   fetchProjectPackageTimeline,
   fetchProjectCatalog,
@@ -4274,18 +4273,6 @@ function App() {
     return true
   }
 
-  async function loadInstallItemDownloadUrl(itemId: number) {
-    if (!selectedProject) throw new Error('Project not found')
-    try {
-      const result = await fetchProjectPackageItemDownloadUrl(selectedProject.id, itemId)
-      setWorkspaceError('')
-      return result.downloadUrl
-    } catch (error) {
-      setWorkspaceError(formatApiErrorDiagnostic(error, '安装包链接生成失败，请稍后再试。'))
-      throw error
-    }
-  }
-
   async function loadInstallEventDeliveryArtifacts(eventId: number, expireMinutes: 30 | 60 | 120) {
     if (!selectedProject) throw new Error('Project not found')
     return fetchProjectPackageEventDeliveryArtifacts(selectedProject.id, eventId, expireMinutes)
@@ -5779,7 +5766,6 @@ ${packageTimelineText}`
             onDraftChange={setJournalDraft}
             onExportInstallTimeline={exportInstallTimeline}
             onInstallLoadMarketDetail={loadPackageMarketDetail}
-            onInstallLoadItemDownloadUrl={loadInstallItemDownloadUrl}
             onInstallLoadEventDeliveryArtifacts={loadInstallEventDeliveryArtifacts}
             onInstallLoadMarketCiBranches={loadPackageMarketCiBranches}
             onInstallLoadMarketRules={loadPackageMarketRules}
@@ -6597,7 +6583,6 @@ function ProjectDetail({
   onExportInstallTimeline,
   onInstallLoadMarketCiBranches,
   onInstallLoadMarketDetail,
-  onInstallLoadItemDownloadUrl,
   onInstallLoadEventDeliveryArtifacts,
   onInstallLoadMarketRules,
   onInstallLoadMarketVersions,
@@ -6696,7 +6681,6 @@ function ProjectDetail({
     releaseVersion?: string
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
-  onInstallLoadItemDownloadUrl: (itemId: number) => Promise<string>
   onInstallLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onInstallLoadMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onInstallLoadMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
@@ -6970,7 +6954,6 @@ function ProjectDetail({
             onExportTimeline={onExportInstallTimeline}
             onLoadPackageMarketDetail={onInstallLoadMarketDetail}
             onLoadPackageMarketCiBranches={onInstallLoadMarketCiBranches}
-            onLoadPackageItemDownloadUrl={onInstallLoadItemDownloadUrl}
             onLoadEventDeliveryArtifacts={onInstallLoadEventDeliveryArtifacts}
             onLoadPackageMarketRules={onInstallLoadMarketRules}
             onLoadPackageMarketVersions={onInstallLoadMarketVersions}

@@ -123,3 +123,11 @@ export function createDeliveryExecutionScript(input: {
   ]
   return commands.join(' && \\\n')
 }
+
+export function createOfflineDeliveryExecutionScript(input: {
+  fileName: string
+  runtimeConfig?: DeliveryRuntimeConfig
+}) {
+  const command = createRuntimeCommand(`sealos run -f ${shellQuote(input.fileName)}`, input.runtimeConfig)
+  return wrapStandaloneCommands([command], Boolean(input.runtimeConfig?.valuesPatch))
+}

@@ -23,7 +23,7 @@ import {
   type DeliveryOther,
   type DeliveryRuntimeConfig,
 } from '../shared/delivery-artifact.ts'
-import { createDeliveryExecutionScript } from './verification-deployment-script.ts'
+import { createDeliveryExecutionScript, createOfflineDeliveryExecutionScript } from './verification-deployment-script.ts'
 
 export type ProjectPackageEventType = 'init' | 'upgrade'
 export type ProjectPackageEventStatus = 'draft' | 'delivering' | 'rejected' | 'partially_delivered' | 'delivered' | 'failed'
@@ -3371,16 +3371,21 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     if (step.kind === 'shell-script') {
       const script = scriptByReference.get(step.reference)
       if (!script) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的 Shell 脚本不存在`, 409)
-      return { command: script.content, content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
+      return { content: `${comment}\n${script.content}`, kind: step.kind, processName: step.processName, stepId: step.id }
     }
     if (step.kind === 'package') {
       const item = packageByReference.get(step.reference)
       if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的安装包不存在`, 409)
-      const command = createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })
+      const onlineCommand = createDeliveryExecutionScript({ images: [], offlinePackages: [], packages: [item] })
+      const offlineCommand = createOfflineDeliveryExecutionScript({
+        fileName: item.objectKey.split('/').at(-1)?.replace(/[^A-Za-z0-9._-]/gu, '-') || 'package.tar',
+        runtimeConfig: item.runtimeConfig,
+      })
       return {
         address: { expiresAt: item.expiresAt, kind: 'object-storage' as const, value: item.downloadUrl },
-        command,
-        content: `${comment}\n${command}`,
+        offlineCommand,
+        onlineCommand,
+        content: `${comment}\n${onlineCommand}`,
         kind: step.kind,
         processName: step.processName,
         runtimeConfig: item.runtimeConfig,
@@ -3390,11 +3395,13 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     if (step.kind === 'offline-package') {
       const item = offlineByReference.get(step.reference)
       if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的离线包不存在`, 409)
-      const command = createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })
+      const onlineCommand = createDeliveryExecutionScript({ images: [], offlinePackages: [item], packages: [] })
+      const offlineCommand = createOfflineDeliveryExecutionScript({ fileName: item.fileName, runtimeConfig: item.runtimeConfig })
       return {
         address: { kind: 'offline-package' as const, value: item.downloadUrl },
-        command,
-        content: `${comment}\n${command}`,
+        offlineCommand,
+        onlineCommand,
+        content: `${comment}\n${onlineCommand}`,
         kind: step.kind,
         processName: step.processName,
         runtimeConfig: item.runtimeConfig,
@@ -3403,11 +3410,9 @@ export async function getProjectPackageEventDeliveryArtifacts(params: {
     }
     const item = imageByReference.get(step.reference)
     if (!item) throw new ProjectPackageEventError(`交付流程“${step.processName}”引用的镜像不存在`, 409)
-    const command = createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })
     return {
       address: { kind: 'container-image' as const, value: item.image },
-      command,
-      content: `${comment}\n${command}`,
+      content: `${comment}\n${createDeliveryExecutionScript({ images: [item], offlinePackages: [], packages: [] })}`,
       kind: step.kind,
       processName: step.processName,
       runtimeConfig: item.runtimeConfig,

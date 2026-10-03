@@ -97,7 +97,6 @@ import type {
   ProjectPackageEventComment,
   ProjectPackageEventSavePayload,
   ProjectPackageEventStatus,
-  ProjectPackageGroup,
   ProjectPackageItem,
   ProjectPackageEventType,
   ProjectPackageOperation,
@@ -172,7 +171,6 @@ type PackageWorkbenchProps = {
     releaseVersion?: string
     context?: PackageMarketRequestContext
   }) => Promise<PackageMarketDetail>
-  onLoadPackageItemDownloadUrl: (itemId: number) => Promise<string>
   onLoadEventDeliveryArtifacts: (eventId: number, expireMinutes: 30 | 60 | 120) => Promise<ProjectPackageDeliveryArtifacts>
   onLoadPackageMarketCiBranches: (packageId: string, context?: PackageMarketRequestContext) => Promise<PackageMarketCiBranch[]>
   onLoadPackageMarketRules: (context?: PackageMarketRequestContext) => Promise<PackageMarketRulesResponse>
@@ -540,22 +538,6 @@ function itemChannelLabel(item: Pick<ProjectPackageItem, 'channel' | 'channelLab
 
 function packageItemFileName(item: Pick<ProjectPackageItem, 'objectKey' | 'packageName'>) {
   return item.objectKey.split('/').filter(Boolean).at(-1) || item.packageName
-}
-
-function summarizeGroupDetails(group: ProjectPackageGroup) {
-  return Array.from(
-    new Set(
-      group.items
-        .map((item) =>
-          [itemChannelLabel(item), item.arch, item.version || '未知版本'].filter(Boolean).join(' · '),
-        )
-        .filter(Boolean),
-    ),
-  )
-}
-
-function summarizeGroup(group: ProjectPackageGroup) {
-  return summarizeGroupDetails(group).join('；')
 }
 
 function operationHeading(operation: ProjectPackageOperation) {
@@ -1611,7 +1593,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   onLoadPackageMarketCiBranches,
   onLoadPackageMarketDetail,
   onLoadEventDeliveryArtifacts,
-  onLoadPackageItemDownloadUrl,
   onLoadPackageMarketRules,
   onLoadPackageMarketVersions,
   onSaveEvent,
@@ -1667,8 +1648,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventDetailsError, setEventDetailsError] = useState('')
   const [eventDetailsRetry, setEventDetailsRetry] = useState(0)
   const eventDetailsRequestIdRef = useRef(0)
-  const [packageQuery, setPackageQuery] = useState('')
-  const [packagePage, setPackagePage] = useState(0)
   const [deliveryResultDialogOpen, setDeliveryResultDialogOpen] = useState(false)
   const [deliveryResult, setDeliveryResult] = useState<'success' | 'partial' | 'rejected' | 'failed'>('success')
   const [deliveryFailureReason, setDeliveryFailureReason] = useState('')
@@ -1756,7 +1735,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const deliveryArtifactsLoaderRef = useRef(onLoadEventDeliveryArtifacts)
   const [busyAction, setBusyAction] = useState('')
   const [copiedValue, setCopiedValue] = useState('')
-  const [, setCopyingPackageItemId] = useState<number | null>(null)
   const marketDetailRequestIdRef = useRef(0)
   const todoPickerSearchRef = useRef<HTMLInputElement | null>(null)
   const todoPickerOptionsRef = useRef<HTMLDivElement | null>(null)
@@ -1883,7 +1861,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     const lastPage = Math.max(0, Math.ceil(eventTotal / eventPageSize) - 1)
     if (eventPage > lastPage) setEventPage(lastPage)
   }, [eventPage, eventPageSize, eventTotal])
-  const packagePageSize = 10
   const todosById = useMemo(
     () => new Map(todos.map((todo) => [todo.id, todo])),
     [todos],
@@ -2054,21 +2031,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     })
     return () => { cancelled = true }
   }, [deliveryArtifactsExpireMinutes, eventDetailOpen, eventDetailTab, selectedEventDetailId, selectedEventDetailRevision, selectedEventNeedsDetails])
-  const selectedEventGroups = selectedEvent?.groups ?? []
-  const filteredPackageGroups = (() => {
-    const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
-    const groups = selectedEventGroups
-    if (!query) return groups
-    return groups.filter((group) => [
-      group.packageName,
-      ...group.items.flatMap((item) => [item.sourcePackageName, item.version, item.arch, item.channelLabel, packageItemFileName(item)]),
-    ].join(' ').toLocaleLowerCase('zh-CN').includes(query))
-  })()
-  const visiblePackageGroups = filteredPackageGroups.slice(packagePage * packagePageSize, (packagePage + 1) * packagePageSize)
-  useEffect(() => {
-    setPackagePage((page) => Math.min(page, Math.max(0, Math.ceil(filteredPackageGroups.length / packagePageSize) - 1)))
-  }, [filteredPackageGroups.length])
-  useEffect(() => { setPackagePage(0) }, [packageQuery, selectedEventId])
   const canManageTimeline = selectedEvent?.capabilities?.canEditPlan === true
   const canManageLinks = selectedEvent?.capabilities?.canExecute === true || canManageTimeline
   const existingOperationInteraction = resolveExistingOperationInteraction(canManageTimeline)
@@ -2341,33 +2303,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   function copiedLabel(feedbackKey: string, fallback: string) {
     return copiedValue === feedbackKey ? '已复制' : fallback
-  }
-
-  async function copyPackageItemDownloadLink(item: ProjectPackageItem) {
-    setCopyingPackageItemId(item.id)
-    try {
-      const downloadUrl = await onLoadPackageItemDownloadUrl(item.id)
-      await copyToClipboard(downloadUrl, `package-item-download-url-${item.id}`)
-    } catch {
-      return
-    } finally {
-      setCopyingPackageItemId((current) => (current === item.id ? null : current))
-    }
-  }
-
-  async function copyPackageItemDownloadCommand(item: ProjectPackageItem) {
-    setCopyingPackageItemId(item.id)
-    try {
-      const downloadUrl = await onLoadPackageItemDownloadUrl(item.id)
-      await copyToClipboard(
-        createWgetDownloadCommand(downloadUrl, packageItemFileName(item)),
-        `package-item-download-command-${item.id}`,
-      )
-    } catch {
-      return
-    } finally {
-      setCopyingPackageItemId((current) => (current === item.id ? null : current))
-    }
   }
 
   function addMarketLinkToCart(
@@ -3200,7 +3135,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     if (!deliveryArtifacts || deliveryArtifacts.processes.length === 0) {
       return <section className="delivery-empty-state"><strong>暂无交付内容</strong><span>该事件没有可展示的交付流程。</span></section>
     }
-    const kindLabel = { 'container-image': '集群镜像', package: '对象存储安装包', 'offline-package': '离线包', 'shell-script': 'Shell 脚本' } as const
+    const kindLabel = { 'container-image': '集群镜像', package: '对象存储', 'offline-package': '离线包', 'shell-script': 'Shell 脚本' } as const
     return (
       <section className="delivery-artifacts-panel">
         <div className="delivery-artifacts-heading">
@@ -3215,7 +3150,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         <div className="delivery-process-list">
           {deliveryArtifacts.processes.map((process, index) => {
             const addressKey = `delivery-address-${process.stepId}`
-            const commandKey = `delivery-command-${process.stepId}`
+            const onlineCommandKey = `delivery-online-command-${process.stepId}`
+            const offlineCommandKey = `delivery-offline-command-${process.stepId}`
             const copyKey = `delivery-copy-${process.stepId}`
             const isDownloadable = process.kind === 'package' || process.kind === 'offline-package'
             const step = selectedEvent?.deliverySteps.find((candidate) => candidate.id === process.stepId)
@@ -3228,13 +3164,18 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               <div className="delivery-process-actions">
                 {isDownloadable && process.address ? <>
                   <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.address?.value ?? '', addressKey)}><Copy size={14} />{copiedValue === addressKey ? '已复制链接' : '链接'}</Button>
-                  <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.command, commandKey)}><TerminalWindow size={14} />{copiedValue === commandKey ? '已复制命令' : '命令'}</Button>
+                  <Button disabled={!process.onlineCommand} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.onlineCommand ?? '', onlineCommandKey)}><TerminalWindow size={14} />{copiedValue === onlineCommandKey ? '已复制在线命令' : '在线命令'}</Button>
+                  <Button disabled={!process.offlineCommand} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.offlineCommand ?? '', offlineCommandKey)}><TerminalWindow size={14} />{copiedValue === offlineCommandKey ? '已复制离线命令' : '离线命令'}</Button>
                 </> : <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.content, copyKey)}><Copy size={14} />{copiedValue === copyKey ? '已复制' : '复制'}</Button>}
                 {process.address?.expiresAt ? <small>链接有效至 {process.address.expiresAt}</small> : null}
               </div>
             </article>
           })}
         </div>
+        <aside className="delivery-command-requirements" role="note">
+          <strong>执行前请确认命令依赖</strong>
+          <p>所有交付项需要 <code>sealos</code>；在线命令还需要 <code>wget</code>。配置 Values 修改时，还需要 <code>yq v4</code>、<code>flock</code>、<code>realpath</code>、<code>base64</code> 和 <code>mktemp</code>，并建议使用 Bash 执行。</p>
+        </aside>
       </section>
     )
   }
@@ -3966,7 +3907,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   </TabsContent>
                   <TabsContent className="delivery-detail-tab-content" value="delivery">
                     <section className="delivery-content-panel">
-                      {selectedEvent.groups.length > 0 ? <section className="delivery-package-browser"><div className="project-package-list-head"><h3>安装包</h3></div><label className="project-package-search"><MagnifyingGlass size={15} /><Input aria-label="搜索安装包" placeholder="搜索名称、版本、架构或渠道" value={packageQuery} onChange={(event) => setPackageQuery(event.target.value)} /></label><div className="project-package-items">{visiblePackageGroups.map((group) => <div className="project-package-item" key={group.id}><div className="project-package-entry"><strong>{group.packageName}</strong><span className="package-meta-text">{summarizeGroup(group)}</span><div className="package-file-list">{group.items.map((item) => { const fileName = packageItemFileName(item); return <div className="package-file-list-row" key={item.id}><span>{fileName}</span><Button size="icon" variant="ghost" type="button" title="复制下载链接" onClick={() => void copyPackageItemDownloadLink(item)}><Copy size={13} /></Button><Button size="icon" variant="ghost" type="button" title="复制下载命令" onClick={() => void copyPackageItemDownloadCommand(item)}><TerminalWindow size={13} /></Button></div> })}</div></div></div>)}</div>{filteredPackageGroups.length > packagePageSize ? <ListPagination label="安装包列表分页" page={packagePage} pageSize={packagePageSize} total={filteredPackageGroups.length} onPageChange={setPackagePage} /> : null}</section> : null}
                       {renderDeliveryArtifacts()}
                     </section>
                   </TabsContent>
