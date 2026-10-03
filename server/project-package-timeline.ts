@@ -1641,7 +1641,7 @@ function buildProjectPackageEventMarkdown(
     `### ${textValue(event.title, '未命名事件')}`,
     '',
     `- 交付人：${textValue(event.assigneeName, '未指派')}`,
-    `- 交付时间：${event.deliveryStartAt} ~ ${event.deliveryEndAt}`,
+    `- 交付日期：${event.deliveryStartAt} ~ ${event.deliveryEndAt}`,
     `- 交付状态：${event.status}`,
     `- 拒绝次数：${event.rejectionCount ?? 0}`,
     '',

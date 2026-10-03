@@ -1656,6 +1656,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [eventFilterDialogOpen, setEventFilterDialogOpen] = useState(false)
   const [eventFilterJoin, setEventFilterJoin] = useState<PackageEventFilterJoin>('and')
   const [eventFilterConditions, setEventFilterConditions] = useState<PackageEventFilterCondition[]>([])
+  const [showDelivered, setShowDelivered] = useState(false)
   const [eventSortDirection, setEventSortDirection] = useState<'asc' | 'desc'>('desc')
   const [eventPage, setEventPage] = useState(0)
   const [eventPageSize, setEventPageSize] = useState(10)
@@ -1751,6 +1752,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [deliveryArtifactsError, setDeliveryArtifactsError] = useState('')
   const [deliveryArtifactsLoading, setDeliveryArtifactsLoading] = useState(false)
   const [deliveryArtifactsExpireMinutes, setDeliveryArtifactsExpireMinutes] = useState<30 | 60 | 120>(30)
+  const deliveryArtifactsCacheRef = useRef(new Map<string, ProjectPackageDeliveryArtifacts>())
+  const deliveryArtifactsLoaderRef = useRef(onLoadEventDeliveryArtifacts)
   const [busyAction, setBusyAction] = useState('')
   const [copiedValue, setCopiedValue] = useState('')
   const [, setCopyingPackageItemId] = useState<number | null>(null)
@@ -1767,6 +1770,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   useEffect(() => {
     packageMarketRulesLoaderRef.current = onLoadPackageMarketRules
   }, [onLoadPackageMarketRules])
+
+  useEffect(() => {
+    deliveryArtifactsLoaderRef.current = onLoadEventDeliveryArtifacts
+  }, [onLoadEventDeliveryArtifacts])
 
   useEffect(() => {
     let cancelled = false
@@ -1810,6 +1817,15 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   }, [memberships, project.id, project.ownerName, project.ownerUserId, project.organizationId, timeline?.deliveryMembers])
   const [assignedOnly, setAssignedOnly] = useState(false)
   const activeEventFilterCount = eventFilterConditions.length
+  const timelineFilterConditions = useMemo(() => {
+    if (showDelivered || eventFilterConditions.some((condition) => condition.field === 'status')) {
+      return eventFilterConditions
+    }
+    return [
+      ...eventFilterConditions,
+      { field: 'status' as const, id: 'default-hide-delivered', operator: 'not_equals' as const, value: 'delivered' },
+    ]
+  }, [eventFilterConditions, showDelivered])
   const visibleEvents = events
   const pagedEvents = visibleEvents
   const eventTotal = timeline?.pagination?.total ?? visibleEvents.length
@@ -1827,7 +1843,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       setTimelineError('')
       void onLoadTimeline({
         assignedUserId: assignedOnly && currentUserId ? currentUserId : undefined,
-        filters: eventFilterConditions,
+        filters: timelineFilterConditions,
         includeDetails: false,
         join: eventFilterJoin,
         limit: eventPageSize,
@@ -1844,12 +1860,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       window.clearTimeout(timer)
       if (timelineRequestIdRef.current === requestId) timelineRequestIdRef.current += 1
     }
-  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline])
+  }, [assignedOnly, currentUserId, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline, timelineFilterConditions])
   useEffect(() => {
     const interval = window.setInterval(() => {
       void onLoadTimeline({
         assignedUserId: assignedOnly && currentUserId ? currentUserId : undefined,
-        filters: eventFilterConditions,
+        filters: timelineFilterConditions,
         includeDetails: false,
         join: eventFilterJoin,
         limit: eventPageSize,
@@ -1859,10 +1875,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       }).catch(() => undefined)
     }, 15_000)
     return () => window.clearInterval(interval)
-  }, [assignedOnly, currentUserId, eventFilterConditions, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline])
+  }, [assignedOnly, currentUserId, eventFilterJoin, eventPage, eventPageSize, eventSearch, eventSortDirection, onLoadTimeline, timelineFilterConditions])
   useEffect(() => {
     setEventPage(0)
-  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventPageSize, eventSearch, eventSortDirection])
+  }, [assignedOnly, eventFilterConditions, eventFilterJoin, eventPageSize, eventSearch, eventSortDirection, showDelivered])
   useEffect(() => {
     const lastPage = Math.max(0, Math.ceil(eventTotal / eventPageSize) - 1)
     if (eventPage > lastPage) setEventPage(lastPage)
@@ -1985,6 +2001,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectedEvent =
     visibleEvents.find((event) => event.id === selectedEventId) ?? visibleEvents[0] ?? null
   const selectedEventDetailId = selectedEvent?.id ?? null
+  const selectedEventDetailRevision = selectedEvent?.detailRevision ?? ''
   const selectedEventNeedsDetails = Boolean(selectedEvent && selectedEvent.detailsLoaded === false)
   useEffect(() => {
     const requestId = ++eventDetailsRequestIdRef.current
@@ -2007,15 +2024,24 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   useEffect(() => {
     let cancelled = false
     if (!eventDetailOpen || eventDetailTab !== 'delivery' || selectedEventDetailId == null || selectedEventNeedsDetails) {
-      setDeliveryArtifacts(null)
-      setDeliveryArtifactsError('')
       return
     }
+    const cacheKey = `${selectedEventDetailId}:${selectedEventDetailRevision}:${deliveryArtifactsExpireMinutes}`
+    const cached = deliveryArtifactsCacheRef.current.get(cacheKey)
+    if (cached) {
+      setDeliveryArtifacts(cached)
+      setDeliveryArtifactsError('')
+      setDeliveryArtifactsLoading(false)
+      return
+    }
+    setDeliveryArtifacts(null)
     setDeliveryArtifactsLoading(true)
     setDeliveryArtifactsError('')
-    void onLoadEventDeliveryArtifacts(selectedEventDetailId, deliveryArtifactsExpireMinutes)
+    void deliveryArtifactsLoaderRef.current(selectedEventDetailId, deliveryArtifactsExpireMinutes)
       .then((value) => {
-        if (!cancelled) setDeliveryArtifacts(value)
+        if (cancelled) return
+        deliveryArtifactsCacheRef.current.set(cacheKey, value)
+        setDeliveryArtifacts(value)
       })
       .catch(() => {
         if (!cancelled) {
@@ -2025,9 +2051,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
       })
       .finally(() => {
         if (!cancelled) setDeliveryArtifactsLoading(false)
-      })
+    })
     return () => { cancelled = true }
-  }, [deliveryArtifactsExpireMinutes, eventDetailOpen, eventDetailTab, onLoadEventDeliveryArtifacts, selectedEventDetailId, selectedEventNeedsDetails])
+  }, [deliveryArtifactsExpireMinutes, eventDetailOpen, eventDetailTab, selectedEventDetailId, selectedEventDetailRevision, selectedEventNeedsDetails])
   const selectedEventGroups = selectedEvent?.groups ?? []
   const filteredPackageGroups = (() => {
     const query = packageQuery.trim().toLocaleLowerCase('zh-CN')
@@ -3798,6 +3824,14 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 />
                 <span>只看我被指派的事件</span>
               </label>
+              <label className="project-events-assigned-toggle">
+                <input
+                  type="checkbox"
+                  checked={showDelivered}
+                  onChange={(event) => setShowDelivered(event.target.checked)}
+                />
+                <span>显示已交付</span>
+              </label>
               <Button
                 aria-label={eventSortDirection === 'asc'
                   ? '当前按交付日期正序排列，点击切换为倒序'
@@ -3938,9 +3972,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         <div className="delivery-members-actions"><Button variant="outline" onClick={() => setReassignEventId(null)}>取消</Button><ConfirmActionDialog actionKey={`delivery-reassign:${project.id}:${selectedEvent.id}`} title={`确认转交“${selectedEvent.title}”的执行负责人？`} description="确认后原负责人将失去执行权限。" confirmLabel="确认转交" variant="default" confirmDisabled={!nextAssignee || !reassignReason.trim()} onConfirm={async () => { const saved = await onReassignEvent(selectedEvent.id, { assigneeUserId: Number(nextAssignee), previousAssigneeUserId: selectedEvent.assigneeUserId ?? null, reason: reassignReason }); if (saved) setReassignEventId(null); return saved }} trigger={<Button disabled={!nextAssignee || !reassignReason.trim()}>转交执行人</Button>} /></div>
                       </div> : null}
                       <dl className="delivery-basic-grid">
-                        <div><dt>事件类型</dt><dd>{eventTypeLabel(selectedEvent.type)}</dd></div><div><dt>交付时间</dt><dd>{selectedEvent.deliveryStartAt} 至 {selectedEvent.deliveryEndAt}</dd></div><div><dt>制定人</dt><dd>{selectedEvent.createdByName || '未知'}</dd></div><div><dt>执行负责人</dt><dd><UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></dd></div><div><dt>发布人</dt><dd>{selectedEvent.publishedByName || '未发布'}</dd></div><div><dt>拒绝次数</dt><dd>{selectedEvent.rejectionCount ?? 0}</dd></div>
+                        <div><dt>事件类型</dt><dd>{eventTypeLabel(selectedEvent.type)}</dd></div><div><dt>交付日期</dt><dd>{selectedEvent.deliveryStartAt} 至 {selectedEvent.deliveryEndAt}</dd></div><div><dt>制定人</dt><dd>{selectedEvent.createdByName || '未知'}</dd></div><div><dt>执行负责人</dt><dd><UserName departedUserIds={timeline?.departedUserIds} name={selectedEvent.assigneeName || '未指派'} userId={selectedEvent.assigneeUserId} /></dd></div><div><dt>发布人</dt><dd>{selectedEvent.publishedByName || '未发布'}</dd></div><div><dt>拒绝次数</dt><dd>{selectedEvent.rejectionCount ?? 0}</dd></div>
                       </dl>
-                      {selectedEvent.deliveryResult ? <section className="delivery-result-summary"><strong>{selectedEvent.deliveryResult === 'success' ? '交付成功' : selectedEvent.deliveryResult === 'partial' ? '部分交付' : selectedEvent.deliveryResult === 'rejected' ? '拒绝交付' : '交付失败'}</strong>{selectedEvent.deliveryFailureReason ? <p>{selectedEvent.deliveryFailureReason}</p> : null}</section> : null}
+                      {selectedEvent.deliveryResult && selectedEvent.deliveryResult !== 'success' ? <section className="delivery-result-summary"><strong>{selectedEvent.deliveryResult === 'partial' ? '部分交付失败记录' : selectedEvent.deliveryResult === 'rejected' ? '拒绝交付记录' : '交付失败记录'}</strong>{selectedEvent.deliveryFailureReason ? <p>{selectedEvent.deliveryFailureReason}</p> : null}{selectedEvent.deliverySteps.filter((step) => step.result === 'failed').map((step) => <p key={step.id}><strong>{step.processName}</strong>：{step.failureDetail || '未填写失败详情'}</p>)}</section> : null}
                       {selectedEvent.rejections.length > 0 ? <section className="delivery-rejection-history"><h4>拒绝记录</h4>{selectedEvent.rejections.map((rejection, index) => <article key={`${rejection.createdAt}-${index}`}><div><strong>第 {selectedEvent.rejections.length - index} 次拒绝</strong><span>{rejection.rejectedByName} · {rejection.createdAt}</span></div><p>{rejection.reason}</p></article>)}</section> : null}
                       <section className="delivery-changelog"><h4>变更记录</h4>{selectedEvent.operations.length === 0 ? <div className="delivery-empty-state"><strong>暂无变更记录</strong></div> : sortByCreatedAt(selectedEvent.operations).map((operation) => <article key={operation.id}><div><strong>{operationHeading(operation)}</strong><span>{operation.createdAt}</span></div><div className="delivery-changelog-content">{operation.content || '暂无内容'}</div></article>)}</section>
                     </section>
