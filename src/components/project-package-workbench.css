@@ -529,6 +529,27 @@
 .delivery-command-requirements strong { color: var(--strong); font-size: 12px; }
 .delivery-command-requirements p { margin: 0; color: var(--muted-text); font-size: 12px; line-height: 1.55; }
 .delivery-command-requirements code { color: var(--strong); font-family: var(--mono); font-size: 11px; }
+.delivery-values-preview-dialog { width: min(720px, calc(100vw - 32px)); }
+.delivery-values-preview-body { display: grid; gap: 14px; min-width: 0; }
+.delivery-values-preview-section { display: grid; gap: 7px; min-width: 0; }
+.delivery-values-preview-section > span { color: var(--muted-text); font-size: 12px; font-weight: 650; }
+.delivery-values-preview-section > code,
+.delivery-values-preview-section > pre {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--muted) 18%, var(--surface));
+  color: var(--strong);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.delivery-values-preview-section > pre { max-height: 220px; overflow: auto; white-space: pre; }
+.delivery-values-preview-script-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .delivery-package-browser { border-bottom: 1px solid var(--line); padding-bottom: 18px; }
 
 .delivery-artifact-note {

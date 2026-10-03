@@ -1731,6 +1731,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [deliveryArtifactsError, setDeliveryArtifactsError] = useState('')
   const [deliveryArtifactsLoading, setDeliveryArtifactsLoading] = useState(false)
   const [deliveryArtifactsExpireMinutes, setDeliveryArtifactsExpireMinutes] = useState<30 | 60 | 120>(30)
+  const [valuesPreviewStepId, setValuesPreviewStepId] = useState<string | null>(null)
   const deliveryArtifactsCacheRef = useRef(new Map<string, ProjectPackageDeliveryArtifacts>())
   const deliveryArtifactsLoaderRef = useRef(onLoadEventDeliveryArtifacts)
   const [busyAction, setBusyAction] = useState('')
@@ -3154,6 +3155,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             const offlineCommandKey = `delivery-offline-command-${process.stepId}`
             const copyKey = `delivery-copy-${process.stepId}`
             const isDownloadable = process.kind === 'package' || process.kind === 'offline-package'
+            const hasValuesPatch = Boolean(process.runtimeConfig?.valuesPath && process.runtimeConfig.valuesPatch)
+            const executionScript = process.onlineCommand ?? process.content
+            const valuesScriptKey = `delivery-values-script-${process.stepId}`
             const step = selectedEvent?.deliverySteps.find((candidate) => candidate.id === process.stepId)
             return <article className="delivery-process-item" key={process.stepId}>
               <div className="delivery-process-title">
@@ -3167,6 +3171,10 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   <Button disabled={!process.onlineCommand} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.onlineCommand ?? '', onlineCommandKey)}><TerminalWindow size={14} />{copiedValue === onlineCommandKey ? '已复制在线命令' : '在线命令'}</Button>
                   <Button disabled={!process.offlineCommand} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.offlineCommand ?? '', offlineCommandKey)}><TerminalWindow size={14} />{copiedValue === offlineCommandKey ? '已复制离线命令' : '离线命令'}</Button>
                 </> : <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.content, copyKey)}><Copy size={14} />{copiedValue === copyKey ? '已复制' : '复制'}</Button>}
+                {hasValuesPatch ? <>
+                  <Button size="sm" type="button" variant="outline" onClick={() => setValuesPreviewStepId(process.stepId)}><Eye size={14} />预览 Values 修改</Button>
+                  <Button disabled={!executionScript} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(executionScript, valuesScriptKey)}><Copy size={14} />{copiedValue === valuesScriptKey ? '已复制执行脚本' : '复制执行脚本'}</Button>
+                </> : null}
                 {process.address?.expiresAt ? <small>链接有效至 {process.address.expiresAt}</small> : null}
               </div>
             </article>
@@ -3176,6 +3184,35 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           <strong>执行前请确认命令依赖</strong>
           <p>所有交付项需要 <code>sealos</code>；在线命令还需要 <code>wget</code>。配置 Values 修改时，还需要 <code>yq v4</code>、<code>flock</code>、<code>realpath</code>、<code>base64</code> 和 <code>mktemp</code>，并建议使用 Bash 执行。</p>
         </aside>
+        {(() => {
+          const previewProcess = deliveryArtifacts.processes.find((process) => process.stepId === valuesPreviewStepId)
+          const previewConfig = previewProcess?.runtimeConfig
+          const previewScript = previewProcess?.onlineCommand ?? previewProcess?.content ?? ''
+          const previewScriptKey = valuesPreviewStepId ? `delivery-values-script-${valuesPreviewStepId}` : 'delivery-values-script'
+          return <Dialog open={Boolean(previewProcess && previewConfig?.valuesPath && previewConfig.valuesPatch)} onOpenChange={(open) => { if (!open) setValuesPreviewStepId(null) }}>
+            <DialogContent className="delivery-values-preview-dialog">
+              <DialogHeader>
+                <DialogTitle>预览 Values 修改</DialogTitle>
+                <DialogDescription>{previewProcess ? `${previewProcess.processName} · 只读预览，执行时会临时合并并在结束后恢复原文件。` : ''}</DialogDescription>
+              </DialogHeader>
+              {previewConfig ? <div className="delivery-values-preview-body">
+                <section className="delivery-values-preview-section">
+                  <span>Values 文件路径</span>
+                  <code>{previewConfig.valuesPath}</code>
+                </section>
+                <section className="delivery-values-preview-section">
+                  <span>Values 修改内容</span>
+                  <pre>{previewConfig.valuesPatch}</pre>
+                </section>
+                <section className="delivery-values-preview-section">
+                  <div className="delivery-values-preview-script-heading"><span>执行脚本</span><Button disabled={!previewScript} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(previewScript, previewScriptKey)}><Copy size={14} />{copiedValue === previewScriptKey ? '已复制执行脚本' : '复制执行脚本'}</Button></div>
+                  <pre>{previewScript || '暂无可复制的执行脚本'}</pre>
+                </section>
+              </div> : null}
+              <DialogFooter><Button type="button" variant="outline" onClick={() => setValuesPreviewStepId(null)}>关闭</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        })()}
       </section>
     )
   }
