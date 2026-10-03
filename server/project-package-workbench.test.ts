@@ -159,6 +159,7 @@ test('event details separate read-only overview and delivery content tabs', () =
   assert.match(workbenchSource, /复制执行脚本/u)
   assert.match(workbenchSource, /previewConfig\.valuesPath/u)
   assert.match(workbenchSource, /previewConfig\.valuesPatch/u)
+  assert.doesNotMatch(workbenchSource, /const valuesScriptKey/u)
   assert.match(workbenchSource, /所有交付项需要 <code>sealos<\/code>；在线命令还需要 <code>wget<\/code>/u)
   assert.match(workbenchSource, /yq v4/u)
   assert.match(workbenchSource, /eventDetailTab !== 'delivery'/u)

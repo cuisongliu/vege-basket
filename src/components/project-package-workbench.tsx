@@ -3156,8 +3156,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             const copyKey = `delivery-copy-${process.stepId}`
             const isDownloadable = process.kind === 'package' || process.kind === 'offline-package'
             const hasValuesPatch = Boolean(process.runtimeConfig?.valuesPath && process.runtimeConfig.valuesPatch)
-            const executionScript = process.onlineCommand ?? process.content
-            const valuesScriptKey = `delivery-values-script-${process.stepId}`
             const step = selectedEvent?.deliverySteps.find((candidate) => candidate.id === process.stepId)
             return <article className="delivery-process-item" key={process.stepId}>
               <div className="delivery-process-title">
@@ -3173,7 +3171,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                 </> : <Button size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(process.content, copyKey)}><Copy size={14} />{copiedValue === copyKey ? '已复制' : '复制'}</Button>}
                 {hasValuesPatch ? <>
                   <Button size="sm" type="button" variant="outline" onClick={() => setValuesPreviewStepId(process.stepId)}><Eye size={14} />预览 Values 修改</Button>
-                  <Button disabled={!executionScript} size="sm" type="button" variant="outline" onClick={() => void copyToClipboard(executionScript, valuesScriptKey)}><Copy size={14} />{copiedValue === valuesScriptKey ? '已复制执行脚本' : '复制执行脚本'}</Button>
                 </> : null}
                 {process.address?.expiresAt ? <small>链接有效至 {process.address.expiresAt}</small> : null}
               </div>
