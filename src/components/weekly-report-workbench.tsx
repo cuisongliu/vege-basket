@@ -27,6 +27,7 @@ import {
   CaretLeft,
   CaretRight,
   ClipboardText,
+  DownloadSimple,
   Flag,
   FolderSimple,
   LinkSimple,
@@ -75,6 +76,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { ConfirmActionDialog } from './confirm-action-dialog'
 import { OrganizationPermissionErrorDialog } from './organization-permission-error-dialog'
 import { isOrganizationPermissionError, organizationPermissionErrorMessage } from './organization-permission-error'
+import { buildAiExportPrompt } from '../ai-export-prompt'
+import { AiExportPromptDialog } from './ai-export-prompt-dialog'
 import './weekly-report-workbench.css'
 
 class WeeklyReportEditorBoundary extends Component<
@@ -181,6 +184,10 @@ function shiftDate(value: string, days: number) {
 
 function formatWeekRange(weekStart: string) {
   return `${weekStart.replaceAll('-', '/')} - ${shiftDate(weekStart, 6).replaceAll('-', '/')}`
+}
+
+function formatWeekLabel(weekStart: string) {
+  return `${weekStart.replaceAll('-', '/')} 周`
 }
 
 function formatDateTime(value: string | null) {
@@ -303,10 +310,18 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
   const [reportListRefresh, setReportListRefresh] = useState(0)
   const [backgroundRefreshVersion, setBackgroundRefreshVersion] = useState(0)
   const [reportListLoading, setReportListLoading] = useState(false)
+  const [selectedReports, setSelectedReports] = useState<Map<string, PersonalWeeklyReportListItem>>(() => new Map())
+  const [exportPrompt, setExportPrompt] = useState<{ prompt: string; fileName: string; summary: string } | null>(null)
+  const [exportSelectionOpen, setExportSelectionOpen] = useState(false)
+  const [exportCandidates, setExportCandidates] = useState<PersonalWeeklyReportListItem[]>([])
+  const [exportCandidatePage, setExportCandidatePage] = useState(0)
+  const [exportCandidateTotal, setExportCandidateTotal] = useState(0)
+  const [exportSelectionLoading, setExportSelectionLoading] = useState(false)
   const [currentWeekSubmitted, setCurrentWeekSubmitted] = useState<boolean | null>(null)
   const [currentWeekReport, setCurrentWeekReport] = useState<PersonalWeeklyReportListItem | null>(null)
   const [now, setNow] = useState(() => getShanghaiDateTime())
   const [topbarActionHost, setTopbarActionHost] = useState<HTMLElement | null>(null)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [internalBusy, setBusy] = useState(false)
@@ -611,6 +626,14 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
   }, [backgroundRefreshVersion, organizationId, reportListPage, reportListRefresh, workspaceView])
 
   useEffect(() => {
+    setSelectedReports(new Map())
+    setExportCandidates([])
+    setExportCandidatePage(0)
+    setExportCandidateTotal(0)
+    setExportSelectionOpen(false)
+  }, [organizationId])
+
+  useEffect(() => {
     if (workspaceView !== 'list' || !reportList || reportListPage !== 0) return
     const activeWeek = getWeeklyReportTargetWeekStart({
       now,
@@ -621,6 +644,106 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
     setCurrentWeekSubmitted(Boolean(currentReport?.publishedRevision))
     setCurrentWeekReport(currentReport ?? null)
   }, [now, reportList, reportListPage, reportProfile, weekStartsOn, weeklyReportRules, workspaceView])
+
+  async function exportReports(items: Array<Pick<PersonalWeeklyReportListItem, 'weekStart' | 'reportProfile'>>) {
+    if (!organizationId || items.length === 0) return
+    try {
+      const reports = await Promise.all(items.map((item) => fetchPersonalWeeklyReport(
+        organizationId,
+        item.weekStart,
+        item.reportProfile ?? 'legacy',
+      )))
+      const reportTitles = reports.map((item) => `${item.weekStart} · ${item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史周报'}`)
+      const roles = [...new Set(reports.map((item) => item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史格式'))]
+      const data = reports.map((item) => [
+        `### ${item.weekStart} · ${item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史周报'}`,
+        `- 组织：${item.organizationName}`,
+        `- 角色：${item.reportProfile ?? item.activeProfile}`,
+        `- 周期：${formatWeekRange(item.weekStart)}`,
+        `- 状态：${item.state}`,
+        `- 提交时间：${item.submittedAt ?? '未提交'}`,
+        `- 周报内容：\n${item.publishedContent || item.content || '无内容'}`,
+        `- 来源摘要：${item.sources.length} 项来源；${item.itemSources.length} 项内容绑定`,
+      ].join('\n')).join('\n\n')
+      const prompt = buildAiExportPrompt({
+        title: '周报管理导出',
+        scope: [
+          `组织：${reports[0]?.organizationName ?? organizationId}`,
+          `角色：${roles.join('、')}`,
+          `周起始日期：${items.map((item) => item.weekStart).join('、')}`,
+          `报告标题：${reportTitles.join('；')}`,
+          `包含数量：${items.length} 篇周报`,
+          '不包含：项目日记、图片、临时下载地址、分享链接、权限配置和通知历史。',
+        ],
+        fields: ['周报周期、作者、角色、状态、提交时间、周报内容、来源数量和事项来源绑定摘要'],
+        data,
+        instructions: ['比较多篇周报的进展、风险和计划变化，标记跨周持续未解决的问题。', '输出事实摘要、趋势判断和下一周行动建议。'],
+      })
+      setExportPrompt({
+        prompt,
+        fileName: `周报-${items[0].weekStart}-${items.length}篇提示词`,
+        summary: `AI 提示词包将包含 ${reports[0]?.organizationName ?? organizationId} 的 ${items.length} 篇周报，角色为 ${roles.join('、')}，周起始日期为 ${items.map((item) => item.weekStart).join('、')}；不包含项目日记、图片、临时链接、权限配置和通知历史。`,
+      })
+    } catch (loadError) {
+      setOperationError(loadError)
+    }
+  }
+
+  async function openExportSelection(current?: PersonalWeeklyReportListItem | null) {
+    if (!organizationId) return
+    setExportSelectionLoading(true)
+    try {
+      const page = await fetchPersonalWeeklyReports(organizationId, { limit: REPORT_LIST_PAGE_SIZE, offset: 0 })
+      const next = new Map(selectedReports)
+      if (current) next.set(`${current.weekStart}:${current.reportProfile ?? 'legacy'}`, current)
+      setSelectedReports(next)
+      setExportCandidatePage(0)
+      setExportCandidateTotal(page.total)
+      setExportCandidates(page.items)
+      setExportSelectionOpen(true)
+    } catch (loadError) {
+      setOperationError(loadError)
+    } finally {
+      setExportSelectionLoading(false)
+    }
+  }
+
+  async function exportAllReports() {
+    if (!organizationId || exportSelectionLoading) return
+    setExportSelectionLoading(true)
+    try {
+      const first = await fetchPersonalWeeklyReports(organizationId, { limit: REPORT_LIST_PAGE_SIZE, offset: 0 })
+      const items = [...first.items]
+      for (let offset = REPORT_LIST_PAGE_SIZE; offset < first.total; offset += REPORT_LIST_PAGE_SIZE) {
+        const page = await fetchPersonalWeeklyReports(organizationId, { limit: REPORT_LIST_PAGE_SIZE, offset })
+        items.push(...page.items)
+      }
+      setExportSelectionOpen(false)
+      await exportReports(items)
+    } catch (loadError) {
+      setOperationError(loadError)
+    } finally {
+      setExportSelectionLoading(false)
+    }
+  }
+
+  async function loadExportCandidatePage(page: number) {
+    if (!organizationId || page < 0 || page >= Math.max(1, Math.ceil(exportCandidateTotal / REPORT_LIST_PAGE_SIZE))) return
+    setExportSelectionLoading(true)
+    try {
+      const result = await fetchPersonalWeeklyReports(organizationId, {
+        limit: REPORT_LIST_PAGE_SIZE,
+        offset: page * REPORT_LIST_PAGE_SIZE,
+      })
+      setExportCandidatePage(page)
+      setExportCandidates(result.items)
+      setExportCandidateTotal(result.total)
+    } catch (loadError) {
+      setOperationError(loadError)
+    } finally {
+      setExportSelectionLoading(false)
+    }
+  }
 
   async function convertLegacyDraft() {
     if (busy || saveInFlight.current || !report) return
@@ -922,10 +1045,10 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
       ? '当前身份本周周报已提交。'
     : createAvailability.reason
 
-  const weeklyReportToolbar = topbarActionHost && organizationId > 0 && workspaceView === 'editor'
+  const weeklyReportToolbar = topbarActionHost && organizationId > 0
     ? createPortal(
       <div className="weekly-report-toolbar">
-        <Select value={weekStart} onValueChange={(value) => void changeEditorWeek(value)}>
+        {workspaceView === 'editor' ? <Select value={weekStart} onValueChange={(value) => void changeEditorWeek(value)}>
           <SelectTrigger
             aria-label="选择周报周期"
             className="weekly-report-select weekly-report-period-select"
@@ -937,11 +1060,11 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
           <SelectContent>
             {weekOptions.map((value, index) => (
               <SelectItem key={value} value={value}>
-                {index === 0 ? '本周 · ' : ''}{formatWeekRange(value)}
+                {index === 0 ? '本周 · ' : ''}{formatWeekLabel(value)}
               </SelectItem>
             ))}
           </SelectContent>
-        </Select>
+        </Select> : <div className="export-scope-trigger"><Button type="button" variant="outline" disabled={exportSelectionLoading} onClick={() => setExportMenuOpen((open) => !open)}><DownloadSimple size={16} />{exportSelectionLoading ? '导出中，请稍等' : '一键导出'}</Button>{exportMenuOpen ? <div className="export-scope-menu" role="menu" aria-label="导出范围"><Button type="button" variant="ghost" role="menuitem" disabled={exportSelectionLoading || !reportList?.total} onClick={() => { setExportMenuOpen(false); void exportAllReports() }}>全部导出</Button><Button type="button" variant="ghost" role="menuitem" disabled={exportSelectionLoading} onClick={() => { setExportMenuOpen(false); void openExportSelection(currentWeekReport) }}>筛选导出</Button></div> : null}</div>}
       </div>,
       topbarActionHost,
     )
@@ -967,6 +1090,50 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
   )
 
   return (
+    <>
+    <AiExportPromptDialog open={Boolean(exportPrompt)} onOpenChange={(open) => { if (!open) setExportPrompt(null) }} title="确认导出周报提示词" prompt={exportPrompt?.prompt ?? ''} fileName={exportPrompt?.fileName ?? '周报提示词'} summary={exportPrompt?.summary} />
+    <Dialog open={exportSelectionOpen} onOpenChange={setExportSelectionOpen}>
+      <DialogContent className="weekly-report-export-selection-dialog">
+        <DialogHeader>
+          <DialogTitle>选择要导出的周报</DialogTitle>
+          <DialogDescription>当前周报已默认选中。可继续选择多篇历史周报，确认后将重新读取完整内容并生成一个 AI 提示词包。</DialogDescription>
+        </DialogHeader>
+        <div className="weekly-report-export-selection-summary">
+          <strong>{organizationName}</strong>
+          <span>已选择 {selectedReports.size} 篇周报</span>
+        </div>
+        <div className="weekly-report-export-selection-list">
+          {exportCandidates.map((item) => {
+            const selectionKey = `${item.weekStart}:${item.reportProfile ?? 'legacy'}`
+            const reportLabel = item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史周报'
+            return <label key={selectionKey}>
+              <input type="checkbox" checked={selectedReports.has(selectionKey)} onChange={(event) => setSelectedReports((current) => {
+                const next = new Map(current)
+                if (event.target.checked) next.set(selectionKey, item)
+                else next.delete(selectionKey)
+                return next
+              })} />
+              <span><strong>{item.weekStart} · {reportLabel}</strong><small>{formatWeekRange(item.weekStart)} · {reportStateMeta[item.state].label}</small></span>
+            </label>
+          })}
+        </div>
+        {exportCandidateTotal > REPORT_LIST_PAGE_SIZE ? <nav className="weekly-report-export-selection-pagination" aria-label="导出周报选择分页">
+          <Button type="button" size="icon" variant="ghost" disabled={exportCandidatePage === 0 || exportSelectionLoading} onClick={() => void loadExportCandidatePage(exportCandidatePage - 1)} aria-label="上一页周报"><CaretLeft /></Button>
+          <span>第 {exportCandidatePage + 1} / {Math.ceil(exportCandidateTotal / REPORT_LIST_PAGE_SIZE)} 页</span>
+          <Button type="button" size="icon" variant="ghost" disabled={exportCandidatePage >= Math.ceil(exportCandidateTotal / REPORT_LIST_PAGE_SIZE) - 1 || exportSelectionLoading} onClick={() => void loadExportCandidatePage(exportCandidatePage + 1)} aria-label="下一页周报"><CaretRight /></Button>
+        </nav> : null}
+        <p className="weekly-report-export-exclusions">格式：AI 提示词包；不包含项目日记、图片、临时链接、权限配置和通知历史。</p>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setExportSelectionOpen(false)}>取消</Button>
+          <Button type="button" variant="outline" disabled={exportSelectionLoading || !exportCandidateTotal} onClick={() => void exportAllReports()}>全部导出</Button>
+          <Button type="button" disabled={!selectedReports.size} onClick={() => {
+            const items = Array.from(selectedReports.values())
+            setExportSelectionOpen(false)
+            void exportReports(items)
+          }}>筛选导出（{selectedReports.size} 篇）</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <section className={`weekly-report-workbench is-${workspaceView}`} aria-label="周报管理">
       <OrganizationPermissionErrorDialog
         message={organizationPermissionError}
@@ -1025,7 +1192,9 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
                   <strong>{currentState?.label ?? '尚未创建周报'}{current?.reportProfile ? ` · ${weeklyReportProfiles[current.reportProfile].label}` : ''}</strong>
                   <small>{current?.publishedRevision ? `已提交第 ${current.publishedRevision} 版，管理员可见提交快照。` : '草稿只对自己可见，填写完成后可在预览中确认提交。'}</small>
                 </div>
-                {current ? <Button type="button" onClick={() => openEditor(activeWeekStart, current.state === 'submitted', reportProfile)}><PencilSimple size={16} />{current.state === 'submitted' ? '查看周报' : current.state === 'modified' ? '继续修改' : '继续填写'}</Button> : <CreateWeeklyReportButton enabled={canCreateWeeklyReport} reason={weeklyReportCreationReason} onCreate={() => openEditor(activeWeekStart, false, reportProfile, true)} />}
+                <div className="weekly-report-list-actions">
+                  {current ? <Button type="button" onClick={() => openEditor(activeWeekStart, current.state === 'submitted', reportProfile)}><PencilSimple size={16} />{current.state === 'submitted' ? '查看周报' : current.state === 'modified' ? '继续修改' : '继续填写'}</Button> : <CreateWeeklyReportButton enabled={canCreateWeeklyReport} reason={weeklyReportCreationReason} onCreate={() => openEditor(activeWeekStart, false, reportProfile, true)} />}
+                </div>
               </section>
             )
           })()}
@@ -1043,6 +1212,7 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
           ) : reportList?.items.length ? (
             <div className="weekly-report-list" role="list">
               <div className="weekly-report-list-head" aria-hidden="true">
+                <span>选择</span>
                 <span>周报周期</span>
                 <span>状态</span>
                 <span>关联工作</span>
@@ -1053,10 +1223,19 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
                 const state = reportStateMeta[item.state]
                 const reportLabel = item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史格式周报'
                 const canEditItem = Boolean(canWriteWeeklyReport && item.reportProfile === activeProfile && !item.publishedRevision)
+                const selectionKey = `${item.weekStart}:${item.reportProfile ?? 'legacy'}`
                 return (
                   <article className="weekly-report-list-row" key={`${item.weekStart}:${item.reportProfile ?? 'legacy'}`} role="listitem">
+                    <label className="weekly-report-list-select">
+                      <input type="checkbox" checked={selectedReports.has(selectionKey)} onChange={(event) => setSelectedReports((current) => {
+                        const next = new Map(current)
+                        if (event.target.checked) next.set(selectionKey, item)
+                        else next.delete(selectionKey)
+                        return next
+                      })} aria-label={`选择 ${formatWeekRange(item.weekStart)} ${reportLabel}`} />
+                    </label>
                     <div className="weekly-report-list-period">
-                      <strong>{formatWeekRange(item.weekStart)}</strong>
+                      <strong title={formatWeekRange(item.weekStart)} aria-label={formatWeekRange(item.weekStart)}>{formatWeekLabel(item.weekStart)}</strong>
                       <span>{item.reportProfile ? weeklyReportProfiles[item.reportProfile].label : '历史周报'} · {item.publishedRevision ? `已提交第 ${item.publishedRevision} 版` : '尚未提交'}</span>
                     </div>
                     <div>
@@ -1371,5 +1550,6 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
       </Dialog>
 
     </section>
+    </>
   )
 })

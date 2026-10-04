@@ -1671,8 +1671,6 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [todoFilterJoin, setTodoFilterJoin] = useState<TodoFilterJoin>('and')
   const [todoFilterConditions, setTodoFilterConditions] = useState<TodoFilterCondition[]>([])
   const [todoPickerOpen, setTodoPickerOpen] = useState(false)
-  const [exportScopeDialogOpen, setExportScopeDialogOpen] = useState(false)
-  const [exportScope, setExportScope] = useState<TimelineExportScope>('current')
   const [exportPreviewOpen, setExportPreviewOpen] = useState(false)
   const [exportEditorReady, setExportEditorReady] = useState(false)
   const [exportFileName, setExportFileName] = useState('')
@@ -3014,15 +3012,9 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
     setEventEditorDirty(true)
   }
 
-  function openExportScopeDialog() {
-    setExportScope(selectedEvent ? 'current' : 'all')
-    setExportScopeDialogOpen(true)
-  }
-
   async function handleExport(scope: TimelineExportScope) {
     const eventId = scope === 'current' ? selectedEvent?.id : undefined
     if (scope === 'current' && eventId == null) return
-    setExportScopeDialogOpen(false)
     setBusyAction('export')
     try {
       const result = await onExportTimeline(eventId)
@@ -3109,7 +3101,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 
   useImperativeHandle(ref, () => ({
     exportTimeline: () => {
-      openExportScopeDialog()
+      void handleExport('all')
     },
     selectEvent: (eventId: number) => {
       const targetEvent = events.find((event) => event.id === eventId)
@@ -4062,63 +4054,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
         </DialogContent>
       </Dialog>
 
-      <Dialog open={exportScopeDialogOpen} onOpenChange={setExportScopeDialogOpen}>
-        <DialogContent className="package-export-scope-dialog">
-          <DialogHeader>
-            <DialogTitle>导出时间线</DialogTitle>
-            <DialogDescription>
-              选择需要导出的时间线范围，确认后可以在预览中继续编辑内容。
-            </DialogDescription>
-          </DialogHeader>
-          <fieldset className="package-export-scope-options">
-            <legend>导出范围</legend>
-            <label className={exportScope === 'current' ? 'package-export-scope-option active' : 'package-export-scope-option'}>
-              <input
-                checked={exportScope === 'current'}
-                disabled={!selectedEvent}
-                name="timeline-export-scope"
-                type="radio"
-                value="current"
-                onChange={() => setExportScope('current')}
-              />
-              <span>
-                <strong>导出当前事件时间线</strong>
-                <small>
-                  {selectedEvent ? `仅导出「${selectedEvent.title}」及其操作文档、安装包记录。` : '当前没有可导出的交付事件。'}
-                </small>
-              </span>
-            </label>
-            <label className={exportScope === 'all' ? 'package-export-scope-option active' : 'package-export-scope-option'}>
-              <input
-                checked={exportScope === 'all'}
-                name="timeline-export-scope"
-                type="radio"
-                value="all"
-                onChange={() => setExportScope('all')}
-              />
-              <span>
-                <strong>导出完整事件线</strong>
-                <small>导出当前项目下的全部交付事件和时间线记录。</small>
-              </span>
-            </label>
-          </fieldset>
-          <DialogFooter>
-            <Button variant="outline" type="button" onClick={() => setExportScopeDialogOpen(false)}>
-              取消
-            </Button>
-            <Button type="button" onClick={() => void handleExport(exportScope)}>
-              继续导出
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={exportPreviewOpen} onOpenChange={setExportPreviewOpen}>
         <DialogContent className="package-operation-dialog">
           <DialogHeader className="operation-doc-header">
-            <DialogTitle>导出 {project.name || '项目'} 时间线</DialogTitle>
+            <DialogTitle>预览全部交付</DialogTitle>
             <DialogDescription>
-              确认项目「{project.name || '未命名项目'}」的时间线内容无误后，再点击右下角确认导出。
+              确认项目「{project.name || '未命名项目'}」的全部交付记录无误后，再导出。
             </DialogDescription>
           </DialogHeader>
           <div className="operation-doc-form">
@@ -4140,7 +4081,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
               取消
             </Button>
             <Button type="button" onClick={confirmExport} disabled={!exportEditorReady || !exportContent.trim()}>
-              确认导出
+              导出交付记录
             </Button>
           </DialogFooter>
         </DialogContent>

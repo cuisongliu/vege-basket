@@ -24,7 +24,7 @@
 }
 
 .weekly-report-period-select {
-  width: 320px;
+  width: 220px;
 }
 
 .weekly-report-create-wrap {
@@ -198,7 +198,7 @@
 .weekly-report-list-head,
 .weekly-report-list-row {
   display: grid;
-  grid-template-columns: minmax(260px, 2fr) 150px 120px minmax(220px, 1.15fr) minmax(210px, 1.2fr);
+  grid-template-columns: 44px minmax(180px, 1.5fr) 100px minmax(130px, 0.9fr) minmax(190px, 1.2fr) minmax(180px, auto);
   gap: 20px;
   align-items: center;
 }
@@ -206,8 +206,13 @@
 .weekly-report-list-actions {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
+}
+
+.weekly-report-list-actions button {
+  white-space: nowrap;
 }
 
 .weekly-report-list-head {
@@ -761,12 +766,12 @@
   }
 
   .weekly-report-period-select {
-    width: 280px;
+    width: 220px;
   }
 
   .weekly-report-list-head,
   .weekly-report-list-row {
-    grid-template-columns: minmax(240px, 1.7fr) 140px 100px minmax(190px, 1fr) minmax(210px, 1.2fr);
+    grid-template-columns: 40px minmax(160px, 1.4fr) 90px minmax(110px, 0.9fr) minmax(170px, 1.1fr) minmax(170px, auto);
     gap: 14px;
   }
 
