@@ -3,6 +3,8 @@ import { request } from './api'
 import type {
   BugSeverity,
   BugStatus,
+  AiBugExportImage,
+  AiBugExportImagePromptResult,
   TestCaseStatus,
   TestCaseType,
   TestCaseImportPreview,
@@ -37,6 +39,38 @@ export function fetchTestWorkbench(
   if (scope?.sections?.length) params.set('sections', scope.sections.join(','))
   const query = params.toString()
   return request<TestWorkbenchData>(`/api/test-workbench${query ? `?${query}` : ''}`, options)
+}
+
+export function exportTestBugAiPrompt(spaceId: number, bugId: number) {
+  return request<{ fileName: string; imageCount: number; prompt: string }>(
+    `/api/test-spaces/${spaceId}/bugs/${bugId}/ai-export-prompt`,
+    { method: 'POST' },
+  )
+}
+
+export function exportAssignedTestBugAiPrompt(organizationId: OrganizationContext, spaceId: number, bugId: number) {
+  return request<{ fileName: string; imageCount: number; prompt: string }>(
+    withOrganizationContext(`/api/test-spaces/${spaceId}/bugs/${bugId}/ai-export-prompt`, organizationId),
+    { method: 'POST' },
+  )
+}
+
+export function fetchAssignedTestBugAiImages(organizationId: OrganizationContext, spaceId: number, bugId: number) {
+  return request<{ images: AiBugExportImage[] }>(
+    withOrganizationContext(`/api/test-spaces/${spaceId}/bugs/${bugId}/ai-export-images`, organizationId),
+  )
+}
+
+export function generateAssignedTestBugAiImagePrompts(
+  organizationId: OrganizationContext,
+  spaceId: number,
+  bugId: number,
+  images: Array<{ imageId: string; instruction: string }>,
+) {
+  return request<{ results: AiBugExportImagePromptResult[] }>(
+    withOrganizationContext(`/api/test-spaces/${spaceId}/bugs/${bugId}/ai-export-image-prompts`, organizationId),
+    { body: JSON.stringify({ images }), method: 'POST' },
+  )
 }
 
 export function createTestSpace(name: string, versionLabel: string, organizationId: number) {

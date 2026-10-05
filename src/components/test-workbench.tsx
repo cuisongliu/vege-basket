@@ -50,6 +50,7 @@ import {
   PencilSimple,
   Plus,
   Stack,
+  Sparkle,
   Trash,
   UploadSimple,
   UserPlus,
@@ -92,6 +93,9 @@ import {
 } from './weekly-report-workbench'
 import type { WeeklyReportProfile } from '../../shared/weekly-report-profile'
 import { BugShareDialog } from './bug-share-dialog'
+import { AiExportPromptDialog } from './ai-export-prompt-dialog'
+import { BugAiExportDialog } from './bug-ai-export-dialog'
+import { buildAiBugExportPrompt } from '../ai-export-prompt'
 import { UserName } from './user-name'
 import {
   BugFilterBuilderDialog,
@@ -141,6 +145,8 @@ import {
   deleteTestSubject,
   deleteTestBug,
   deleteTestBugComment,
+  fetchAssignedTestBugAiImages,
+  generateAssignedTestBugAiImagePrompts,
   fetchAssignedTestBugs,
   fetchTestBugVerificationScript,
   fetchTestSpaceInviteLinkInfo,
@@ -174,6 +180,7 @@ import {
 import type {
   BugSeverity,
   BugStatus,
+  AiBugExportImage,
   TestBug,
   TestBugComment,
   TestBugEvent,
@@ -5981,6 +5988,11 @@ export function AssignedTestBugs({
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [verificationBug, setVerificationBug] = useState<TestBug>()
   const [verificationDialogOpen, setVerificationDialogOpen] = useState(false)
+  const [aiExportBusy, setAiExportBusy] = useState(false)
+  const [aiExportError, setAiExportError] = useState('')
+  const [aiExportPrompt, setAiExportPrompt] = useState<{ fileName: string; imageCount: number; prompt: string } | null>(null)
+  const [aiExportImages, setAiExportImages] = useState<AiBugExportImage[]>([])
+  const [aiExportConfigOpen, setAiExportConfigOpen] = useState(false)
   const [filterDialogOpen, setFilterDialogOpen] = useState(false)
   const [filterJoin, setFilterJoin] = useState<BugFilterJoin>('and')
   const [filterConditions, setFilterConditions] = useState<BugFilterCondition[]>(createDefaultBugFilterConditions)
@@ -6161,6 +6173,74 @@ export function AssignedTestBugs({
     }
   }
 
+  async function exportAiPrompt() {
+    if (!selected) return
+    setAiExportBusy(true)
+    setAiExportError('')
+    try {
+      const result = await fetchAssignedTestBugAiImages(organizationId, selected.testSpaceId, selected.id)
+      setAiExportImages(result.images)
+      setAiExportConfigOpen(true)
+    } catch (exportError) {
+      setAiExportError(exportError instanceof Error ? exportError.message : 'AI 提示词导出失败，请稍后重试。')
+    } finally {
+      setAiExportBusy(false)
+    }
+  }
+
+  async function generateAiImagePrompts(items: Array<{ imageId: string; instruction: string }>) {
+    if (!selected) return items.map((item) => ({ imageId: item.imageId, error: '没有选中的 Bug。' }))
+    setAiExportBusy(true)
+    setAiExportError('')
+    try {
+      const result = await generateAssignedTestBugAiImagePrompts(organizationId, selected.testSpaceId, selected.id, items)
+      return result.results
+    } catch (generationError) {
+      const message = generationError instanceof Error ? generationError.message : 'AI 图片提示词生成失败。'
+      setAiExportError(message)
+      return items.map((item) => ({ imageId: item.imageId, error: message }))
+    } finally {
+      setAiExportBusy(false)
+    }
+  }
+
+  function continueAiExport(imagePrompts: Array<{ imageId: string; label: string; prompt: string }>) {
+    if (!selected) return
+    const processedImageReferences = imagePrompts.flatMap((prompt) => {
+      const image = aiExportImages.find((candidate) => candidate.id === prompt.imageId)
+      return image ? [image.source, image.previewUrl] : []
+    })
+    const prompt = buildAiBugExportPrompt({
+      actualResult: selected.actualResult,
+      comments: selected.comments.map((comment) => ({
+        authorName: comment.authorName,
+        content: comment.content,
+        createdAt: comment.createdAt,
+      })),
+      environment: selected.environment,
+      expectedResult: selected.expectedResult,
+      id: selected.id,
+      imagePrompts,
+      moduleName: selected.moduleName,
+      processedImageReferences,
+      priority: selected.priority,
+      reproductionSteps: selected.reproductionSteps,
+      severity: selected.severity,
+      status: selected.status,
+      testCaseTitle: selected.testCaseTitle,
+      testEnvironmentName: selected.testEnvironmentName,
+      testSpaceName: selected.testSpaceName,
+      testSpaceVersionLabel: selected.testSpaceVersionLabel,
+      title: selected.title,
+    })
+    setAiExportConfigOpen(false)
+    setAiExportPrompt({
+      fileName: `BUG-${selected.id}-AI分析提示词.md`,
+      imageCount: imagePrompts.length,
+      prompt,
+    })
+  }
+
   const Root = embedded ? 'section' : 'main'
 
   return (
@@ -6242,7 +6322,8 @@ export function AssignedTestBugs({
                 <div className="test-detail-heading">
                   <div><code>BUG-{selected.id}</code><h2>{selected.title}</h2></div>
                   <div className="test-detail-heading-actions">
-                    {selected.canShare ? <Button variant="outline" disabled={busy} onClick={() => setShareOpen(true)}><LinkSimple /> 分享 Bug</Button> : null}
+                    {selected.canShare ? <Button aria-label="分享 Bug" size="icon-sm" variant="outline" disabled={busy} onClick={() => setShareOpen(true)} title="分享 Bug"><LinkSimple /></Button> : null}
+                    <Button aria-label={aiExportBusy ? '正在导出 AI 提示词' : 'AI 导出提示词'} size="icon-sm" variant="outline" disabled={busy || aiExportBusy} onClick={() => void exportAiPrompt()} title={aiExportBusy ? '正在导出 AI 提示词' : 'AI 导出提示词'}><Sparkle /></Button>
                     {selected.canTransfer && (selected.transferCandidates?.length ?? 0) > 0 ? (
                       <Button
                         variant="outline"
@@ -6284,6 +6365,7 @@ export function AssignedTestBugs({
                     ) : null}
                   </div>
                 </div>
+                {aiExportError ? <p className="test-form-error" role="alert">{aiExportError}</p> : null}
                 <div className="test-detail-meta assigned-bug-detail-meta">
                   <span>负责人 <UserName departedUserIds={departedUserIds} name={selected.assigneeName || '未分配'} userId={selected.assigneeUserId} /></span>
                   <span>测试用例 <strong>{selected.testCaseId ? `CASE-${selected.testCaseId} ${selected.testCaseTitle || ''}` : '待补关联'}</strong></span>
@@ -6366,6 +6448,26 @@ export function AssignedTestBugs({
       <OrganizationPermissionErrorDialog
         message={organizationPermissionError}
         onOpenChange={(open) => { if (!open) setOrganizationPermissionError('') }}
+      />
+      <BugAiExportDialog
+        busy={aiExportBusy}
+        error={aiExportError}
+        images={aiExportImages}
+        onContinue={continueAiExport}
+        onGenerate={generateAiImagePrompts}
+        onOpenChange={(open) => {
+          setAiExportConfigOpen(open)
+          if (!open) setAiExportError('')
+        }}
+        open={aiExportConfigOpen}
+      />
+      <AiExportPromptDialog
+        open={Boolean(aiExportPrompt)}
+        onOpenChange={(open) => { if (!open) setAiExportPrompt(null) }}
+        title="预览并编辑 AI 提示词"
+        prompt={aiExportPrompt?.prompt ?? ''}
+        fileName={aiExportPrompt?.fileName ?? 'AI分析提示词.md'}
+        summary={aiExportPrompt ? `已确认 ${aiExportPrompt.imageCount} 张图片提示词。最终导出不会重复上传或解析图片。` : undefined}
       />
     </Root>
   )

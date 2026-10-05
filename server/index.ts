@@ -28,6 +28,16 @@ import {
   requestAiChatCompletion,
 } from './ai-provider.ts'
 import {
+  completeAiActivity,
+  failAiActivity,
+  failAiActivityForTurn,
+  getAiActivityDetail,
+  listAiActivities,
+  startAiActivity,
+  withAiActivity,
+} from './ai-activity.ts'
+import type { AiActivityContext } from './ai-activity.ts'
+import {
   createAiConcurrencyLimiter,
   createAiRateLimiter,
   readAiRateLimitConfig,
@@ -136,6 +146,7 @@ import {
   deriveAiIntentTargetContext,
 } from '../shared/ai-input-intent.ts'
 import {
+  buildAiIntentClassificationRequest,
   AiIntentClassifierError,
   classifyAiIntentWithModel,
 } from './ai-intent-classifier.ts'
@@ -266,6 +277,8 @@ import {
 } from './account-offboarding.ts'
 import {
   configureTestWorkbenchNotifications,
+  getAssignedBugs,
+  getTestWorkbench,
   testWorkbenchRouter,
   type TestBugAssignedEvent,
   type TestBugCommentAddedEvent,
@@ -275,6 +288,13 @@ import {
   type TestExecutionResultChangedEvent,
   type TestPlanAssignedEvent,
 } from './test-workbench.ts'
+import {
+  generateAiBugExportPrompt,
+  generateAiBugImagePrompt,
+  generateAiBugImagePromptsConcurrently,
+  listAiBugExportImages,
+  type AiBugExportExecutionImage,
+} from './ai-bug-export.ts'
 import { imageSyncWorkflowRouter } from './image-sync-workflows.ts'
 import {
   acceptOrganizationInviteTokenWithClient,
@@ -284,7 +304,7 @@ import { createWeeklyReportRouter } from './weekly-reports.ts'
 import { changelogRouter } from './changelog.ts'
 import { getMyWork } from './my-work.ts'
 import { parseMyWorkFilters } from './my-work-policy.ts'
-import { parseOrganizationContext } from '../shared/organization-context.ts'
+import { parseOrganizationContext, type OrganizationContext } from '../shared/organization-context.ts'
 import {
   hashTodoShareToken,
   hashProjectTransferToken,
@@ -717,6 +737,244 @@ configureAccountOffboardingNotifications(({ notificationId }: AccountOffboarding
 })
 app.use('/api', testWorkbenchRouter)
 
+async function loadAiBugExportTarget(
+  userId: number,
+  assignedBugRequest: boolean,
+  organizationId: OrganizationContext | undefined,
+  spaceId: number,
+  bugId: number,
+) {
+  const bug = assignedBugRequest
+    ? (await getAssignedBugs(userId, organizationId ?? null)).bugs.find((item) => item.id === bugId && item.testSpaceId === spaceId)
+    : (await getTestWorkbench(userId, { bugId, spaceId }, new Set(['bugs']))).bugs.find((item) => item.id === bugId && item.testSpaceId === spaceId)
+  if (!bug || (!assignedBugRequest && !('detailsLoaded' in bug && bug.detailsLoaded))) return null
+  const executionImages: AiBugExportExecutionImage[] = bug.testPlanCaseId
+    ? (await query<AiBugExportExecutionImage>(
+      `
+      select image.object_key as "objectKey", image.content_type as "contentType", image.file_size as "fileSize"
+      from test_plan_execution_images image
+      join test_plan_executions execution on execution.id = image.execution_id
+      join test_plan_cases plan_case on plan_case.id = execution.test_plan_case_id
+      join test_plans plan on plan.id = plan_case.test_plan_id
+      where plan_case.id = $1 and plan.test_space_id = $2
+      order by execution.executed_at desc, execution.id desc, image.id
+      limit 8
+      `,
+      [bug.testPlanCaseId, spaceId],
+    )).rows.map((image) => ({
+      contentType: String(image.contentType),
+      fileSize: Number(image.fileSize),
+      objectKey: String(image.objectKey),
+    }))
+    : []
+  return { bug, executionImages }
+}
+
+function aiBugExportBugInput(bug: Record<string, unknown>) {
+  return {
+    ...bug,
+    comments: Array.isArray(bug.comments) ? bug.comments.map((comment) => {
+      const item = comment as Record<string, unknown>
+      return {
+        authorName: String(item.authorName ?? '未知用户'),
+        content: String(item.content ?? ''),
+        createdAt: String(item.createdAt ?? ''),
+      }
+    }) : [],
+  }
+}
+
+async function authenticateAiBugExportTarget(request: express.Request, response: express.Response) {
+  const assignedBugRequest = request.query.organizationId !== undefined
+  const organizationId = assignedBugRequest ? parseOrganizationContext(request.query.organizationId) : undefined
+  if (assignedBugRequest && organizationId === undefined) {
+    response.status(400).json({ error: '有效的组织上下文是必填项' })
+    return null
+  }
+  const session = await requireActiveRole(request, response, assignedBugRequest ? 'developer' : 'tester')
+  if (!session) return null
+  const spaceId = Number(request.params.spaceId)
+  const bugId = Number(request.params.bugId)
+  if (!Number.isSafeInteger(spaceId) || spaceId <= 0 || !Number.isSafeInteger(bugId) || bugId <= 0) {
+    response.status(400).json({ error: 'Bug and test space are required' })
+    return null
+  }
+  const target = await loadAiBugExportTarget(session.userId, assignedBugRequest, organizationId, spaceId, bugId)
+  if (!target) {
+    response.status(404).json({ error: 'Bug not found' })
+    return null
+  }
+  return { ...target, assignedBugRequest, bugId, organizationId, session, spaceId }
+}
+
+app.get('/api/test-spaces/:spaceId/bugs/:bugId/ai-export-images', asyncHandler(async (request, response) => {
+  const target = await authenticateAiBugExportTarget(request, response)
+  if (!target) return
+  const images = await listAiBugExportImages(aiBugExportBugInput(target.bug as Record<string, unknown>) as never, {
+    executionImages: target.executionImages,
+  })
+  response.json({ images })
+}))
+
+app.post('/api/test-spaces/:spaceId/bugs/:bugId/ai-export-image-prompts', asyncHandler(async (request, response) => {
+  const target = await authenticateAiBugExportTarget(request, response)
+  if (!target) return
+  const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {}
+  const rawImages = Array.isArray(body.images) ? body.images : []
+  if (rawImages.length < 1 || rawImages.length > 8) {
+    response.status(400).json({ error: '请选择 1 到 8 张图片。' })
+    return
+  }
+  const images = rawImages.map((value) => {
+    const item = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+    return {
+      id: String(item.imageId ?? ''),
+      instruction: String(item.instruction ?? '').trim().slice(0, 2_000),
+    }
+  })
+  if (images.some((item) => !item.id) || new Set(images.map((item) => item.id)).size !== images.length) {
+    response.status(400).json({ error: '图片选择无效。' })
+    return
+  }
+  if (!checkAiRateLimit(target.session.userId)) {
+    response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI 请求过于频繁，请稍后再试。' })
+    return
+  }
+  try {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    const bug = aiBugExportBugInput(target.bug as Record<string, unknown>)
+    const selectedImages = images.map((image) => ({ imageId: image.id, instruction: image.instruction }))
+    const results = await generateAiBugImagePromptsConcurrently(selectedImages, async (image) => {
+      const activity = await startAiActivity(query, target.session.userId, {
+        imageCount: 1,
+        module: 'bug-workbench',
+        operation: 'bug-image-analysis',
+        relatedType: 'bug',
+        relatedId: String(target.bugId),
+      }, JSON.stringify({
+        bugId: target.bugId,
+        instruction: image.instruction,
+        imageCount: 1,
+      }, null, 2), config.model)
+      try {
+        const prompt = await generateAiBugImagePrompt(config, bug as never, image.imageId, image.instruction, {
+          executionImages: target.executionImages,
+        })
+        await completeAiActivity(query, activity, prompt)
+        return prompt
+      } catch (error) {
+        try { await failAiActivity(query, activity, error) } catch { /* preserve image error */ }
+        throw error
+      }
+    })
+    response.json({ results })
+  } catch (error) {
+    if (error instanceof AiProviderError) {
+      response.status(error.status).json({
+        code: error.code,
+        error: error.code === 'AI_NOT_CONFIGURED' ? '暂未配置AI，请联系管理员。' : error.message,
+      })
+      return
+    }
+    throw error
+  }
+}))
+
+app.post('/api/test-spaces/:spaceId/bugs/:bugId/ai-export-prompt', asyncHandler(async (request, response) => {
+  const assignedBugRequest = request.query.organizationId !== undefined
+  const organizationId = assignedBugRequest ? parseOrganizationContext(request.query.organizationId) : undefined
+  if (assignedBugRequest && organizationId === undefined) {
+    response.status(400).json({ error: '有效的组织上下文是必填项' })
+    return
+  }
+  const session = await requireActiveRole(request, response, assignedBugRequest ? 'developer' : 'tester')
+  if (!session) return
+  const spaceId = Number(request.params.spaceId)
+  const bugId = Number(request.params.bugId)
+  if (!Number.isSafeInteger(spaceId) || spaceId <= 0 || !Number.isSafeInteger(bugId) || bugId <= 0) {
+    response.status(400).json({ error: 'Bug and test space are required' })
+    return
+  }
+
+  const bug = assignedBugRequest
+    ? (await getAssignedBugs(session.userId, organizationId ?? null)).bugs.find((item) => item.id === bugId && item.testSpaceId === spaceId)
+    : (await getTestWorkbench(
+      session.userId,
+      { bugId, spaceId },
+      new Set(['bugs']),
+    )).bugs.find((item) => item.id === bugId && item.testSpaceId === spaceId)
+  if (!bug || (!assignedBugRequest && !("detailsLoaded" in bug && bug.detailsLoaded))) {
+    response.status(404).json({ error: 'Bug not found' })
+    return
+  }
+
+  const executionImages: AiBugExportExecutionImage[] = bug.testPlanCaseId
+    ? (await query<AiBugExportExecutionImage>(
+      `
+      select image.object_key as "objectKey", image.content_type as "contentType", image.file_size as "fileSize"
+      from test_plan_execution_images image
+      join test_plan_executions execution on execution.id = image.execution_id
+      join test_plan_cases plan_case on plan_case.id = execution.test_plan_case_id
+      join test_plans plan on plan.id = plan_case.test_plan_id
+      where plan_case.id = $1 and plan.test_space_id = $2
+      order by execution.executed_at desc, execution.id desc, image.id
+      limit 8
+      `,
+      [bug.testPlanCaseId, spaceId],
+    )).rows.map((image) => ({
+      contentType: String(image.contentType),
+      fileSize: Number(image.fileSize),
+      objectKey: String(image.objectKey),
+    }))
+    : []
+
+  if (!checkAiRateLimit(session.userId)) {
+    response.status(429).json({ code: 'AI_RATE_LIMITED', error: 'AI 请求过于频繁，请稍后再试。' })
+    return
+  }
+  let activity: { id: string; startedAt: number } | null = null
+  try {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    activity = await startAiActivity(query, session.userId, {
+      imageCount: executionImages.length,
+      module: 'bug-workbench',
+      operation: 'bug-repair-prompt',
+      relatedType: 'bug',
+      relatedId: String(bugId),
+    }, JSON.stringify({
+      bugId,
+      fields: ['title', 'status', 'severity', 'priority', 'environment', 'reproductionSteps', 'expectedResult', 'actualResult', 'comments', 'imageEvidence'],
+      imageCount: executionImages.length,
+    }, null, 2), config.model)
+    const generated = await generateAiBugExportPrompt(
+      config,
+      {
+        ...bug,
+        comments: bug.comments.map((comment) => ({
+          authorName: String(comment.authorName ?? '未知用户'),
+          content: String(comment.content ?? ''),
+          createdAt: String(comment.createdAt ?? ''),
+        })),
+      },
+      { executionImages },
+    )
+    await completeAiActivity(query, activity, generated.prompt)
+    response.json(generated)
+  } catch (error) {
+    if (activity) {
+      try { await failAiActivity(query, activity, error) } catch { /* preserve provider error */ }
+    }
+    if (error instanceof AiProviderError) {
+      response.status(error.status).json({
+        code: error.code,
+        error: error.code === 'AI_NOT_CONFIGURED' ? '暂未配置AI，请联系管理员。' : error.message,
+      })
+      return
+    }
+    throw error
+  }
+}))
+
 app.get('/api/todo-shares/:token', asyncHandler(async (request, response) => {
   const token = String(request.params.token ?? '').trim().slice(0, 256)
   if (!token) {
@@ -1042,13 +1300,24 @@ async function resolveAiIntentClassification(
       input.source.userContent,
       input.source.attachments,
     )
-    const intent = await classifyAiIntentWithModel(readAiProviderConfig(platformAiEnvironment()), {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    const intentInput = {
       content: sourceContent,
       hasPendingTodoProposals: context.hasPendingTodoProposals,
       shanghaiDate: formatDate(new Date()),
       signal,
       sourceContextKind: input.source.context.contextKind,
       sourceProjectId: input.source.context.projectId,
+    }
+    const intentRequest = buildAiIntentClassificationRequest(intentInput)
+    const intent = await withAiActivity({
+      database: query,
+      userId: input.userId,
+      context: { module: 'veges-ai', operation: 'intent-classification' },
+      config,
+      request: intentRequest,
+      execute: () => classifyAiIntentWithModel(config, intentInput),
+      responseText: (value) => JSON.stringify(value),
     })
     if (signal?.aborted) {
       throw new AiIntentRoutingStoreError('AI_REQUEST_CANCELLED', 'AI request cancelled', 499)
@@ -1902,6 +2171,7 @@ async function assertAiWorkspaceReviewAccess(userId: number, projectIds: readonl
 }
 
 async function createAiWorkspaceReviewResponse(params: {
+  activityContext?: Pick<AiActivityContext, 'captureContent' | 'conversationId' | 'turnId'>
   messages: ChatMessage[]
   period: 'daily' | 'weekly'
   signal?: AbortSignal
@@ -1914,12 +2184,27 @@ async function createAiWorkspaceReviewResponse(params: {
   )
   await assertAiWorkspaceReviewAccess(params.userId, request.projectIds)
   try {
-    const message = await requestAiChatCompletion(readAiProviderConfig(platformAiEnvironment()), {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    const aiRequest = {
       messages: params.messages,
       signal: params.signal,
       systemPrompt: request.systemPrompt,
       timeoutMs: aiStructuredTurnTimeoutMs,
       untrustedContext: request.untrustedContext,
+    }
+    const message = await withAiActivity({
+      database: query,
+      userId: params.userId,
+      context: {
+        module: 'veges-ai',
+        operation: `workspace-${params.period}-review`,
+        sourceProjectIds: request.projectIds,
+        ...params.activityContext,
+      },
+      config,
+      request: aiRequest,
+      execute: () => requestAiChatCompletion(config, aiRequest),
+      responseText: String,
     })
     await assertAiWorkspaceReviewAccess(params.userId, request.projectIds)
     return { message, projectIds: request.projectIds, status: 200 as const }
@@ -1932,6 +2217,7 @@ async function createAiWorkspaceReviewResponse(params: {
 }
 
 async function generateAiPeriodSummary(params: {
+  activityContext?: Pick<AiActivityContext, 'captureContent' | 'conversationId' | 'turnId'>
   projectId: number
   signal?: AbortSignal
   type: 'daily' | 'weekly'
@@ -1976,10 +2262,27 @@ async function generateAiPeriodSummary(params: {
 
   try {
     const request = buildAiPeriodSummaryRequest(period, facts)
-    const content = await requestAiChatCompletion(readAiProviderConfig(platformAiEnvironment()), {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    const aiRequest = {
       ...request,
       signal: params.signal,
       timeoutMs: aiStructuredTurnTimeoutMs,
+    }
+    const content = await withAiActivity({
+      database: query,
+      userId: params.userId,
+      context: {
+        module: 'project-summary',
+        operation: `${params.type}-summary`,
+        relatedType: 'project',
+        relatedId: String(params.projectId),
+        sourceProjectIds: [params.projectId],
+        ...params.activityContext,
+      },
+      config,
+      request: aiRequest,
+      execute: () => requestAiChatCompletion(config, aiRequest),
+      responseText: String,
     })
     const title = `${formatDate(new Date())} ${params.type === 'daily' ? '日总结' : '周总结'}`
     return { content, period: period.label, title }
@@ -2026,6 +2329,7 @@ async function createAiAgentResponse(
   projectId?: number | null,
   signal?: AbortSignal,
   onDelta?: (delta: string) => Promise<void>,
+  activityContext: Partial<AiActivityContext> = {},
 ) {
   const scopedProjectId = Number.isFinite(projectId) ? Number(projectId) : null
   const projectContext = agentType === 'project-summary' && scopedProjectId
@@ -2035,13 +2339,35 @@ async function createAiAgentResponse(
     return { error: 'Project not found', status: 404 as const }
   }
   try {
-    const message = await requestAiChatCompletion(readAiProviderConfig(platformAiEnvironment()), {
+    const config = readAiProviderConfig(platformAiEnvironment())
+    const aiRequest = {
       messages,
       onDelta,
       signal,
       systemPrompt: aiAgentPrompts[agentType],
       timeoutMs,
       untrustedContext: projectContext ?? undefined,
+    }
+    const message = await withAiActivity({
+      database: query,
+      userId,
+      context: {
+        module: agentType === 'personal-weekly-report'
+          ? 'weekly-report'
+          : agentType === 'organization-weekly-summary'
+            ? 'organization-weekly-summary'
+            : agentType === 'conversation-analysis'
+              ? 'conversation-analysis'
+              : 'veges-ai',
+        operation: agentType,
+        ...(scopedProjectId ? { relatedType: 'project', relatedId: String(scopedProjectId) } : {}),
+        sourceProjectIds: scopedProjectId ? [scopedProjectId] : [],
+        ...activityContext,
+      },
+      config,
+      request: aiRequest,
+      execute: () => requestAiChatCompletion(config, aiRequest),
+      responseText: String,
     })
     return { message, status: 200 as const }
   } catch (error) {
@@ -2143,6 +2469,7 @@ async function generateAiTodoProposalCandidates(
   sourceMarkdown: string,
   context: AiConversationContext,
   signal?: AbortSignal,
+  activityContext?: Pick<AiActivityContext, 'captureContent' | 'conversationId' | 'turnId'>,
 ) {
   const catalog = await buildAiTodoProposalCatalog(
     userId,
@@ -2166,10 +2493,25 @@ async function generateAiTodoProposalCandidates(
       413,
     )
   }
-  const aiContent = await requestAiChatCompletion(aiConfig, {
+  const request = {
     ...aiRequest,
     signal,
     timeoutMs: aiStructuredTurnTimeoutMs,
+  }
+  const aiContent = await withAiActivity({
+    database: query,
+    userId,
+    context: {
+      module: 'veges-ai',
+      operation: 'todo-extraction',
+      ...(context.projectId ? { relatedType: 'project', relatedId: String(context.projectId) } : {}),
+      sourceProjectIds: catalog.projects.map((project) => project.id),
+      ...activityContext,
+    },
+    config: aiConfig,
+    request,
+    execute: () => requestAiChatCompletion(aiConfig, request),
+    responseText: String,
   })
   const proposals = parseAiTodoProposalResponse(aiContent, {
     catalog,
@@ -2266,6 +2608,11 @@ async function executeAiConversationTurn(
   const controller = new AbortController()
   activeAiTurnControllers.register(execution.turnId, execution.leaseToken, controller)
   try {
+    const canonicalActivityContext = {
+      captureContent: false,
+      conversationId: execution.conversationId,
+      turnId: execution.turnId,
+    } satisfies Pick<AiActivityContext, 'captureContent' | 'conversationId' | 'turnId'>
     observer.onProgress?.('preparing')
     await assertAiTurnExecutionActive(userId, execution)
     const classifiedIntent = execution.intent
@@ -2297,6 +2644,7 @@ async function executeAiConversationTurn(
       }
       observer.onProgress?.('generating')
       const generated = await generateAiPeriodSummary({
+        activityContext: canonicalActivityContext,
         projectId: execution.projectId,
         signal: controller.signal,
         type: classifiedIntent.period,
@@ -2364,6 +2712,7 @@ async function executeAiConversationTurn(
       }
       observer.onProgress?.('generating')
       const generated = await createAiWorkspaceReviewResponse({
+        activityContext: canonicalActivityContext,
         messages: [
           ...execution.history,
           { content: execution.modelContent, role: 'user' },
@@ -2426,6 +2775,7 @@ async function executeAiConversationTurn(
         classifiedIntent.content,
         execution.context,
         controller.signal,
+        canonicalActivityContext,
       )
       observer.onProgress?.('validating')
       const assistantContent = `已提取 ${proposals.length} 条待办候选，请审核后再创建。`
@@ -2489,6 +2839,7 @@ async function executeAiConversationTurn(
       execution.projectId,
       controller.signal,
       observer.onDelta,
+      canonicalActivityContext,
     )
     if ('error' in response) {
       throw new AiConversationStoreError(
@@ -2513,6 +2864,7 @@ async function executeAiConversationTurn(
     }
   } catch (error) {
     const code = aiTurnErrorCode(error)
+    await failAiActivityForTurn(query, userId, execution.turnId, error).catch(() => undefined)
     await failAiTurn(execution.turnId, execution.leaseToken, code)
     throw error
   } finally {
@@ -13468,6 +13820,40 @@ app.get('/api/ai/conversations', asyncHandler(async (request, response) => {
   }
 }))
 
+app.get('/api/ai/activities', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const status = typeof request.query.status === 'string' ? request.query.status : undefined
+  if (status && !['processing', 'completed', 'failed', 'cancelled'].includes(status)) {
+    response.status(400).json({ error: 'AI 记录状态无效' })
+    return
+  }
+  response.setHeader('Cache-Control', 'private, no-store')
+  response.json(await listAiActivities(query, userId, {
+    cursor: typeof request.query.cursor === 'string' ? request.query.cursor : undefined,
+    limit: Number(request.query.limit) || undefined,
+    module: typeof request.query.module === 'string' ? request.query.module.trim().slice(0, 80) : undefined,
+    status: status as 'processing' | 'completed' | 'failed' | 'cancelled' | undefined,
+  }))
+}))
+
+app.get('/api/ai/activities/:activityId', asyncHandler(async (request, response) => {
+  const userId = await ensureUserId(request, response)
+  if (!userId) return
+  const activityId = String(request.params.activityId ?? '')
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(activityId)) {
+    response.status(400).json({ error: 'AI 记录编号无效' })
+    return
+  }
+  const activity = await getAiActivityDetail(query, userId, activityId)
+  if (!activity) {
+    response.status(404).json({ error: 'AI 记录不存在' })
+    return
+  }
+  response.setHeader('Cache-Control', 'private, no-store')
+  response.json({ activity })
+}))
+
 app.post('/api/ai/intent-classifications', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
@@ -14423,12 +14809,16 @@ app.post('/api/integrations/feishu/card-actions', (request, response, next) => {
 
 app.use('/api', createOrganizationRouter({
   fetchFeishuUserName: fetchConfiguredFeishuUserName,
-  generateWeeklySummary: async (userId, source) => {
+  generateWeeklySummary: async (userId, source, organizationId) => {
     const result = await createAiAgentResponse(
       userId,
       'organization-weekly-summary',
       [{ role: 'user', content: trimForAi(source, aiMaxContextChars()) }],
       60_000,
+      undefined,
+      undefined,
+      undefined,
+      { relatedType: 'organization', relatedId: String(organizationId) },
     )
     return 'error' in result
       ? { error: result.error, status: result.status }
@@ -14439,12 +14829,16 @@ app.use('/api', createOrganizationRouter({
 }))
 
 app.use('/api', createWeeklyReportRouter({
-  generateWeeklyReport: async (userId, source) => {
+  generateWeeklyReport: async (userId, source, organizationId) => {
     const result = await createAiAgentResponse(
       userId,
       'personal-weekly-report',
       [{ role: 'user', content: trimForAi(source, aiMaxContextChars()) }],
       60_000,
+      undefined,
+      undefined,
+      undefined,
+      { relatedType: 'organization', relatedId: String(organizationId) },
     )
     return 'error' in result
       ? { error: result.error, status: result.status }

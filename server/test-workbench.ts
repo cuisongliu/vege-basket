@@ -1693,7 +1693,7 @@ function mapVerificationSubmissions(rows: readonly VerificationSubmissionRow[]) 
   return submissionsByBug
 }
 
-async function getTestWorkbench(
+export async function getTestWorkbench(
   userId: number,
   scope?: { bugId?: number; spaceId?: number; subjectId?: number },
   sections?: Set<TestWorkbenchSection>,
@@ -5419,7 +5419,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
   response.json(await getTestWorkbench(session.userId))
 }))
 
-async function getAssignedBugs(userId: number, organizationId: OrganizationContext) {
+export async function getAssignedBugs(userId: number, organizationId: OrganizationContext) {
   const bugs = await query<{
     organization_module_id: string | null
     organization_module_name: string | null
@@ -5445,6 +5445,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
     severity: string
     status: BugStatus
     test_plan_id: string | null
+    test_plan_case_id: string | null
     test_plan_name: string | null
     test_space_id: string
     test_space_name: string
@@ -5457,7 +5458,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
     organization_admin_access: boolean
   }>(
     `
-    select b.id, b.test_space_id, b.test_subject_id, b.test_plan_id, b.test_case_id, b.organization_module_id,
+    select b.id, b.test_space_id, b.test_subject_id, b.test_plan_id, b.test_plan_case_id, b.test_case_id, b.organization_module_id,
       linked_case.title as test_case_title,
       organization_module.name as organization_module_name,
       linked_case.folder_id as test_case_folder_id,
@@ -5751,6 +5752,7 @@ async function getAssignedBugs(userId: number, organizationId: OrganizationConte
       discoveryDifficultyReason: decryptText(row.discovery_difficulty_reason),
       severity: row.severity,
       status: row.status,
+      testPlanCaseId: row.test_plan_case_id ? Number(row.test_plan_case_id) : undefined,
       testPlanId: row.test_plan_id ? Number(row.test_plan_id) : undefined,
       testPlanName: row.test_plan_name ? decryptText(row.test_plan_name) : undefined,
       testSpaceId: Number(row.test_space_id),

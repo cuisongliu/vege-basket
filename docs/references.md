@@ -57,15 +57,15 @@ Fresh deployments mount the initial built-in `admin` password at
 `VEGES_BOOTSTRAP_ADMIN_PASSWORD`; the process deletes that environment value after checking the
 account. It is not business configuration and is never written to the platform configuration.
 Business configuration is not a process environment contract. Superadministrators edit
-the public URL, the existing eight AI fields, SMTP, OSS, package rules, Feishu, and GitHub
+the public URL, the existing nine AI fields, SMTP, OSS, package rules, Feishu, and GitHub
 Actions in Platform Management. Each version is encrypted in PostgreSQL. API replicas reload
 through `LISTEN/NOTIFY` plus reconciliation; the digest worker reads the current version before
 delivery. Feishu event and OAuth callback URLs are read-only values derived from the configured
 public URL.
 
-Platform configuration schema version 2 reads stored version 1 snapshots through an in-memory
+Platform configuration schema version 3 reads stored version 1 and version 2 snapshots through an in-memory
 compatibility migration. It does not update the immutable stored revision during startup. A later
-save or restore writes a new version 2 snapshot. Future configuration-shape changes must add the
+save or restore writes a new version 3 snapshot. Future configuration-shape changes must add the
 next explicit migration step before increasing the schema version.
 
 The built-in `admin` account has an immutable database grant. Managed platform grants are
@@ -187,7 +187,7 @@ an in-flight flow retains the exact redirect URL stored in its signed state.
 | Package market | Organization-context `GET /api/package-market/rules?organizationId=:id` (or `projectId=:id` for a project selector), package details, release versions, CI branches/versions; every market read is filtered by the resolved organization policy |
 | Package timeline | `GET /api/projects/:projectId/package-timeline`; aggregate draft create with `POST .../events`, draft or rejected-plan replace/publish with `PUT .../events/:eventId`, completion with `POST .../events/:eventId/complete` (`success`, `partial`, `failed`, or reasoned `rejected` plus per-process results), per-event feedback comments with `POST/PATCH/DELETE .../events/:eventId/comments(/:commentId)` (author-owned edits, organization-member `@` mentions delivered as personal Feishu messages), mixed object-storage packages, encrypted container-image/offline-package addresses, reusable Shell scripts and explicitly ordered duplicate process references, per-item encrypted environment variables and Values YAML overlays, authorized `GET .../events/:eventId/delivery-artifacts` address, ordered process and execution-script generation, package-item download URLs, and timeline export |
 | Image sync | `POST /api/image-sync-runs`, `GET /api/image-sync-runs`, `GET /api/image-sync-runs/:runId?refresh=true`, `DELETE /api/image-sync-runs/:runId`; every route is session-protected and owner-scoped, and deletion accepts failed local records only |
-| AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
+| AI | `GET /api/ai/status`, `POST /api/ai/intent-classifications`, `GET/POST /api/ai/conversations/:conversationId/turns`, `POST .../turns/:turnId/document`, `POST .../turns/:turnId/retry`, `POST .../turns/:turnId/cancel`, `POST .../turns/:turnId/reconcile`, `GET /api/ai/conversations`, `PATCH/DELETE /api/ai/conversations/:conversationId`, current-user-only `GET /api/ai/activities` and `GET /api/ai/activities/:activityId`, `POST /api/projects/:projectId/summaries`, todo-proposal read/confirm routes |
 | Feishu events | `/api/integrations/feishu/events` |
 | Platform management | `/api/admin/platform-config`, config test/history/restore/runtime routes, `/api/admin/users`, `POST /api/admin/users/:userId/feishu-name-sync`, platform grants, and platform organization create/delete routes require a platform administrator. The name-sync route accepts no caller-supplied name and rejects the built-in `admin`. `npm run platform:config -- verify --env-file ...` is a read-only upgrade diagnostic that reports database/schema identity, active revision metadata, version count, configuration readability, and encryption key IDs without exposing configuration values. |
 | Roles | `POST /api/auth/active-role`, `GET /api/admin/users`, `PATCH /api/admin/users/:userId/roles` |

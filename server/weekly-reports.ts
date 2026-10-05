@@ -37,7 +37,7 @@ import { normalizeWeeklyReportSources, loadWeeklyReportSources, validateWeeklyRe
 type WeeklyReportSourceMode = 'ai' | 'manual'
 
 type WeeklyReportRouterDependencies = {
-  generateWeeklyReport: (userId: number, source: string) => Promise<{
+  generateWeeklyReport: (userId: number, source: string, organizationId: number) => Promise<{
     error?: string
     message?: string
     status: number
@@ -1229,6 +1229,7 @@ export function createWeeklyReportRouter(dependencies: WeeklyReportRouterDepende
         testerPlans: generationFacts.testerPlans,
         workStats: generationFacts.workStats,
       }),
+      organizationId,
     )
     if (!generated.message) {
       response.status(generated.status).json({ error: generated.error ?? 'AI 周报生成失败' })

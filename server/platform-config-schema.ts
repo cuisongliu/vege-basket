@@ -9,7 +9,7 @@ import { normalizeOssEndpoint } from './oss-endpoint.ts'
 
 // Stored snapshots are immutable. When the shape evolves, migrate a snapshot
 // in memory before validating it and write a new revision only on the next save.
-export const platformConfigSchemaVersion = 2
+export const platformConfigSchemaVersion = 3
 
 const maxPackageRulesBytes = 256 * 1024
 const defaultGithubRepositoryUrl = 'https://github.com/sealos-apps/sealos-pro'
@@ -25,6 +25,7 @@ export type PlatformConfig = {
     model: string
     rateLimit: number
     rateWindowMs: number
+    requestTimeoutMs: number
   }
   email: {
     enabled: boolean
@@ -63,7 +64,7 @@ export type PlatformConfig = {
     legacyMiddlewareRoots: string[]
     rulesYaml: string
   }
-  schemaVersion: 2
+  schemaVersion: 3
   storage: {
     accessKeyId: string
     accessKeySecret: string
@@ -93,7 +94,7 @@ export type MaskedPlatformConfig = Omit<PlatformConfig, 'ai' | 'email' | 'feishu
 
 const editableSectionFields: Record<PlatformConfigSection, readonly string[]> = {
   general: ['displayName', 'publicUrl'],
-  ai: ['apiBase', 'model', 'rateLimit', 'globalRateLimit', 'rateWindowMs', 'maxMessageLength', 'maxContextChars'],
+  ai: ['apiBase', 'model', 'rateLimit', 'globalRateLimit', 'rateWindowMs', 'maxMessageLength', 'maxContextChars', 'requestTimeoutMs'],
   email: ['enabled', 'host', 'port', 'security', 'username', 'fromName', 'fromAddress'],
   storage: ['endpoint', 'bucket', 'uploadMaxBytes', 'objectPrefix'],
   packages: ['downloadExpireSeconds', 'rulesYaml'],
@@ -238,6 +239,7 @@ export function createDefaultPlatformConfig(): PlatformConfig {
       rateWindowMs: 60_000,
       maxMessageLength: 2_000,
       maxContextChars: 12_000,
+      requestTimeoutMs: 120_000,
     },
     email: {
       enabled: false,
@@ -298,7 +300,7 @@ export function parsePlatformConfig(value: unknown): PlatformConfig {
   if (!displayName || displayName.length > 80) issues.push('general.displayName 长度必须为 1 到 80 个字符。')
 
   const ai = objectValue(root.ai, 'ai', issues)
-  strictKeys(ai, ['apiBase', 'apiKey', 'model', 'rateLimit', 'globalRateLimit', 'rateWindowMs', 'maxMessageLength', 'maxContextChars'], 'ai', issues)
+  strictKeys(ai, ['apiBase', 'apiKey', 'model', 'rateLimit', 'globalRateLimit', 'rateWindowMs', 'maxMessageLength', 'maxContextChars', 'requestTimeoutMs'], 'ai', issues)
   const aiApiBase = stringValue(ai.apiBase)
   const aiModel = stringValue(ai.model)
   if (aiApiBase) parseHttpsOrigin(aiApiBase, 'ai.apiBase', issues)
@@ -376,6 +378,7 @@ export function parsePlatformConfig(value: unknown): PlatformConfig {
       rateWindowMs: integerValue(ai.rateWindowMs, 'ai.rateWindowMs', issues, 1_000, 86_400_000),
       maxMessageLength: integerValue(ai.maxMessageLength, 'ai.maxMessageLength', issues, 1, 1_000_000),
       maxContextChars: integerValue(ai.maxContextChars, 'ai.maxContextChars', issues, 1, 10_000_000),
+      requestTimeoutMs: integerValue(ai.requestTimeoutMs, 'ai.requestTimeoutMs', issues, 5_000, 600_000),
     },
     email: {
       enabled: emailEnabled,
@@ -440,6 +443,19 @@ export function migrateStoredPlatformConfig(value: unknown, storedSchemaVersion:
     if (version === 1) {
       migrated = { ...migrated, schemaVersion: 2 }
       version = 2
+      continue
+    }
+    if (version === 2) {
+      const ai = objectValue(migrated.ai, 'config.ai', [])
+      migrated = {
+        ...migrated,
+        ai: {
+          ...ai,
+          requestTimeoutMs: ai.requestTimeoutMs ?? createDefaultPlatformConfig().ai.requestTimeoutMs,
+        },
+        schemaVersion: 3,
+      }
+      version = 3
       continue
     }
     throw new PlatformConfigValidationError([`无法升级的平台配置版本：${version}。`])

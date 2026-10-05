@@ -336,6 +336,8 @@ test('Bug detail header actions use icon-only buttons with accessible labels', (
   assert.match(testWorkbenchClientSource, /aria-label="转移空间"[\s\S]*?size="icon-sm"[\s\S]*?title="转移空间"[\s\S]*?<ArrowsLeftRight \/><\/Button>/u)
   assert.match(testWorkbenchClientSource, /aria-label="时间线"[\s\S]*?size="icon-sm"[\s\S]*?title="时间线"[\s\S]*?<Clock \/><\/Button>/u)
   assert.match(testWorkbenchClientSource, /aria-label="分享 Bug"[\s\S]*?size="icon-sm"[\s\S]*?title="分享 Bug"[\s\S]*?<LinkSimple \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /aria-label=\{aiExportBusy \? '正在导出 AI 提示词' : 'AI 导出提示词'\}[\s\S]*?size="icon-sm"[\s\S]*?<Sparkle \/><\/Button>/u)
+  assert.match(testWorkbenchClientSource, /selected\.canShare \? <Button aria-label="分享 Bug" size="icon-sm"[\s\S]*?title="分享 Bug"><LinkSimple \/><\/Button>/u)
   assert.match(testWorkbenchClientSource, /aria-label="编辑"[\s\S]*?size="icon-sm"[\s\S]*?title="编辑"[\s\S]*?<PencilSimple \/><\/Button>/u)
   assert.match(testWorkbenchClientSource, /function BugTimelineDialog/u)
   assert.match(testWorkbenchClientSource, /<DialogTitle>Bug 时间线<\/DialogTitle>/u)

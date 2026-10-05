@@ -29,6 +29,7 @@ test('reads one deployment-level AI configuration without exposing its key in er
       AI_MAX_CONTEXT_CHARS: '9000',
       AI_MAX_MESSAGE_LENGTH: '1500',
       AI_MODEL: ' model-name ',
+      AI_REQUEST_TIMEOUT_MS: '180000',
     }),
     {
       apiKey: 'secret-key',
@@ -36,6 +37,7 @@ test('reads one deployment-level AI configuration without exposing its key in er
       maxContextChars: 9000,
       maxMessageLength: 1500,
       model: 'model-name',
+      requestTimeoutMs: 180_000,
     },
   )
 
@@ -46,6 +48,13 @@ test('reads one deployment-level AI configuration without exposing its key in er
       error.code === 'AI_NOT_CONFIGURED' &&
       !error.message.includes('do-not-leak'),
   )
+
+  assert.equal(readAiProviderConfig({
+    AI_API_BASE: 'https://ai.example.com',
+    AI_API_KEY: 'secret-key',
+    AI_MODEL: 'model-name',
+    AI_REQUEST_TIMEOUT_MS: '1000',
+  }).requestTimeoutMs, 120_000)
 })
 
 test('normalizes a public HTTPS base URL and rejects unsafe destinations', async () => {
@@ -256,6 +265,40 @@ test('streams chat completion deltas and returns the complete response', async (
   assert.equal(responseContent, '你好')
 })
 
+test('adds only server-generated image data URLs to the final user message', async () => {
+  let body: { messages: Array<{ content: unknown; role: string }> } | undefined
+  await requestAiChatCompletion(
+    {
+      apiKey: 'provider-key',
+      baseUrl: 'https://ai.example.com',
+      maxContextChars: 100,
+      maxMessageLength: 100,
+      model: 'provider-model',
+    },
+    {
+      imageParts: [
+        { image_url: { url: 'data:image/png;base64,aGVsbG8=' }, type: 'image_url' },
+        { image_url: { url: 'https://example.com/image.png' }, type: 'image_url' },
+      ],
+      messages: [{ content: '分析图片', role: 'user' }],
+      systemPrompt: 'answer',
+    },
+    {
+      fetch: async (_input, init) => {
+        body = JSON.parse(String(init?.body)) as typeof body
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+      },
+      lookup: publicLookup,
+    },
+  )
+
+  const content = body?.messages.at(-1)?.content
+  assert.ok(Array.isArray(content))
+  assert.equal(content.length, 2)
+  assert.deepEqual(content[0], { type: 'text', text: '分析图片' })
+  assert.deepEqual(content[1], { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } })
+})
+
 test('ignores provider data after the first streaming terminal event', async () => {
   const deltas: string[] = []
   const responseContent = await requestAiChatCompletion(
@@ -464,11 +507,11 @@ test('maps an elapsed provider timeout while reading the response', async () => 
         maxContextChars: 100,
         maxMessageLength: 100,
         model: 'provider-model',
+        requestTimeoutMs: 5,
       },
       {
         messages: [{ content: 'hello', role: 'user' }],
         systemPrompt: 'answer',
-        timeoutMs: 5,
       },
       {
         fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {

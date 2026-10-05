@@ -26,6 +26,7 @@
 | 8 | AI_RATE_WINDOW_MS | 否 | 全局 AI / 限流时间窗口 | 默认 60000 毫秒，页面显示 60 秒，落库保留毫秒精度 |
 | 9 | AI_MAX_MESSAGE_LENGTH | 否 | 全局 AI / 单条消息字符上限 | 默认 2000 字符 |
 | 10 | AI_MAX_CONTEXT_CHARS | 否 | 全局 AI / 上下文字符上限 | 默认 12000 字符，不是 token |
+| 10a | AI_REQUEST_TIMEOUT_MS | 否 | 全局 AI / 请求超时 | 默认 120000 毫秒，页面显示秒数，限制 5 秒到 10 分钟 |
 | 11 | FEISHU_APP_ID | 是 | 飞书 / App ID | 迁移，已有绑定时更换受身份迁移限制 |
 | 12 | FEISHU_APP_SECRET | 是 | 飞书 / App Secret | 迁移，凭据更新使令牌缓存换版本 |
 | 13 | FEISHU_VERIFICATION_TOKEN | 是 | 飞书 / 事件及卡片回调校验 Token | 迁移 |

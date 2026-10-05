@@ -64,6 +64,7 @@ const fields: FieldDefinition[] = [
   { section: 'ai', field: 'rateWindowMs', label: '限流窗口', format: durationMs },
   { section: 'ai', field: 'maxMessageLength', label: '单次输入字符数' },
   { section: 'ai', field: 'maxContextChars', label: '上下文字符数' },
+  { section: 'ai', field: 'requestTimeoutMs', label: '请求超时', format: durationMs },
   { section: 'email', field: 'enabled', label: '启用邮件发送', format: enabled },
   { section: 'email', field: 'host', label: '邮件服务器' },
   { section: 'email', field: 'port', label: '端口' },

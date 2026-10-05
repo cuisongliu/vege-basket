@@ -3,6 +3,20 @@ import { isIP, type LookupFunction } from 'node:net'
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici'
 import { ServerSentEventDecoder } from '../shared/server-sent-events.ts'
 
+export type AiTextContentPart = {
+  text: string
+  type: 'text'
+}
+
+export type AiImageContentPart = {
+  image_url: {
+    url: string
+  }
+  type: 'image_url'
+}
+
+export type AiMessageContent = string | Array<AiTextContentPart | AiImageContentPart>
+
 export type AiChatMessage = {
   content: string
   role: 'assistant' | 'user'
@@ -14,9 +28,11 @@ export type AiProviderConfig = {
   maxContextChars: number
   maxMessageLength: number
   model: string
+  requestTimeoutMs?: number
 }
 
 export type AiCompletionRequest = {
+  imageParts?: AiImageContentPart[]
   messages: AiChatMessage[]
   onDelta?: (delta: string) => Promise<void> | void
   responseFormat?: 'json_object'
@@ -55,7 +71,9 @@ export const AI_UNTRUSTED_CONTENT_INSTRUCTION =
 
 const defaultMaxMessageLength = 2_000
 const defaultMaxContextChars = 12_000
-const defaultTimeoutMs = 45_000
+const defaultTimeoutMs = 120_000
+const minTimeoutMs = 5_000
+const maxTimeoutMs = 600_000
 const publicDnsTimeoutMs = 5_000
 const publicDnsEndpoint = 'https://cloudflare-dns.com/dns-query'
 
@@ -84,6 +102,11 @@ class AiCompletionObserverError extends Error {
 function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function boundedPositiveInteger(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback
 }
 
 export function isAiProviderConfigured(
@@ -122,6 +145,7 @@ export function readAiProviderConfig(
     maxContextChars: positiveInteger(environment.AI_MAX_CONTEXT_CHARS, defaultMaxContextChars),
     maxMessageLength: positiveInteger(environment.AI_MAX_MESSAGE_LENGTH, defaultMaxMessageLength),
     model,
+    requestTimeoutMs: boundedPositiveInteger(environment.AI_REQUEST_TIMEOUT_MS, defaultTimeoutMs, minTimeoutMs, maxTimeoutMs),
   }
 }
 
@@ -323,9 +347,12 @@ function trimContent(value: string, maxLength: number) {
 }
 
 function requestMessages(config: AiProviderConfig, request: AiCompletionRequest) {
-  const messages = request.messages
+  const messages: Array<{
+    content: string | Array<AiTextContentPart | AiImageContentPart>
+    role: AiChatMessage['role']
+  }> = request.messages
     .map((message) => ({
-      content: trimContent(String(message.content), config.maxMessageLength),
+      content: trimContent(message.content, config.maxMessageLength),
       role: message.role,
     }))
     .filter((message) => message.content)
@@ -337,6 +364,21 @@ function requestMessages(config: AiProviderConfig, request: AiCompletionRequest)
   const context = request.untrustedContext
     ? trimContent(request.untrustedContext, config.maxContextChars)
     : ''
+  const normalizedImageParts = (request.imageParts ?? []).filter((part) => part.image_url.url.startsWith('data:image/'))
+  const lastUserMessageIndex = messages.findLastIndex((message) => message.role === 'user')
+  if (normalizedImageParts.length > 0 && lastUserMessageIndex >= 0) {
+    const message = messages[lastUserMessageIndex]
+    const text = typeof message.content === 'string'
+      ? message.content
+      : message.content.filter((part): part is AiTextContentPart => part.type === 'text').map((part) => part.text).join('\n')
+    messages[lastUserMessageIndex] = {
+      ...message,
+      content: [
+        { type: 'text', text },
+        ...normalizedImageParts,
+      ],
+    }
+  }
   return [
     {
       content: `${request.systemPrompt.trim()}\n\n${AI_UNTRUSTED_CONTENT_INSTRUCTION}`,
@@ -460,7 +502,7 @@ export async function requestAiChatCompletion(
   const endpoint = buildAiChatCompletionsEndpoint(resolution.baseUrl)
   const dispatcher = createPinnedDispatcher(resolution.addresses)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? defaultTimeoutMs)
+  const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? config.requestTimeoutMs ?? defaultTimeoutMs)
   const signal = request.signal
     ? AbortSignal.any([controller.signal, request.signal])
     : controller.signal

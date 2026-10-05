@@ -11,6 +11,7 @@ export function platformAiEnvironment(): Record<string, string> {
     AI_RATE_WINDOW_MS: String(ai.rateWindowMs),
     AI_MAX_MESSAGE_LENGTH: String(ai.maxMessageLength),
     AI_MAX_CONTEXT_CHARS: String(ai.maxContextChars),
+    AI_REQUEST_TIMEOUT_MS: String(ai.requestTimeoutMs),
   }
 }
 

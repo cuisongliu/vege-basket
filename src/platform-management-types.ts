@@ -15,7 +15,7 @@ export type SecretState = {
 }
 
 export type PlatformConfig = {
-  schemaVersion: 2
+  schemaVersion: 3
   general: { displayName: string; publicUrl: string }
   ai: {
     apiBase: string
@@ -26,6 +26,7 @@ export type PlatformConfig = {
     rateWindowMs: number
     maxMessageLength: number
     maxContextChars: number
+    requestTimeoutMs: number
   }
   email: {
     enabled: boolean

@@ -2,6 +2,8 @@ import OSS from 'ali-oss'
 import nodemailer from 'nodemailer'
 import * as yaml from 'js-yaml'
 import { requestAiChatCompletion } from './ai-provider.ts'
+import { completeAiActivity, failAiActivity, startAiActivity } from './ai-activity.ts'
+import { query } from './db.ts'
 import { createPinnedHttpsAgent, resolvePublicNetworkHost } from './outbound-network.ts'
 import { normalizeOssEndpoint } from './package-market.ts'
 import type { PlatformConfig } from './platform-config-schema.ts'
@@ -25,8 +27,13 @@ function result(label: string, ok: boolean, message: string): TestResult {
   return { checks: [{ label, message, ok }], ok }
 }
 
-async function testAi(config: PlatformConfig): Promise<TestResult> {
-  await requestAiChatCompletion({
+async function testAi(config: PlatformConfig, userId?: number): Promise<TestResult> {
+  const activity = userId ? await startAiActivity(query, userId, {
+    module: 'platform-management',
+    operation: 'ai-connection-test',
+  }, JSON.stringify({ message: '只回复 OK', purpose: 'AI 服务连通性检查' }, null, 2), config.ai.model) : null
+  try {
+    await requestAiChatCompletion({
     apiKey: config.ai.apiKey,
     baseUrl: config.ai.apiBase,
     maxContextChars: config.ai.maxContextChars,
@@ -37,8 +44,13 @@ async function testAi(config: PlatformConfig): Promise<TestResult> {
     systemPrompt: '这是连通性检查。只回复 OK。',
     temperature: 0,
     timeoutMs: 15_000,
-  })
-  return result('AI 服务', true, '模型请求成功。')
+    })
+    if (activity) await completeAiActivity(query, activity, '模型请求成功。')
+    return result('AI 服务', true, '模型请求成功。')
+  } catch (error) {
+    if (activity) await failAiActivity(query, activity, error).catch(() => undefined)
+    throw error
+  }
 }
 
 async function testStorage(config: PlatformConfig): Promise<TestResult> {
@@ -209,10 +221,10 @@ async function testEmail(
 export async function testPlatformConfigSection(
   config: PlatformConfig,
   section: string,
-  options: { action?: unknown; recipient?: unknown } = {},
+  options: { action?: unknown; recipient?: unknown; userId?: number } = {},
 ): Promise<TestResult> {
   try {
-    if (section === 'ai') return await testAi(config)
+    if (section === 'ai') return await testAi(config, options.userId)
     if (section === 'storage') return await testStorage(config)
     if (section === 'feishu') return await testFeishu(config)
     if (section === 'github') return await testGithub(config)

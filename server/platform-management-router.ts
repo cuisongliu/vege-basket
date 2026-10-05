@@ -213,6 +213,7 @@ platformManagementRouter.post('/admin/platform-config/:section/test', async (req
     response.json(await testPlatformConfigSection(candidate, section, {
       action: request.body?.action,
       recipient: request.body?.recipient,
+      userId: session.userId,
     }))
   } catch (error) {
     if (!sendPlatformError(response, error)) next(error)

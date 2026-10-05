@@ -992,6 +992,7 @@ export function PlatformManagementWorkbench({
             <Field label="限制窗口（秒）"><Input type="number" value={draft.ai.rateWindowMs / 1000} onChange={(event) => updateSection('ai', { rateWindowMs: Number(event.target.value) * 1000 })} /></Field>
             <Field label="单条消息字符数"><Input type="number" value={draft.ai.maxMessageLength} onChange={(event) => updateSection('ai', { maxMessageLength: Number(event.target.value) })} /></Field>
             <Field label="上下文字符数"><Input type="number" value={draft.ai.maxContextChars} onChange={(event) => updateSection('ai', { maxContextChars: Number(event.target.value) })} /></Field>
+            <Field label="请求超时（秒）" hint="模型生成较慢或包含图片时可适当调大"><Input type="number" value={draft.ai.requestTimeoutMs / 1000} onChange={(event) => updateSection('ai', { requestTimeoutMs: Number(event.target.value) * 1000 })} /></Field>
           </div> : null}
 
           {tab === 'email' ? <div className="platform-form-grid">

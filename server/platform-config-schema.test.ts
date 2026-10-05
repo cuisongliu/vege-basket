@@ -18,6 +18,7 @@ test('platform config defaults preserve the current effective limits', () => {
   assert.equal(config.ai.rateWindowMs, 60_000)
   assert.equal(config.ai.maxMessageLength, 2_000)
   assert.equal(config.ai.maxContextChars, 12_000)
+  assert.equal(config.ai.requestTimeoutMs, 120_000)
   assert.equal(config.storage.uploadMaxBytes, 10 * 1024 * 1024)
   assert.equal(config.storage.objectPrefix, 'todo-images')
   assert.equal(config.packages.downloadExpireSeconds, 1_800)
@@ -27,10 +28,16 @@ test('stored v1 snapshots migrate in memory without changing their persisted sha
   const current = createDefaultPlatformConfig()
   const legacy = { ...current, schemaVersion: 1 }
   const migrated = migrateStoredPlatformConfig(legacy, 1)
-  assert.equal(migrated.schemaVersion, 2)
+  assert.equal(migrated.schemaVersion, 3)
   assert.equal(migrated.general.displayName, current.general.displayName)
+  assert.equal(migrated.ai.requestTimeoutMs, current.ai.requestTimeoutMs)
+  const v2 = { ...current, schemaVersion: 2, ai: { ...current.ai } }
+  delete (v2.ai as Partial<typeof v2.ai>).requestTimeoutMs
+  const migratedV2 = migrateStoredPlatformConfig(v2, 2)
+  assert.equal(migratedV2.schemaVersion, 3)
+  assert.equal(migratedV2.ai.requestTimeoutMs, 120_000)
   assert.throws(() => migrateStoredPlatformConfig({ ...legacy, schemaVersion: 2 }, 1), PlatformConfigValidationError)
-  assert.throws(() => migrateStoredPlatformConfig(current, 3), PlatformConfigValidationError)
+  assert.throws(() => migrateStoredPlatformConfig({ ...current, schemaVersion: 4 }, 4), PlatformConfigValidationError)
 })
 
 test('platform config rejects partial credentials and unknown fields', () => {
@@ -45,6 +52,17 @@ test('platform config rejects partial credentials and unknown fields', () => {
       error.issues.some((issue) => issue.includes('unexpected')) &&
       error.issues.some((issue) => issue.includes('必须同时配置')),
   )
+})
+
+test('platform AI request timeout stays within bounded seconds', () => {
+  const config = createDefaultPlatformConfig()
+  for (const requestTimeoutMs of [4_999, 600_001]) {
+    assert.throws(
+      () => parsePlatformConfig({ ...config, ai: { ...config.ai, requestTimeoutMs } }),
+      (error: unknown) => error instanceof PlatformConfigValidationError &&
+        error.issues.some((issue) => issue.includes('ai.requestTimeoutMs')),
+    )
+  }
 })
 
 test('configured object storage requires its signing secret', () => {

@@ -92,6 +92,7 @@ import { useConfirmAction } from './hooks/use-confirm-action'
 import { reconcileAction } from './confirmed-action'
 import { JournalDatePicker } from '@/components/journal-date-picker'
 import { AccountSettingsDialog } from '@/components/account-settings-dialog'
+import { AiActivityRecords } from '@/components/ai-activity-records'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -5283,6 +5284,7 @@ function App() {
       onAcknowledge={() => void acknowledgeCurrentChangelogAnnouncement()}
     />
   ) : null
+  const aiActivityRecords = authUser ? <AiActivityRecords /> : null
 
   if (bugShareToken && !loggedIn && bugShareLoginRequested) {
     return (
@@ -5314,6 +5316,7 @@ function App() {
     return (
       <>
         {changelogAnnouncementDialog}
+        {aiActivityRecords}
         <BugShareView
           authUser={authUser}
           onBackToVeges={authUser ? returnToVegesFromShare : undefined}
@@ -5356,6 +5359,7 @@ function App() {
     return (
       <>
         {changelogAnnouncementDialog}
+        {aiActivityRecords}
         <TodoShareView
           authUser={authUser}
           onLogin={() => setTodoShareLoginRequested(true)}
@@ -5392,12 +5396,12 @@ function App() {
   }
 
   if (platformStatus?.maintenance.active && authUser && !authUser.isSystemAdmin) {
-    return <MaintenanceScreen message={platformStatus.maintenance.message} onSignOut={signOut} />
+    return <><AiActivityRecords /><MaintenanceScreen message={platformStatus.maintenance.message} onSignOut={signOut} /></>
   }
 
   const maintenanceAdmin = Boolean(platformStatus?.maintenance.active && authUser?.isSystemAdmin)
   if ((!workspaceLoaded && !maintenanceAdmin) || (!organizationContextReady && !authUser?.isSystemAdmin)) {
-    return <WorkspaceBootScreen message={organizationContextError || undefined} />
+    return <>{aiActivityRecords}<WorkspaceBootScreen message={organizationContextError || undefined} /></>
   }
 
   const roleSelectionDialog = authUser ? (
@@ -5414,6 +5418,7 @@ function App() {
       <>
         {roleSelectionDialog}
         {changelogAnnouncementDialog}
+        {aiActivityRecords}
         <TestWorkbench
           weeklyReportRef={weeklyReportWorkbenchRef}
           weeklyReportProfiles={authUser.roles.includes('organization_admin')
@@ -5455,6 +5460,7 @@ function App() {
 
   return (
     <main className="app-shell">
+      {aiActivityRecords}
       {confirmationDialog}
       {roleSelectionDialog}
       {changelogAnnouncementDialog}

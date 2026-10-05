@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { buildAiExportPrompt } from '../src/ai-export-prompt.ts'
+import { buildAiBugExportPrompt, buildAiExportPrompt, shouldGenerateAiBugImagePrompt } from '../src/ai-export-prompt.ts'
 import {
   fetchAllTodoWorkHours,
   filterWorkHourEntries,
@@ -46,6 +46,78 @@ test('AI export prompt has stable analysis sections and explicit exclusions', ()
   assert.match(prompt, /## 数据内容/u)
   assert.match(prompt, /## AI 分析要求/u)
   assert.match(prompt, /项目日记、图片二进制、临时下载地址、分享链接、权限配置和通知历史/u)
+})
+
+test('manual Bug image prompts are never sent back through AI generation', () => {
+  assert.equal(shouldGenerateAiBugImagePrompt('', false), true)
+  assert.equal(shouldGenerateAiBugImagePrompt('   ', false), true)
+  assert.equal(shouldGenerateAiBugImagePrompt('直接使用这段图片提示词', false), false)
+  assert.equal(shouldGenerateAiBugImagePrompt('', true), false)
+})
+
+test('processed Bug image URLs are removed from the final prompt preview', () => {
+  const processedUrl = '/api/todo-images?key=veges%2Fprocessed.png&sig=signed'
+  const untouchedUrl = '/api/todo-images?key=veges%2Funtouched.png&sig=signed'
+  const prompt = buildAiBugExportPrompt({
+    actualResult: `页面异常。![错误截图](${processedUrl}) ![待处理截图](${untouchedUrl})`,
+    comments: [{ authorName: '测试员', content: `已复现 ${processedUrl}`, createdAt: '2026-10-05' }],
+    environment: '测试环境',
+    expectedResult: '页面正常',
+    id: 42,
+    imagePrompts: [{ label: 'Bug 附件图片', prompt: `核对错误信息，不要展示 ${processedUrl}` }],
+    priority: 'high',
+    processedImageReferences: [processedUrl],
+    reproductionSteps: '打开页面',
+    severity: 'major',
+    status: 'in_progress',
+    title: '页面异常',
+  })
+
+  assert.equal(prompt.includes(processedUrl), false)
+  assert.equal(prompt.includes(untouchedUrl), true)
+  assert.match(prompt, /错误截图，图片已处理/u)
+})
+
+test('Bug repair prompt is compact and focused on downstream repair', () => {
+  const prompt = buildAiBugExportPrompt({
+    actualResult: '提交后页面白屏',
+    comments: Array.from({ length: 12 }, (_, index) => ({ authorName: '测试员', content: `记录 ${index}`, createdAt: '2026-10-05' })),
+    environment: 'staging',
+    expectedResult: '提交成功',
+    id: 42,
+    imagePrompts: [{ label: '执行截图', prompt: '页面显示错误码 E500，提交按钮可用。'.repeat(30) }],
+    priority: 'high',
+    reproductionSteps: '打开表单并提交',
+    severity: 'major',
+    status: 'in_progress',
+    title: '提交白屏',
+  })
+  assert.match(prompt, /^# BUG-42 修复分析/u)
+  assert.match(prompt, /## 已知事实/u)
+  assert.match(prompt, /## 图片证据/u)
+  assert.match(prompt, /指出建议检查和修改的代码位置/u)
+  assert.doesNotMatch(prompt, /图片分析提示词/u)
+  assert.ok(prompt.length <= 8_000)
+})
+
+test('Bug repair prompt keeps the repair task when evidence reaches the size limit', () => {
+  const prompt = buildAiBugExportPrompt({
+    actualResult: '实际'.repeat(2_000),
+    comments: Array.from({ length: 8 }, (_, index) => ({ authorName: `测试员${index}`, content: '协作'.repeat(500), createdAt: '2026-10-05' })),
+    environment: '环境'.repeat(500),
+    expectedResult: '预期'.repeat(1_000),
+    id: 43,
+    imagePrompts: Array.from({ length: 8 }, (_, index) => ({ label: `截图${index}`, prompt: '证据'.repeat(500) })),
+    priority: 'high',
+    reproductionSteps: '步骤'.repeat(2_000),
+    severity: 'major',
+    status: 'in_progress',
+    title: '超长 Bug',
+  })
+  assert.ok(prompt.length <= 8_000)
+  assert.match(prompt, /## 任务/u)
+  assert.match(prompt, /最小可行修复方案/u)
+  assert.match(prompt, /不虚构未提供的事实/u)
 })
 
 test('todo export contains every promised structured field and work record', () => {

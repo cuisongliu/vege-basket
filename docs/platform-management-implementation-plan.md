@@ -65,6 +65,7 @@
 | `AI_RATE_WINDOW_MS` | 60000 | 页面显示 60 秒，存毫秒 |
 | `AI_MAX_MESSAGE_LENGTH` | 2000 | 字符数 |
 | `AI_MAX_CONTEXT_CHARS` | 12000 | 字符预算，不是 token |
+| `AI_REQUEST_TIMEOUT_MS` | 120000 | 页面显示秒数，限制 5 秒到 10 分钟 |
 | `TODO_IMAGE_UPLOAD_MAX_BYTES` | 10485760 | 页面显示 10 MB，仍按 1024×1024 换算，保留导入的精确字节数 |
 | `TODO_IMAGE_OBJECT_PREFIX` | `todo-images` | 已使用后不能通过普通保存/恢复更换 |
 | `TODO_IMAGE_URL_SECRET` | 无固定默认值 | 原代码按 `??` 依次回退 state 密钥、整个 APP 密钥环字符串；显式空字符串不回退 |

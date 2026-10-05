@@ -119,6 +119,27 @@ export type AiTurnDocumentResponse = {
   workspace: WorkspaceData
 }
 
+export type AiActivityRecord = {
+  id: string
+  module: string
+  operation: string
+  status: 'processing' | 'completed' | 'failed' | 'cancelled'
+  model: string | null
+  relatedType: string | null
+  relatedId: string | null
+  imageCount: number
+  startedAt: string
+  completedAt: string | null
+  durationMs: number | null
+  createdAt: string
+}
+
+export type AiActivityDetail = AiActivityRecord & {
+  request: string
+  response: string
+  error: string
+}
+
 export type NotificationResponse = {
   notifications: NotificationCenterData
 }
@@ -1936,6 +1957,20 @@ export function confirmTodoProposals(batchId: number, proposals: TodoProposal[])
 export function fetchAiConversations(cursor?: string) {
   const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
   return request<AiConversationPage>(`/api/ai/conversations${query}`)
+}
+
+export function fetchAiActivities(options: { cursor?: string; limit?: number; module?: string; status?: AiActivityRecord['status'] } = {}) {
+  const params = new URLSearchParams()
+  if (options.cursor) params.set('cursor', options.cursor)
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.module) params.set('module', options.module)
+  if (options.status) params.set('status', options.status)
+  const query = params.size ? `?${params.toString()}` : ''
+  return request<{ items: AiActivityRecord[]; nextCursor: string | null }>(`/api/ai/activities${query}`)
+}
+
+export function fetchAiActivityDetail(activityId: string) {
+  return request<{ activity: AiActivityDetail }>(`/api/ai/activities/${encodeURIComponent(activityId)}`)
 }
 
 export function fetchAiConversationTurns(

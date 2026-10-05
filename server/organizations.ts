@@ -83,7 +83,7 @@ import {
 
 type OrganizationRouterDependencies = {
   fetchFeishuUserName: (openId: string) => Promise<string>
-  generateWeeklySummary: (userId: number, source: string) => Promise<{
+  generateWeeklySummary: (userId: number, source: string, organizationId: number) => Promise<{
     error?: string
     message?: string
     status: number
@@ -3260,7 +3260,7 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
     const source = '分别整理开发进展、测试结果、共同风险和下周重点，保留来源姓名及修订号。只使用已提交事实，不把可能重复的用例数叠加，不将任务进度或通过率推断为版本可发布。每条总结标注对应来源，不虚构百分比。\n' + reports.rows.map((report) => (
       `来源：${displayName(report)} · 第 ${report.revision_number} 版 · ${report.report_profile ? weeklyReportProfiles[report.report_profile].label : '历史周报'}\n周报：\n${decryptText(report.content)}`
     )).join('\n\n---\n\n')
-    const generated = await dependencies.generateWeeklySummary(session.userId, source)
+    const generated = await dependencies.generateWeeklySummary(session.userId, source, organizationId!)
     if (!generated.message) {
       response.status(generated.status).json({ error: generated.error ?? 'AI summary failed' })
       return

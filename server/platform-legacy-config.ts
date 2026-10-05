@@ -16,6 +16,7 @@ export const legacyBusinessConfigKeys = [
   'AI_RATE_WINDOW_MS',
   'AI_MAX_MESSAGE_LENGTH',
   'AI_MAX_CONTEXT_CHARS',
+  'AI_REQUEST_TIMEOUT_MS',
   'FEISHU_APP_ID',
   'FEISHU_APP_SECRET',
   'FEISHU_VERIFICATION_TOKEN',
@@ -137,6 +138,7 @@ export function parseLegacyPlatformConfig(
       rateWindowMs: numberValue(env, 'AI_RATE_WINDOW_MS', defaults.ai.rateWindowMs),
       maxMessageLength: numberValue(env, 'AI_MAX_MESSAGE_LENGTH', defaults.ai.maxMessageLength),
       maxContextChars: numberValue(env, 'AI_MAX_CONTEXT_CHARS', defaults.ai.maxContextChars),
+      requestTimeoutMs: numberValue(env, 'AI_REQUEST_TIMEOUT_MS', defaults.ai.requestTimeoutMs),
     },
     storage: {
       endpoint: stringValue(env, 'OSS_ENDPOINT'),

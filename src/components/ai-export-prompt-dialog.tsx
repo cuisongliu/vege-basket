@@ -1,5 +1,5 @@
 import { CopySimple, DownloadSimple } from '@phosphor-icons/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { downloadMarkdownFile } from '../ai-export-prompt'
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
@@ -24,10 +24,18 @@ export function AiExportPromptDialog({
   summary,
 }: AiExportPromptDialogProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [draftPrompt, setDraftPrompt] = useState(prompt)
+
+  useEffect(() => {
+    if (open) {
+      setDraftPrompt(prompt)
+      setCopyState('idle')
+    }
+  }, [open, prompt])
 
   async function copyPrompt() {
     try {
-      await navigator.clipboard.writeText(prompt)
+      await navigator.clipboard.writeText(draftPrompt)
       setCopyState('copied')
     } catch {
       setCopyState('failed')
@@ -42,13 +50,13 @@ export function AiExportPromptDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         {summary ? <div className="ai-export-prompt-summary">{summary}</div> : null}
-        <textarea className="ai-export-prompt-preview" readOnly value={prompt} aria-label="导出提示词预览" />
+        <textarea className="ai-export-prompt-preview" value={draftPrompt} onChange={(event) => setDraftPrompt(event.target.value)} aria-label="导出提示词预览，可编辑" />
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
           <Button type="button" variant="outline" onClick={() => void copyPrompt()}>
             <CopySimple size={16} /> {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制提示词'}
           </Button>
-          <Button type="button" onClick={() => downloadMarkdownFile(fileName, prompt)}>
+          <Button type="button" onClick={() => downloadMarkdownFile(fileName, draftPrompt)}>
             <DownloadSimple size={16} /> 下载 Markdown
           </Button>
         </DialogFooter>

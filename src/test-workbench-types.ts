@@ -272,6 +272,21 @@ export type TestBugVerificationSubmission = {
   submittedByUserId?: number
 }
 
+export type AiBugExportImage = {
+  contentType?: string
+  fileSize?: number
+  id: string
+  label: string
+  previewUrl: string
+  source: string
+}
+
+export type AiBugExportImagePromptResult = {
+  error?: string
+  imageId: string
+  prompt?: string
+}
+
 export type TestBug = BugDiscoveryAssessment & {
   actualResult: string
   assigneeName?: string
