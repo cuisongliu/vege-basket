@@ -6167,7 +6167,11 @@ app.put('/api/notification-subscription', asyncHandler(async (request, response)
   response.json({ subscription: serializeNotificationSubscription(result.rows[0]) })
 }))
 
-async function getNotifications(userId: number) {
+type NotificationAccess = {
+  canViewDelivery: boolean
+}
+
+async function getNotifications(userId: number, access: NotificationAccess) {
   const tomorrow = formatDate(addDays(new Date(), 1))
   const statesResult = await query<NotificationStateRow>(
     `
@@ -6288,6 +6292,7 @@ async function getNotifications(userId: number) {
        and pm.invited_user_id = $1
       left join users assigner on assigner.id = e.assigned_by_user_id
       where e.assignee_user_id = $1
+        and $2::boolean
         and e.assigned_by_user_id is distinct from $1
         and e.published_at is not null
         and e.status = 'delivering'
@@ -6302,7 +6307,7 @@ async function getNotifications(userId: number) {
         and (p.user_id = $1 or pm.id is not null)
       order by coalesce(e.assigned_at, e.created_at) desc, e.id desc
       `,
-      [userId],
+      [userId, access.canViewDelivery],
     ),
     query<{
       id: string
@@ -6517,6 +6522,7 @@ async function getNotifications(userId: number) {
       join projects p on p.id = e.project_id
       left join users author on author.id = c.author_user_id
       where delivery.user_id = $1
+        and $2::boolean
         and delivery.kind = 'package_event_comment_added'
         and delivery.channel = 'in_app'
         and delivery.target_type = 'user'
@@ -6524,7 +6530,7 @@ async function getNotifications(userId: number) {
       order by delivery.created_at desc, delivery.id desc
       limit 200
       `,
-      [userId],
+      [userId, access.canViewDelivery],
     ),
     query<{
       created_at: Date
@@ -9988,15 +9994,27 @@ function enqueuePackageEventCommentAddedDelivery(params: {
 }
 
 app.get('/api/notifications', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  response.json({ notifications: await getNotifications(userId) })
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  response.json({
+    notifications: await getNotifications(session.userId, {
+      canViewDelivery: session.activeRole !== 'tester',
+    }),
+  })
 }))
 
 app.patch('/api/notifications/read-all', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
-  const notifications = await getNotifications(userId)
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const userId = session.userId
+  const access = { canViewDelivery: session.activeRole !== 'tester' }
+  const notifications = await getNotifications(userId, access)
   const entries: Array<{ kind: NotificationKind; sourceId: number }> = [
     ...notifications.invites.map((item) => ({ kind: 'project_invite' as const, sourceId: item.id })),
     ...notifications.projectTransfers.map((item) => ({ kind: 'project_transfer' as const, sourceId: item.id })),
@@ -10037,12 +10055,13 @@ app.patch('/api/notifications/read-all', asyncHandler(async (request, response) 
       client.release()
     }
   }
-  response.json({ notifications: await getNotifications(userId) })
+  response.json({ notifications: await getNotifications(userId, access) })
 }))
 
 app.get('/api/my-work', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const roleSession = await getAuthenticatedRoleSession(request)
   const organizationId = parseOrganizationContext(request.query.organizationId)
   const filters = parseMyWorkFilters(request.query as Record<string, unknown>)
   if (organizationId === undefined) {
@@ -10084,12 +10103,14 @@ app.get('/api/my-work', asyncHandler(async (request, response) => {
     userId,
     organizationId,
     filters,
+    { hideDelivery: roleSession?.activeRole === 'tester' },
   ))
 }))
 
 app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
+  const roleSession = await getAuthenticatedRoleSession(request)
   response.setHeader('Cache-Control', 'private, no-store')
   const organizationId = parseOrganizationContext(request.query.organizationId)
   if (organizationId === undefined) {
@@ -10137,6 +10158,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
               on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
            where p.organization_id is not distinct from $2::bigint
              and event.assignee_user_id = $1::bigint
+             and $3::text <> 'tester'
              and event.status not in ('delivered', 'cancelled')
              and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
           union all
@@ -10183,7 +10205,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
           )
       ) as assigned_bug_count
     `,
-    [userId, organizationId],
+    [userId, organizationId, roleSession?.activeRole ?? 'developer'],
   )
   const row = result.rows[0]
   response.json({
@@ -10195,9 +10217,20 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
 }))
 
 app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const userId = session.userId
   const kind = String(request.params.kind) as NotificationKind
+  if (
+    session.activeRole === 'tester' &&
+    (kind === 'package_event_assigned' || kind === 'package_event_comment_added')
+  ) {
+    response.status(403).json({ error: '当前测试身份无权操作交付通知。' })
+    return
+  }
   if ([
     'project_invite',
     'project_transfer',
@@ -10221,12 +10254,20 @@ app.patch('/api/notifications/:kind/:sourceId/read', asyncHandler(async (request
     `,
     [userId, kind, Number(request.params.sourceId), Boolean(request.body.dismiss)],
   )
-  response.json({ notifications: await getNotifications(userId) })
+  response.json({
+    notifications: await getNotifications(userId, {
+      canViewDelivery: session.activeRole !== 'tester',
+    }),
+  })
 }))
 
 app.post('/api/invitations/:membershipId/accept', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const userId = session.userId
   const membershipId = Number(request.params.membershipId)
   const client = await pool.connect()
   try {
@@ -10284,7 +10325,9 @@ app.post('/api/invitations/:membershipId/accept', asyncHandler(async (request, r
     client.release()
   }
   response.json({
-    notifications: await getNotifications(userId),
+    notifications: await getNotifications(userId, {
+      canViewDelivery: session.activeRole !== 'tester',
+    }),
     workspace: await getWorkspace(userId, {
       sections: new Set(['catalog', 'overview']),
     }),
@@ -10292,8 +10335,12 @@ app.post('/api/invitations/:membershipId/accept', asyncHandler(async (request, r
 }))
 
 app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const userId = session.userId
   const result = await query<{ id: string; project_id: string }>(
     `
     update project_memberships
@@ -10322,7 +10369,9 @@ app.post('/api/invitations/:membershipId/decline', asyncHandler(async (request, 
     [userId, Number(request.params.membershipId)],
   )
   response.json({
-    notifications: await getNotifications(userId),
+    notifications: await getNotifications(userId, {
+      canViewDelivery: session.activeRole !== 'tester',
+    }),
     workspace: await getWorkspace(userId, {
       projectId: Number(result.rows[0].project_id),
       sections: new Set(['catalog', 'overview']),
@@ -10729,8 +10778,12 @@ app.post('/api/organizations/:organizationId/projects/:projectId/transfer', asyn
 }))
 
 app.post('/api/project-transfers/:transferId/respond', asyncHandler(async (request, response) => {
-  const userId = await ensureUserId(request, response)
-  if (!userId) return
+  const session = await getAuthenticatedRoleSession(request)
+  if (!session) {
+    response.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  const userId = session.userId
   const transferId = Number(request.params.transferId)
   const action = String(request.body?.action ?? '')
   if (!Number.isSafeInteger(transferId) || transferId <= 0 || !['accept', 'decline'].includes(action)) {
@@ -10933,7 +10986,9 @@ app.post('/api/project-transfers/:transferId/respond', asyncHandler(async (reque
   }
 
   response.json({
-    notifications: await getNotifications(userId),
+    notifications: await getNotifications(userId, {
+      canViewDelivery: session.activeRole !== 'tester',
+    }),
     workspace: await getWorkspace(userId, {
       sections: new Set(['catalog', 'overview']),
     }),

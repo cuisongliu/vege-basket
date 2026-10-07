@@ -97,7 +97,7 @@ test('tester reads the changelog inside the test workbench without switching per
     appSource,
     /authUser\?\.activeRole === 'tester' && \(view === 'testing' \|\| view === 'changelog'\)/u,
   )
-  assert.match(appSource, /workspaceContent=\{view === 'changelog' \? \(/u)
+  assert.match(appSource, /return renderTesterWorkspaceShell\(\(/u)
   assert.match(appSource, /onBack=\{\(\) => setView\('testing'\)\}/u)
   assert.match(changelogWorkbenchSource, /onBack\?: \(\) => void/u)
   assert.match(changelogWorkbenchSource, /返回测试工作台/u)

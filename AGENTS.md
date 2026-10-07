@@ -50,6 +50,9 @@ historical product context; current code and these operational docs take precede
   the initiator's authority when accepted. Other resource mutations still require the
   original project membership, test-space access, creator, or Bug-assignee permission. Platform-administrator access comes
   only from active database grants; the built-in `admin` grant is immutable and remains separate from occupational roles.
+- Scope notification reads, counts, and read/dismiss mutations to the authenticated session's
+  active persona. Tester sessions must not receive or mutate delivery notifications; persona
+  changes must invalidate in-flight notification reads and clear persona-specific client state.
 - Keep document editors on the existing Markdown string contract. When registering
   `CodeBlockLowlight`, disable StarterKit's plain code block, preserve fenced-language
   metadata, highlight only an explicit supported language, and normalize link marks to

@@ -1,4 +1,17 @@
 import type { NotificationCenterData } from './types'
+
+export function filterNotificationsForRole(
+  notifications: NotificationCenterData,
+  hideDelivery: boolean,
+): NotificationCenterData {
+  if (!hideDelivery) return notifications
+  return {
+    ...notifications,
+    assignedPackageEvents: [],
+    packageEventCommentMentions: [],
+  }
+}
+
 export function removePackageEventNotification(
   notifications: NotificationCenterData,
   eventId: number,

@@ -28,6 +28,10 @@ type MyWorkRow = {
   relation: MyWorkItem['relation']
 }
 
+type MyWorkOptions = {
+  hideDelivery?: boolean
+}
+
 function localDate(value: Date | string) {
   const date = value instanceof Date ? value : new Date(value)
   return new Intl.DateTimeFormat('en-CA', {
@@ -57,6 +61,7 @@ export async function getMyWork(
   userId: number,
   organizationId: OrganizationContext,
   filters: MyWorkFilters,
+  options: MyWorkOptions = {},
 ): Promise<MyWorkData> {
   const today = localDate(new Date())
   const pagination = createMyWorkPagination(filters, today, weekEnd(today))
@@ -192,6 +197,7 @@ export async function getMyWork(
         or work.creator_name = $5::text
       )
       and ($7::boolean = false or work.kind = 'todo')
+      and ($8::boolean = false or work.kind <> 'delivery')
       and (
         $2::text = 'all'
         or work.status = $2::text
@@ -219,6 +225,7 @@ export async function getMyWork(
         filters.creator ?? null,
         organizationId,
         filters.review ?? false,
+        options.hideDelivery ?? false,
       ],
     )
 

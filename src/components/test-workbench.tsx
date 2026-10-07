@@ -51,6 +51,7 @@ import {
   Plus,
   Stack,
   Sparkle,
+  Target,
   Trash,
   UploadSimple,
   UserPlus,
@@ -312,10 +313,7 @@ function testWorkbenchCasesScopeKey(spaceId: number) {
   return `cases:${spaceId}`
 }
 
-type TestResourceWorkbenchNotification = Exclude<
-  TestWorkbenchNotification,
-  { kind: 'package_event_comment_added' }
->
+type TestResourceWorkbenchNotification = TestWorkbenchNotification
 
 function replaceScopedItems<T>(
   current: T[],
@@ -675,6 +673,155 @@ type TestSpaceOrganizationGroup = {
   spaces: TestSpaceSettings['spaces']
 }
 
+export type TestWorkbenchWorkspaceNavigation = 'project_basket' | 'my_work' | 'my_work_hours' | 'notifications'
+
+function TesterWorkspaceFrame({
+  accountMenu,
+  children,
+  contentClassName = '',
+  contextSwitcher,
+  navigation,
+  notificationCount,
+  onOpenNotifications,
+  activeWorkspaceNavigation,
+}: {
+  accountMenu: ReactNode
+  children: ReactNode
+  contentClassName?: string
+  contextSwitcher: ReactNode
+  navigation: ReactNode
+  notificationCount: number
+  onOpenNotifications: () => void
+  activeWorkspaceNavigation?: TestWorkbenchWorkspaceNavigation | null
+}) {
+  return (
+    <main className="test-workbench-shell">
+      <aside className="test-workbench-nav">
+        <div className="test-workbench-space-header">
+          <div className="brand-block">
+            <img className="brand-mark" src="/favicon.svg" alt="Veges" />
+            <div>
+              <p className="eyebrow">Veges</p>
+              <h1>测试工作台</h1>
+            </div>
+          </div>
+          <button
+            className={`sidebar-notifications-button${activeWorkspaceNavigation === 'notifications' ? ' active' : ''}`}
+            type="button"
+            aria-label="通知中心"
+            aria-current={activeWorkspaceNavigation === 'notifications' ? 'page' : undefined}
+            title="通知中心"
+            onClick={onOpenNotifications}
+          >
+            <Bell size={18} weight="duotone" />
+            {notificationCount > 0 ? <span className="sidebar-notifications-dot" aria-hidden /> : null}
+          </button>
+        </div>
+        {contextSwitcher}
+        <div className="test-workbench-nav-main">
+          <nav className="test-workbench-nav-actions" aria-label="测试工作台模块">
+            {navigation}
+          </nav>
+        </div>
+        <div className="test-workbench-account">{accountMenu}</div>
+      </aside>
+      <section className={`test-workbench-content${contentClassName}`}>{children}</section>
+    </main>
+  )
+}
+
+function TesterSharedNavigation({
+  activeWorkspaceNavigation,
+  myWorkCount,
+  onOpenMyWork,
+  onOpenMyWorkHours,
+  onOpenProjectBasket,
+}: {
+  activeWorkspaceNavigation?: TestWorkbenchWorkspaceNavigation | null
+  myWorkCount: number
+  onOpenMyWork?: () => void
+  onOpenMyWorkHours?: () => void
+  onOpenProjectBasket?: () => void
+}) {
+  return (
+    <>
+      {onOpenProjectBasket ? <button className={activeWorkspaceNavigation === 'project_basket' ? 'active' : ''} type="button" onClick={onOpenProjectBasket}><Target /><span className="test-nav-label">项目篮子</span><span className="test-nav-count" /></button> : null}
+      {onOpenMyWork ? <button className={activeWorkspaceNavigation === 'my_work' ? 'active' : ''} type="button" onClick={onOpenMyWork}><ListChecks /><span className="test-nav-label">我的待办</span><span className={`test-nav-count${myWorkCount > 0 ? ' unread' : ''}`}>{myWorkCount > 0 ? myWorkCount : ''}</span></button> : null}
+      {onOpenMyWorkHours ? <button className={activeWorkspaceNavigation === 'my_work_hours' ? 'active' : ''} type="button" onClick={onOpenMyWorkHours}><Clock /><span className="test-nav-label">我的工时</span><span className="test-nav-count" /></button> : null}
+    </>
+  )
+}
+
+function TesterNavigationGroup({
+  children,
+  label,
+}: {
+  children: ReactNode
+  label: string
+}) {
+  return (
+    <div className="test-workbench-nav-group" role="group" aria-label={label}>
+      <span className="test-workbench-nav-group-label" aria-hidden>{label}</span>
+      <div className="test-workbench-nav-group-actions">{children}</div>
+    </div>
+  )
+}
+
+export function TesterWorkspaceShell({
+  accountMenu,
+  activeWorkspaceNavigation,
+  children,
+  myWorkCount = 0,
+  notificationCount = 0,
+  onOpenMyWork,
+  onOpenMyWorkHours,
+  onOpenNotifications,
+  onOpenProjectBasket,
+  onOpenTestWorkbench,
+  workspaceContextSwitcher,
+}: {
+  accountMenu: ReactNode
+  activeWorkspaceNavigation?: TestWorkbenchWorkspaceNavigation | null
+  children: ReactNode
+  myWorkCount?: number
+  notificationCount?: number
+  onOpenMyWork: () => void
+  onOpenMyWorkHours: () => void
+  onOpenNotifications: () => void
+  onOpenProjectBasket: () => void
+  onOpenTestWorkbench: () => void
+  workspaceContextSwitcher: ReactNode
+}) {
+  return (
+    <TesterWorkspaceFrame
+      accountMenu={accountMenu}
+      activeWorkspaceNavigation={activeWorkspaceNavigation}
+      contentClassName=" is-shared-workspace"
+      contextSwitcher={<div className="test-workspace-context-switcher">{workspaceContextSwitcher}</div>}
+      navigation={(
+        <>
+          <TesterNavigationGroup label="工作入口">
+            <TesterSharedNavigation
+              activeWorkspaceNavigation={activeWorkspaceNavigation}
+              myWorkCount={myWorkCount}
+              onOpenMyWork={onOpenMyWork}
+              onOpenMyWorkHours={onOpenMyWorkHours}
+              onOpenProjectBasket={onOpenProjectBasket}
+            />
+          </TesterNavigationGroup>
+          <TesterNavigationGroup label="当前测试空间">
+            <button type="button" onClick={onOpenTestWorkbench}><Flask /><span className="test-nav-label">测试工作台</span><span className="test-nav-count" /></button>
+          </TesterNavigationGroup>
+        </>
+      )}
+      notificationCount={notificationCount}
+      onOpenNotifications={onOpenNotifications}
+    >
+      {children}
+    </TesterWorkspaceFrame>
+  )
+}
+
 export function TestWorkbench({
   weeklyReportRef,
   weeklyReportProfiles = ['tester'],
@@ -682,8 +829,11 @@ export function TestWorkbench({
   navigationBusy = false,
   accountMenu,
   currentUserId,
+  myWorkCount = 0,
   projects,
-  workspaceContent,
+  onOpenMyWork,
+  onOpenMyWorkHours,
+  onOpenProjectBasket,
   planPresentation,
 }: {
   navigationBusy?: boolean
@@ -692,8 +842,11 @@ export function TestWorkbench({
   weeklyReportOrganizationProfiles?: Record<number, WeeklyReportProfile[]>
   accountMenu: ReactNode
   currentUserId?: number
+  myWorkCount?: number
   projects: TestWorkbenchProjectOption[]
-  workspaceContent?: ReactNode
+  onOpenMyWork?: () => void
+  onOpenMyWorkHours?: () => void
+  onOpenProjectBasket?: () => void
   planPresentation?: TestPlanPresentation
 }) {
   const [data, setData] = useState<TestWorkbenchData>(emptyWorkbench)
@@ -1367,29 +1520,11 @@ export function TestWorkbench({
   }
 
   return (
-    <main className="test-workbench-shell">
-      {confirmationDialog}
-      <aside className="test-workbench-nav">
-        <div className="test-workbench-space-header">
-          <div className="brand-block">
-            <img className="brand-mark" src="/favicon.svg" alt="Veges" />
-            <div>
-              <p className="eyebrow">Veges</p>
-              <h1>测试工作台</h1>
-            </div>
-          </div>
-          <button
-            className="sidebar-notifications-button"
-            type="button"
-            aria-label="通知中心"
-            title="通知中心"
-            onClick={() => void changeTab('notifications')}
-          >
-            <Bell size={18} weight="duotone" />
-            {notificationUnreadCount > 0 ? <span className="sidebar-notifications-dot" aria-hidden /> : null}
-          </button>
-        </div>
-        <div className="test-space-switcher">
+    <>
+      <TesterWorkspaceFrame
+        accountMenu={accountMenu}
+        contextSwitcher={(
+          <div className="test-space-switcher">
           <DropdownMenu
             open={spaceSwitcherOpen}
             onOpenChange={setSpaceSwitcherOpen}
@@ -1451,20 +1586,34 @@ export function TestWorkbench({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
-          <div className="test-workbench-nav-main">
-            <nav className="test-workbench-nav-actions" aria-label="测试工作台模块">
+          </div>
+        )}
+        navigation={(
+          <>
+            <TesterNavigationGroup label="工作入口">
+              <TesterSharedNavigation
+                myWorkCount={myWorkCount}
+                onOpenMyWork={onOpenMyWork}
+                onOpenMyWorkHours={onOpenMyWorkHours}
+                onOpenProjectBasket={onOpenProjectBasket}
+              />
+            </TesterNavigationGroup>
+            <TesterNavigationGroup label="当前测试空间">
               <button className={tab === 'cases' ? 'active' : ''} onClick={() => void changeTab('cases')}><ClipboardText /><span className="test-nav-label">用例管理</span><span className="test-nav-count">{activeSpace?.caseCount ?? 0}</span></button>
               <button className={tab === 'plans' ? 'active' : ''} onClick={() => void changeTab('plans')}><ListChecks /><span className="test-nav-label">测试计划</span><span className="test-nav-count">{activeSpace?.planCount ?? 0}</span></button>
               <button className={tab === 'bugs' ? 'active' : ''} onClick={() => void changeTab('bugs')}><Bug /><span className="test-nav-label">Bug 追踪</span><span className="test-nav-count">{activeSpace?.bugCount ?? 0}</span></button>
-              {activeWeeklyReportProfiles.includes('tester') ? <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => void changeTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button> : null}
-            </nav>
-          </div>
-          <div className="test-workbench-account">{accountMenu}</div>
-      </aside>
-
-      <section className="test-workbench-content">
-          {workspaceContent ?? (loading || sectionLoading ? (
+            </TesterNavigationGroup>
+            {activeWeeklyReportProfiles.includes('tester') ? (
+              <TesterNavigationGroup label="协作">
+                <button className={tab === 'weekly_report' ? 'active' : ''} onClick={() => void changeTab('weekly_report')}><FileText /><span className="test-nav-label">周报管理</span><span className="test-nav-count" /></button>
+              </TesterNavigationGroup>
+            ) : null}
+          </>
+        )}
+        notificationCount={notificationUnreadCount}
+        onOpenNotifications={() => void changeTab('notifications')}
+      >
+          {loading || sectionLoading ? (
             <div className="test-workbench-loading">正在加载测试工作台...</div>
           ) : tab === 'weekly_report' ? (
             <div className="test-workbench-weekly-report">
@@ -1507,7 +1656,6 @@ export function TestWorkbench({
                   setSelectedPlanId(notification.targetId)
                   setTab('plans')
                 }}
-                onMarkNotificationRead={(notification) => markNotificationAsRead(getTestWorkbenchNotificationKey(notification))}
               />
             </>
           ) : data.spaces.length === 0 ? (
@@ -1663,9 +1811,10 @@ export function TestWorkbench({
                   (next) => next.bugs.some((item) => item.id === bug.id && !item.comments.some((entry) => entry.id === comment.id)))}
               />
             </>
-          ))}
-      </section>
+          )}
+      </TesterWorkspaceFrame>
 
+      {confirmationDialog}
       <TestSpaceSettingsDialog
         currentSpaceId={spaceId}
         open={spaceAdministrationOpen}
@@ -1858,7 +2007,7 @@ export function TestWorkbench({
         onConfirm={() => bugPendingDelete ? mutate(() => deleteTestBug(bugPendingDelete.testSpaceId, bugPendingDelete.id), true,
           (next) => !next.bugs.some((item) => item.id === bugPendingDelete.id)) : Promise.resolve(false)}
       />
-    </main>
+    </>
   )
 }
 
@@ -1872,7 +2021,6 @@ function NotificationsView({
   onDeclineInvitation,
   onOpenBug,
   onOpenPlan,
-  onMarkNotificationRead,
   readNotificationKeys,
   seenBugCommentIds,
 }: {
@@ -1885,7 +2033,6 @@ function NotificationsView({
   onDeclineInvitation: (invitation: TestSpaceInvitation) => void
   onOpenBug: (notification: TestResourceWorkbenchNotification, commentId?: number) => void
   onOpenPlan: (notification: TestResourceWorkbenchNotification) => void
-  onMarkNotificationRead: (notification: TestWorkbenchNotification) => void
   readNotificationKeys: Set<string>
   seenBugCommentIds: Set<number>
 }) {
@@ -1934,16 +2081,6 @@ function NotificationsView({
       notificationKey: getTestWorkbenchNotificationKey(notification),
       sortAt: getTimestampMs(notification.createdAt),
     }] : []),
-    ...data.notifications
-      .filter((notification) => notification.kind === 'package_event_comment_added')
-      .map((notification) => ({
-        createdAt: notification.createdAt,
-        key: `package-comment-${notification.sourceId}`,
-        kind: 'package_comment' as const,
-        notification,
-        notificationKey: getTestWorkbenchNotificationKey(notification),
-        sortAt: getTimestampMs(notification.createdAt),
-      })),
   ].sort((left, right) => {
     const rightTime = Number.isNaN(right.sortAt) ? 0 : right.sortAt
     const leftTime = Number.isNaN(left.sortAt) ? 0 : left.sortAt
@@ -2021,31 +2158,6 @@ function NotificationsView({
                     </div>
                     <div>
                       <Button variant="outline" onClick={() => onOpenPlan(notification)}><ListChecks /> 查看计划</Button>
-                    </div>
-                  </article>
-                )
-              }
-              if (item.kind === 'package_comment') {
-                const notification = item.notification
-                const read = readNotificationKeys.has(item.notificationKey)
-                return (
-                  <article key={item.key} className={read ? 'test-notification-card read' : 'test-notification-card unread'}>
-                    <div className="test-notification-copy">
-                      <span className={read ? 'test-notification-kind' : 'test-notification-kind unread'}>交付反馈</span>
-                      <div>
-                        <strong>{notification.eventTitle || '交付事件'}</strong>
-                        <p>{notification.authorName} 在交付反馈中提到了你{notification.commentPreview ? `：“${notification.commentPreview}”` : '。'}</p>
-                        <small>{notification.projectName || '项目' } · {formatTimestamp(item.createdAt)}</small>
-                      </div>
-                    </div>
-                    <div>
-                      <Button
-                        disabled={read}
-                        variant="outline"
-                        onClick={() => onMarkNotificationRead(notification)}
-                      >
-                        <CheckCircle /> {read ? '已读' : '标记已读'}
-                      </Button>
                     </div>
                   </article>
                 )

@@ -102,6 +102,12 @@ test('navigation count uses the same mixed actionable-item scope as My Work', ()
   assert.match(countSource, /t\.reviewer_user_id = \$1::bigint/u)
 })
 
+test('tester sessions hide delivery work from My Work and its navigation count', () => {
+  assert.match(myWorkSource, /\$8::boolean = false or work\.kind <> 'delivery'/u)
+  assert.match(serverSource, /\{ hideDelivery: roleSession\?\.activeRole === 'tester' \}/u)
+  assert.match(serverSource, /and \$3::text <> 'tester'/u)
+})
+
 test('renders failed acceptance status in Chinese', () => {
   assert.match(myWorkWorkbenchSource, /acceptance_failed: '验收未通过'/u)
 })

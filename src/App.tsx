@@ -308,7 +308,12 @@ import {
   totalAttachmentCharacters,
   type AiTextAttachment,
 } from './ai-attachments'
-import { AssignedTestBugs, TestWorkbench } from './components/test-workbench'
+import {
+  AssignedTestBugs,
+  TesterWorkspaceShell,
+  TestWorkbench,
+  type TestWorkbenchWorkspaceNavigation,
+} from './components/test-workbench'
 import { BugShareView } from './components/bug-share-view'
 import { getBugShareTokenFromPath } from './bug-share-deep-link'
 import { TodoShareDialog } from './components/todo-share-dialog'
@@ -329,6 +334,7 @@ import {
 import { MyWorkWorkbench } from './components/my-work-workbench'
 import { WorkHoursWorkbench } from './components/work-hours-workbench'
 import { TodoWorkHoursPanel } from './components/todo-work-hours-panel'
+import { filterNotificationsForRole } from './notifications'
 import { buildAiExportPrompt } from './ai-export-prompt'
 import { fetchCompleteTodoExport, formatTodoExport, mapWithConcurrency } from './ai-export-data'
 import { AiExportPromptDialog } from './components/ai-export-prompt-dialog'
@@ -732,15 +738,16 @@ function canAccessOrganizationManagement(user: Pick<AuthUser, 'roles'>) {
 }
 
 function canUseViewForUser(view: View, user: AuthUser) {
-  if (view === 'search') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
-  if (view === 'my_work_hours') return hasOrganizationAdminRole(user.roles) || user.roles.includes('developer') || user.roles.includes('tester')
+  if (view === 'organization') return canAccessOrganizationManagement(user)
+  if (view === 'work_hours') return canAccessOrganizationManagement(user)
+  if (view === 'platform') return user.isSystemAdmin
+  if (view === 'search' || view === 'my_work_hours') {
+    return hasOrganizationAdminRole(user.roles) || user.roles.includes(user.activeRole)
+  }
   if (view === 'testing') return user.activeRole === 'tester'
   if (view === 'assigned_bugs') {
     return user.activeRole === 'developer' && SHOW_DEVELOPER_ASSIGNED_BUGS_MODULE
   }
-  if (view === 'organization') return canAccessOrganizationManagement(user)
-  if (view === 'work_hours') return canAccessOrganizationManagement(user)
-  if (view === 'platform') return user.isSystemAdmin
   return true
 }
 
@@ -1957,6 +1964,14 @@ function App() {
   const acceptingOrganizationInviteTokenRef = useRef('')
   const notificationRefreshRequestIdRef = useRef(0)
   const notificationRefreshPromiseRef = useRef<Promise<NotificationCenterData | false> | null>(null)
+  const notificationRoleRef = useRef(authUser?.activeRole)
+  notificationRoleRef.current = authUser?.activeRole
+  const resetNotificationsForRole = useCallback((role: UserRole | undefined) => {
+    notificationRoleRef.current = role
+    notificationRefreshRequestIdRef.current += 1
+    notificationRefreshPromiseRef.current = null
+    setNotifications(emptyNotifications)
+  }, [])
   const workspaceRefreshRequestIdRef = useRef(0)
   const workspaceRefreshPromiseRef = useRef<Promise<boolean> | null>(null)
   const organizationContextReadyRef = useRef(false)
@@ -2033,6 +2048,7 @@ function App() {
   )
   const canNavigateToTestWorkbench = authUser?.activeRole === 'tester'
   const canNavigateToProjectBasket = Boolean(authUser && (isOrganizationAdmin || authUser.roles.includes('developer') || authUser.roles.includes('tester')))
+  const canViewProjectDelivery = Boolean(authUser && authUser.activeRole !== 'tester')
 
   useEffect(() => {
     setAssignedBugCommentReadAtByBugId(loadAssignedBugCommentReadAt(authUser?.id))
@@ -2325,15 +2341,23 @@ function App() {
     const existing = notificationRefreshPromiseRef.current
     if (existing) return existing
 
+    const requestedRole = notificationRoleRef.current
     const requestId = notificationRefreshRequestIdRef.current + 1
     notificationRefreshRequestIdRef.current = requestId
     const promise = (async () => {
       try {
         const result = await fetchNotifications()
-        if (notificationRefreshRequestIdRef.current === requestId) {
-          setNotifications(result.notifications)
+        const scopedNotifications = filterNotificationsForRole(
+          result.notifications,
+          requestedRole === 'tester',
+        )
+        if (
+          notificationRefreshRequestIdRef.current === requestId &&
+          notificationRoleRef.current === requestedRole
+        ) {
+          setNotifications(scopedNotifications)
         }
-        return result.notifications
+        return scopedNotifications
       } catch {
         return false
       }
@@ -2352,6 +2376,14 @@ function App() {
       },
     )
     return promise
+  }, [])
+
+  const setRoleScopedNotifications = useCallback((
+    next: NotificationCenterData,
+    requestedRole: UserRole | undefined,
+  ) => {
+    if (notificationRoleRef.current !== requestedRole) return
+    setNotifications(filterNotificationsForRole(next, requestedRole === 'tester'))
   }, [])
 
   const fetchActiveWorkspace = useCallback(async (
@@ -2436,6 +2468,7 @@ function App() {
       .then((data) => {
         if (authSessionGenerationRef.current !== sessionGeneration) return
         resetWorkspaceState()
+        resetNotificationsForRole(data.user.activeRole)
         setAuthUser(data.user)
         if (
           selectRoleAfterSessionLoadRef.current &&
@@ -2462,7 +2495,7 @@ function App() {
       .finally(() => {
         if (authSessionGenerationRef.current === sessionGeneration) setWorkspaceLoaded(true)
       })
-  }, [applyWorkspace, loggedIn, refreshNotifications, resetWorkspaceState])
+  }, [applyWorkspace, loggedIn, refreshNotifications, resetNotificationsForRole, resetWorkspaceState])
 
   useEffect(() => {
     setChangelogAnnouncement(null)
@@ -3347,6 +3380,7 @@ function App() {
       })
       setAuthToken(result.token)
       resetWorkspaceState()
+      resetNotificationsForRole(result.user.activeRole)
       setAuthUser(result.user)
       setRoleSelectionOpen(getSelectableWorkspaceRoles(result.user.roles, result.user.isSystemAdmin).length > 1)
       applyWorkspace(result.workspace)
@@ -3497,6 +3531,10 @@ function App() {
         try {
           const result = await fetchCurrentAuthContext()
           if (authSessionGenerationRef.current !== sessionGeneration) return false
+          if (notificationRoleRef.current !== result.user.activeRole) {
+            resetNotificationsForRole(result.user.activeRole)
+            void refreshNotifications()
+          }
           setAuthUser((current) => sameAuthContext(current, result.user) ? current : result.user)
           return true
         } catch (error) {
@@ -3513,7 +3551,7 @@ function App() {
       },
       setInterval: (listener, delay) => window.setInterval(listener, delay),
     })
-  }, [authUserId, loggedIn, signOut])
+  }, [authUserId, loggedIn, refreshNotifications, resetNotificationsForRole, signOut])
 
   async function updateAccountSettings(payload: {
     displayName: string
@@ -3577,9 +3615,11 @@ function App() {
     setWorkspaceError('')
     try {
       await switchActiveRole(role)
+      resetNotificationsForRole(role)
       setAuthUser((current) => current ? { ...current, activeRole: role } : current)
       setRoleSelectionOpen(false)
       setView(roleLandingView)
+      void refreshNotifications()
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : '身份切换失败，请稍后重试。')
     } finally {
@@ -3780,6 +3820,7 @@ function App() {
   }
 
   async function openNotificationCenter() {
+    const requestedRole = notificationRoleRef.current
     setDetailEntrySource('project')
     setView('notifications')
     const readAt = new Date().toISOString()
@@ -3796,7 +3837,7 @@ function App() {
     }))
     try {
       const result = await markAllNotificationsRead()
-      setNotifications(result.notifications)
+      setRoleScopedNotifications(result.notifications, requestedRole)
     } catch {
       void refreshNotifications()
     }
@@ -4050,10 +4091,11 @@ function App() {
   }, [applyWorkspace])
 
   async function acceptInvitation(membershipId: number) {
+    const requestedRole = notificationRoleRef.current
     try {
       const result = await acceptProjectInvitation(membershipId)
       applyWorkspace(result.workspace)
-      setNotifications(result.notifications)
+      setRoleScopedNotifications(result.notifications, requestedRole)
       setWorkspaceError('')
     } catch {
       setWorkspaceError('邀请处理失败，请稍后再试。')
@@ -4061,6 +4103,7 @@ function App() {
   }
 
   async function ignoreInvitation(membershipId: number) {
+    const requestedRole = notificationRoleRef.current
     const invitation = notifications.invites.find((item) => item.id === membershipId)
     await confirmAction({
       actionKey: `decline-project:${authUser?.id}:${membershipId}`,
@@ -4073,16 +4116,17 @@ function App() {
         (data) => !data.notifications.invites.some((item) => item.id === membershipId))
       if (confirmationScopeRef.current !== confirmationScope) return false
       applyWorkspace(result.workspace)
-      setNotifications(result.notifications)
+      setRoleScopedNotifications(result.notifications, requestedRole)
       return true
     })
   }
 
   async function respondProjectTransfer(transferId: number, action: 'accept' | 'decline') {
+    const requestedRole = notificationRoleRef.current
     try {
       const result = await respondToProjectTransfer(transferId, action)
       applyWorkspace(result.workspace)
-      setNotifications(result.notifications)
+      setRoleScopedNotifications(result.notifications, requestedRole)
       setWorkspaceError('')
     } catch {
       setWorkspaceError('项目转移处理失败，请刷新后重试。')
@@ -5413,7 +5457,69 @@ function App() {
       onSelect={(role) => void changeActiveUserRole(role)}
     />
   ) : null
-  if (authUser?.activeRole === 'tester' && (view === 'testing' || view === 'changelog')) {
+  const testerWorkspaceNavigation: TestWorkbenchWorkspaceNavigation | null = view === 'search'
+    ? 'project_basket'
+    : view === 'my_work'
+      ? 'my_work'
+      : view === 'my_work_hours'
+        ? 'my_work_hours'
+        : view === 'notifications'
+          ? 'notifications'
+          : view === 'project'
+            ? detailEntrySource === 'my_work' ? 'my_work' : 'project_basket'
+            : null
+
+  const testerAccountMenu = authUser ? (
+    <AccountMenu
+      activeView={view}
+      user={authUser}
+      themeMode={themeMode}
+      onDisconnectFeishu={disconnectFeishuBinding}
+      onSaveAccountSettings={updateAccountSettings}
+      onSyncFeishuName={syncAccountFeishuName}
+      onRoleChange={(role) => void changeActiveUserRole(role)}
+      roleSelectionBusy={roleSelectionBusy}
+      onOpenChangelog={() => setView('changelog')}
+      onSignOut={signOut}
+      onToggleTheme={toggleThemeMode}
+    />
+  ) : null
+  const testerOrganizationSwitcher = (
+    <OrganizationSwitcher
+      error={organizationContextError}
+      organizations={organizations}
+      selectedOrganizationId={selectedOrganizationId}
+      onChange={changeOrganization}
+    />
+  )
+
+  function renderTesterWorkspaceShell(workspaceContent: ReactNode, includeGlobalOverlays = true) {
+    if (!authUser) return null
+    return (
+      <>
+        {includeGlobalOverlays ? roleSelectionDialog : null}
+        {includeGlobalOverlays ? changelogAnnouncementDialog : null}
+        {includeGlobalOverlays ? aiActivityRecords : null}
+        <TesterWorkspaceShell
+          accountMenu={testerAccountMenu}
+          activeWorkspaceNavigation={testerWorkspaceNavigation}
+          myWorkCount={openTodoCount}
+          notificationCount={openNotificationCount}
+          onOpenMyWork={openMyWork}
+          onOpenMyWorkHours={openMyWorkHours}
+          onOpenNotifications={openNotificationCenter}
+          onOpenProjectBasket={() => setView('search')}
+          onOpenTestWorkbench={() => setView('testing')}
+          workspaceContextSwitcher={testerOrganizationSwitcher}
+        >
+          {workspaceContent}
+        </TesterWorkspaceShell>
+      </>
+    )
+  }
+
+  function renderTestWorkbench() {
+    if (!authUser) return null
     return (
       <>
         {roleSelectionDialog}
@@ -5428,43 +5534,39 @@ function App() {
             organizations.map((organization) => [organization.id, organization.weeklyReportProfiles]),
           )}
           navigationBusy={roleSelectionBusy}
-          accountMenu={(
-            <AccountMenu
-              activeView={view}
-              user={authUser}
-              themeMode={themeMode}
-              onDisconnectFeishu={disconnectFeishuBinding}
-              onSaveAccountSettings={updateAccountSettings}
-              onSyncFeishuName={syncAccountFeishuName}
-              onRoleChange={(role) => void changeActiveUserRole(role)}
-              roleSelectionBusy={roleSelectionBusy}
-              onOpenChangelog={() => setView('changelog')}
-              onSignOut={signOut}
-              onToggleTheme={toggleThemeMode}
-            />
-          )}
+          accountMenu={testerAccountMenu}
           currentUserId={authUser.id}
+          myWorkCount={openTodoCount}
           projects={projects.map((project) => ({ id: project.id, name: project.name }))}
-          workspaceContent={view === 'changelog' ? (
-            <ChangelogWorkbench
-              createRequest={changelogCreateRequest}
-              onBack={() => setView('testing')}
-              onCanManageChange={setChangelogCanManage}
-              onEditorModeChange={setChangelogEditorOpen}
-            />
-          ) : undefined}
+          onOpenMyWork={openMyWork}
+          onOpenMyWorkHours={openMyWorkHours}
+          onOpenProjectBasket={() => setView('search')}
         />
       </>
     )
   }
 
-  return (
-    <main className="app-shell">
+  if (authUser?.activeRole === 'tester' && (view === 'testing' || view === 'changelog')) {
+    if (view === 'testing') return renderTestWorkbench()
+    return renderTesterWorkspaceShell((
+      <ChangelogWorkbench
+        createRequest={changelogCreateRequest}
+        onBack={() => setView('testing')}
+        onCanManageChange={setChangelogCanManage}
+        onEditorModeChange={setChangelogEditorOpen}
+      />
+    ))
+  }
+
+  const isTesterSharedWorkspace = authUser?.activeRole === 'tester' && testerWorkspaceNavigation !== null
+  const MainWorkspaceRoot = isTesterSharedWorkspace ? 'div' : 'main'
+  const mainWorkspace = (
+    <MainWorkspaceRoot className={`app-shell${isTesterSharedWorkspace ? ' tester-shared-workspace' : ''}`}>
       {aiActivityRecords}
       {confirmationDialog}
       {roleSelectionDialog}
       {changelogAnnouncementDialog}
-      <aside className="sidebar" aria-label="主导航">
+      {!isTesterSharedWorkspace ? <aside className="sidebar" aria-label="主导航">
           <div className="brand-block">
             <img className="brand-mark" src="/favicon.svg" alt="Veges" />
             <div>
@@ -5594,7 +5696,7 @@ function App() {
             onSignOut={signOut}
             onToggleTheme={toggleThemeMode}
           />
-      </aside>
+      </aside> : null}
 
       <Dialog
         open={Boolean(loggedIn && inviteToken && invitePasswordRequired && !invitePasswordVerified)}
@@ -5842,6 +5944,7 @@ function App() {
             workHourRecorderContext={workHourRecorderContext?.projectId === selectedProject.id
               ? workHourRecorderContext
               : null}
+            canViewProjectDelivery={canViewProjectDelivery}
             canViewProjectWorkHours={canManageSelectedOrganization}
             onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
@@ -5971,7 +6074,7 @@ function App() {
           />
         </Activity> : null}
 
-        {selectedOrganizationId !== null ? <Activity mode={view === 'my_work_hours' ? 'visible' : 'hidden'}>
+        {selectedOrganizationId !== null || authUser?.activeRole === 'tester' ? <Activity mode={view === 'my_work_hours' ? 'visible' : 'hidden'}>
           <WorkHoursWorkbench
             mode="mine"
             projects={scopedProjects}
@@ -6173,8 +6276,14 @@ function App() {
           />
         )}
       </section>
-    </main>
+    </MainWorkspaceRoot>
   )
+
+  if (isTesterSharedWorkspace) {
+    return renderTesterWorkspaceShell(mainWorkspace, false)
+  }
+
+  return mainWorkspace
 }
 
 function WorkspaceBootScreen({ message }: { message?: string }) {
@@ -6666,6 +6775,7 @@ function ProjectDetail({
   projectTopbarHost,
   projectDetailTab,
   workHourRecorderContext,
+  canViewProjectDelivery,
   canViewProjectWorkHours,
   onAddTodo,
   onAddInstallEventComment,
@@ -6742,6 +6852,7 @@ function ProjectDetail({
   projectTopbarHost: HTMLElement | null
   projectDetailTab: ProjectDetailTab
   workHourRecorderContext: WorkHourRecorderContext | null
+  canViewProjectDelivery: boolean
   canViewProjectWorkHours: boolean
   onProjectDetailTabChange: (tab: ProjectDetailTab) => void
   onAddTodo: (projectId: number) => Promise<boolean>
@@ -6974,6 +7085,10 @@ function ProjectDetail({
   }
 
   useEffect(() => {
+    if (projectDetailTab === 'packages' && !canViewProjectDelivery) {
+      onProjectDetailTabChange('tasks')
+      return
+    }
     if (projectDetailTab === 'work_hours' && !canViewProjectWorkHours) {
       onProjectDetailTabChange('tasks')
       return
@@ -6982,7 +7097,7 @@ function ProjectDetail({
       setIsProjectTodoDetailOpen(false)
       setIsTodoCreateDialogOpen(false)
     }
-  }, [canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
+  }, [canViewProjectDelivery, canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
 
   useEffect(() => {
     setJournalPage((page) => Math.min(page, journalPageCount - 1))
@@ -7019,7 +7134,7 @@ function ProjectDetail({
         <nav className="project-detail-tabs" aria-label="项目详情视图" role="tablist">
           <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} /><span>项目待办</span><span className="project-detail-tab-count">{projectTodos.length}</span></button>
           <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} /><span>项目日记</span></button>
-          <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} /><span>交付工作台</span></button>
+          {canViewProjectDelivery ? <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} /><span>交付工作台</span></button> : null}
           {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} /><span>项目工时</span></button> : null}
         </nav>
         {projectDetailTab === 'tasks' && canWriteProject && !isProjectTodoFocusOpen ? (
@@ -7043,7 +7158,7 @@ function ProjectDetail({
             topbarActionHost={projectTopbarHost}
             onTodoClick={onWorkHoursTodoClick}
           />
-        ) : projectDetailTab === 'packages' ? (
+        ) : projectDetailTab === 'packages' && canViewProjectDelivery ? (
           <ProjectPackageWorkbench
             ref={packageWorkbenchRef}
             onAddEventComment={onAddInstallEventComment}

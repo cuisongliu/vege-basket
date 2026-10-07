@@ -89,7 +89,6 @@ type TestWorkbenchNotificationKind =
   | 'test_bug_status_changed'
   | 'test_bug_rejected'
   | 'test_bug_comment_added'
-  | 'package_event_comment_added'
 type TestWorkbenchSection = 'bugs' | 'cases' | 'core' | 'notifications' | 'plans'
 type TestPlanExecutionImageInput = {
   contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
@@ -2211,17 +2210,10 @@ export async function getTestWorkbench(
     ) : Promise.resolve({ rows: [] }),
     includes('notifications') ? workbenchQuery<{
       actionable: boolean
-      author_display_name: string | null
-      author_email: string | null
-      comment_content: string | null
       comment_author_display_name: string | null
       comment_author_email: string | null
       created_at: Date
-      event_id: string | null
-      event_title: string | null
       kind: TestWorkbenchNotificationKind
-      project_id: string | null
-      project_name: string | null
       source_id: string
       target_id: string | null
       target_status: string | null
@@ -2248,22 +2240,11 @@ export async function getTestWorkbench(
             'test_plan_assigned',
             'test_bug_status_changed',
             'test_bug_rejected',
-            'test_bug_comment_added',
-            'package_event_comment_added'
+            'test_bug_comment_added'
           )
           and (
-            (
-              delivery.kind = 'package_event_comment_added'
-              and delivery.channel = 'in_app'
-              and delivery.status = 'sent'
-            )
-            or (
-              delivery.kind <> 'package_event_comment_added'
-              and (
-                (delivery.channel = 'in_app' and delivery.status = 'sent')
-                or delivery.channel = 'feishu'
-              )
-            )
+            (delivery.channel = 'in_app' and delivery.status = 'sent')
+            or delivery.channel = 'feishu'
           )
         group by delivery.kind, delivery.source_id
         order by created_at desc, delivery.source_id desc
@@ -2279,13 +2260,6 @@ export async function getTestWorkbench(
                  and notification_plan.status not in ('completed', 'aborted')
                else true
              end as actionable,
-             package_comment.content as comment_content,
-             package_event.id as event_id,
-             package_event.title as event_title,
-             package_event.project_id,
-             package_project.name as project_name,
-             package_author.email as author_email,
-             package_author.display_name as author_display_name,
              comment_author.email as comment_author_email,
              comment_author.display_name as comment_author_display_name,
              coalesce(notification_bug.id, notification_plan.id) as target_id,
@@ -2309,13 +2283,6 @@ export async function getTestWorkbench(
                   )
              ) end as target_subjects
       from recent_deliveries delivery
-      left join project_package_event_comments package_comment
-        on delivery.kind = 'package_event_comment_added'
-       and package_comment.id = delivery.source_id
-      left join project_package_events package_event
-        on package_event.id = package_comment.project_package_event_id
-      left join projects package_project on package_project.id = package_event.project_id
-      left join users package_author on package_author.id = package_comment.author_user_id
       left join test_bug_comments notification_comment
         on delivery.kind = 'test_bug_comment_added'
        and notification_comment.id = delivery.source_id
@@ -2340,13 +2307,9 @@ export async function getTestWorkbench(
       left join test_cases notification_case
         on notification_case.id = notification_bug.test_case_id
        and notification_case.test_space_id = notification_bug.test_space_id
-      where (delivery.kind = 'package_event_comment_added' and package_comment.id is not null)
-        or (
-          delivery.kind <> 'package_event_comment_added'
-          and notification_space.id is not null
-          and (${testSpaceMembershipPresentSql('notification_membership')}
-            or ${managedOrganizationReadScopeSql('notification_space.organization_id')})
-        )
+      where notification_space.id is not null
+        and (${testSpaceMembershipPresentSql('notification_membership')}
+          or ${managedOrganizationReadScopeSql('notification_space.organization_id')})
       order by delivery.created_at desc, delivery.source_id desc
       `,
       [userId],
@@ -2584,20 +2547,7 @@ export async function getTestWorkbench(
       testSpaceId: Number(row.test_space_id),
       testSubjectId: Number(row.test_subject_id),
     })),
-    notifications: notifications.rows.map((row) => row.kind === 'package_event_comment_added'
-      ? {
-        actionable: true,
-        authorName: row.author_display_name || row.author_email || '未知用户',
-        commentPreview: row.comment_content ? decryptText(row.comment_content).slice(0, 160) : '',
-        createdAt: row.created_at.toISOString(),
-        eventId: Number(row.event_id),
-        eventTitle: row.event_title ? decryptText(row.event_title) : '',
-        kind: row.kind,
-        projectId: Number(row.project_id),
-        projectName: row.project_name ? decryptText(row.project_name) : '',
-        sourceId: Number(row.source_id),
-      }
-      : {
+    notifications: notifications.rows.map((row) => ({
         actionable: row.actionable,
         commentAuthorName: row.comment_author_display_name || row.comment_author_email || undefined,
         createdAt: row.created_at.toISOString(),
@@ -2619,7 +2569,7 @@ export async function getTestWorkbench(
           id: Number(subject.id),
           name: decryptText(subject.name),
         })),
-      }),
+      })),
     modules: modules.rows.map((row) => ({
       enabled: row.enabled,
       id: Number(row.id),

@@ -344,8 +344,9 @@ case/weekly-report pagination remain unchanged.
   A published event supports only the `delivering` to `delivered` completion action.
 - Creating a package-event feedback comment records one in-app notification for every
   explicitly mentioned member except the author, independently of Feishu configuration.
-  The developer project basket and tester workbench notification centers expose the same
-  recipient-scoped notification; deleting the feedback removes its notification records.
+  Only the developer persona exposes that recipient-scoped delivery notification in the
+  global notification center; the tester persona and test-workbench notification feed do
+  not expose delivery content. Deleting the feedback removes its notification records.
 - Package event aggregate save accepts `action` (`save_draft` or `publish`), basic event
   fields, zero or more selected package `items`, and `documents`. Publishing always requires
   one event-scoped Markdown document; each selected package may additionally have one

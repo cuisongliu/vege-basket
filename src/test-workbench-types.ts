@@ -363,18 +363,6 @@ export type TestWorkbenchNotification = {
   testSubjectId?: number
   testSubjectName?: string
   testSubjects?: Array<{ id: number; name: string }>
-} | {
-  authorName: string
-  commentPreview: string
-  createdAt: string
-  eventId: number
-  eventTitle: string
-  kind: 'package_event_comment_added'
-  projectId: number
-  projectName: string
-  sourceId: number
-  testSpaceName?: string
-  testSpaceVersionLabel?: string
 }
 
 export type TestWorkbenchData = {

@@ -16,6 +16,7 @@ import {
   startVisibleRefreshSchedule,
 } from '../src/refresh-schedule.ts'
 import {
+  filterNotificationsForRole,
   removePackageEventNotification,
   removeTodoNotifications,
 } from '../src/notifications.ts'
@@ -55,15 +56,76 @@ test('notification center exposes a read-all endpoint without dismissing notific
   assert.ok(routeStart >= 0)
   assert.ok(nextRoute > routeStart)
   const route = serverSource.slice(routeStart, nextRoute)
-  assert.match(route, /getNotifications\(userId\)/u)
+  assert.match(route, /const access = \{ canViewDelivery: session\.activeRole !== 'tester' \}/u)
+  assert.match(route, /getNotifications\(userId, access\)/u)
   assert.match(route, /read_at = coalesce\(notification_states\.read_at, now\(\)\)/u)
   assert.doesNotMatch(route, /dismissed_at\s*=\s*now\(\)/u)
+})
+
+test('notification visibility and state writes follow the active persona', () => {
+  const notificationsStart = serverSource.indexOf('async function getNotifications(userId: number, access: NotificationAccess)')
+  const notificationsEnd = serverSource.indexOf("app.get('/api/notifications'", notificationsStart)
+  assert.ok(notificationsStart >= 0)
+  assert.ok(notificationsEnd > notificationsStart)
+  const notificationsSource = serverSource.slice(notificationsStart, notificationsEnd)
+  assert.equal([...notificationsSource.matchAll(/and \$2::boolean/gu)].length, 2)
+  assert.match(notificationsSource, /\[userId, access\.canViewDelivery\]/u)
+
+  const listRouteStart = serverSource.indexOf("app.get('/api/notifications'")
+  const readAllRouteStart = serverSource.indexOf("app.patch('/api/notifications/read-all'", listRouteStart)
+  const listRoute = serverSource.slice(listRouteStart, readAllRouteStart)
+  assert.match(listRoute, /canViewDelivery: session\.activeRole !== 'tester'/u)
+
+  const readRouteStart = serverSource.indexOf("app.patch('/api/notifications/:kind/:sourceId/read'")
+  const readRouteEnd = serverSource.indexOf("app.post('/api/invitations/:membershipId/accept'", readRouteStart)
+  const readRoute = serverSource.slice(readRouteStart, readRouteEnd)
+  assert.match(readRoute, /session\.activeRole === 'tester'/u)
+  assert.match(readRoute, /kind === 'package_event_assigned'/u)
+  assert.match(readRoute, /kind === 'package_event_comment_added'/u)
+  assert.match(readRoute, /response\.status\(403\)/u)
+
+  for (const routePath of [
+    '/api/invitations/:membershipId/accept',
+    '/api/invitations/:membershipId/decline',
+    '/api/project-transfers/:transferId/respond',
+  ]) {
+    const routeStart = serverSource.indexOf(`app.post('${routePath}'`)
+    const routeEnd = serverSource.indexOf("\napp.", routeStart + 1)
+    assert.ok(routeStart >= 0)
+    assert.ok(routeEnd > routeStart)
+    const route = serverSource.slice(routeStart, routeEnd)
+    assert.match(route, /const session = await getAuthenticatedRoleSession\(request\)/u)
+    assert.match(route, /canViewDelivery: session\.activeRole !== 'tester'/u)
+  }
+})
+
+test('client defensively removes delivery notifications for the tester persona', () => {
+  const invite = { id: 7 } as NotificationCenterData['invites'][number]
+  const notifications: NotificationCenterData = {
+    accountOffboardingReceived: [],
+    assignedPackageEvents: [{ id: 11 } as NotificationCenterData['assignedPackageEvents'][number]],
+    assignedTodos: [],
+    watchedTodos: [],
+    dueTomorrowTodos: [],
+    noteMentions: [],
+    invites: [invite],
+    packageEventCommentMentions: [
+      { commentId: 13 } as NotificationCenterData['packageEventCommentMentions'][number],
+    ],
+    projectTransfers: [],
+  }
+
+  const testerNotifications = filterNotificationsForRole(notifications, true)
+  assert.deepEqual(testerNotifications.assignedPackageEvents, [])
+  assert.deepEqual(testerNotifications.packageEventCommentMentions, [])
+  assert.strictEqual(testerNotifications.invites, notifications.invites)
+  assert.strictEqual(filterNotificationsForRole(notifications, false), notifications)
 })
 
 test('suppresses notifications caused by the recipient own actions', () => {
   assert.match(
     serverSource,
-    /where e\.assignee_user_id = \$1\s+and e\.assigned_by_user_id is distinct from \$1/u,
+    /where e\.assignee_user_id = \$1\s+and \$2::boolean\s+and e\.assigned_by_user_id is distinct from \$1/u,
   )
   assert.match(
     serverSource,
@@ -870,9 +932,9 @@ test('notifies only mentioned users privately when a delivery event comment is a
   )
   assert.match(serverSource, /packageEventCommentMentions: packageEventCommentMentionsResult\.rows\.map/u)
   assert.match(appSource, /notifications\.packageEventCommentMentions/u)
-  assert.match(testWorkbenchSource, /delivery\.kind = 'package_event_comment_added'/u)
-  assert.match(testWorkbenchClientSource, />交付反馈<\/span>/u)
-  assert.match(testWorkbenchClientSource, /在交付反馈中提到了你/u)
+  assert.doesNotMatch(testWorkbenchSource, /delivery\.kind = 'package_event_comment_added'/u)
+  assert.doesNotMatch(testWorkbenchClientSource, />交付反馈<\/span>/u)
+  assert.doesNotMatch(testWorkbenchClientSource, /在交付反馈中提到了你/u)
 })
 
 test('bug share comments reuse organization mentions and the test-bug notification hook', () => {
