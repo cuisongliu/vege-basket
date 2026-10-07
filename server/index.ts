@@ -5838,10 +5838,75 @@ app.get('/api/workspace/documents', asyncHandler(async (request, response) => {
 app.get('/api/workspace/search', asyncHandler(async (request, response) => {
   const userId = await ensureUserId(request, response)
   if (!userId) return
-  response.json(await getWorkspace(userId, {
+  const searchQuery = typeof request.query.q === 'string' ? request.query.q.trim() : ''
+  if (!searchQuery) {
+    response.status(400).json({ error: '搜索关键词不能为空' })
+    return
+  }
+  const offsetValue = Number(request.query.cursor ?? 0)
+  const limitValue = Number(request.query.limit ?? 8)
+  const offset = Number.isSafeInteger(offsetValue) && offsetValue >= 0 ? offsetValue : 0
+  const limit = Number.isSafeInteger(limitValue) ? Math.min(50, Math.max(1, limitValue)) : 8
+  const statusFilter = typeof request.query.status === 'string' && ['active', 'paused', 'completed', 'archived'].includes(request.query.status)
+    ? request.query.status
+    : null
+  const tagFilter = typeof request.query.tag === 'string' ? request.query.tag.trim() : ''
+  const workspace = await getWorkspace(userId, {
     includeTodoDetail: false,
     sections: new Set(['journals', 'summaries', 'todos']),
-  }))
+  })
+  const queryText = searchQuery.toLocaleLowerCase('zh-CN')
+  const todoTextByProject = new Map<number, string[]>()
+  for (const todo of workspace.todos) {
+    const values = todoTextByProject.get(todo.projectId) ?? []
+    values.push(todo.title)
+    todoTextByProject.set(todo.projectId, values)
+  }
+  const summaryTextByProject = new Map<number, string[]>()
+  for (const summary of workspace.summaries) {
+    if (summary.projectId == null) continue
+    const values = summaryTextByProject.get(summary.projectId) ?? []
+    values.push(summary.content)
+    summaryTextByProject.set(summary.projectId, values)
+  }
+  const projectText = new Map<number, string>()
+  for (const project of workspace.projects) {
+    projectText.set(project.id, [
+      project.name,
+      project.description,
+      project.tags.join(' '),
+      project.journals.map((entry) => entry.content).join(' '),
+      todoTextByProject.get(project.id)?.join(' ') ?? '',
+      summaryTextByProject.get(project.id)?.join(' ') ?? '',
+    ].join(' ').toLocaleLowerCase('zh-CN'))
+  }
+  const matchedProjects = workspace.projects.filter((project) => (
+    (!statusFilter || project.status === statusFilter)
+    && (!tagFilter || project.tags.includes(tagFilter))
+    && projectText.get(project.id)?.includes(queryText)
+  ))
+  const projects = matchedProjects
+    .sort((left, right) => right.id - left.id)
+    .slice(offset, offset + limit)
+    .map((project) => ({
+      ...project,
+      journals: [],
+      modules: [],
+      risks: [],
+      riskJournalEntryIds: [],
+      subprojects: [],
+    }))
+  response.json({
+    departedUserIds: [],
+    inbox: [],
+    loadedSections: ['catalog'],
+    memberships: [],
+    pagination: { offset, limit, total: matchedProjects.length },
+    projects,
+    scope: { searchQuery },
+    summaries: [],
+    todos: [],
+  })
 }))
 
 app.get('/api/projects/:projectId/overview', asyncHandler(async (request, response) => {

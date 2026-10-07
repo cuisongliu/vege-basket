@@ -1858,6 +1858,8 @@ function App() {
   }, [view])
 
   const [projects, setProjects] = useState(initialProjects)
+  const [searchResults, setSearchResults] = useState<Project[]>([])
+  const [searchResultTotal, setSearchResultTotal] = useState(0)
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>([])
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<number | null>(null)
   const [organizationContextReady, setOrganizationContextReady] = useState(false)
@@ -1937,9 +1939,14 @@ function App() {
   const [isProjectModulesDialogOpen, setIsProjectModulesDialogOpen] = useState(false)
   const [projectModuleDraft, setProjectModuleDraft] = useState('')
   const [search, setSearch] = useState('')
+  const [searchRequest, setSearchRequest] = useState('')
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('active')
   const [tagFilter, setTagFilter] = useState('全部')
   const projectBasketScope = JSON.stringify([authUserId, selectedOrganizationId, search, statusFilter, tagFilter])
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchRequest(search.trim()), search.trim() ? 250 : 0)
+    return () => window.clearTimeout(timer)
+  }, [search])
   useEffect(() => {
     setProjectBasketPage({ scope: projectBasketScope, page: 0 })
     projectBasketScrollRef.current = { scope: projectBasketScope, page: 0, top: 0 }
@@ -1974,6 +1981,8 @@ function App() {
   }, [])
   const workspaceRefreshRequestIdRef = useRef(0)
   const workspaceRefreshPromiseRef = useRef<Promise<boolean> | null>(null)
+  const workspaceRefreshKeyRef = useRef('')
+  const workspaceRefreshControllerRef = useRef<AbortController | null>(null)
   const organizationContextReadyRef = useRef(false)
   const workspaceMutationEpochRef = useRef(0)
   const aiRequestIdRef = useRef(0)
@@ -2169,6 +2178,8 @@ function App() {
 
   const resetWorkspaceState = useCallback(() => {
     setProjects([])
+    setSearchResults([])
+    setSearchResultTotal(0)
     setTodos([])
     setMemberships([])
     setDepartedUserIds([])
@@ -2185,6 +2196,12 @@ function App() {
     const includes = (section: NonNullable<WorkspaceData['loadedSections']>[number]) => (
       !sections || sections.has(section)
     )
+
+    if (data.scope?.searchQuery) {
+      setSearchResults(data.projects)
+      setSearchResultTotal(data.pagination?.total ?? data.projects.length)
+      return
+    }
 
     if (!sections || includes('catalog') || includes('overview') || includes('journals')) {
       setProjects((current) => {
@@ -2391,16 +2408,30 @@ function App() {
     includeCatalog = true,
   ) => {
     const requestOptions = { signal }
-    const requests: Array<Promise<WorkspaceData>> = view === 'search'
-      ? [fetchWorkspaceSearch(requestOptions)]
-      : includeCatalog ? [fetchProjectCatalog(requestOptions)] : []
+    const requests: Array<Promise<WorkspaceData>> = includeCatalog
+      ? [fetchProjectCatalog(requestOptions)]
+      : []
+
+    if (view === 'search' && searchRequest) {
+      requests.push(fetchWorkspaceSearch(searchRequest, {
+        ...requestOptions,
+        cursor: projectBasketPage.scope === projectBasketScope
+          ? projectBasketPage.page * 8
+          : 0,
+        limit: 8,
+        status: statusFilter,
+        tag: tagFilter,
+      }))
+    }
 
     if (view === 'project' && selectedProjectId) {
-      requests.push(
-        fetchProjectOverview(selectedProjectId, requestOptions),
-        fetchProjectJournals(selectedProjectId, requestOptions),
-        fetchProjectTodos(selectedProjectId, requestOptions),
-      )
+      requests.push(fetchProjectOverview(selectedProjectId, requestOptions))
+      if (projectDetailTab === 'journal') {
+        requests.push(fetchProjectJournals(selectedProjectId, requestOptions))
+      }
+      if (projectDetailTab === 'tasks' || projectDetailTab === 'activity') {
+        requests.push(fetchProjectTodos(selectedProjectId, requestOptions))
+      }
       if (requestedTodoDetailId) {
         requests.push(fetchTodoDetail(requestedTodoDetailId, requestOptions).then(({ todo }) => (
           todoDetailWorkspace(todo)
@@ -2419,11 +2450,27 @@ function App() {
     }
 
     return Promise.all(requests)
-  }, [requestedTodoDetailId, selectedProjectId, view])
+  }, [projectBasketPage, projectBasketScope, projectDetailTab, requestedTodoDetailId, searchRequest, selectedProjectId, statusFilter, tagFilter, view])
 
   const refreshWorkspace = useCallback(async () => {
+    const refreshKey = [
+      view,
+      selectedProjectId ?? '',
+      projectDetailTab,
+      requestedTodoDetailId ?? '',
+      view === 'search' ? searchRequest : '',
+      view === 'search' ? statusFilter : '',
+      view === 'search' ? tagFilter : '',
+      view === 'search' && projectBasketPage.scope === projectBasketScope
+        ? projectBasketPage.page
+        : 0,
+    ].join(':')
     const existing = workspaceRefreshPromiseRef.current
-    if (existing) return existing
+    if (existing && workspaceRefreshKeyRef.current === refreshKey) return existing
+    workspaceRefreshControllerRef.current?.abort()
+    const controller = new AbortController()
+    workspaceRefreshControllerRef.current = controller
+    workspaceRefreshKeyRef.current = refreshKey
 
     const requestId = workspaceRefreshRequestIdRef.current + 1
     workspaceRefreshRequestIdRef.current = requestId
@@ -2431,8 +2478,9 @@ function App() {
     const mutationEpoch = workspaceMutationEpochRef.current
     const promise = (async () => {
       try {
-        const snapshots = await fetchActiveWorkspace(undefined, false)
+        const snapshots = await fetchActiveWorkspace(controller.signal, false)
         if (
+          controller.signal.aborted ||
           authSessionGenerationRef.current !== sessionGeneration ||
           workspaceRefreshRequestIdRef.current !== requestId ||
           workspaceMutationEpochRef.current !== mutationEpoch
@@ -2449,16 +2497,30 @@ function App() {
       () => {
         if (workspaceRefreshPromiseRef.current === promise) {
           workspaceRefreshPromiseRef.current = null
+          workspaceRefreshControllerRef.current = null
         }
       },
       () => {
         if (workspaceRefreshPromiseRef.current === promise) {
           workspaceRefreshPromiseRef.current = null
+          workspaceRefreshControllerRef.current = null
         }
       },
     )
     return promise
-  }, [applyWorkspace, fetchActiveWorkspace])
+  }, [
+    applyWorkspace,
+    fetchActiveWorkspace,
+    projectBasketPage,
+    projectBasketScope,
+    projectDetailTab,
+    requestedTodoDetailId,
+    searchRequest,
+    selectedProjectId,
+    statusFilter,
+    tagFilter,
+    view,
+  ])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -2485,7 +2547,9 @@ function App() {
         if (authSessionGenerationRef.current !== sessionGeneration) return
         authSessionGenerationRef.current += 1
         notificationRefreshPromiseRef.current = null
+        workspaceRefreshControllerRef.current?.abort()
         workspaceRefreshPromiseRef.current = null
+        workspaceRefreshKeyRef.current = ''
         clearAuthToken()
         resetWorkspaceState()
         setLoggedIn(false)
@@ -2752,8 +2816,10 @@ function App() {
     selectedAiConversationId,
   ])
 
+  const workspacePollingActive = workspacePollingViews.has(view)
+
   useEffect(() => {
-    if (!loggedIn) return
+    if (!loggedIn || view !== 'notifications') return
     return startVisibleRefreshSchedule({
       clearInterval: (handle) => window.clearInterval(handle),
       isVisible: () => document.visibilityState === 'visible',
@@ -2769,30 +2835,15 @@ function App() {
       minRefreshGapMs: 1_000,
       setInterval: (listener, delay) => window.setInterval(listener, delay),
     })
-  }, [loggedIn, refreshNotifications])
+  }, [loggedIn, refreshNotifications, view])
 
   useEffect(() => {
-    if (!loggedIn || !workspaceLoaded) return
-    const controller = new AbortController()
-    const sessionGeneration = authSessionGenerationRef.current
-    const mutationEpoch = workspaceMutationEpochRef.current
-    fetchActiveWorkspace(controller.signal, false)
-      .then((snapshots) => {
-        if (
-          controller.signal.aborted ||
-          authSessionGenerationRef.current !== sessionGeneration ||
-          workspaceMutationEpochRef.current !== mutationEpoch
-        ) return
-        for (const snapshot of snapshots) applyWorkspace(snapshot)
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return
-        setWorkspaceError(error instanceof Error && error.message
-          ? error.message
-          : '当前页面数据读取失败，请稍后重试。')
-      })
-    return () => controller.abort()
-  }, [applyWorkspace, fetchActiveWorkspace, loggedIn, workspaceLoaded])
+    if (!loggedIn || !workspaceLoaded || !workspacePollingActive) return
+    void refreshWorkspace().then((successful) => {
+      if (!successful) setWorkspaceError('当前页面数据读取失败，请稍后重试。')
+      else setWorkspaceError('')
+    })
+  }, [loggedIn, refreshWorkspace, workspaceLoaded, workspacePollingActive])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -2814,7 +2865,6 @@ function App() {
     })
   }, [loggedIn])
 
-  const workspacePollingActive = workspacePollingViews.has(view)
   useEffect(() => {
     if (!loggedIn || !workspacePollingActive) return
     return startVisibleRefreshSchedule({
@@ -3259,7 +3309,8 @@ function App() {
 
   const filteredResults = useMemo(() => {
     const query = search.trim().toLowerCase()
-    return scopedProjects
+    const sourceProjects = searchRequest ? searchResults : scopedProjects
+    return sourceProjects
       .filter((project) => {
         const matchesStatus = statusFilter === 'all' || project.status === statusFilter
         const matchesTag = tagFilter === '全部' || project.tags.includes(tagFilter)
@@ -3279,7 +3330,7 @@ function App() {
         ]
           .join(' ')
           .toLowerCase()
-        const matchesQuery = !query || projectText.includes(query)
+        const matchesQuery = searchRequest ? true : !query || projectText.includes(query)
         return matchesStatus && matchesTag && matchesQuery
       })
       .sort((left, right) => {
@@ -3289,7 +3340,7 @@ function App() {
         if (journalDiff !== 0) return journalDiff
         return right.id - left.id
       })
-  }, [scopedProjects, search, statusFilter, summaries, tagFilter, todos])
+  }, [scopedProjects, search, searchRequest, searchResults, statusFilter, summaries, tagFilter, todos])
 
   const openNotificationCount = useMemo(
     () =>
@@ -3479,7 +3530,9 @@ function App() {
     notificationRefreshRequestIdRef.current += 1
     workspaceRefreshRequestIdRef.current += 1
     notificationRefreshPromiseRef.current = null
+    workspaceRefreshControllerRef.current?.abort()
     workspaceRefreshPromiseRef.current = null
+    workspaceRefreshKeyRef.current = ''
     workspaceMutationEpochRef.current += 1
     aiRequestIdRef.current += 1
     aiHistoryRequestIdRef.current += 1
@@ -6043,6 +6096,7 @@ function App() {
         <Activity mode={view === 'my_work' ? 'visible' : 'hidden'}>
           <MyWorkWorkbench
             key={`${authUserId}:${selectedOrganizationId}`}
+            isActive={view === 'my_work'}
             scope={`${authUserId}:${selectedOrganizationId}`}
             savedView={myWorkViewState}
             onViewChange={setMyWorkViewState}
@@ -6062,6 +6116,7 @@ function App() {
           <MyWorkWorkbench
             key={`${authUserId}:${selectedOrganizationId}:review`}
             mode="review"
+            isActive={view === 'my_work_review'}
             scope={`${authUserId}:${selectedOrganizationId}:review`}
             organizationId={selectedOrganizationId}
             projects={scopedProjects}
@@ -6077,6 +6132,7 @@ function App() {
         {selectedOrganizationId !== null || authUser?.activeRole === 'tester' ? <Activity mode={view === 'my_work_hours' ? 'visible' : 'hidden'}>
           <WorkHoursWorkbench
             mode="mine"
+            isActive={view === 'my_work_hours'}
             projects={scopedProjects}
             currentUserId={authUser?.id}
             currentUserName={authUser?.displayName}
@@ -6092,6 +6148,7 @@ function App() {
         {selectedOrganizationId !== null && canManageSelectedOrganization ? <Activity mode={view === 'work_hours' ? 'visible' : 'hidden'}>
           <WorkHoursWorkbench
             mode="organization"
+            isActive={view === 'work_hours'}
             organizationId={selectedOrganizationId}
             projects={scopedProjects}
             currentUserId={authUser?.id}
@@ -6113,6 +6170,8 @@ function App() {
         <Activity mode={view === 'search' ? 'visible' : 'hidden'}>
           <SearchView
             page={projectBasketPage.scope === projectBasketScope ? projectBasketPage.page : 0}
+            total={searchRequest ? searchResultTotal : filteredResults.length}
+            serverPaged={Boolean(searchRequest)}
             onPageChange={(page) => setProjectBasketPage({ scope: projectBasketScope, page })}
             paginationScope={projectBasketScope}
             scrollPositionRef={projectBasketScrollRef}
@@ -9223,6 +9282,8 @@ const projectBasketPageSize = 8
 
 function SearchView({
   page,
+  serverPaged,
+  total,
   onPageChange,
   paginationScope,
   scrollPositionRef,
@@ -9242,6 +9303,8 @@ function SearchView({
   tagFilter,
 }: {
   page: number
+  serverPaged: boolean
+  total: number
   onPageChange: (page: number) => void
   paginationScope: string
   scrollPositionRef: RefObject<{ scope: string; page: number; top: number }>
@@ -9262,8 +9325,10 @@ function SearchView({
   tagFilter: string
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
-  const safePage = clampListPage(page, filteredResults.length, projectBasketPageSize)
-  const visibleProjects = filteredResults.slice(safePage * projectBasketPageSize, (safePage + 1) * projectBasketPageSize)
+  const safePage = clampListPage(page, total, projectBasketPageSize)
+  const visibleProjects = serverPaged
+    ? filteredResults
+    : filteredResults.slice(safePage * projectBasketPageSize, (safePage + 1) * projectBasketPageSize)
   useEffect(() => {
     if (page !== safePage) onPageChange(safePage)
   }, [onPageChange, page, safePage])
@@ -9510,8 +9575,8 @@ function SearchView({
           </article>
         ))}
       </div>
-      {filteredResults.length > projectBasketPageSize ? (
-        <ListPagination label="项目篮子分页" page={safePage} pageSize={projectBasketPageSize} total={filteredResults.length}
+      {total > projectBasketPageSize ? (
+        <ListPagination label="项目篮子分页" page={safePage} pageSize={projectBasketPageSize} total={total}
           onPageChange={(next) => {
             scrollPositionRef.current = { scope: paginationScope, page: next, top: 0 }
             onPageChange(next)

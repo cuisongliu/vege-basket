@@ -60,6 +60,8 @@ test('background refreshes preserve workbench content and editor state', () => {
   assert.match(myWorkClientSource, /backgroundRefreshVersion/u)
   assert.match(weeklyReportSource, /backgroundRefreshVersion/u)
   assert.match(weeklyReportSource, /loadedReportListContext/u)
+  assert.match(weeklyReportSource, /fetchWeeklyReportContext/u)
+  assert.doesNotMatch(weeklyReportSource, /fetchOrganization\(organizationId\)/u)
   assert.match(appSource, /view !== 'project'/u)
   assert.match(
     weeklyReportSource,
@@ -68,6 +70,11 @@ test('background refreshes preserve workbench content and editor state', () => {
   assert.match(
     weeklyReportSource,
     /\}, \[now, reportList, reportListPage, reportProfile, weekStartsOn, weeklyReportRules, workspaceView\]\)/u,
+  )
+  assert.match(myWorkClientSource, /if \(!isActive\) return/u)
+  assert.match(
+    readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8'),
+    /if \(!isActive\) return/u,
   )
 })
 
@@ -127,6 +134,9 @@ test('organization sections preserve the complete default and avoid multiplied c
   assert.doesNotMatch(organizationServerSource, /left join test_plans p on p\.test_space_id = s\.id/u)
   assert.doesNotMatch(organizationServerSource, /left join test_bugs b on b\.test_space_id = s\.id/u)
   assert.match(organizationClientSource, /mergeOrganizationDetail/u)
+  assert.match(organizationServerSource, /weekly-report-context/u)
+  assert.match(organizationClientSource, /sections: \['overview'\]/u)
+  assert.doesNotMatch(organizationClientSource, /sections: \['overview', 'settings'\]/u)
 })
 
 test('workspace loading uses independently scoped live read models', () => {
@@ -152,9 +162,25 @@ test('workspace loading uses independently scoped live read models', () => {
   assert.match(workspaceApiSource, /fetchWorkspaceInbox/u)
   assert.match(workspaceApiSource, /fetchWorkspaceDocuments/u)
   assert.match(workspaceApiSource, /fetchWorkspaceSearch/u)
+  assert.match(workspaceApiSource, /cursor.*limit/u)
   assert.match(appSource, /return Promise\.all\(requests\)/u)
   assert.match(appSource, /controller\.abort\(\)/u)
-  assert.match(appSource, /const snapshots = await fetchActiveWorkspace\(undefined, false\)/u)
+  assert.match(appSource, /const snapshots = await fetchActiveWorkspace\(controller\.signal, false\)/u)
+  assert.match(appSource, /if \(view === 'search' && searchRequest\)/u)
+  assert.match(appSource, /setSearchRequest\(search\.trim\(\)\)/u)
+  assert.match(appSource, /searchResultTotal/u)
+  assert.match(appSource, /data\.scope\?\.searchQuery/u)
+  assert.match(workspaceServerSource, /搜索关键词不能为空/u)
+  assert.match(workspaceServerSource, /pagination: \{ offset, limit, total: matchedProjects\.length \}/u)
+  assert.match(workspaceServerSource, /journals: \[\]/u)
+  assert.match(workspaceServerSource, /Math\.min\(50, Math\.max\(1, limitValue\)\)/u)
+  assert.match(appSource, /if \(projectDetailTab === 'journal'\)/u)
+  assert.match(appSource, /projectDetailTab === 'tasks' \|\| projectDetailTab === 'activity'/u)
+  assert.match(appSource, /workspaceRefreshKeyRef/u)
+  assert.match(appSource, /workspaceRefreshControllerRef\.current\?\.abort\(\)/u)
+  assert.match(appSource, /isActive=\{view === 'my_work'\}/u)
+  assert.match(appSource, /isActive=\{view === 'my_work_hours'\}/u)
+  assert.match(appSource, /if \(!loggedIn \|\| view !== 'notifications'\) return/u)
   assert.match(
     appSource,
     /workspaceMutationEpochRef\.current !== mutationEpoch[\s\S]*?for \(const snapshot of snapshots\) applyWorkspace\(snapshot\)/u,

@@ -123,6 +123,7 @@ function TableFilterMenu({
 
 export function MyWorkWorkbench({
   mode = 'work',
+  isActive = true,
   scope,
   savedView,
   onViewChange,
@@ -135,6 +136,7 @@ export function MyWorkWorkbench({
   onWorkHoursChanged,
 }: {
   mode?: 'work' | 'review'
+  isActive?: boolean
   scope: string
   savedView?: MyWorkViewState
   onViewChange: (view: MyWorkViewState) => void
@@ -174,8 +176,10 @@ export function MyWorkWorkbench({
     setView((current) => ({ ...current, filters: { ...current.filters, ...patch }, page: 0, scrollTop: 0 }))
   }
 
-  useEffect(() => startVisibleRefreshSchedule({
-    clearInterval: (handle) => window.clearInterval(handle),
+  useEffect(() => {
+    if (!isActive) return
+    return startVisibleRefreshSchedule({
+      clearInterval: (handle) => window.clearInterval(handle),
     intervalMs: workspaceRefreshIntervalMs,
     isVisible: () => document.visibilityState === 'visible',
     onFocus: (listener) => {
@@ -187,11 +191,13 @@ export function MyWorkWorkbench({
       return () => document.removeEventListener('visibilitychange', listener)
     },
     refresh: () => setBackgroundRefreshVersion((current) => current + 1),
-    minRefreshGapMs: 1_000,
-    setInterval: (listener, delay) => window.setInterval(listener, delay),
-  }), [])
+      minRefreshGapMs: 1_000,
+      setInterval: (listener, delay) => window.setInterval(listener, delay),
+    })
+  }, [isActive])
 
   useEffect(() => {
+    if (!isActive) return
     let active = true
     setLoading(true)
     setError('')
@@ -211,10 +217,10 @@ export function MyWorkWorkbench({
       if (active) setLoading(false)
     })
     return () => { active = false }
-  }, [backgroundRefreshVersion, organizationId, view])
+  }, [isActive, backgroundRefreshVersion, organizationId, view])
 
   useEffect(() => {
-    if (!reviewItem) return
+    if (!isActive || !reviewItem) return
     let active = true
     setReviewLoading(true)
     setReviewError('')
@@ -234,7 +240,7 @@ export function MyWorkWorkbench({
       if (active) setReviewLoading(false)
     })
     return () => { active = false }
-  }, [reviewItem])
+  }, [isActive, reviewItem])
 
   // Revalidation preserves the viewport. Explicit navigation and remounts restore
   // their own position only after the corresponding records are committed.

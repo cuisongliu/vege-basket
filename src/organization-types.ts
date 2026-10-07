@@ -28,6 +28,15 @@ export type OrganizationListItem = {
   weeklyReportProfiles: WeeklyReportProfile[]
 }
 
+export type WeeklyReportContext = {
+  canWriteWeeklyReport: boolean
+  id: number
+  name: string
+  weekStartsOn: number
+  weeklyReportProfiles: WeeklyReportProfile[]
+  weeklyReportRules: WeeklyReportRules
+}
+
 export type OrganizationPackageMarketCatalogRule = PackageMarketRule & {
   canonicalId: string
   ciSupported: boolean

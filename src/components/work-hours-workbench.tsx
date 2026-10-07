@@ -59,6 +59,7 @@ const emptySummary: WorkHourSummary = {
 
 type Props = {
   mode: 'mine' | 'organization' | 'project'
+  isActive?: boolean
   organizationId?: number | null
   project?: Project
   projects: Project[]
@@ -77,7 +78,7 @@ type Props = {
 }
 
 export function WorkHoursWorkbench({
-  mode, organizationId, project, projects, currentUserId,
+  mode, isActive = true, organizationId, project, projects, currentUserId,
   initialProjectId = null, initialTodoId = null, autoOpenRecorder = false, onRecorderContextConsumed,
   recorderOnly = false, recorderRequest = null, onRecorderDismiss, onTodoClick, onProjectClick, topbarActionHost,
 }: Props) {
@@ -137,16 +138,21 @@ export function WorkHoursWorkbench({
       .finally(() => setLoading(false))
   }, [mineTab, mode, organizationId, projectFilter, projectId, range.endDate, range.startDate, status])
 
-  useEffect(() => { reload() }, [reload])
+  useEffect(() => {
+    if (!isActive) return
+    reload()
+  }, [isActive, reload])
   useEffect(() => { setRange(rangeForPeriod(period)) }, [period])
   useEffect(() => {
+    if (!isActive) return
     if (!selectedProjectId || mode !== 'mine') { setTodos([]); return }
     void fetchProjectTodos(selectedProjectId)
       .then((data) => setTodos(data.todos.filter((todo) => todo.assigneeUserId != null && !todo.done && todo.confirmationStatus !== 'pending_review')))
       .catch(() => setTodos([]))
-  }, [currentUserId, mode, projects, selectedProjectId])
+  }, [currentUserId, isActive, mode, projects, selectedProjectId])
 
   useEffect(() => {
+    if (!isActive) return
     if (mode !== 'mine' || !autoOpenRecorder || initialTodoId == null) return
     setSelectedProjectId(initialProjectId ?? project?.id ?? null)
     setSelectedTodoId(initialTodoId)
@@ -155,18 +161,20 @@ export function WorkHoursWorkbench({
     setError('')
     setDialogOpen(true)
     onRecorderContextConsumed?.()
-  }, [autoOpenRecorder, initialProjectId, initialTodoId, mode, onRecorderContextConsumed, project?.id])
+  }, [autoOpenRecorder, initialProjectId, initialTodoId, isActive, mode, onRecorderContextConsumed, project?.id])
 
   useEffect(() => {
+    if (!isActive) return
     if (mode !== 'mine' || !recorderRequest) return
     openRecorderForTodo(recorderRequest.todoId, recorderRequest.projectId)
-  }, [mode, recorderRequest])
+  }, [isActive, mode, recorderRequest])
 
   useEffect(() => {
     setSelectedTaskEntryPage(0)
   }, [selectedTaskId])
 
   useEffect(() => {
+    if (!isActive) return
     if (selectedTaskId == null) {
       setSelectedTaskEntries([])
       setSelectedTaskEntryTotal(0)
@@ -188,7 +196,7 @@ export function WorkHoursWorkbench({
       setSelectedTaskEntryTotal(0)
     })
     return () => { active = false }
-  }, [selectedTaskEntriesVersion, selectedTaskEntryPage, selectedTaskId])
+  }, [isActive, selectedTaskEntriesVersion, selectedTaskEntryPage, selectedTaskId])
 
   const projectOptions = useMemo(() => projects.filter((candidate) => candidate.organizationId != null), [projects])
   const filteredProjectOptions = useMemo(() => projectOptions.filter((candidate) => !projectQuery.trim() || candidate.name.toLowerCase().includes(projectQuery.trim().toLowerCase())), [projectOptions, projectQuery])

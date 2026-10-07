@@ -42,7 +42,7 @@ import {
   X,
 } from '@phosphor-icons/react'
 import {
-  fetchOrganization,
+  fetchWeeklyReportContext,
   fetchPersonalWeeklyReport,
   fetchPersonalWeeklyReports,
   fetchWeeklyReportSources,
@@ -523,7 +523,7 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
     let active = true
     const organizationChanged = loadedOrganizationId.current !== organizationId
     if (organizationChanged) setLoading(true)
-    fetchOrganization(organizationId)
+    fetchWeeklyReportContext(organizationId)
       .then((detail) => {
         if (!active) return
         if (organizationChanged) setCurrentWeekSubmitted(null)

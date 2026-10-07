@@ -881,12 +881,14 @@ test('coalesces focus and visibility refreshes fired by the same foreground tran
 
 test('refreshes only the active workspace scope and keeps catalog reconciliation separate', () => {
   assert.match(appSource, /const refreshWorkspace = useCallback\(async \(\) =>/u)
-  assert.match(appSource, /fetchActiveWorkspace\(undefined, false\)/u)
+  assert.match(appSource, /fetchActiveWorkspace\(controller\.signal, false\)/u)
+  assert.match(appSource, /workspaceRefreshKeyRef/u)
+  assert.match(appSource, /workspaceRefreshControllerRef\.current\?\.abort\(\)/u)
   assert.match(appSource, /intervalMs: workspaceRefreshIntervalMs/u)
   assert.match(appSource, /workspacePollingViews = new Set<View>\(\['project', 'inbox', 'search', 'ai'\]\)/u)
   assert.match(appSource, /const workspacePollingActive = workspacePollingViews\.has\(view\)/u)
   assert.match(appSource, /if \(!loggedIn \|\| !workspacePollingActive\) return/u)
-  assert.match(appSource, /\[loggedIn, refreshWorkspace, workspacePollingActive\]/u)
+  assert.match(appSource, /\[loggedIn, refreshWorkspace, workspaceLoaded, workspacePollingActive\]/u)
   assert.match(appSource, /refresh: \(\) => refreshWorkspace\(\),\s*refreshImmediately: true/u)
   assert.match(appSource, /minRefreshGapMs: 1_000/u)
   assert.doesNotMatch(appSource, /workspaceHydratedRef/u)

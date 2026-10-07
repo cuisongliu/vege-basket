@@ -38,9 +38,10 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `src/App.tsx`, `src/components/`: UI state and user workflows. They must not hold
   database, OSS credential, or authorization decisions.
 - `src/refresh-schedule.ts`: visible-page refresh scheduling shared by notifications and the
-  workspace snapshot. Notification polling remains global, while workspace polling runs only
-  on workspace-backed views and refreshes immediately when one becomes active. Independently
-  loaded workbenches revalidate only their mounted data surface while retaining current content.
+  workspace snapshot. Notification polling runs only while the notification center is active,
+  while workspace polling runs only on workspace-backed views and refreshes immediately when one
+  becomes active. Independently loaded workbenches revalidate only their active data surface while
+  retaining current content.
   The application-level organization directory revalidates separately so removed access cannot
   leave a stale organization context. Foreground focus and visibility events are coalesced, and
   a workspace refresh must not invalidate those workbenches.
@@ -184,7 +185,11 @@ focus or navigation. The application shell refreshes the authenticated account a
 through a separate lightweight endpoint on the same 15-second cadence and on focus, so platform
 administrator grants, revocations, and account disabling take effect without reloading workspace
 data. Project overview, journals, todos, todo detail, drafts, AI documents, and
-cross-project search have separate authorized routes. Superseded navigation reads are aborted.
+cross-project search have separate authorized routes. Navigation and foreground refresh share a
+keyed in-flight request, superseded reads are aborted, and hidden mounted workbenches do not
+initialize or poll. Empty project-basket searches read only the project catalog; non-empty search
+uses an authorized paginated response capped at eight project cards per request. The weekly-report
+workbench reads its organization context from a dedicated narrow route.
 Mutation responses use the narrowest matching read model; only the compatibility
 `GET /api/workspace` route may build the complete legacy response.
 

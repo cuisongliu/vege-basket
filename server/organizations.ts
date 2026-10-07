@@ -1172,6 +1172,53 @@ async function getOrganizationDetail(
   }
 }
 
+async function getWeeklyReportContext(organizationId: number, userId: number) {
+  const result = await query<{
+    id: string
+    name: string
+    week_starts_on: number
+    weekly_report_close_day: number
+    weekly_report_close_time: string
+    weekly_report_open_day: number
+    weekly_report_open_time: string
+    weekly_report_profiles: WeeklyReportProfile[]
+  }>(
+    `
+    select o.id, o.name, o.week_starts_on,
+      o.weekly_report_open_day, o.weekly_report_open_time,
+      o.weekly_report_close_day, o.weekly_report_close_time,
+      membership.weekly_report_profiles
+    from organizations o
+    join organization_memberships membership
+      on membership.organization_id = o.id
+     and membership.user_id = $2
+     and membership.status = 'active'
+    where o.id = $1
+    `,
+    [organizationId, userId],
+  )
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    canWriteWeeklyReport: row.weekly_report_profiles.length > 0,
+    id: Number(row.id),
+    name: decryptText(row.name),
+    weekStartsOn: normalizeOrganizationWeekStartsOn(row.week_starts_on) ?? 1,
+    weeklyReportProfiles: row.weekly_report_profiles,
+    weeklyReportRules: normalizeWeeklyReportRules({
+      closeDay: row.weekly_report_close_day,
+      closeTime: String(row.weekly_report_close_time).slice(0, 5),
+      openDay: row.weekly_report_open_day,
+      openTime: String(row.weekly_report_open_time).slice(0, 5),
+    }) ?? {
+      closeDay: 1,
+      closeTime: '23:59',
+      openDay: 5,
+      openTime: '00:00',
+    },
+  }
+}
+
 export function createOrganizationRouter(dependencies: OrganizationRouterDependencies) {
   const router = Router()
 
@@ -1301,6 +1348,22 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       }
       throw error
     }
+  }))
+
+  router.get('/organizations/:organizationId/weekly-report-context', asyncRoute(async (request, response) => {
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    if (!organizationId) {
+      response.status(400).json({ error: 'Valid organization is required' })
+      return
+    }
+    const context = await getWeeklyReportContext(organizationId, session.userId)
+    if (!context) {
+      response.status(404).json({ error: 'Organization not found' })
+      return
+    }
+    response.json(context)
   }))
 
   router.get('/organizations/:organizationId', asyncRoute(async (request, response) => {

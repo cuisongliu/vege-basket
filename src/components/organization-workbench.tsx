@@ -529,7 +529,7 @@ export function OrganizationWorkbench({
       setLoading(true)
     }
     fetchOrganization(selectedOrganizationId, {
-      sections: ['overview', 'settings'],
+      sections: ['overview'],
       signal: controller.signal,
     })
       .then((nextDetail) => {

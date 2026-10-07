@@ -72,6 +72,7 @@ import type {
   ProjectOrganizationTransferOptions,
   OrganizationProjectMilestoneStatus,
   OrganizationProjectStatus,
+  WeeklyReportContext,
   PersonalWeeklyReport,
   PersonalWeeklyReportList,
   WeeklyReportCollection,
@@ -107,8 +108,10 @@ export type WorkspaceData = {
   projects: Project[]
   scope?: {
     projectId?: number
+    searchQuery?: string
     todoId?: number
   }
+  pagination?: { offset: number; limit: number; total: number }
   summaries: Summary[]
   todos: Todo[]
 }
@@ -517,8 +520,23 @@ export function fetchWorkspaceDocuments(options: Pick<RequestInit, 'signal'> = {
   return request<WorkspaceData>('/api/workspace/documents', options)
 }
 
-export function fetchWorkspaceSearch(options: Pick<RequestInit, 'signal'> = {}) {
-  return request<WorkspaceData>('/api/workspace/search', options)
+export function fetchWorkspaceSearch(
+  query: string,
+  options: Pick<RequestInit, 'signal'> & {
+    cursor?: number
+    limit?: number
+    status?: ProjectStatus | 'all'
+    tag?: string
+  } = {},
+) {
+  const params = new URLSearchParams({ q: query })
+  if (options.cursor != null) params.set('cursor', String(options.cursor))
+  if (options.limit != null) params.set('limit', String(options.limit))
+  if (options.status && options.status !== 'all') params.set('status', options.status)
+  if (options.tag && options.tag !== '全部') params.set('tag', options.tag)
+  return request<WorkspaceData>(`/api/workspace/search?${params}`, {
+    signal: options.signal,
+  })
 }
 
 export function fetchProjectOverview(projectId: number, options: Pick<RequestInit, 'signal'> = {}) {
@@ -1138,6 +1156,16 @@ export function fetchOrganization(
   return request<OrganizationDetail>(`/api/organizations/${organizationId}${query ? `?${query}` : ''}`, {
     signal: options.signal,
   })
+}
+
+export function fetchWeeklyReportContext(
+  organizationId: number,
+  options: Pick<RequestInit, 'signal'> = {},
+) {
+  return request<WeeklyReportContext>(
+    `/api/organizations/${organizationId}/weekly-report-context`,
+    options,
+  )
 }
 
 export function updateOrganization(organizationId: number, name: string) {
