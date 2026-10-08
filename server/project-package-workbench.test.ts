@@ -345,7 +345,10 @@ test('package event comment routes require project write access and valid conten
 })
 
 test('delivery workbench keeps feedback beside delivery result actions', () => {
-  assert.match(workbenchSource, /交付反馈/u)
+  const feedbackAction = workbenchSource.match(/\{selectedEvent\.publishedAt \? <Button className="package-feedback-button"[\s\S]*?<\/Button> : null\}/u)
+  assert.ok(feedbackAction, 'published events should expose the feedback drawer regardless of write permission')
+  assert.match(feedbackAction[0], /交付反馈/u)
+  assert.doesNotMatch(feedbackAction[0], /canComment/u)
   assert.match(workbenchSource, /ChatCircleDots/u)
   assert.match(workbenchSource, /setCommentsDrawerOpen\(true\)/u)
   assert.match(workbenchSource, /PackageEventCommentsDrawer/u)
@@ -547,7 +550,8 @@ test('delivery workbench uses a full-width event list and a desktop right detail
   assert.match(workbenchSource, /delivery-event-table-viewport/u)
   assert.match(workbenchSource, /project-package-event-drawer/u)
   assert.match(workbenchSource, /事件详情暂时无法显示/u)
-  assert.match(workbenchSource, /<DialogContent fixedHeader className="project-package-event-drawer">/u)
+  assert.match(workbenchSource, /<Dialog modal=\{false\} open=\{eventDetailOpen/u)
+  assert.match(workbenchSource, /<DialogContent fixedHeader showOverlay=\{false\} className="project-package-event-drawer">/u)
   assert.match(workbenchSource, /selectedEvent\.detailsLoaded === false && !eventDetailsError/u)
   assert.match(workbenchSource, /事件不存在、已删除或当前账号无权查看/u)
   assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)

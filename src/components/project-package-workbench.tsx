@@ -3885,8 +3885,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} onPageSizeChange={(size) => { setEventPage(0); setEventPageSize(size) }} />
           </section>
 
-          <Dialog open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
-            <DialogContent fixedHeader className="project-package-event-drawer">
+          <Dialog modal={false} open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
+            <DialogContent fixedHeader showOverlay={false} className="project-package-event-drawer">
               <DialogHeader className="delivery-drawer-header">
                 <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
                 <DialogDescription>{selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · ${eventStatusLabel(eventDisplayStatus(selectedEvent))}` : '查看交付事件详情'}</DialogDescription>
@@ -3907,7 +3907,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                         <div><span className={`project-event-status-badge ${eventDisplayStatus(selectedEvent)}`}>{eventStatusLabel(eventDisplayStatus(selectedEvent))}</span><small>更新于 {selectedEvent.updatedAt}</small></div>
                         <div className="operation-actions">
                           {selectedEvent.capabilities.canEditPlan ? <Button type="button" variant="outline" onClick={() => void openDraftEventEditor(selectedEvent)}>{selectedEvent.status === 'rejected' ? '调整并重新提交' : '继续编辑'}</Button> : null}
-                          {selectedEvent.publishedAt && selectedEvent.capabilities.canComment ? <Button className="package-feedback-button" type="button" variant="outline" onClick={() => setCommentsDrawerOpen(true)}><ChatCircleDots size={15} /> 交付反馈</Button> : null}
+                          {selectedEvent.publishedAt ? <Button className="package-feedback-button" type="button" variant="outline" onClick={() => setCommentsDrawerOpen(true)}><ChatCircleDots size={15} /> 交付反馈</Button> : null}
                           {selectedEvent.capabilities.canReassign ? <Button variant="outline" type="button" onClick={() => { setReassignEventId(reassignEventId === selectedEvent.id ? null : selectedEvent.id); setNextAssignee(''); setReassignReason('') }}>转交执行人</Button> : null}
                           {selectedEvent.capabilities.canComplete ? <Button className="solid-button" type="button" onClick={() => {
                             setDeliveryResult('success')

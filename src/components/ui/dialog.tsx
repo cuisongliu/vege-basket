@@ -48,10 +48,12 @@ function DialogContent({
   className,
   children,
   fixedHeader = false,
+  showOverlay = true,
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   fixedHeader?: boolean
+  showOverlay?: boolean
   showCloseButton?: boolean
 }) {
   const content = React.Children.toArray(children)
@@ -60,7 +62,7 @@ function DialogContent({
 
   return (
     <DialogPortal>
-      <DialogOverlay />
+      {showOverlay ? <DialogOverlay /> : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
