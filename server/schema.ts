@@ -877,6 +877,7 @@ create table if not exists todo_work_hours (
   minutes integer not null,
   status text not null default 'pending'
     check (status in ('pending', 'submitted', 'confirmed')),
+  returned_at timestamptz,
   description text not null default '',
   confirmed_by_user_id bigint references users(id) on delete set null,
   confirmed_at timestamptz,
@@ -885,6 +886,9 @@ create table if not exists todo_work_hours (
   check (minutes > 0 and minutes <= 1440 and minutes % 60 = 0),
   foreign key (todo_id, project_id) references todos(id, project_id) on delete cascade
 );
+
+alter table todo_work_hours
+  add column if not exists returned_at timestamptz;
 
 alter table todo_work_hours drop constraint if exists todo_work_hours_minutes_check;
 alter table todo_work_hours

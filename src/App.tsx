@@ -408,7 +408,7 @@ type View =
   | 'assigned_bugs'
 
 const workspacePollingViews = new Set<View>(['project', 'inbox', 'search', 'ai'])
-type DetailEntrySource = 'project' | 'notifications' | 'my_work' | 'my_work_review'
+type DetailEntrySource = 'project' | 'project_work_hours' | 'notifications' | 'my_work' | 'my_work_review'
 type DisplayAiAttachment = {
   id: number | string
   name: string
@@ -3814,7 +3814,11 @@ function App() {
     setView('project')
   }
 
-  function selectMyWorkTodo(projectId: number, todoId: number, source: 'my_work' | 'my_work_review' = 'my_work') {
+  function selectMyWorkTodo(
+    projectId: number,
+    todoId: number,
+    source: 'project_work_hours' | 'my_work' | 'my_work_review' = 'my_work',
+  ) {
     setDetailEntrySource(source)
     setRequestedTodoDetailId(todoId)
     setRequestedPackageEventId(null)
@@ -3870,6 +3874,15 @@ function App() {
     setIsProjectTodoDetailActive(false)
     setDetailEntrySource('project')
     setView('my_work_review')
+  }
+
+  function returnToProjectWorkHours() {
+    setRequestedTodoDetailId(null)
+    setRequestedPackageEventId(null)
+    setIsProjectTodoDetailActive(false)
+    setDetailEntrySource('project')
+    setProjectDetailTab('work_hours')
+    setView('project')
   }
 
   async function openNotificationCenter() {
@@ -5816,7 +5829,7 @@ function App() {
       </Dialog>
 
       <section className={view === 'project'
-        ? 'workspace cockpit-workspace'
+        ? `workspace cockpit-workspace${projectDetailTab === 'work_hours' ? ' project-work-hours-workspace' : ''}`
         : view === 'weekly_report'
           ? 'workspace embedded-module-workspace weekly-report-shell'
           : view === 'assigned_bugs' || view === 'package_market' || view === 'image_sync' || view === 'changelog' || view === 'platform'
@@ -5842,11 +5855,13 @@ function App() {
                       ? '返回消息'
                       : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
+                      : detailEntrySource === 'project_work_hours' ? '返回项目工时'
                       : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     title={detailEntrySource === 'notifications'
                       ? '返回消息'
                       : detailEntrySource === 'my_work_review' ? '返回工时确认'
                       : detailEntrySource === 'my_work' ? '返回我的待办'
+                      : detailEntrySource === 'project_work_hours' ? '返回项目工时'
                       : projectDetailTab !== 'tasks' ? '返回项目待办' : '返回项目篮子'}
                     onClick={() => {
                       if (detailEntrySource === 'notifications') {
@@ -5859,6 +5874,10 @@ function App() {
                       }
                       if (detailEntrySource === 'my_work_review') {
                         returnToMyWorkReview()
+                        return
+                      }
+                      if (detailEntrySource === 'project_work_hours') {
+                        returnToProjectWorkHours()
                         return
                       }
                       if (projectDetailTab !== 'tasks') {
@@ -6020,13 +6039,15 @@ function App() {
             onSaveInstallEvent={saveInstallEvent}
             onUpdateInstallEventComment={updateInstallEventComment}
             onTodoDetailViewChange={setIsProjectTodoDetailActive}
-            onWorkHoursTodoClick={selectMyWorkTodo}
+            onWorkHoursTodoClick={(projectId, todoId) => selectMyWorkTodo(projectId, todoId, 'project_work_hours')}
             onRecordWorkHour={selectMyWorkHour}
             onReturnToNotifications={detailEntrySource === 'my_work'
               ? returnToMyWork
               : detailEntrySource === 'my_work_review'
                 ? returnToMyWorkReview
-                : returnToNotifications}
+                : detailEntrySource === 'project_work_hours'
+                  ? returnToProjectWorkHours
+                  : returnToNotifications}
             onUpdateInstallOperation={updateInstallOperation}
             onSaveJournal={saveJournal}
             onDeleteJournalEntry={deleteJournalEntry}
@@ -12538,6 +12559,10 @@ function TodoList({
     setIsTodoDetailEditing(false)
   }
 
+  useEffect(() => () => {
+    todoDetailRequestIdRef.current += 1
+  }, [editingTodoId])
+
   useEffect(() => {
     if (
       editingTodoId == null ||
@@ -12559,12 +12584,20 @@ function TodoList({
       }
       setLoadingTodoDetailId(null)
     })
-    return () => {
-      if (todoDetailRequestIdRef.current === requestId) {
-        todoDetailRequestIdRef.current += 1
-      }
-    }
   }, [editingTodo, editingTodoId, markTodoNotesRead, onLoadTodoDetail])
+
+  useEffect(() => {
+    if (
+      !editingTodo ||
+      editingTodo.detailsLoaded === false ||
+      loadingTodoDetailId !== editingTodo.id
+    ) return
+
+    todoDetailRequestIdRef.current += 1
+    syncTodoEditState(editingTodo)
+    markTodoNotesRead(editingTodo)
+    setLoadingTodoDetailId(null)
+  }, [editingTodo, loadingTodoDetailId, markTodoNotesRead])
 
   function cancelTodoEdit() {
     if (!editingTodo) return

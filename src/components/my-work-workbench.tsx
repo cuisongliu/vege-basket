@@ -27,10 +27,12 @@ function formatMinutes(minutes: number | null | undefined) {
   return `${(minutes / 60).toFixed(minutes % 60 === 0 ? 0 : 1)}h`
 }
 
-function workHourStatusLabel(status: WorkHourEntry['status']) {
+function workHourStatusLabel(entry: Pick<WorkHourEntry, 'status' | 'returnedAt'>) {
+  if (entry.returnedAt) return '已退回'
+  const status = entry.status
   if (status === 'confirmed') return '已确认'
   if (status === 'submitted') return '待确认'
-  return '已退回'
+  return '未提交'
 }
 
 async function fetchWorkHourConfirmationDetails(todoId: number) {
@@ -306,7 +308,9 @@ export function MyWorkWorkbench({
     const pendingCount = entries.filter((entry) => entry.status === 'pending').length
     const succeeded = await confirmAction({
       title: `确认完成任务“${todo.title}”？`,
-      description: pendingCount > 0
+      description: entries.some((entry) => entry.returnedAt)
+        ? '当前存在已退回工时，请先修改并重新提交后再完成任务。'
+        : pendingCount > 0
         ? `当前仍有 ${pendingCount} 条未提交工时。完成任务后，这些工时将自动标记为已确认，是否继续？`
         : '当前所有工时均已确认。确认后任务将标记为已完成。',
       confirmLabel: '确认完成任务',
@@ -495,7 +499,7 @@ export function MyWorkWorkbench({
                 <div className="my-work-confirmation-selection-heading"><div><strong>工时记录</strong><span>已选 {selectedEntryIds.length} 条 · {formatMinutes(selectedMinutes)}</span></div>{submittedEntries.length ? <label><input type="checkbox" checked={selectableBatch.length > 0 && selectedEntryIds.length === selectableBatch.length && selectableBatch.every((entry) => selectedEntryIds.includes(entry.id))} onChange={(event) => setSelectedEntryIds(event.target.checked ? selectableBatch.map((entry) => entry.id) : [])} />{submittedEntries.length > MAX_SELECTED_WORK_HOURS ? `选择前 ${MAX_SELECTED_WORK_HOURS} 条` : '全选待确认'}</label> : null}</div>
                 <div className="my-work-confirmation-entry-list">{reviewEntries.length ? reviewEntries.map((entry) => {
                   const selectable = entry.status === 'submitted'
-                  return <label className={`my-work-confirmation-entry is-${entry.status}`} key={entry.id}><input type="checkbox" checked={selectedEntryIds.includes(entry.id)} disabled={!selectable || (!selectedEntryIds.includes(entry.id) && selectedEntryIds.length >= MAX_SELECTED_WORK_HOURS)} onChange={(event) => setSelectedEntryIds((current) => event.target.checked ? current.length < MAX_SELECTED_WORK_HOURS ? [...current, entry.id] : current : current.filter((id) => id !== entry.id))} /><time>{entry.workDate}</time><div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p></div><span>{workHourStatusLabel(entry.status)}</span><b>{formatMinutes(entry.minutes)}</b></label>
+                  return <label className={`my-work-confirmation-entry is-${entry.status}`} key={entry.id}><input type="checkbox" checked={selectedEntryIds.includes(entry.id)} disabled={!selectable || (!selectedEntryIds.includes(entry.id) && selectedEntryIds.length >= MAX_SELECTED_WORK_HOURS)} onChange={(event) => setSelectedEntryIds((current) => event.target.checked ? current.length < MAX_SELECTED_WORK_HOURS ? [...current, entry.id] : current : current.filter((id) => id !== entry.id))} /><time>{entry.workDate}</time><div><strong>{entry.userName ?? '项目成员'}</strong><p>{entry.description}</p></div><span>{workHourStatusLabel(entry)}</span><b>{formatMinutes(entry.minutes)}</b></label>
                 }) : <p className="my-work-confirmation-empty">暂无工时记录</p>}</div>
               </section>
             </div>
@@ -503,7 +507,7 @@ export function MyWorkWorkbench({
           {reviewError ? <p className="my-work-confirmation-message is-error" role="alert">{reviewError}</p> : null}
           {reviewSuccess ? <p className="my-work-confirmation-message is-success" role="status">{reviewSuccess}</p> : null}
           <DialogFooter className="my-work-confirmation-footer">
-            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0 || reviewEntries.length === 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : reviewEntries.length === 0 ? '请先记录至少一条工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
+            {reviewTodo && !reviewTodo.done ? <Button type="button" variant="outline" disabled={reviewSaving || reviewLoading || submittedEntries.length > 0 || reviewEntries.some((entry) => entry.returnedAt) || reviewEntries.length === 0} title={submittedEntries.length > 0 ? '请先确认或退回剩余待确认工时' : reviewEntries.some((entry) => entry.returnedAt) ? '请先修改并重新提交已退回工时' : reviewEntries.length === 0 ? '请先记录至少一条工时' : undefined} onClick={() => void requestTodoCompletion(reviewTodo, reviewEntries)}><Check size={16} />完成任务</Button> : null}
             <Button type="button" variant="outline" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('return')}><ArrowCounterClockwise size={16} />{reviewSaving ? '处理中...' : '退回修改'}</Button><Button type="button" disabled={reviewSaving || selectedEntryIds.length === 0} onClick={() => void runWorkHourReview('accept')}><CheckCircle size={16} />{reviewSaving ? '处理中...' : '确认工时'}</Button>
           </DialogFooter>
         </DialogContent>

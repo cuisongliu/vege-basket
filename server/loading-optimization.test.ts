@@ -196,6 +196,27 @@ test('workspace loading uses independently scoped live read models', () => {
   assert.match(appSource, /sections && \(!includes\('catalog'\) \|\| data\.scope\?\.projectId\)/u)
 })
 
+test('todo detail hydration does not invalidate its own in-flight request', () => {
+  const detailLoadEffect = appSource.slice(
+    appSource.indexOf('    const requestId = todoDetailRequestIdRef.current + 1'),
+    appSource.indexOf('  function cancelTodoEdit()', appSource.indexOf('    const requestId = todoDetailRequestIdRef.current + 1')),
+  )
+
+  assert.match(detailLoadEffect, /onLoadTodoDetail\(editingTodo\.id\)\.then/u)
+  assert.doesNotMatch(
+    detailLoadEffect,
+    /return \(\) => \{[\s\S]*?todoDetailRequestIdRef\.current \+= 1/u,
+  )
+  assert.match(
+    detailLoadEffect,
+    /editingTodo\.detailsLoaded === false[\s\S]*?loadingTodoDetailId !== editingTodo\.id[\s\S]*?todoDetailRequestIdRef\.current \+= 1[\s\S]*?setLoadingTodoDetailId\(null\)/u,
+  )
+  assert.match(
+    appSource,
+    /useEffect\(\(\) => \(\) => \{\s*todoDetailRequestIdRef\.current \+= 1\s*\}, \[editingTodoId\]\)/u,
+  )
+})
+
 test('navigation badges use a scoped count endpoint instead of loading work entities', () => {
   assert.match(workspaceServerSource, /app\.get\('\/api\/navigation-counts'/u)
   assert.match(workspaceServerSource, /select count\(\*\)[\s\S]*?from todos t/u)

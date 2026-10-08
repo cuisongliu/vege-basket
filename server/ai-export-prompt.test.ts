@@ -34,8 +34,8 @@ const todo: Todo = {
 }
 
 const entries: WorkHourEntry[] = [
-  { id: 1, projectId: 3, todoId: 7, userId: 11, workDate: '2026-10-01', minutes: 60, hours: 1, status: 'confirmed', description: '完成读取', createdAt: '', updatedAt: '', projectName: 'Veges', todoTitle: todo.title, userName: '小王', estimatedWorkMinutes: 120 },
-  { id: 2, projectId: 3, todoId: 7, userId: 12, workDate: '2026-10-02', minutes: 30, hours: 0.5, status: 'submitted', description: '等待确认', createdAt: '', updatedAt: '', projectName: 'Veges', todoTitle: todo.title, userName: '小李', estimatedWorkMinutes: 120 },
+  { id: 1, projectId: 3, todoId: 7, userId: 11, workDate: '2026-10-01', minutes: 60, hours: 1, status: 'confirmed', returnedAt: null, description: '完成读取', createdAt: '', updatedAt: '', projectName: 'Veges', todoTitle: todo.title, userName: '小王', estimatedWorkMinutes: 120 },
+  { id: 2, projectId: 3, todoId: 7, userId: 12, workDate: '2026-10-02', minutes: 30, hours: 0.5, status: 'submitted', returnedAt: null, description: '等待确认', createdAt: '', updatedAt: '', projectName: 'Veges', todoTitle: todo.title, userName: '小李', estimatedWorkMinutes: 120 },
 ]
 
 test('AI export prompt has stable analysis sections and explicit exclusions', () => {

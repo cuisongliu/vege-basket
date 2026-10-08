@@ -164,6 +164,7 @@ export type WorkHourEntry = {
   minutes: number
   hours: number
   status: WorkHourStatus
+  returnedAt: string | null
   description: string
   createdAt: string
   updatedAt: string
@@ -191,9 +192,9 @@ export type WorkHourSummary = {
   pendingMinutes: number
   projectCount: number
   taskCount: number
-  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
+  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes?: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
   byDate: Array<{ date: string; minutes: number; hours: number; pendingMinutes: number; confirmedMinutes: number }>
-  byUser: Array<{ userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; projectCount?: number; taskCount?: number }>
+  byUser: Array<{ userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes?: number; returnedCount?: number; projectCount?: number; taskCount?: number }>
   tasks?: WorkHourTaskSummary[]
   estimatedMinutes?: number
   estimatedHours?: number
@@ -654,7 +655,10 @@ export function fetchMyWork(organizationId: OrganizationContext, filters: MyWork
 
 function workHoursQuery(filters: {
   endDate?: string
+  limit?: number
+  offset?: number
   projectId?: number
+  q?: string
   startDate?: string
   status?: WorkHourStatus | 'all'
 } = {}) {
@@ -662,6 +666,9 @@ function workHoursQuery(filters: {
   if (filters.startDate) params.set('startDate', filters.startDate)
   if (filters.endDate) params.set('endDate', filters.endDate)
   if (filters.projectId) params.set('projectId', String(filters.projectId))
+  if (filters.offset != null) params.set('offset', String(filters.offset))
+  if (filters.limit != null) params.set('limit', String(filters.limit))
+  if (filters.q?.trim()) params.set('q', filters.q.trim())
   if (filters.status && filters.status !== 'all') params.set('status', filters.status)
   const queryString = params.toString()
   return queryString ? `?${queryString}` : ''

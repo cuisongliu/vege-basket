@@ -895,6 +895,17 @@ textarea:focus {
   flex-direction: column;
 }
 
+.cockpit-workspace.project-work-hours-workspace {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.project-work-hours-workspace .detail-layout.work-hours-mode {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
 .cockpit-workspace .topbar {
   margin-bottom: 24px;
 }
@@ -6245,13 +6256,17 @@ textarea:focus {
 .detail-layout.work-hours-mode {
   height: auto;
   min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: start;
 }
 
 .detail-layout.work-hours-mode .project-detail-main {
+  grid-column: 1 / -1;
   height: auto;
   min-height: 0;
   overflow: visible;
+  width: 100%;
 }
 
 .todo-create-dialog {

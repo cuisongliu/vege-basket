@@ -114,12 +114,16 @@ test('project basket keeps work-hour recording in the current project surface', 
   assert.match(appSource, /workHourRecorderContext\?\.projectId === selectedProject.id/u)
 })
 
-test('task work-hour details have an independent paginated scroll surface', () => {
+test('project work-hour task rows open the canonical task detail without an intermediate dialog', () => {
   const workHoursSource = readFileSync(new URL('../src/components/work-hours-workbench.tsx', import.meta.url), 'utf8')
-  assert.match(workHoursSource, /fetchTodoWorkHours\(selectedTaskId, \{[\s\S]*?cursor: selectedTaskEntryPage \* 10[\s\S]*?limit: 10/u)
-  assert.match(workHoursSource, /任务投入明细分页/u)
-  assert.match(workHoursSource, /setSelectedTaskEntryPage\(\(page\) => Math.min\(page, Math.max\(0, Math.ceil\(total \/ 10\) - 1\)\)\)/u)
-  assert.match(workHoursCssSource, /work-hours-drawer-list \{[^}]*overflow-y: auto/u)
+  assert.match(workHoursSource, /const openTaskDetail = \(todoId: number\) => \{[\s\S]*?onTodoClick\?\.\(projectId, todoId\)/u)
+  assert.equal(workHoursSource.match(/onClick=\{\(\) => openTaskDetail\(task\.taskId\)\}/gu)?.length, 2)
+  assert.match(appSource, /function selectMyWorkTodo\([\s\S]*?setRequestedTodoDetailId\(todoId\)[\s\S]*?setProjectDetailTab\('tasks'\)[\s\S]*?setView\('project'\)/u)
+  assert.match(appSource, /onWorkHoursTodoClick=\{\(projectId, todoId\) => selectMyWorkTodo\(projectId, todoId, 'project_work_hours'\)\}/u)
+  assert.match(appSource, /function returnToProjectWorkHours\(\)[\s\S]*?setRequestedTodoDetailId\(null\)[\s\S]*?setProjectDetailTab\('work_hours'\)[\s\S]*?setView\('project'\)/u)
+  assert.match(appSource, /onReturnToNotifications=\{detailEntrySource === 'my_work'[\s\S]*?detailEntrySource === 'project_work_hours'[\s\S]*?returnToProjectWorkHours/u)
+  assert.doesNotMatch(workHoursSource, /fetchTodoWorkHours\(selectedTaskId|work-hours-task-drawer/u)
+  assert.doesNotMatch(workHoursCssSource, /work-hours-task-drawer/u)
 })
 
 test('project detail keeps tabs and task actions in one aligned bar', () => {
@@ -141,6 +145,17 @@ test('project work-hour layout grows with content instead of forcing a fixed pan
   )
   assert.match(workHoursCssSource, /work-hours-workbench\.mode-project[^}]*height: auto/u)
   assert.match(workHoursCssSource, /work-hours-overview-chart, \.work-hours-overview-members \{ min-height: 0; \}/u)
+})
+
+test('project work-hour reports use the full detail width and keep vertical page scrolling', () => {
+  const appCssSource = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+  assert.match(
+    appCssSource,
+    /detail-layout\.work-hours-mode[\s\S]*?grid-template-columns: minmax\(0, 1fr\)[\s\S]*?\.detail-layout\.work-hours-mode \.project-detail-main[\s\S]*?grid-column: 1 \/ -1;/u,
+  )
+  assert.match(workHoursCssSource, /\.work-hours-table-card \{ overflow: visible; \}/u)
+  assert.match(workHoursCssSource, /\.work-hours-table \{ min-width: 0; \}/u)
+  assert.match(workHoursCssSource, /\.work-hours-table-row \{[^}]*min-width: 680px/u)
 })
 
 test('assigned enterprise todos expose the work-hour entry with locked context', () => {

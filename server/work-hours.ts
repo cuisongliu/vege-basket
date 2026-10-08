@@ -78,6 +78,7 @@ type WorkHourRow = QueryResultRow & {
   work_date: string | Date
   minutes: number
   status: WorkHourStatus
+  returned_at?: Date | string | null
   description: string
   created_at: Date
   updated_at: Date
@@ -122,6 +123,204 @@ function formatDateTime(value: Date) {
   return value.toISOString()
 }
 
+function parseListPagination(queryParams: express.Request['query']) {
+  const rawOffset = Number(queryParams.offset ?? 0)
+  const rawLimit = Number(queryParams.limit ?? 10)
+  return {
+    offset: Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: Number.isSafeInteger(rawLimit) ? Math.min(50, Math.max(1, rawLimit)) : 10,
+  }
+}
+
+function filterWorkHourEntries(entries: WorkHourRow[], rawQuery: unknown) {
+  const queryText = typeof rawQuery === 'string' ? rawQuery.trim().toLocaleLowerCase('zh-CN') : ''
+  if (!queryText) return entries
+  return entries.filter((entry) => [
+    entry.description ? decryptText(entry.description) : '',
+    entry.user_name ? decryptText(entry.user_name) : '',
+    entry.project_name ? decryptText(entry.project_name) : '',
+    entry.todo_title ? decryptText(entry.todo_title) : '',
+    formatDate(entry.work_date),
+    entry.returned_at ? '已退回' : entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待确认' : '未提交',
+  ].join(' ').toLocaleLowerCase('zh-CN').includes(queryText))
+}
+
+function paginateWorkHourEntries(entries: WorkHourRow[], pagination: { offset: number; limit: number }) {
+  return {
+    entries: entries.slice(pagination.offset, pagination.offset + pagination.limit),
+    pagination: { ...pagination, total: entries.length },
+  }
+}
+
+const WORK_HOUR_SEARCH_CANDIDATE_LIMIT = 2000
+
+type WorkHourFilters = {
+  organizationId?: number
+  projectId?: number
+  todoId?: number
+  startDate?: string
+  endDate?: string
+  status?: WorkHourStatus | 'all'
+  onlyUser?: boolean
+}
+
+function buildWorkHourScope(userId: number, filters: WorkHourFilters) {
+  const values: unknown[] = [userId]
+  const conditions = [
+    filters.onlyUser === false ? 'true' : 'entry.user_id = $1',
+    filters.organizationId ? `p.organization_id = $${values.push(filters.organizationId)}` : 'true',
+    filters.projectId ? `entry.project_id = $${values.push(filters.projectId)}` : 'true',
+    filters.todoId ? `entry.todo_id = $${values.push(filters.todoId)}` : 'true',
+    filters.startDate ? `entry.work_date >= $${values.push(filters.startDate)}::date` : 'true',
+    filters.endDate ? `entry.work_date <= $${values.push(filters.endDate)}::date` : 'true',
+    filters.status === 'pending'
+      ? "entry.status in ('pending', 'submitted')"
+      : filters.status === 'confirmed' ? "entry.status = 'confirmed'" : 'true',
+    `(
+      p.user_id = $1
+      or exists (select 1 from project_memberships pm where pm.project_id = p.id and pm.invited_user_id = $1 and pm.status = 'active')
+      or exists (select 1 from organization_memberships om where om.organization_id = p.organization_id and om.user_id = $1 and om.status = 'active')
+      or ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
+    )`,
+  ]
+  return { values, where: conditions.join(' and ') }
+}
+
+async function loadWorkHourPage(userId: number, filters: WorkHourFilters, rawQuery: unknown, pagination: { offset: number; limit: number }) {
+  const queryText = typeof rawQuery === 'string' ? rawQuery.trim() : ''
+  if (queryText) {
+    const candidates = await loadEntries(userId, filters, WORK_HOUR_SEARCH_CANDIDATE_LIMIT + 1)
+    const matched = filterWorkHourEntries(candidates, queryText)
+    return paginateWorkHourEntries(matched, pagination)
+  }
+  const scope = buildWorkHourScope(userId, filters)
+  const count = await query<{ total: string }>(
+    `select count(*)::bigint as total
+       from todo_work_hours entry
+       join projects p on p.id = entry.project_id
+       join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+       join users u on u.id = entry.user_id
+      where ${scope.where}`,
+    scope.values,
+  )
+  const pageValues = [...scope.values, pagination.limit, pagination.offset]
+  const result = await query<WorkHourRow>(
+    `select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date,
+            entry.minutes, entry.status, entry.returned_at, entry.description, entry.created_at, entry.updated_at,
+            p.name as project_name, t.title as todo_title, u.display_name as user_name,
+            t.estimated_work_minutes
+       from todo_work_hours entry
+       join projects p on p.id = entry.project_id
+       join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+       join users u on u.id = entry.user_id
+      where ${scope.where}
+      order by entry.work_date desc, entry.created_at desc, entry.id desc
+      limit $${pageValues.length - 1} offset $${pageValues.length}`,
+    pageValues,
+  )
+  return { entries: result.rows, pagination: { ...pagination, total: Number(count.rows[0]?.total ?? 0) } }
+}
+
+async function loadWorkHourSummary(userId: number, filters: WorkHourFilters) {
+  const scope = buildWorkHourScope(userId, filters)
+  const [totals, byDate, byProject, byUser] = await Promise.all([
+    query<{ total_minutes: string; confirmed_minutes: string; pending_minutes: string; task_count: string; project_count: string }>(
+      `select coalesce(sum(entry.minutes), 0)::bigint as total_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status = 'confirmed'), 0)::bigint as confirmed_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status <> 'confirmed'), 0)::bigint as pending_minutes,
+              count(distinct entry.todo_id)::int as task_count,
+              count(distinct entry.project_id)::int as project_count
+         from todo_work_hours entry
+         join projects p on p.id = entry.project_id
+         join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+         join users u on u.id = entry.user_id
+        where ${scope.where}`,
+      scope.values,
+    ),
+    query<{ date: string | Date; minutes: string; confirmed_minutes: string; pending_minutes: string }>(
+      `select entry.work_date as date,
+              coalesce(sum(entry.minutes), 0)::bigint as minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status = 'confirmed'), 0)::bigint as confirmed_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status <> 'confirmed'), 0)::bigint as pending_minutes
+         from todo_work_hours entry
+         join projects p on p.id = entry.project_id
+         join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+         join users u on u.id = entry.user_id
+        where ${scope.where}
+        group by entry.work_date
+        order by entry.work_date asc`,
+      scope.values,
+    ),
+    query<{ project_id: string; project_name: string; minutes: string; confirmed_minutes: string; pending_minutes: string; returned_minutes: string; task_count: string }>(
+      `select entry.project_id, p.name as project_name,
+              coalesce(sum(entry.minutes), 0)::bigint as minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status = 'confirmed'), 0)::bigint as confirmed_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status <> 'confirmed'), 0)::bigint as pending_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.returned_at is not null), 0)::bigint as returned_minutes,
+              count(distinct entry.todo_id)::int as task_count
+         from todo_work_hours entry
+         join projects p on p.id = entry.project_id
+         join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+         join users u on u.id = entry.user_id
+        where ${scope.where}
+        group by entry.project_id, p.name
+        order by minutes desc, entry.project_id asc`,
+      scope.values,
+    ),
+    query<{ user_id: string; user_name: string; minutes: string; confirmed_minutes: string; pending_minutes: string; returned_minutes: string; returned_count: string; project_count: string; task_count: string }>(
+      `select entry.user_id, u.display_name as user_name,
+              coalesce(sum(entry.minutes), 0)::bigint as minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status = 'confirmed'), 0)::bigint as confirmed_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.status <> 'confirmed'), 0)::bigint as pending_minutes,
+              coalesce(sum(entry.minutes) filter (where entry.returned_at is not null), 0)::bigint as returned_minutes,
+              count(*) filter (where entry.returned_at is not null)::int as returned_count,
+              count(distinct entry.project_id)::int as project_count,
+              count(distinct entry.todo_id)::int as task_count
+         from todo_work_hours entry
+         join projects p on p.id = entry.project_id
+         join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
+         join users u on u.id = entry.user_id
+        where ${scope.where}
+        group by entry.user_id, u.display_name
+        order by minutes desc, entry.user_id asc`,
+      scope.values,
+    ),
+  ])
+  const totalMinutes = Number(totals.rows[0]?.total_minutes ?? 0)
+  return {
+    totalMinutes,
+    totalHours: totalMinutes / 60,
+    confirmedMinutes: Number(totals.rows[0]?.confirmed_minutes ?? 0),
+    pendingMinutes: Number(totals.rows[0]?.pending_minutes ?? 0),
+    projectCount: Number(totals.rows[0]?.project_count ?? 0),
+    taskCount: Number(totals.rows[0]?.task_count ?? 0),
+    byProject: byProject.rows.map((row) => ({
+      projectId: Number(row.project_id),
+      projectName: row.project_name ? decryptText(row.project_name) : '未命名项目',
+      minutes: Number(row.minutes),
+      pendingMinutes: Number(row.pending_minutes),
+      confirmedMinutes: Number(row.confirmed_minutes),
+      returnedMinutes: Number(row.returned_minutes),
+      taskCount: Number(row.task_count),
+    })),
+    byDate: byDate.rows.map((row) => {
+      const minutes = Number(row.minutes)
+      return { date: formatDate(row.date), minutes, hours: minutes / 60, pendingMinutes: Number(row.pending_minutes), confirmedMinutes: Number(row.confirmed_minutes) }
+    }),
+    byUser: byUser.rows.map((row) => ({
+      userId: Number(row.user_id),
+      userName: row.user_name ? decryptText(row.user_name) : '未记录',
+      minutes: Number(row.minutes),
+      pendingMinutes: Number(row.pending_minutes),
+      confirmedMinutes: Number(row.confirmed_minutes),
+      returnedMinutes: Number(row.returned_minutes),
+      returnedCount: Number(row.returned_count),
+      projectCount: Number(row.project_count),
+      taskCount: Number(row.task_count),
+    })),
+  }
+}
+
 function serializeEntry(row: WorkHourRow) {
   return {
     id: Number(row.id),
@@ -132,6 +331,7 @@ function serializeEntry(row: WorkHourRow) {
     minutes: Number(row.minutes),
     hours: Number(row.minutes) / 60,
     status: row.status,
+    returnedAt: row.returned_at ? formatDateTime(new Date(row.returned_at)) : null,
     description: row.description ? decryptText(row.description) : '',
     createdAt: formatDateTime(row.created_at),
     updatedAt: formatDateTime(row.updated_at),
@@ -330,56 +530,31 @@ async function insertWorkHoursActivityEvent(client: PoolClient, todo: Awaited<Re
   )
 }
 
-async function loadEntries(userId: number, filters: {
-  organizationId?: number
-  projectId?: number
-  todoId?: number
-  startDate?: string
-  endDate?: string
-  status?: WorkHourStatus | 'all'
-  onlyUser?: boolean
-}) {
-  const values: unknown[] = [userId]
-  const conditions = [
-    filters.onlyUser === false
-      ? 'true'
-      : 'entry.user_id = $1',
-    filters.organizationId ? `p.organization_id = $${values.push(filters.organizationId)}` : 'true',
-    filters.projectId ? `entry.project_id = $${values.push(filters.projectId)}` : 'true',
-    filters.todoId ? `entry.todo_id = $${values.push(filters.todoId)}` : 'true',
-    filters.startDate ? `entry.work_date >= $${values.push(filters.startDate)}::date` : 'true',
-    filters.endDate ? `entry.work_date <= $${values.push(filters.endDate)}::date` : 'true',
-    filters.status === 'pending'
-      ? "entry.status in ('pending', 'submitted')"
-      : filters.status === 'confirmed' ? "entry.status = 'confirmed'" : 'true',
-  ]
+async function loadEntries(userId: number, filters: WorkHourFilters, maxRows?: number) {
+  const scope = buildWorkHourScope(userId, filters)
+  const values = [...scope.values]
+  const limitSql = maxRows == null ? '' : ` limit $${values.push(maxRows)}`
   const result = await query<WorkHourRow>(
     `select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date,
-            entry.minutes, entry.status, entry.description, entry.created_at, entry.updated_at,
+            entry.minutes, entry.status, entry.returned_at, entry.description, entry.created_at, entry.updated_at,
             p.name as project_name, t.title as todo_title, u.display_name as user_name,
             t.estimated_work_minutes
        from todo_work_hours entry
        join projects p on p.id = entry.project_id
        join todos t on t.id = entry.todo_id and t.project_id = entry.project_id
        join users u on u.id = entry.user_id
-      where ${conditions.join(' and ')}
-        and (
-          p.user_id = $1
-          or exists (select 1 from project_memberships pm where pm.project_id = p.id and pm.invited_user_id = $1 and pm.status = 'active')
-          or exists (select 1 from organization_memberships om where om.organization_id = p.organization_id and om.user_id = $1 and om.status = 'active')
-          or ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
-        )
-      order by entry.work_date desc, entry.created_at desc, entry.id desc`,
+      where ${scope.where}
+      order by entry.work_date desc, entry.created_at desc, entry.id desc${limitSql}`,
     values,
   )
   return result.rows
 }
 
 function summary(entries: WorkHourRow[]) {
-  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; taskCount: number }>()
+  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes: number; taskCount: number }>()
   const projectTasks = new Set<string>()
   const byDate = new Map<string, { minutes: number; pendingMinutes: number; confirmedMinutes: number }>()
-  const byUser = new Map<number, { userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; projects: Set<number>; tasks: Set<string> }>()
+  const byUser = new Map<number, { userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes: number; returnedCount: number; projects: Set<number>; tasks: Set<string> }>()
   for (const entry of entries) {
     const projectId = Number(entry.project_id)
     const project = byProject.get(projectId) ?? {
@@ -388,6 +563,7 @@ function summary(entries: WorkHourRow[]) {
       minutes: 0,
       pendingMinutes: 0,
       confirmedMinutes: 0,
+      returnedMinutes: 0,
       taskCount: 0,
     }
     const projectTaskKey = `${projectId}:${entry.todo_id}`
@@ -398,6 +574,7 @@ function summary(entries: WorkHourRow[]) {
     project.minutes += Number(entry.minutes)
     if (entry.status !== 'confirmed') project.pendingMinutes += Number(entry.minutes)
     else project.confirmedMinutes += Number(entry.minutes)
+    if (entry.returned_at) project.returnedMinutes += Number(entry.minutes)
     byProject.set(projectId, project)
     const date = formatDate(entry.work_date)
     const dateSummary = byDate.get(date) ?? { minutes: 0, pendingMinutes: 0, confirmedMinutes: 0 }
@@ -406,12 +583,16 @@ function summary(entries: WorkHourRow[]) {
     else dateSummary.confirmedMinutes += Number(entry.minutes)
     byDate.set(date, dateSummary)
     const userId = Number(entry.user_id)
-    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ? decryptText(entry.user_name) : '未记录', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, projects: new Set<number>(), tasks: new Set<string>() }
+    const user = byUser.get(userId) ?? { userId, userName: entry.user_name ? decryptText(entry.user_name) : '未记录', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, returnedMinutes: 0, returnedCount: 0, projects: new Set<number>(), tasks: new Set<string>() }
     user.minutes += Number(entry.minutes)
     user.projects.add(projectId)
     user.tasks.add(entry.todo_id)
     if (entry.status !== 'confirmed') user.pendingMinutes += Number(entry.minutes)
     else user.confirmedMinutes += Number(entry.minutes)
+    if (entry.returned_at) {
+      user.returnedMinutes += Number(entry.minutes)
+      user.returnedCount += 1
+    }
     byUser.set(userId, user)
   }
   const totalMinutes = entries.reduce((sum, entry) => sum + Number(entry.minutes), 0)
@@ -472,12 +653,14 @@ async function loadOrganizationProjectSummaries(organizationId: number, startDat
     estimated_minutes: string | null
     confirmed_minutes: string
     pending_minutes: string
+    returned_minutes: string
   }>(
     `select p.id as project_id, p.name as project_name,
             coalesce(tasks.task_count, 0)::int as task_count,
             tasks.estimated_minutes,
             coalesce(hours.confirmed_minutes, 0)::bigint as confirmed_minutes,
-            coalesce(hours.pending_minutes, 0)::bigint as pending_minutes
+            coalesce(hours.pending_minutes, 0)::bigint as pending_minutes,
+            coalesce(hours.returned_minutes, 0)::bigint as returned_minutes
        from projects p
        left join lateral (
          select count(*)::int as task_count,
@@ -486,7 +669,8 @@ async function loadOrganizationProjectSummaries(organizationId: number, startDat
        ) tasks on true
        left join lateral (
          select sum(case when e.status = 'confirmed' then e.minutes else 0 end)::bigint as confirmed_minutes,
-                sum(case when e.status <> 'confirmed' then e.minutes else 0 end)::bigint as pending_minutes
+                sum(case when e.status <> 'confirmed' then e.minutes else 0 end)::bigint as pending_minutes,
+                sum(case when e.returned_at is not null then e.minutes else 0 end)::bigint as returned_minutes
            from todo_work_hours e
           where e.project_id = p.id
             and ($2::date is null or e.work_date >= $2::date)
@@ -500,6 +684,7 @@ async function loadOrganizationProjectSummaries(organizationId: number, startDat
   return result.rows.map((row) => {
     const confirmedMinutes = Number(row.confirmed_minutes)
     const pendingMinutes = Number(row.pending_minutes)
+    const returnedMinutes = Number(row.returned_minutes)
     const estimatedMinutes = row.estimated_minutes == null ? null : Number(row.estimated_minutes)
     return {
       projectId: Number(row.project_id),
@@ -507,9 +692,10 @@ async function loadOrganizationProjectSummaries(organizationId: number, startDat
       minutes: confirmedMinutes + pendingMinutes,
       pendingMinutes,
       confirmedMinutes,
+      returnedMinutes,
       taskCount: Number(row.task_count),
       estimatedMinutes,
-      varianceMinutes: estimatedMinutes == null ? null : confirmedMinutes - estimatedMinutes,
+      varianceMinutes: estimatedMinutes == null ? null : confirmedMinutes + pendingMinutes - estimatedMinutes,
     }
   })
 }
@@ -551,7 +737,7 @@ async function createWorkHour(userId: number, todoId: number, body: Record<strin
       const result = await client.query<WorkHourRow>(
         `insert into todo_work_hours (project_id, todo_id, user_id, work_date, minutes, status, description)
          values ($1, $2, $3, $4, $5, 'pending', $6)
-         returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
+         returning id, project_id, todo_id, user_id, work_date, minutes, status, returned_at, description, created_at, updated_at`,
         [Number(todo.project_id), todoId, userId, workDate, minutes, encryptText(description)],
       )
       await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_added')
@@ -591,8 +777,13 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
       const projectId = request.query.projectId ? positiveId(request.query.projectId) ?? undefined : undefined
-      const entries = await loadEntries(userId, { startDate, endDate, status, projectId, onlyUser: true })
-      response.json({ entries: entries.map(serializeEntry), summary: summary(entries) })
+      const pagination = parseListPagination(request.query)
+      const filters = { startDate, endDate, status, projectId, onlyUser: true } as const
+      const [paged, reportSummary] = await Promise.all([
+        loadWorkHourPage(userId, filters, request.query.q, pagination),
+        loadWorkHourSummary(userId, filters),
+      ])
+      response.json({ entries: paged.entries.map(serializeEntry), pagination: paged.pagination, summary: reportSummary })
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }
@@ -654,17 +845,9 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const startDate = request.query.startDate ? parseWorkDate(request.query.startDate) : undefined
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const entries = await loadEntries(userId, { todoId, startDate, endDate, status: 'all', onlyUser: !canReadAll })
-      const queryText = typeof request.query.q === 'string' ? request.query.q.trim().toLocaleLowerCase('zh-CN') : ''
-      const filteredEntries = queryText
-        ? entries.filter((entry) => [
-          entry.description ? decryptText(entry.description) : '',
-          entry.user_name ? decryptText(entry.user_name) : '',
-          formatDate(entry.work_date),
-          entry.status === 'confirmed' ? '已确认' : entry.status === 'submitted' ? '待确认' : '未提交',
-        ].join(' ').toLocaleLowerCase('zh-CN').includes(queryText))
-        : entries
       const offset = Math.max(0, Number.isSafeInteger(Number(request.query.cursor)) ? Number(request.query.cursor) : 0)
       const limit = Math.min(50, Math.max(1, Number.isSafeInteger(Number(request.query.limit)) ? Number(request.query.limit) : 10))
+      const filteredEntries = filterWorkHourEntries(entries, request.query.q)
       response.json({
         entries: filteredEntries.slice(offset, offset + limit).map(serializeEntry),
         pagination: { offset, limit, total: filteredEntries.length },
@@ -735,7 +918,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       if (action === 'submit') {
         await client.query(
           `update todo_work_hours
-              set status = 'submitted', updated_at = now()
+              set status = 'submitted', returned_at = null, updated_at = now()
             where todo_id = $1 and id = any($2::bigint[]) and status = 'pending'`,
           [todoId, entryIds],
         )
@@ -751,7 +934,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       } else {
         await client.query(
           `update todo_work_hours
-              set status = 'pending', confirmed_by_user_id = null,
+              set status = 'pending', returned_at = now(), confirmed_by_user_id = null,
                   confirmed_at = null, updated_at = now()
             where todo_id = $1 and id = any($2::bigint[]) and status = 'submitted'`,
           [todoId, entryIds],
@@ -820,8 +1003,8 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           response.json({ ok: true, autoConfirmedCount: 0 })
           return
         }
-        const entries = await client.query<{ id: string; status: WorkHourStatus }>(
-          `select id, status
+        const entries = await client.query<{ id: string; status: WorkHourStatus; returned_at: Date | string | null }>(
+          `select id, status, returned_at
              from todo_work_hours
             where todo_id = $1
             order by id
@@ -834,11 +1017,14 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         if (entries.rows.some((entry) => entry.status === 'submitted')) {
           throw new WorkHoursError('WORK_HOUR_PENDING_CONFIRMATION', '请先确认或退回全部待确认工时。', 409)
         }
+        if (entries.rows.some((entry) => entry.returned_at != null)) {
+          throw new WorkHoursError('WORK_HOUR_RETURNED_UNRESUBMITTED', '存在已退回工时，请修改并重新提交后再完成任务。', 409)
+        }
         const pendingIds = entries.rows.filter((entry) => entry.status === 'pending').map((entry) => Number(entry.id))
         if (pendingIds.length > 0) {
           await client.query(
             `update todo_work_hours
-                set status = 'confirmed', confirmed_by_user_id = $2,
+                set status = 'confirmed', returned_at = null, confirmed_by_user_id = $2,
                     confirmed_at = now(), updated_at = now()
               where todo_id = $1 and id = any($3::bigint[]) and status = 'pending'`,
             [todoId, userId, pendingIds],
@@ -880,9 +1066,14 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const startDate = request.query.startDate ? parseWorkDate(request.query.startDate) : undefined
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
-      const entries = await loadEntries(userId, { organizationId, startDate, endDate, status, onlyUser: false })
-      const projectRows = await loadOrganizationProjectSummaries(organizationId, startDate, endDate, status)
-      response.json({ entries: entries.map(serializeEntry), summary: { ...summary(entries), byProject: projectRows } })
+      const pagination = parseListPagination(request.query)
+      const filters = { organizationId, startDate, endDate, status, onlyUser: false } as const
+      const [paged, reportSummary, projectRows] = await Promise.all([
+        loadWorkHourPage(userId, filters, request.query.q, pagination),
+        loadWorkHourSummary(userId, filters),
+        loadOrganizationProjectSummaries(organizationId, startDate, endDate, status),
+      ])
+      response.json({ entries: paged.entries.map(serializeEntry), pagination: paged.pagination, summary: { ...reportSummary, byProject: projectRows } })
     } catch (error) {
       if (!sendWorkHoursError(response, error)) throw error
     }
@@ -901,28 +1092,34 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
       const startDate = request.query.startDate ? parseWorkDate(request.query.startDate) : undefined
       const endDate = request.query.endDate ? parseWorkDate(request.query.endDate) : undefined
       const status = request.query.status === 'pending' || request.query.status === 'confirmed' ? request.query.status : 'all'
-      const entries = await loadEntries(userId, { projectId, startDate, endDate, status, onlyUser: false })
-      const tasks = await loadTaskSummaries(projectId, startDate, endDate, status)
+      const filters = { projectId, startDate, endDate, status, onlyUser: false } as const
+      const pagination = parseListPagination(request.query)
+      const [paged, reportSummary, tasks] = await Promise.all([
+        loadWorkHourPage(userId, filters, request.query.q, pagination),
+        loadWorkHourSummary(userId, filters),
+        loadTaskSummaries(projectId, startDate, endDate, status),
+      ])
       const project = await query<{ estimated: string | null }>(
         'select sum(estimated_work_minutes)::bigint as estimated from todos where project_id = $1',
         [projectId],
       )
       const estimatedMinutes = Number(project.rows[0]?.estimated ?? 0)
-      const projectSummary = summary(entries)
       response.json({
-        entries: entries.map(serializeEntry),
+        entries: paged.entries.map(serializeEntry),
+        pagination: paged.pagination,
         summary: {
-          ...projectSummary,
+          ...reportSummary,
           tasks,
           byProject: [{
             projectId,
-            projectName: entries[0]?.project_name ? decryptText(entries[0].project_name) : '当前项目',
-            minutes: projectSummary.totalMinutes,
-            pendingMinutes: projectSummary.pendingMinutes,
-            confirmedMinutes: projectSummary.confirmedMinutes,
+            projectName: reportSummary.byProject[0]?.projectName ?? '当前项目',
+            minutes: reportSummary.totalMinutes,
+            pendingMinutes: reportSummary.pendingMinutes,
+            confirmedMinutes: reportSummary.confirmedMinutes,
+            returnedMinutes: reportSummary.byProject[0]?.returnedMinutes ?? 0,
             taskCount: tasks.length,
             estimatedMinutes,
-            varianceMinutes: projectSummary.confirmedMinutes - estimatedMinutes,
+            varianceMinutes: reportSummary.totalMinutes - estimatedMinutes,
           }],
           estimatedMinutes,
           estimatedHours: estimatedMinutes / 60,
@@ -966,7 +1163,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
           throw new WorkHoursError('TODO_NOT_EDITABLE', '已提交确认的任务不能修改工时。', 409)
         }
         const existing = await client.query<WorkHourRow>(
-          "select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date, entry.minutes, entry.status, entry.description, entry.created_at, entry.updated_at, (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at from todo_work_hours entry join projects p on p.id = entry.project_id where entry.id = $1 for update of entry",
+          "select entry.id, entry.project_id, entry.todo_id, entry.user_id, entry.work_date, entry.minutes, entry.status, entry.returned_at, entry.description, entry.created_at, entry.updated_at, (p.created_at at time zone 'Asia/Shanghai')::date::text as project_created_at from todo_work_hours entry join projects p on p.id = entry.project_id where entry.id = $1 for update of entry",
           [entryId],
         )
         const row = existing.rows[0]
@@ -987,7 +1184,7 @@ export function createWorkHoursRouter(options: WorkHoursRouterOptions = {}) {
         if (Number(total.rows[0]?.total ?? 0) + targetMinutes > WORK_MINUTES_DAY_LIMIT) throw new WorkHoursError('WORK_DAY_LIMIT', '同一工作日跨项目累计工时不能超过 24 小时。', 409)
         const updated = await client.query<WorkHourRow>(
           `update todo_work_hours set work_date = $1, minutes = $2, description = $3, updated_at = now()
-             where id = $4 returning id, project_id, todo_id, user_id, work_date, minutes, status, description, created_at, updated_at`,
+             where id = $4 returning id, project_id, todo_id, user_id, work_date, minutes, status, returned_at, description, created_at, updated_at`,
           [targetDate, targetMinutes, typeof request.body.description === 'string' ? (request.body.description.trim() ? encryptText(request.body.description.trim()) : '') : row.description, entryId],
         )
         await insertWorkHoursActivityEvent(client, todo, userId, 'work_hours_updated')

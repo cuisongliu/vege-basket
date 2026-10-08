@@ -1,6 +1,6 @@
 .work-hours-workbench { display: grid; gap: 18px; padding: 24px 28px 36px; color: var(--text); min-height: 0; }
 .work-hours-workbench.is-recorder-only { display: none; }
-.work-hours-workbench.mode-project { gap: 18px; padding: 18px 22px 30px; height: auto; }
+.work-hours-workbench.mode-project { align-self: stretch; gap: 18px; padding: 18px 22px 30px; height: auto; max-width: none; width: 100%; }
 .work-hours-workbench.mode-project .work-hours-card { padding: 18px; }
 .work-hours-list-search { align-items: center; color: var(--muted-text); display: flex; gap: 8px; margin: 12px 0; max-width: 420px; }
 .work-hours-header { align-items: center; display: flex; justify-content: space-between; gap: 16px; }
@@ -35,7 +35,7 @@
 .work-hours-bar-row, .work-hours-list-row, .work-hours-table-row { align-items: center; display: grid; gap: 12px; min-height: 38px; }
 .work-hours-bar-row { grid-template-columns: 46px minmax(80px, 1fr) 48px; }.work-hours-bar-row > div { background: var(--muted); border-radius: 999px; height: 7px; overflow: hidden; }.work-hours-bar-row i { background: var(--primary); border-radius: inherit; display: block; height: 100%; }
 .work-hours-list-row { grid-template-columns: 1fr auto; border-bottom: 1px solid var(--border); }.work-hours-list-row:last-child { border-bottom: 0; }
-.work-hours-table-card { overflow: auto; }.work-hours-table { margin-top: 10px; min-width: 680px; }.work-hours-table-row { border-top: 1px solid var(--border); grid-template-columns: 100px 1.1fr 1.5fr 70px 70px; padding: 8px 0; }.work-hours-project-table .work-hours-table-row { grid-template-columns: 1.5fr repeat(3, minmax(80px, 0.6fr)); }.work-hours-table-heading { color: var(--muted-text); font-size: 12px; }.work-hours-table-row span { color: var(--muted-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.work-hours-status.is-confirmed { color: var(--primary); }.work-hours-status.is-pending { color: #a67739; }
+.work-hours-table-card { overflow: visible; }.work-hours-table { margin-top: 10px; max-width: 100%; overflow-x: auto; width: 100%; }.work-hours-table-row { border-top: 1px solid var(--border); grid-template-columns: 100px 1.1fr 1.5fr 70px 70px; min-width: 680px; padding: 8px 0; }.work-hours-project-table .work-hours-table-row { grid-template-columns: 1.5fr repeat(3, minmax(80px, 0.6fr)); }.work-hours-table-heading { color: var(--muted-text); font-size: 12px; }.work-hours-table-row span { color: var(--muted-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.work-hours-status.is-confirmed { color: var(--primary); }.work-hours-status.is-pending { color: #a67739; }
 .work-hours-table-row > span:not(:first-child), .work-hours-table-row > strong:not(:first-child) { font-variant-numeric: tabular-nums; }
 .work-hours-empty { color: var(--muted-text); font-size: 13px; }
 .work-hours-overview-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); }
@@ -63,11 +63,14 @@
 .work-hours-trend-chart text { fill: var(--muted-text); font-size: 10px; }
 .work-hours-trend-chart .work-hours-trend-label { font-size: 10px; }
 .work-hours-trend-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.5; }
+.work-hours-trend-line.is-total { stroke: var(--primary); }
 .work-hours-trend-line.is-confirmed { stroke: #2d8468; }
 .work-hours-trend-line.is-pending { stroke: #d49a43; stroke-dasharray: 5 4; stroke-width: 2; }
 .work-hours-trend-chart circle { fill: var(--surface); stroke-width: 2; }
+.work-hours-trend-chart circle.is-total { stroke: var(--primary); }
 .work-hours-trend-chart circle.is-confirmed { stroke: #2d8468; }
 .work-hours-trend-chart circle.is-pending { stroke: #d49a43; }
+.work-hours-trend-chart .work-hours-legend { margin-top: 6px; }
 @media (max-width: 800px) { .work-hours-workbench { padding: 16px; }.work-hours-header { align-items: flex-start; flex-direction: column; }.work-hours-header h3 { font-size: 20px; }.work-hours-actions { width: 100%; }.work-hours-actions button { flex: 1; }.work-hours-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.work-hours-grid, .work-hours-overview-grid { grid-template-columns: 1fr; }.work-hours-filters > label { flex: 1 1 140px; }.work-hours-date-nav { justify-content: space-between; width: 100%; }.work-hours-date-nav strong { flex: 1; text-align: center; }.work-hours-filter-icon { display: none; }.work-hours-recorder > * { flex: 1 1 140px; }.work-hours-recorder-description { flex-basis: 100%; }.work-hours-table-card { margin-inline: -4px; }.work-hours-table { min-width: 620px; }.work-hours-overview-chart, .work-hours-overview-members { min-height: 0; }.work-hours-project-picker { flex-basis: 100%; }.work-hours-project-picker > button { max-width: 150px; }.work-hours-project-pager { margin-left: 0; }.work-hours-trend-chart svg { height: 178px; } }
 .work-hours-filters select, .work-hours-dialog select, .work-hours-task-filters select, .work-hours-dialog textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; min-height: 36px; padding: 7px 9px; }
 .work-hours-split-bar { display: flex; }
@@ -76,13 +79,17 @@
 .work-hours-project-card { align-items: center; background: transparent; border: 0; border-bottom: 1px solid var(--border); color: var(--text); cursor: pointer; display: grid; gap: 4px 12px; grid-template-columns: 1fr auto; padding: 12px 0; text-align: left; width: 100%; }
 .work-hours-project-card small { color: var(--muted-text); grid-column: 1; }
 .work-hours-project-card strong { grid-column: 2; grid-row: 1 / span 2; }
-.work-hours-project-table .work-hours-table-row, .work-hours-member-table .work-hours-table-row, .work-hours-task-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .6fr)); }
+.work-hours-project-table .work-hours-table-row, .work-hours-task-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .6fr)); }
+.work-hours-member-table .work-hours-table-row { grid-template-columns: minmax(150px, 1.35fr) repeat(6, minmax(76px, .6fr)); }
 .work-hours-date-table .work-hours-table-row { grid-template-columns: minmax(150px, 1.3fr) repeat(3, minmax(92px, .7fr)); }
 .work-hours-personal-table .work-hours-table-row { grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(76px, .7fr)); }
 button.work-hours-table-row { background: transparent; border: 0; border-top: 1px solid var(--border); color: var(--text); cursor: pointer; text-align: left; width: 100%; }
 button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary) 5%, transparent); }
 .work-hours-table-row .is-overrun { color: #b2483e; font-weight: 600; }
 .work-hours-section-heading { align-items: center; display: flex; gap: 16px; justify-content: space-between; }
+.work-hours-project-dot { border-radius: 50%; display: inline-block; flex: 0 0 9px; height: 9px; margin-right: 7px; width: 9px; }
+.work-hours-project-card > span, .work-hours-personal-table strong { align-items: center; display: inline-flex; min-width: 0; }
+.work-hours-project-dot.is-tone-0 { background: #2d8468; }.work-hours-project-dot.is-tone-1 { background: #477aa6; }.work-hours-project-dot.is-tone-2 { background: #b9793f; }.work-hours-project-dot.is-tone-3 { background: #8b6ab8; }.work-hours-project-dot.is-tone-4 { background: #b34b4b; }.work-hours-project-dot.is-tone-5 { background: #6d8990; }
 .work-hours-task-filters { align-items: center; display: flex; gap: 8px; }
 .work-hours-task-filters > span { align-items: center; display: flex; position: relative; }
 .work-hours-task-filters svg { color: var(--muted-text); left: 9px; position: absolute; }
@@ -101,15 +108,37 @@ button.work-hours-table-row:hover { background: color-mix(in srgb, var(--primary
 .work-hours-locked-context > div { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 9px 10px; background: color-mix(in srgb, var(--primary) 5%, var(--surface)); }
 .work-hours-locked-context span { color: var(--muted-text); font-size: 12px; }
 .work-hours-locked-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-hours-task-drawer { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; left: auto; max-height: none; right: 0; top: 0; transform: none; width: min(92vw, 520px); overflow: hidden; }
-.work-hours-drawer-metrics { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
-.work-hours-drawer-metrics > div { background: var(--muted); border-radius: 6px; display: grid; gap: 4px; padding: 12px; }
-.work-hours-drawer-metrics span, .work-hours-drawer-list small { color: var(--muted-text); font-size: 12px; }
-.work-hours-drawer-list { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 8px; scrollbar-color: color-mix(in srgb, var(--foreground) 28%, transparent) transparent; scrollbar-width: thin; }
-.work-hours-drawer-list::-webkit-scrollbar { width: 6px; }
-.work-hours-drawer-list::-webkit-scrollbar-track { background: transparent; }
-.work-hours-drawer-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--foreground) 28%, transparent); border-radius: 999px; }
-.work-hours-drawer-list > div { align-items: start; border-top: 1px solid var(--border); display: grid; gap: 10px; grid-template-columns: 86px 1fr auto; padding: 12px 0; }
-.work-hours-drawer-list span { display: grid; font-size: 13px; gap: 3px; }
-.work-hours-drawer-list p { color: var(--muted-text); margin: 0; white-space: pre-wrap; }
 @media (max-width: 800px) { .work-hours-section-heading { align-items: stretch; flex-direction: column; }.work-hours-task-filters { align-items: stretch; flex-direction: column; }.work-hours-task-filters input { width: 100%; }.work-hours-record { grid-template-columns: 78px minmax(0, 1fr) auto; }.work-hours-record-actions { grid-column: 2 / -1; }.work-hours-form-grid { grid-template-columns: 1fr; } }
+
+/* Work-hour views share one full-width reading flow across tabs. */
+.work-hours-workbench.mode-project .work-hours-card { padding: 16px; }
+.work-hours-grid, .work-hours-overview-grid { grid-template-columns: minmax(0, 1fr); }
+.work-hours-overview-grid { align-items: stretch; }
+.work-hours-table-card { overflow: visible; }
+.work-hours-table { min-width: 0; }
+.work-hours-table-row > strong, .work-hours-table-row > span { min-width: 0; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.work-hours-table-row { min-height: 44px; }
+.work-hours-table-heading { min-height: 34px; }
+.work-hours-status-badge { border: 1px solid currentColor; border-radius: 999px; display: inline-flex; font-size: 12px; font-weight: 600; line-height: 1.35; padding: 2px 8px; white-space: nowrap; }
+.work-hours-status-badge.is-confirmed, .work-hours-member-legend .is-confirmed { color: #2d8468; }
+.work-hours-status-badge.is-submitted { color: #a67739; }
+.work-hours-status-badge.is-pending, .work-hours-status-badge.is-open { color: #6d8990; }
+.work-hours-status-badge.is-returned { color: #b34b4b; }
+.work-hours-status-badge.is-done { color: #477aa6; }
+.work-hours-member-legend { align-items: center; color: var(--muted-text); display: flex; flex-wrap: wrap; font-size: 12px; gap: 12px; margin-top: 10px; }
+.work-hours-member-legend span { align-items: center; display: inline-flex; gap: 5px; }
+.work-hours-member-legend i { border-radius: 999px; display: inline-block; height: 8px; width: 8px; }
+.work-hours-member-legend .is-pending { background: #d49a43; }
+.work-hours-member-legend .is-confirmed { background: #2d8468; }
+.work-hours-member-compare-row { align-items: center; display: grid; gap: 10px; grid-template-columns: minmax(100px, .45fr) minmax(160px, 1fr) 52px 88px; min-height: 34px; }
+.work-hours-member-compare-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-hours-member-compare-row > span, .work-hours-member-compare-row small { color: var(--muted-text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.work-hours-member-compare-bar { background: var(--muted); border-radius: 999px; display: flex; height: 9px; overflow: hidden; }
+.work-hours-member-compare-bar i { display: block; height: 100%; min-width: 0; }
+.work-hours-member-compare-bar .is-confirmed { background: #2d8468; }
+.work-hours-member-compare-bar .is-pending { background: #d49a43; }
+.work-hours-record small { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 800px) {
+  .work-hours-member-compare-row { grid-template-columns: minmax(84px, .55fr) minmax(100px, 1fr) 46px; }
+  .work-hours-member-compare-row small { grid-column: 2 / -1; }
+}
