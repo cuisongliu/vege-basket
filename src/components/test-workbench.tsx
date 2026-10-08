@@ -5004,10 +5004,19 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
         </div>
         {step === 1 ? (
           <section className="test-plan-step-panel test-plan-basic-panel" aria-label="计划基础信息">
-            <Label>计划名称<Input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></Label>
+            <Label>
+              <span>计划名称 <span className="field-required" aria-hidden="true">*</span></span>
+              <Input autoFocus required value={name} onChange={(event) => setName(event.target.value)} />
+            </Label>
             <div className="test-form-grid test-plan-basic-grid">
               <Label>版本<Input value={versionLabel} onChange={(event) => setVersionLabel(event.target.value)} /></Label>
-              <Label>环境<Select value={testEnvironmentId} onValueChange={(value) => { setTestEnvironmentId(value); const selected = testEnvironments.find((item) => item.id === Number(value)); if (selected) setEnvironment(selected.name) }}><SelectTrigger><SelectValue placeholder="选择已配置环境" /></SelectTrigger><SelectContent>{testEnvironments.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></Label>
+              <Label>
+                <span>环境 {!plan ? <span className="field-required" aria-hidden="true">*</span> : null}</span>
+                <Select required={!plan} value={testEnvironmentId} onValueChange={(value) => { setTestEnvironmentId(value); const selected = testEnvironments.find((item) => item.id === Number(value)); if (selected) setEnvironment(selected.name) }}>
+                  <SelectTrigger><SelectValue placeholder="选择已配置环境" /></SelectTrigger>
+                  <SelectContent>{testEnvironments.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </Label>
               <Label>
                 开始日期
                 <JournalDatePicker
@@ -5046,7 +5055,7 @@ function PlanDialog({ busy, cases, folders, onOpenChange, onSubmit, open, plan, 
                 onToggle={(id) => setExpandedDirectories((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })}
               />
               <fieldset className="test-plan-case-picker">
-                <legend>{plan ? '追加用例' : '选择用例'}</legend>
+                <legend>{plan ? '追加用例' : <>选择用例 <span className="field-required" aria-hidden="true">*</span></>}</legend>
                 <div className="test-plan-case-tools">
                   <div className="test-plan-case-search-row">
                     <label className="test-case-search">
