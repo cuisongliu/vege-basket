@@ -37,6 +37,7 @@ The current migrations are:
 | `20261002_weekly_report_assignments.sql` | Adds organization-member weekly-report persona assignments, backfills existing assignees from their roles, and keeps eligibility synchronized with configured report types. |
 | `20261005_ai_activity_records.sql` | Adds the user-scoped AI activity ledger, indexes, and canonical conversation/turn references used to hydrate private AI details. |
 | `20261007_work_hour_returned_marker.sql` | Adds the nullable current-return marker used by work-hour member summaries and review displays. |
+| `20261008_organization_weekly_report_toggle.sql` | Adds the organization-level weekly-report switch while preserving existing assignments and report history. |
 | `20260929_remove_legacy_ai_settings.sql` | Explicit destructive cleanup for the retired user-level AI settings table. It is never part of startup and requires a verified platform configuration, backup, and separate approval. |
 
 For the organization package-market policy release, update the image only. API startup applies

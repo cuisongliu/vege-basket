@@ -197,6 +197,11 @@ historical product context; current code and these operational docs take precede
   Keep names encrypted and retain the lookup key recorded in `project_module_settings`
   across active encryption-key rotation. Initialization imports the organization name union
   once; workspace reads must never backfill it.
+- The organization weekly-report switch is a server-enforced module gate. When disabled,
+  hide personal and tester entry points and reject every personal report, collection,
+  reminder, and summary API without returning report content. Keep organization managers
+  able to reopen weekly-report rules, preserve assignments, drafts, submissions, summaries,
+  and reminders, and recheck the switch under the organization lock before report writes.
 - Moving a project between organizations requires the actor to be an active Owner/Admin in both
   organizations with the `organization_admin` role. Under both catalog locks and the project
   lock, recheck that the target organization contains the project owner and every active member,

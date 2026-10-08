@@ -413,7 +413,12 @@ Personal organization weekly reports use a separate draft-and-publish lifecycle.
 submitted report changes only its encrypted draft; organization management continues to read the
 latest immutable submitted revision until the member confirms another submission. AI generation
 uses only organization-scoped sources the current user may read and never submits a report
-automatically. New reports fix a `developer` or `tester` profile on the first actual save,
+automatically. Each organization has a default-enabled weekly-report module switch. Disabling it
+hides member entry points and makes personal report, collection, reminder, and summary APIs reject
+access without returning report bodies. The switch preserves assignments, drafts, submissions,
+summaries, reminders, and rules so reopening restores the prior state. Report writes take a shared
+organization lock and recheck the switch; AI generation and organization summary generation recheck
+again before persisting provider output. New reports fix a `developer` or `tester` profile on the first actual save,
 with one active report per organization, user, week, and profile. Dual-role members keep separate
 development and testing reports; indexes, organization collection, reminders, and summaries retain
 that identity. Historical null-profile reports are not assigned a guessed identity and stay read-only,

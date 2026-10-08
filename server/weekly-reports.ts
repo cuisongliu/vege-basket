@@ -54,6 +54,7 @@ type WeeklyReportRouterDependencies = {
 type OrganizationMembership = {
   access_role: OrganizationAccessRole
   organization_id: string
+  weekly_report_enabled: boolean
   weekly_report_profiles: WeeklyReportProfile[]
   weekly_report_required: boolean
 }
@@ -210,17 +211,42 @@ async function checkSources(client: PoolClient, params: Parameters<typeof valida
 
 async function getMembership(client: PoolClient, organizationId: number, userId: number) {
   const result = await client.query<OrganizationMembership>(
-    `select organization_id, access_role, weekly_report_profiles, weekly_report_required
-     from organization_memberships
-     where organization_id = $1 and user_id = $2 and status = 'active'`,
+    `select membership.organization_id, membership.access_role,
+        organization.weekly_report_enabled,
+        membership.weekly_report_profiles, membership.weekly_report_required
+     from organization_memberships membership
+     join organizations organization on organization.id = membership.organization_id
+     where membership.organization_id = $1 and membership.user_id = $2 and membership.status = 'active'`,
     [organizationId, userId],
   )
   return result.rows[0] ?? null
 }
 
-async function requireMember(client: PoolClient, organizationId: number, userId: number) {
+async function requireMember(
+  client: PoolClient,
+  organizationId: number,
+  userId: number,
+  lockOrganization = false,
+) {
+  if (lockOrganization) {
+    const result = await client.query<OrganizationMembership>(
+      `select membership.organization_id, membership.access_role,
+          organization.weekly_report_enabled,
+          membership.weekly_report_profiles, membership.weekly_report_required
+       from organization_memberships membership
+       join organizations organization on organization.id = membership.organization_id
+       where membership.organization_id = $1 and membership.user_id = $2 and membership.status = 'active'
+       for share of organization`,
+      [organizationId, userId],
+    )
+    const membership = result.rows[0] ?? null
+    if (!membership) throw new WeeklyReportError(404, '组织不存在')
+    if (!membership.weekly_report_enabled) throw new WeeklyReportError(403, '该组织已关闭周报模块')
+    return membership
+  }
   const membership = await getMembership(client, organizationId, userId)
   if (!membership) throw new WeeklyReportError(404, '组织不存在')
+  if (!membership.weekly_report_enabled) throw new WeeklyReportError(403, '该组织已关闭周报模块')
   return membership
 }
 
@@ -231,30 +257,52 @@ async function requireWeeklyReportAssignee(
   profile: WeeklyReportProfile,
 ) {
   const result = await client.query<OrganizationMembership>(
-    `select organization_id, access_role, weekly_report_profiles, weekly_report_required
-     from organization_memberships
-     where organization_id = $1
-       and user_id = $2
-       and status = 'active'
-       and weekly_report_required = true
-       and $3::text = any(weekly_report_profiles)
-     for update`,
+    `select membership.organization_id, membership.access_role,
+        organization.weekly_report_enabled,
+        membership.weekly_report_profiles, membership.weekly_report_required
+     from organization_memberships membership
+     join organizations organization on organization.id = membership.organization_id
+     where membership.organization_id = $1
+       and membership.user_id = $2
+       and membership.status = 'active'
+       and membership.weekly_report_required = true
+       and $3::text = any(membership.weekly_report_profiles)
+     for update of membership`,
     [organizationId, userId, profile],
   )
   if (!result.rows[0]) {
     const membership = await getMembership(client, organizationId, userId)
     if (!membership) throw new WeeklyReportError(404, '组织不存在')
+    if (!membership.weekly_report_enabled) throw new WeeklyReportError(403, '该组织已关闭周报模块')
     throw new WeeklyReportError(403, '当前未配置该类型周报')
   }
+  if (!result.rows[0].weekly_report_enabled) throw new WeeklyReportError(403, '该组织已关闭周报模块')
   return result.rows[0]
 }
 
-async function requireWeeklyReportManager(client: PoolClient, organizationId: number, userId: number) {
-  const membership = await requireMember(client, organizationId, userId)
-  const roles = await client.query<{ role: string }>(
-    'select role from user_roles where user_id = $1 order by role',
-    [userId],
-  )
+async function requireWeeklyReportManager(
+  client: PoolClient,
+  organizationId: number,
+  userId: number,
+  lockOrganization = false,
+) {
+  const membership = await requireMember(client, organizationId, userId, lockOrganization)
+  const roles = lockOrganization
+    ? await client.query<{ role: string }>(
+      `select role.role
+       from organization_memberships membership
+       join user_roles role on role.user_id = membership.user_id
+       where membership.organization_id = $1::bigint
+         and membership.user_id = $2::bigint
+         and membership.status = 'active'
+       order by role.role
+       for share of membership, role`,
+      [organizationId, userId],
+    )
+    : await client.query<{ role: string }>(
+      'select role from user_roles where user_id = $1::bigint order by role',
+      [userId],
+    )
   if (!canManageOrganizationWeeklyReports(membership.access_role, roles.rows.map((row) => row.role))) {
     throw new WeeklyReportError(403, '需要组织管理员权限')
   }
@@ -378,6 +426,7 @@ async function saveDraft(params: {
   try {
     await client.query('begin')
     if (!params.profile) throw new WeeklyReportError(409, '历史周报只读，不能保存')
+    await requireMember(client, params.organizationId, params.userId, true)
     await client.query(
       `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
       [`weekly-report:${params.organizationId}:${params.userId}:${params.weekStart}:${params.profile}`],
@@ -618,6 +667,7 @@ async function submitWeeklyReport(params: {
   try {
     await client.query('begin')
     if (!params.profile) throw new WeeklyReportError(409, '历史周报只读，不能保存')
+    await requireMember(client, params.organizationId, params.userId, true)
     await client.query(
       `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
       [`weekly-report:${params.organizationId}:${params.userId}:${params.weekStart}:${params.profile}`],
@@ -725,6 +775,7 @@ async function deleteWeeklyReport(params: {
   const client = await pool.connect()
   try {
     await client.query('begin')
+    await requireMember(client, params.organizationId, params.userId, true)
     const weekStart = await normalizeExistingReportWeek(client, params.organizationId, params.weekStart)
     await client.query('select pg_advisory_xact_lock(hashtextextended($1::text, 0))', [
       `weekly-report:${params.organizationId}:${params.userId}:${weekStart}:${params.profile ?? 'legacy'}`,
@@ -1413,72 +1464,114 @@ export function createWeeklyReportRouter(dependencies: WeeklyReportRouterDepende
           openId = ''
         }
       }
-      const reminder = await pool.query<{ id: string; status: string }>(
-        `insert into organization_weekly_report_reminders (
-           organization_id, target_user_id, requested_by_user_id,
-          week_start, report_profile, reminder_day, status
-        ) values ($1, $2, $3, $4, $5, $6, 'pending')
-        on conflict (organization_id, target_user_id, week_start, reminder_day, report_profile)
-         do update set
-           requested_by_user_id = excluded.requested_by_user_id,
-           status = case
-             when organization_weekly_report_reminders.status = 'sent' then 'sent'
-             else 'pending'
-           end,
-           last_error = case
-             when organization_weekly_report_reminders.status = 'sent'
-               then organization_weekly_report_reminders.last_error
-             else ''
-           end,
-           updated_at = now()
-         returning id, status`,
-        [organizationId, candidate.user_id, session.userId, weekStart, profile, shanghaiDate()],
-      )
-      if (reminder.rows[0].status === 'sent') {
-        totals.skipped += 1
-        continue
-      }
-      if (!openId.startsWith('ou_')) {
-        await pool.query(
-          `update organization_weekly_report_reminders
-           set status = 'skipped', last_error = '未绑定飞书账号', updated_at = now()
-           where id = $1`,
-          [reminder.rows[0].id],
-        )
-        totals.skipped += 1
-        continue
-      }
+      const deliveryClient = await pool.connect()
       try {
-        await dependencies.sendFeishuMessage({
-          content: buildReminderCard({
-        organizationName,
-        profile,
-            requestedByName: requesterName,
-            url,
-            weekStart,
-          }),
-          msgType: 'interactive',
-          receiveId: openId,
-          receiveIdType: 'open_id',
-        })
-        await pool.query(
-          `update organization_weekly_report_reminders
-           set status = 'sent', last_error = '', delivered_at = now(), updated_at = now()
-           where id = $1`,
-          [reminder.rows[0].id],
+        await deliveryClient.query('begin')
+        await requireWeeklyReportManager(deliveryClient, organizationId, session.userId, true)
+        await deliveryClient.query(
+          'select pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+          [`weekly-report:${organizationId}:${candidate.user_id}:${weekStart}:${profile}`],
         )
-        totals.sent += 1
+        const eligible = await deliveryClient.query<{ user_id: string }>(
+          `select membership.user_id
+           from organization_memberships membership
+           left join organization_weekly_reports report
+             on report.organization_id = membership.organization_id
+            and report.user_id = membership.user_id
+            and report.week_start = $2::date
+            and report.deleted_at is null
+            and report.report_profile = $4::text
+           where membership.organization_id = $1::bigint
+             and membership.user_id = $3::bigint
+             and membership.status = 'active'
+             and membership.weekly_report_required = true
+             and $4::text = any(membership.weekly_report_profiles)
+             and report.published_revision_id is null
+             and coalesce(report.status, 'draft') <> 'submitted'
+           limit 1
+           for share of membership`,
+          [organizationId, weekStart, candidate.user_id, profile],
+        )
+        if (!eligible.rows[0]) {
+          await deliveryClient.query('commit')
+          totals.skipped += 1
+          continue
+        }
+        const reminder = await deliveryClient.query<{ id: string; status: string }>(
+          `insert into organization_weekly_report_reminders (
+             organization_id, target_user_id, requested_by_user_id,
+            week_start, report_profile, reminder_day, status
+          ) values ($1, $2, $3, $4, $5, $6, 'pending')
+          on conflict (organization_id, target_user_id, week_start, reminder_day, report_profile)
+           do update set
+             requested_by_user_id = excluded.requested_by_user_id,
+             status = case
+               when organization_weekly_report_reminders.status = 'sent' then 'sent'
+               else 'pending'
+             end,
+             last_error = case
+               when organization_weekly_report_reminders.status = 'sent'
+                 then organization_weekly_report_reminders.last_error
+               else ''
+             end,
+             updated_at = now()
+           returning id, status`,
+          [organizationId, candidate.user_id, session.userId, weekStart, profile, shanghaiDate()],
+        )
+        if (reminder.rows[0].status === 'sent') {
+          await deliveryClient.query('commit')
+          totals.skipped += 1
+          continue
+        }
+        if (!openId.startsWith('ou_')) {
+          await deliveryClient.query(
+            `update organization_weekly_report_reminders
+             set status = 'skipped', last_error = '未绑定飞书账号', updated_at = now()
+             where id = $1`,
+            [reminder.rows[0].id],
+          )
+          await deliveryClient.query('commit')
+          totals.skipped += 1
+          continue
+        }
+        try {
+          await dependencies.sendFeishuMessage({
+            content: buildReminderCard({
+              organizationName,
+              profile,
+              requestedByName: requesterName,
+              url,
+              weekStart,
+            }),
+            msgType: 'interactive',
+            receiveId: openId,
+            receiveIdType: 'open_id',
+          })
+          await deliveryClient.query(
+            `update organization_weekly_report_reminders
+             set status = 'sent', last_error = '', delivered_at = now(), updated_at = now()
+             where id = $1`,
+            [reminder.rows[0].id],
+          )
+          totals.sent += 1
+        } catch (error) {
+          await deliveryClient.query(
+            `update organization_weekly_report_reminders
+             set status = 'failed', last_error = $2, updated_at = now()
+             where id = $1`,
+            [
+              reminder.rows[0].id,
+              error instanceof Error ? error.message.slice(0, 500) : '飞书消息发送失败',
+            ],
+          )
+          totals.failed += 1
+        }
+        await deliveryClient.query('commit')
       } catch (error) {
-        await pool.query(
-          `update organization_weekly_report_reminders
-           set status = 'failed', last_error = $2, updated_at = now()
-           where id = $1`,
-          [
-            reminder.rows[0].id,
-            error instanceof Error ? error.message.slice(0, 500) : '飞书消息发送失败',
-          ],
-        )
-        totals.failed += 1
+        await deliveryClient.query('rollback')
+        throw error
+      } finally {
+        deliveryClient.release()
       }
     }
     response.json(totals)

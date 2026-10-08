@@ -7,6 +7,10 @@ const migrationSource = readFileSync(
   new URL('./migrations/20260908_weekly_report_assignees.sql', import.meta.url),
   'utf8',
 )
+const toggleMigrationSource = readFileSync(
+  new URL('./migrations/20261008_organization_weekly_report_toggle.sql', import.meta.url),
+  'utf8',
+)
 const assignmentsMigrationSource = readFileSync(
   new URL('./migrations/20261002_weekly_report_assignments.sql', import.meta.url),
   'utf8',
@@ -27,6 +31,17 @@ const weeklyReportWorkbenchSource = readFileSync(
   new URL('../src/components/weekly-report-workbench.tsx', import.meta.url),
   'utf8',
 )
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+test('the organization weekly-report module is default-enabled and has an idempotent migration', () => {
+  assert.match(schemaSource, /weekly_report_enabled boolean not null default true/u)
+  assert.match(schemaSource, /add column if not exists weekly_report_enabled boolean not null default true/u)
+  assert.match(toggleMigrationSource, /add column if not exists weekly_report_enabled boolean not null default true/u)
+  assert.match(organizationsSource, /weeklyReportEnabled: organization\.weekly_report_enabled/u)
+  assert.match(organizationsSource, /weekly_report_enabled,/u)
+  assert.match(organizationsSource, /select o\.id, o\.name, o\.week_starts_on, o\.weekly_report_enabled/u)
+  assert.match(organizationsSource, /canWriteWeeklyReport: row\.weekly_report_enabled/u)
+})
 
 test('organization memberships require an explicit report persona assignment', () => {
   assert.match(schemaSource, /weekly_report_required boolean not null default false/u)
@@ -69,6 +84,39 @@ test('weekly-report rule updates validate and replace the long-lived assignee li
   )
   assert.match(routeSource, /await client\.query\('commit'\)/u)
   assert.match(routeSource, /weeklyReportAssignments: assignments/u)
+  assert.match(routeSource, /weeklyReportEnabled/u)
+  assert.match(routeSource, /weekly_report_enabled = true/u)
+  assert.match(routeSource, /weekly_report_enabled = false/u)
+  assert.match(routeSource, /weeklyReportEnabled,/u)
+  assert.match(routeSource, /if \(weeklyReportEnabled\) \{[\s\S]+update organization_memberships membership/u)
+  assert.match(routeSource, /const weekStartsOn = weeklyReportEnabled[\s\S]+: null/u)
+  assert.match(routeSource, /if \(weeklyReportEnabled && \(!weekStartsOn \|\| !weeklyReportRules \|\| !assignments\)\)/u)
+  assert.match(routeSource, /requestedWeeklyReportEnabled[\s\S]+\?\? organization\.rows\[0\]\.weekly_report_enabled/u)
+})
+
+test('disabled organizations gate every weekly-report surface and preserve the manager rules route', () => {
+  assert.match(weeklyReportsSource, /if \(!membership\.weekly_report_enabled\) throw new WeeklyReportError\(403, '该组织已关闭周报模块'\)/u)
+  assert.match(weeklyReportsSource, /requireMember\(client, params\.organizationId, params\.userId, true\)/u)
+  assert.match(weeklyReportsSource, /for share of organization/u)
+  assert.match(weeklyReportsSource, /requireWeeklyReportManager\(deliveryClient, organizationId, session\.userId, true\)/u)
+  assert.match(weeklyReportsSource, /for share of membership, role/u)
+  assert.match(
+    weeklyReportsSource,
+    /select role from user_roles where user_id = \$1::bigint order by role'[\s\S]+\[userId\]/u,
+  )
+  assert.match(weeklyReportsSource, /weekly-report:\$\{organizationId\}:\$\{candidate\.user_id\}:\$\{weekStart\}:\$\{profile\}/u)
+  assert.match(weeklyReportsSource, /limit 1[\s\S]+for share of membership/u)
+  assert.match(weeklyReportsSource, /await dependencies\.sendFeishuMessage\([\s\S]+await deliveryClient\.query\('commit'\)/u)
+  assert.match(organizationsSource, /report_organization\.weekly_report_enabled = true/u)
+  assert.match(organizationsSource, /const weeklyReportEnabled = includes\('reports'\)[\s\S]+select weekly_report_enabled from organizations/u)
+  assert.match(organizationsSource, /reports: weeklyReportEnabled \? reports\.rows\.map/u)
+  assert.match(organizationsSource, /summaries: weeklyReportEnabled \? summaries\.rows\.map/u)
+  assert.match(organizationsSource, /select weekly_report_enabled as enabled from organizations where id = \$1 for share/u)
+  assert.match(organizationWorkbenchSource, /启用周报模块/u)
+  assert.match(organizationWorkbenchSource, /本组织已关闭周报模块/u)
+  assert.match(organizationWorkbenchSource, /weeklyReportEnabled: weeklyReportEnabledDraft/u)
+  assert.match(appSource, /organization\.weeklyReportEnabled \? organization\.weeklyReportProfiles : \[\]/u)
+  assert.match(appSource, /activeWeeklyReportOrganization\?\.weeklyReportEnabled/u)
 })
 
 test('personal weekly-report mutations require a current assignee before writing or calling AI', () => {

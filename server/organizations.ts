@@ -576,11 +576,13 @@ async function getOrganizationDetail(
       owner_user_id: string
       weekly_report_close_day: number
       weekly_report_close_time: string
+      weekly_report_enabled: boolean
       weekly_report_open_day: number
       weekly_report_open_time: string
       week_starts_on: number
     }>(
       `select id, owner_user_id, name, week_starts_on,
+         weekly_report_enabled,
          weekly_report_open_day, weekly_report_open_time,
          weekly_report_close_day, weekly_report_close_time,
          created_at
@@ -866,6 +868,9 @@ async function getOrganizationDetail(
       select r.user_id, r.week_start, r.content, r.status, r.updated_at, r.submitted_at, r.report_profile,
         u.email, u.display_name
       from organization_weekly_reports r
+      join organizations report_organization
+        on report_organization.id = r.organization_id
+       and report_organization.weekly_report_enabled = true
       join users u on u.id = r.user_id
       join organization_memberships report_membership
         on report_membership.organization_id = r.organization_id
@@ -898,8 +903,13 @@ async function getOrganizationDetail(
       source_report_count: number
       week_start: Date | string
     }>(
-      `select week_start, content, source_report_count, created_at, stale, stale_at
-       from organization_weekly_summaries where organization_id = $1
+      `select summary.week_start, summary.content, summary.source_report_count,
+         summary.created_at, summary.stale, summary.stale_at
+       from organization_weekly_summaries summary
+       join organizations report_organization
+         on report_organization.id = summary.organization_id
+        and report_organization.weekly_report_enabled = true
+       where summary.organization_id = $1
        order by week_start desc limit 12`,
       [organizationId],
     ) : Promise.resolve({ rows: [] }),
@@ -931,6 +941,12 @@ async function getOrganizationDetail(
   ])
   const row = organization.rows[0]
   if (!row) return null
+  const weeklyReportEnabled = includes('reports')
+    ? (await detailQuery<{ weekly_report_enabled: boolean }>(
+        'select weekly_report_enabled from organizations where id = $1',
+        [organizationId],
+      )).rows[0]?.weekly_report_enabled === true
+    : row.weekly_report_enabled
   const departedUserIds = includes('overview') ? await getDepartedUserIds() : []
   const taskRows = [
     ...todos.rows.map((task) => ({
@@ -1067,7 +1083,7 @@ async function getOrganizationDetail(
     projectModules,
     canManageTestEnvironments: canManageTestEnvironments(membership.access_role, assignedRoles),
     canManageWeeklyReports,
-    canWriteWeeklyReport: membership.weekly_report_profiles.length > 0,
+    canWriteWeeklyReport: weeklyReportEnabled && membership.weekly_report_profiles.length > 0,
     weeklyReportProfiles: membership.weekly_report_profiles,
     weeklyReportAssignments: members.rows
       .filter((member) => member.weekly_report_required && member.email.toLowerCase() !== 'admin')
@@ -1076,6 +1092,7 @@ async function getOrganizationDetail(
         profiles: member.weekly_report_profiles,
         userId: Number(member.user_id),
       })),
+    weeklyReportEnabled,
     createdAt: row.created_at.toISOString(),
     id: Number(row.id),
     invitations: invitations.rows.map((invite) => ({
@@ -1121,7 +1138,7 @@ async function getOrganizationDetail(
       todoCount: Number(project.todo_count),
       updatedAt: project.updated_at.toISOString(),
     })),
-    reports: reports.rows.map((report) => ({
+    reports: weeklyReportEnabled ? reports.rows.map((report) => ({
       content: decryptText(report.content),
       memberName: displayName(report),
       status: report.status,
@@ -1130,15 +1147,15 @@ async function getOrganizationDetail(
       userId: Number(report.user_id),
       reportProfile: report.report_profile,
       weekStart: dateOnly(report.week_start),
-    })),
-    summaries: summaries.rows.map((summary) => ({
+    })) : [],
+    summaries: weeklyReportEnabled ? summaries.rows.map((summary) => ({
       content: decryptText(summary.content),
       createdAt: summary.created_at.toISOString(),
       sourceReportCount: summary.source_report_count,
       stale: summary.stale,
       staleAt: summary.stale_at?.toISOString() ?? null,
       weekStart: dateOnly(summary.week_start),
-    })),
+    })) : [],
     testEnvironments: testEnvironments.rows.map((environment) => ({
       accessUrl: decryptText(environment.access_url),
       createdAt: environment.created_at.toISOString(),
@@ -1179,12 +1196,13 @@ async function getWeeklyReportContext(organizationId: number, userId: number) {
     week_starts_on: number
     weekly_report_close_day: number
     weekly_report_close_time: string
+    weekly_report_enabled: boolean
     weekly_report_open_day: number
     weekly_report_open_time: string
     weekly_report_profiles: WeeklyReportProfile[]
   }>(
     `
-    select o.id, o.name, o.week_starts_on,
+    select o.id, o.name, o.week_starts_on, o.weekly_report_enabled,
       o.weekly_report_open_day, o.weekly_report_open_time,
       o.weekly_report_close_day, o.weekly_report_close_time,
       membership.weekly_report_profiles
@@ -1200,7 +1218,7 @@ async function getWeeklyReportContext(organizationId: number, userId: number) {
   const row = result.rows[0]
   if (!row) return null
   return {
-    canWriteWeeklyReport: row.weekly_report_profiles.length > 0,
+    canWriteWeeklyReport: row.weekly_report_enabled && row.weekly_report_profiles.length > 0,
     id: Number(row.id),
     name: decryptText(row.name),
     weekStartsOn: normalizeOrganizationWeekStartsOn(row.week_starts_on) ?? 1,
@@ -1216,6 +1234,7 @@ async function getWeeklyReportContext(organizationId: number, userId: number) {
       openDay: 5,
       openTime: '00:00',
     },
+    weeklyReportEnabled: row.weekly_report_enabled,
   }
 }
 
@@ -1231,10 +1250,12 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       member_count: string
       name: string
       package_market_enabled: boolean | null
+      weekly_report_enabled: boolean
       weekly_report_profiles: WeeklyReportProfile[]
     }>(
       `
       select o.id, o.name, mine.access_role, mine.weekly_report_profiles,
+        o.weekly_report_enabled,
         count(m.user_id) filter (where m.status = 'active') as member_count,
         (
           coalesce(feature.enabled, true)
@@ -1310,6 +1331,7 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       memberCount: Number(organization.member_count),
       name: decryptText(organization.name),
       packageMarketEnabled: organization.package_market_enabled !== false,
+      weeklyReportEnabled: organization.weekly_report_enabled,
       weeklyReportProfiles: organization.weekly_report_profiles,
     })).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     const organizationAdmin = await query<{ allowed: boolean }>(
@@ -1635,11 +1657,8 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
     if (!session) return
     const organizationId = positiveId(request.params.organizationId)
     if (!(await requireOrganizationWeeklyReportManager(response, organizationId, session.userId))) return
-    const weekStartsOn = normalizeOrganizationWeekStartsOn(request.body?.weekStartsOn)
-    const weeklyReportRules = normalizeWeeklyReportRules(request.body?.weeklyReportRules)
-    const assignments = weeklyReportAssignments(request.body?.weeklyReportAssignments)
-    if (!weekStartsOn || !weeklyReportRules
-      || !assignments) {
+    const requestedWeeklyReportEnabled = request.body?.weeklyReportEnabled
+    if (requestedWeeklyReportEnabled !== undefined && typeof requestedWeeklyReportEnabled !== 'boolean') {
       response.status(400).json({
         error: '周报规则无效：请检查填写成员、日期和时间设置',
       })
@@ -1649,8 +1668,8 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
     const client = await pool.connect()
     try {
       await client.query('begin')
-      const organization = await client.query(
-        `select o.id
+      const organization = await client.query<{ weekly_report_enabled: boolean }>(
+        `select o.id, o.weekly_report_enabled
          from organizations o
          join organization_memberships membership
            on membership.organization_id = o.id
@@ -1668,81 +1687,113 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
         response.status(409).json({ error: '周报配置权限校验未通过，请刷新后重试；如仍失败，请确认你是该组织 Owner/Admin。' })
         return
       }
-      const assigneeIds = assignments.map((assignment) => assignment.userId)
-      const assignees = await client.query<{ user_id: string }>(
-        `select membership.user_id
-         from organization_memberships membership
-         join users on users.id = membership.user_id
-         where membership.organization_id = $1
-           and membership.status = 'active'
-           and lower(users.email) <> 'admin'
-           and membership.user_id = any($2::bigint[])
-         for update of membership`,
-        [organizationId, assigneeIds],
-      )
-      if (assignees.rows.length !== assigneeIds.length) {
+      const weeklyReportEnabled = requestedWeeklyReportEnabled
+        ?? organization.rows[0].weekly_report_enabled
+      const weekStartsOn = weeklyReportEnabled
+        ? normalizeOrganizationWeekStartsOn(request.body?.weekStartsOn)
+        : null
+      const weeklyReportRules = weeklyReportEnabled
+        ? normalizeWeeklyReportRules(request.body?.weeklyReportRules)
+        : null
+      const assignments = weeklyReportEnabled
+        ? weeklyReportAssignments(request.body?.weeklyReportAssignments)
+        : null
+      if (weeklyReportEnabled && (!weekStartsOn || !weeklyReportRules || !assignments)) {
         await client.query('rollback')
-        response.status(400).json({ error: '周报填写成员必须是当前组织成员' })
+        response.status(400).json({
+          error: '周报规则无效：请检查填写成员、日期和时间设置',
+        })
         return
       }
-      const roles = await client.query<{ role: string; user_id: string }>(
-        `select user_id, role from user_roles where user_id = any($1::bigint[])`,
-        [assigneeIds],
-      )
-      const rolesByUserId = new Map<number, string[]>()
-      for (const row of roles.rows) {
-        const current = rolesByUserId.get(Number(row.user_id)) ?? []
-        current.push(row.role)
-        rolesByUserId.set(Number(row.user_id), current)
+      const enabledAssignments = assignments ?? []
+      if (weeklyReportEnabled) {
+        const assigneeIds = enabledAssignments.map((assignment) => assignment.userId)
+        const assignees = await client.query<{ user_id: string }>(
+          `select membership.user_id
+           from organization_memberships membership
+           join users on users.id = membership.user_id
+           where membership.organization_id = $1
+             and membership.status = 'active'
+             and lower(users.email) <> 'admin'
+             and membership.user_id = any($2::bigint[])
+           for update of membership`,
+          [organizationId, assigneeIds],
+        )
+        if (assignees.rows.length !== assigneeIds.length) {
+          await client.query('rollback')
+          response.status(400).json({ error: '周报填写成员必须是当前组织成员' })
+          return
+        }
+        const roles = await client.query<{ role: string; user_id: string }>(
+          `select user_id, role from user_roles where user_id = any($1::bigint[])`,
+          [assigneeIds],
+        )
+        const rolesByUserId = new Map<number, string[]>()
+        for (const row of roles.rows) {
+          const current = rolesByUserId.get(Number(row.user_id)) ?? []
+          current.push(row.role)
+          rolesByUserId.set(Number(row.user_id), current)
+        }
+        const invalidAssignment = enabledAssignments.find((assignment) => {
+          const roles = rolesByUserId.get(assignment.userId) ?? []
+          return assignment.profiles.some((profile) => (
+            !roles.includes(profile) && !roles.includes('organization_admin')
+          ))
+        })
+        if (invalidAssignment) {
+          await client.query('rollback')
+          response.status(400).json({ error: '周报类型必须与成员的职业角色一致' })
+          return
+        }
       }
-      const invalidAssignment = assignments.find((assignment) => {
-        const roles = rolesByUserId.get(assignment.userId) ?? []
-        return assignment.profiles.some((profile) => (
-          !roles.includes(profile) && !roles.includes('organization_admin')
-        ))
-      })
-      if (invalidAssignment) {
-        await client.query('rollback')
-        response.status(400).json({ error: '周报类型必须与成员的职业角色一致' })
-        return
+      if (weeklyReportEnabled) {
+        await client.query(
+          `update organizations
+           set week_starts_on = $1,
+               weekly_report_enabled = true,
+               weekly_report_open_day = $2,
+               weekly_report_open_time = $3,
+               weekly_report_close_day = $4,
+               weekly_report_close_time = $5,
+               updated_at = now()
+           where id = $6`,
+          [
+            weekStartsOn,
+            weeklyReportRules!.openDay,
+            weeklyReportRules!.openTime,
+            weeklyReportRules!.closeDay,
+            weeklyReportRules!.closeTime,
+            organizationId,
+          ],
+        )
+        await client.query(
+          `with assignment as (
+             select (entry.value->>'userId')::bigint as user_id,
+               array(select jsonb_array_elements_text(entry.value->'profiles')) as profiles,
+               entry.ordinality - 1 as sort_order
+             from jsonb_array_elements($2::jsonb) with ordinality as entry(value, ordinality)
+           )
+           update organization_memberships membership
+           set weekly_report_profiles = coalesce(assignment.profiles, '{}'::text[]),
+               weekly_report_required = assignment.user_id is not null,
+               weekly_report_sort_order = assignment.sort_order
+           from users
+           left join assignment on assignment.user_id = users.id
+           where membership.organization_id = $1
+             and membership.status = 'active'
+             and users.id = membership.user_id
+          `,
+          [organizationId, JSON.stringify(enabledAssignments)],
+        )
+      } else {
+        await client.query(
+          `update organizations
+           set weekly_report_enabled = false,
+               updated_at = now()
+           where id = $1`,
+          [organizationId],
+        )
       }
-      await client.query(
-        `update organizations
-         set week_starts_on = $1,
-             weekly_report_open_day = $2,
-             weekly_report_open_time = $3,
-             weekly_report_close_day = $4,
-             weekly_report_close_time = $5,
-             updated_at = now()
-         where id = $6`,
-        [
-          weekStartsOn,
-          weeklyReportRules.openDay,
-          weeklyReportRules.openTime,
-          weeklyReportRules.closeDay,
-          weeklyReportRules.closeTime,
-          organizationId,
-        ],
-      )
-      await client.query(
-        `with assignment as (
-           select (entry.value->>'userId')::bigint as user_id,
-             array(select jsonb_array_elements_text(entry.value->'profiles')) as profiles,
-             entry.ordinality - 1 as sort_order
-           from jsonb_array_elements($2::jsonb) with ordinality as entry(value, ordinality)
-         )
-         update organization_memberships membership
-         set weekly_report_profiles = coalesce(assignment.profiles, '{}'::text[]),
-             weekly_report_required = assignment.user_id is not null,
-             weekly_report_sort_order = assignment.sort_order
-         from users
-         left join assignment on assignment.user_id = users.id
-         where membership.organization_id = $1
-           and membership.status = 'active'
-           and users.id = membership.user_id
-        `,
-        [organizationId, JSON.stringify(assignments)],
-      )
       await writeAudit(
         client,
         organizationId!,
@@ -1750,7 +1801,12 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
         'organization.weekly_report_rules_changed',
         'organization',
         String(organizationId),
-        JSON.stringify({ weekStartsOn, weeklyReportAssignments: assignments, weeklyReportRules }),
+        JSON.stringify(weeklyReportEnabled ? {
+          weekStartsOn,
+          weeklyReportAssignments: assignments,
+          weeklyReportEnabled,
+          weeklyReportRules,
+        } : { weeklyReportEnabled }),
       )
       await client.query('commit')
     } catch (error) {
@@ -3274,7 +3330,18 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
 
   // All writes use the versioned draft/submit endpoints, including profile validation.
   router.put('/organizations/:organizationId/weekly-reports/:weekStart', asyncRoute(async (request, response) => {
-    if (!await requireSession(request, response)) return
+    const session = await requireSession(request, response)
+    if (!session) return
+    const organizationId = positiveId(request.params.organizationId)
+    if (!await requireOrganizationMember(response, organizationId, session.userId)) return
+    const weeklyReportFeature = await query<{ enabled: boolean }>(
+      'select weekly_report_enabled as enabled from organizations where id = $1',
+      [organizationId],
+    )
+    if (weeklyReportFeature.rows[0]?.enabled !== true) {
+      response.status(403).json({ error: '该组织已关闭周报模块', code: 'WEEKLY_REPORT_DISABLED' })
+      return
+    }
     response.status(410).json({ error: '旧周报写入接口已停用，请通过周报工作台保存草稿并提交' })
   }))
 
@@ -3283,6 +3350,14 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
     if (!session) return
     const organizationId = positiveId(request.params.organizationId)
     if (!(await requireOrganizationWeeklyReportManager(response, organizationId, session.userId))) return
+    const weeklyReportFeature = await query<{ enabled: boolean }>(
+      'select weekly_report_enabled as enabled from organizations where id = $1',
+      [organizationId],
+    )
+    if (weeklyReportFeature.rows[0]?.enabled !== true) {
+      response.status(403).json({ error: '该组织已关闭周报模块', code: 'WEEKLY_REPORT_DISABLED' })
+      return
+    }
     const weekStart = normalizeOrganizationWeekStart(
       request.params.weekStart,
       await getOrganizationWeekStartsOn(organizationId!),
@@ -3328,17 +3403,30 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       response.status(generated.status).json({ error: generated.error ?? 'AI summary failed' })
       return
     }
-    await query(
-      `insert into organization_weekly_summaries
-        (organization_id, week_start, requested_by_user_id, content, source_report_count)
-       values ($1, $2, $3, $4, $5)
-       on conflict (organization_id, week_start) do update
-         set requested_by_user_id = excluded.requested_by_user_id,
-           content = excluded.content, source_report_count = excluded.source_report_count,
-           stale = false, stale_at = null,
-           updated_at = now()`,
-      [organizationId, weekStart, session.userId, encryptText(generated.message), reports.rows.length],
-    )
+    const generatedMessage = generated.message
+    const saved = await transaction(async (client) => {
+      const current = await client.query<{ enabled: boolean }>(
+        'select weekly_report_enabled as enabled from organizations where id = $1 for share',
+        [organizationId],
+      )
+      if (current.rows[0]?.enabled !== true) return false
+      await client.query(
+        `insert into organization_weekly_summaries
+          (organization_id, week_start, requested_by_user_id, content, source_report_count)
+         values ($1, $2, $3, $4, $5)
+         on conflict (organization_id, week_start) do update
+           set requested_by_user_id = excluded.requested_by_user_id,
+             content = excluded.content, source_report_count = excluded.source_report_count,
+             stale = false, stale_at = null,
+             updated_at = now()`,
+        [organizationId, weekStart, session.userId, encryptText(generatedMessage), reports.rows.length],
+      )
+      return true
+    })
+    if (!saved) {
+      response.status(403).json({ error: '该组织已关闭周报模块', code: 'WEEKLY_REPORT_DISABLED' })
+      return
+    }
     response.json(await getOrganizationDetail(organizationId!, session.userId))
   }))
 

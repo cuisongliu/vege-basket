@@ -1219,6 +1219,7 @@ export function updateOrganizationWeeklyReportRules(
     weekStartsOn: number
     /** Ordered member assignments; each member selects one or both report personas. */
     weeklyReportAssignments: Array<{ profiles: Array<'developer' | 'tester'>; userId: number }>
+    weeklyReportEnabled: boolean
     weeklyReportRules: WeeklyReportRules
   },
 ) {

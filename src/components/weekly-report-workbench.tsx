@@ -532,7 +532,7 @@ export const WeeklyReportWorkbench = forwardRef<WeeklyReportWorkbenchHandle, Wee
         setWeeklyReportRules(detail.weeklyReportRules)
         const eligibleProfiles = detail.weeklyReportProfiles.filter((profile) => providedAvailableProfiles.includes(profile))
         setAvailableProfiles(eligibleProfiles)
-        setCanWriteWeeklyReport(eligibleProfiles.includes(activeProfile))
+        setCanWriteWeeklyReport(detail.weeklyReportEnabled && eligibleProfiles.includes(activeProfile))
         const current = currentWeekStart(detail.weekStartsOn, today)
         const preferredWeek = organizationId === initialContext.current.organizationId
           && initialContext.current.weekStart

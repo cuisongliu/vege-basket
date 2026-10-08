@@ -102,6 +102,7 @@ import {
 import { userRoleLabel } from '../user-roles'
 import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
+import { Switch } from './ui/switch'
 import {
   Dialog,
   DialogClose,
@@ -407,6 +408,7 @@ export function OrganizationWorkbench({
   onProjectModulesChanged,
   onSubprojectsChanged,
   onPackageMarketVisibilityChange,
+  onWeeklyReportVisibilityChange,
 }: {
   currentUser: AuthUser
   initialOrganizations: OrganizationListItem[]
@@ -417,6 +419,7 @@ export function OrganizationWorkbench({
   onProjectModulesChanged?: () => void
   onSubprojectsChanged?: () => void
   onPackageMarketVisibilityChange?: (organizationId: number, enabled: boolean) => void
+  onWeeklyReportVisibilityChange?: (organizationId: number, enabled: boolean) => void
 }) {
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>(initialOrganizations)
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(initialSelectedOrganizationId ?? initialOrganizations[0]?.id ?? 0)
@@ -469,6 +472,7 @@ export function OrganizationWorkbench({
   const [weeklyRulesError, setWeeklyRulesError] = useState('')
   const [weeklyRulesDraft, setWeeklyRulesDraft] = useState<WeeklyReportRules>(defaultWeeklyReportRules)
   const [weeklyRulesWeekStartsOn, setWeeklyRulesWeekStartsOn] = useState(1)
+  const [weeklyReportEnabledDraft, setWeeklyReportEnabledDraft] = useState(true)
   const [weeklyReportAssignments, setWeeklyReportAssignments] = useState<Array<{ profiles: WeeklyReportProfile[]; userId: number }>>([])
   const [weeklyReportAssigneeQuery, setWeeklyReportAssigneeQuery] = useState('')
   const packageMarketDraftOrganizationId = useRef(0)
@@ -652,6 +656,7 @@ export function OrganizationWorkbench({
       weeklyRulesContext.current = detail.id
       setWeeklyRulesDraft(detail.weeklyReportRules)
       setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
+      setWeeklyReportEnabledDraft(detail.weeklyReportEnabled)
       setWeeklyReportAssignments(detail.weeklyReportAssignments)
       setSelectedReportWeek('')
       setWeeklyReadingKey(null)
@@ -663,6 +668,7 @@ export function OrganizationWorkbench({
     if (!detail) return
     setWeeklyRulesDraft(detail.weeklyReportRules)
     setWeeklyRulesWeekStartsOn(detail.weekStartsOn)
+    setWeeklyReportEnabledDraft(detail.weeklyReportEnabled)
     setWeeklyReportAssignments(detail.weeklyReportAssignments)
     setWeeklyReportAssigneeQuery('')
     setWeeklyRulesError('')
@@ -800,12 +806,15 @@ export function OrganizationWorkbench({
   async function submitWeeklyReportRules(event: FormEvent) {
     event.preventDefault()
     if (!detail) return
-    const rules = normalizeWeeklyReportRules(weeklyRulesDraft)
+    const rules = normalizeWeeklyReportRules(
+      weeklyReportEnabledDraft ? weeklyRulesDraft : detail.weeklyReportRules,
+    )
     if (!rules) {
       setWeeklyRulesError('截止时间必须早于下一轮开放时间，请重新设置日期和时间。')
       return
     }
-    if (weeklyReportAssignments.some((assignment) => assignment.profiles.length === 0)) {
+    const assignments = weeklyReportEnabledDraft ? weeklyReportAssignments : detail.weeklyReportAssignments
+    if (assignments.some((assignment) => assignment.profiles.length === 0)) {
       setWeeklyRulesError('多角色成员需要选择至少一种周报类型。')
       return
     }
@@ -815,8 +824,9 @@ export function OrganizationWorkbench({
     const scope = actionScopeRef.current
     try {
       const nextDetail = await updateOrganizationWeeklyReportRules(detail.id, {
-        weekStartsOn: weeklyRulesWeekStartsOn,
-        weeklyReportAssignments,
+        weekStartsOn: weeklyReportEnabledDraft ? weeklyRulesWeekStartsOn : detail.weekStartsOn,
+        weeklyReportAssignments: assignments,
+        weeklyReportEnabled: weeklyReportEnabledDraft,
         weeklyReportRules: rules,
       })
       if (scope !== actionScopeRef.current) return
@@ -824,6 +834,12 @@ export function OrganizationWorkbench({
       setWeeklyCollection(null)
       setWeeklyCollectionRefresh((value) => value + 1)
       setWeeklyAdminTab('collection')
+      setOrganizations((current) => current.map((organization) => (
+        organization.id === nextDetail.id
+          ? { ...organization, weeklyReportEnabled: nextDetail.weeklyReportEnabled }
+          : organization
+      )))
+      onWeeklyReportVisibilityChange?.(nextDetail.id, nextDetail.weeklyReportEnabled)
     } catch (saveError) {
       if (scope === actionScopeRef.current && !showOrganizationPermissionError(saveError)) {
         setWeeklyRulesError(errorMessage(saveError))
@@ -986,7 +1002,7 @@ export function OrganizationWorkbench({
   const canManageWeeklyReports = detail?.canManageWeeklyReports ?? false
   const loadWeeklyCollection = useCallback(async () => {
     const request = ++weeklyCollectionRequest.current.version
-    if (!canManageWeeklyReports || !weeklyOrganizationId) {
+    if (!canManageWeeklyReports || !weeklyOrganizationId || !detail?.weeklyReportEnabled) {
       setWeeklyCollection(null)
       return
     }
@@ -1003,7 +1019,7 @@ export function OrganizationWorkbench({
     }
   // The permission handler is stable and deliberately not part of this refresh scope.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canManageWeeklyReports, weekStart, weeklyOrganizationId])
+  }, [canManageWeeklyReports, detail?.weeklyReportEnabled, weekStart, weeklyOrganizationId])
 
   useEffect(() => {
     const requests = weeklyCollectionRequest.current
@@ -1572,7 +1588,7 @@ export function OrganizationWorkbench({
               </div>
               <div className="organization-report-header-actions">
                 <Select value={weekStart} onValueChange={value => { setSelectedReportWeek(value); setWeeklyReadingKey(null) }}>
-                  <SelectTrigger aria-label="组织周报周期" disabled={busy}><CalendarBlank size={16} /><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="组织周报周期" disabled={busy || !detail.weeklyReportEnabled}><CalendarBlank size={16} /><SelectValue /></SelectTrigger>
                   <SelectContent>{Array.from({ length: 12 }, (_, index) => shiftDateOnly(targetReportWeek, -index * 7)).map(value => <SelectItem value={value} key={value}>{formatWeekRange(value)}</SelectItem>)}</SelectContent>
                 </Select>
                 {weeklyReadingMember ? <Button variant="outline" onClick={() => { setWeeklyReadingKey(null); setWeeklyAdminTab('collection') }}><ArrowLeft size={16} />返回收集列表</Button> : null}
@@ -1584,9 +1600,25 @@ export function OrganizationWorkbench({
             {detail.canManageWeeklyReports && weeklyAdminTab === 'rules' && !weeklyReadingMember ? (
               <div className="organization-weekly-rules-layout">
                 <section className="organization-weekly-rules-page">
-                      <h3>填写周期</h3>
+                      <div className="organization-weekly-feature-toggle">
+                        <div>
+                          <Label htmlFor="organization-weekly-report-enabled">启用周报模块</Label>
+                          <p>关闭后，成员端周报入口及组织收集、催交、汇总功能将停用；现有规则和周报数据会保留。</p>
+                        </div>
+                        <div>
+                          <span>{weeklyReportEnabledDraft ? '已开启' : '已关闭'}</span>
+                          <Switch
+                            checked={weeklyReportEnabledDraft}
+                            disabled={busy}
+                            id="organization-weekly-report-enabled"
+                            onCheckedChange={setWeeklyReportEnabledDraft}
+                          />
+                        </div>
+                      </div>
                       {weeklyRulesError ? <div className="organization-error" role="alert">{weeklyRulesError}</div> : null}
                       <form className="organization-weekly-rules-form" onSubmit={submitWeeklyReportRules}><fieldset disabled={busy} className="wr-rules-fields">
+                        <fieldset className="wr-rules-configuration" disabled={!weeklyReportEnabledDraft}>
+                        <h3>填写周期</h3>
                         <Label>
                           周起始日
                           <Select
@@ -1768,20 +1800,31 @@ export function OrganizationWorkbench({
                           </ol>
                           <p>未选成员仍可查看自己的历史周报，但不再计入提交统计和填写提醒。</p>
                         </fieldset>
+                        </fieldset>
                         <footer className="wr-rules-footer">
                           <Button disabled={busy} type="button" variant="outline" onClick={() => { resetWeeklyRules(); setWeeklyAdminTab('collection') }}>取消</Button>
                           <Button disabled={busy} type="submit">保存规则</Button>
                         </footer>
                       </fieldset></form>
                 </section>
-                <aside className="wr-admin-aside"><h3>规则如何生效</h3><p>开发和测试分别使用自己的周报模板；双角色成员需分别提交两份周报。</p><p>取消填写资格后，成员仍可阅读历史周报，不再计入收集和催交名单。</p><p>已选成员的排列顺序在保存后生效。</p></aside>
+                <aside className="wr-admin-aside"><h3>规则如何生效</h3><p>关闭模块不会删除成员分配、草稿、提交版本、组织汇总或提醒记录；重新开启后会恢复原有配置。</p><p>开发和测试分别使用自己的周报模板；双角色成员需分别提交两份周报。</p><p>取消填写资格后，成员仍可阅读历史周报，不再计入收集和催交名单。</p><p>已选成员的排列顺序在保存后生效。</p></aside>
               </div>
             ) : null}
-            {detail.canManageWeeklyReports && weeklyReadingMember ? <div className="wr-admin-reading">
+            {detail.canManageWeeklyReports && detail.weeklyReportEnabled && weeklyReadingMember ? <div className="wr-admin-reading">
               <aside className="wr-admin-members"><h3>已提交成员</h3>{weeklyCollection?.members.filter(member => member.revision != null).map(member => <button key={weeklyMemberKey(member)} type="button" aria-pressed={weeklyMemberKey(member) === weeklyReadingKey} onClick={() => setWeeklyReadingKey(weeklyMemberKey(member))}><strong>{member.memberName}</strong><small>{member.reportProfile ? weeklyReportProfiles[member.reportProfile].label : '历史周报'} · 第 {member.revision} 版</small></button>)}</aside>
               <article className="wr-admin-paper"><p className="wr-published-note">{weeklyReadingMember.state === 'modified' ? '该成员有未提交修改，以下为上次确认提交的版本。' : '以下为成员已确认提交的版本。'}</p><div className="wr-paper-title"><small>{detail.name} / 已提交周报</small><h2>{weeklyReadingMember.memberName}的{weeklyReadingMember.reportProfile ? weeklyReportProfiles[weeklyReadingMember.reportProfile].label : '周报'}</h2><p>{formatWeekRange(weekStart)} · 第 {weeklyReadingMember.revision} 版 · {formatDateTime(weeklyReadingMember.submittedAt)}</p></div><WeeklyReportReading content={weeklyReadingMember.content} sourceSnapshots={weeklyReadingMember.sourceSnapshots} published /></article>
             </div> : null}
-            {detail.canManageWeeklyReports && !weeklyReadingMember ? (
+            {detail.canManageWeeklyReports && !detail.weeklyReportEnabled && weeklyAdminTab !== 'rules' ? (
+              <div className="organization-weekly-disabled" role="status">
+                <ClipboardText aria-hidden="true" size={28} weight="duotone" />
+                <strong>本组织已关闭周报模块</strong>
+                <span>成员无法进入或读写周报，组织收集、催交和汇总也已停用。已有数据与配置仍会保留。</span>
+                <Button type="button" variant="outline" onClick={() => setWeeklyAdminTab('rules')}>
+                  <GearSix aria-hidden="true" size={16} />前往周报规则
+                </Button>
+              </div>
+            ) : null}
+            {detail.canManageWeeklyReports && detail.weeklyReportEnabled && !weeklyReadingMember ? (
               <>
                 {weeklyAdminTab === 'collection' ? <div className="organization-report-collection-toolbar">
                   <div>
@@ -1840,7 +1883,7 @@ export function OrganizationWorkbench({
             ) : !detail.canManageWeeklyReports ? (
               <EmptyRow text="需要组织管理员身份才能管理周报收集" />
             ) : null}
-            {detail.canManageWeeklyReports && !weeklyReadingMember && weeklyAdminTab === 'summary' ? <div className="organization-summary-band wr-summary-layout">
+            {detail.canManageWeeklyReports && detail.weeklyReportEnabled && !weeklyReadingMember && weeklyAdminTab === 'summary' ? <div className="organization-summary-band wr-summary-layout">
               <div>
                 <div className="wr-paper-title"><small>{detail.name} / 已提交周报汇总</small><h2>本周组织工作汇总</h2><p>{formatWeekRange(weekStart)}{currentSummary ? ` · 基于 ${currentSummary.sourceReportCount} 份提交版本 · ${formatDateTime(currentSummary.createdAt)}` : ''}</p></div>
               {currentSummary ? (

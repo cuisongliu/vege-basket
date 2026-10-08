@@ -116,6 +116,7 @@ create table if not exists organizations (
   name text not null,
   name_lookup text not null,
   week_starts_on smallint not null default 1 check (week_starts_on between 1 and 7),
+  weekly_report_enabled boolean not null default true,
   weekly_report_open_day smallint not null default 5,
   weekly_report_open_time time not null default '00:00',
   weekly_report_close_day smallint not null default 1,
@@ -130,6 +131,7 @@ create table if not exists organizations (
 alter table organizations
   add column if not exists feishu_tenant_key text not null default '',
   add column if not exists week_starts_on smallint not null default 1,
+  add column if not exists weekly_report_enabled boolean not null default true,
   add column if not exists weekly_report_open_day smallint not null default 5,
   add column if not exists weekly_report_open_time time not null default '00:00',
   add column if not exists weekly_report_close_day smallint not null default 1,

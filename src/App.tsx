@@ -2925,9 +2925,12 @@ function App() {
       (organization) => organization.id === selectedOrganizationId && organization.packageMarketEnabled,
     ) ?? null
   const packageMarketVisible = activePackageMarketOrganization !== null
-  const activeWeeklyReportProfiles = selectedOrganizationId == null
-    ? []
-    : organizations.find((organization) => organization.id === selectedOrganizationId)?.weeklyReportProfiles ?? []
+  const activeWeeklyReportOrganization = selectedOrganizationId == null
+    ? null
+    : organizations.find((organization) => organization.id === selectedOrganizationId) ?? null
+  const activeWeeklyReportProfiles = activeWeeklyReportOrganization?.weeklyReportEnabled
+    ? activeWeeklyReportOrganization.weeklyReportProfiles
+    : []
   const weeklyReportVisible = Boolean(
     authUser && activeWeeklyReportProfiles.includes(authUser.activeRole as 'developer' | 'tester'),
   )
@@ -5594,10 +5597,15 @@ function App() {
         <TestWorkbench
           weeklyReportRef={weeklyReportWorkbenchRef}
           weeklyReportProfiles={authUser.roles.includes('organization_admin')
-            ? [...new Set(organizations.flatMap((organization) => organization.weeklyReportProfiles))]
+            ? [...new Set(organizations
+              .filter((organization) => organization.weeklyReportEnabled)
+              .flatMap((organization) => organization.weeklyReportProfiles))]
             : authUser.roles.filter((role): role is 'developer' | 'tester' => role === 'developer' || role === 'tester')}
           weeklyReportOrganizationProfiles={Object.fromEntries(
-            organizations.map((organization) => [organization.id, organization.weeklyReportProfiles]),
+            organizations.map((organization) => [
+              organization.id,
+              organization.weeklyReportEnabled ? organization.weeklyReportProfiles : [],
+            ]),
           )}
           navigationBusy={roleSelectionBusy}
           accountMenu={testerAccountMenu}
@@ -6235,6 +6243,13 @@ function App() {
               setOrganizations((current) => current.map((organization) => (
                 organization.id === organizationId
                   ? { ...organization, packageMarketEnabled: enabled }
+                  : organization
+              )))
+            }}
+            onWeeklyReportVisibilityChange={(organizationId, enabled) => {
+              setOrganizations((current) => current.map((organization) => (
+                organization.id === organizationId
+                  ? { ...organization, weeklyReportEnabled: enabled }
                   : organization
               )))
             }}

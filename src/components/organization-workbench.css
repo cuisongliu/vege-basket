@@ -1342,6 +1342,7 @@
 }
 
 .organization-weekly-rules-form > label,
+.wr-rules-configuration > label,
 .organization-weekly-rule-row > label {
   display: grid;
   gap: 7px;
@@ -1662,6 +1663,14 @@
 .organization-weekly-rules-page { min-width: 0; }
 .organization-weekly-rules-page h3 { font-size: 16px; margin-bottom: 18px; }
 .wr-rules-fields { display: grid; gap: 18px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.wr-rules-configuration { display: grid; gap: 18px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.wr-rules-configuration:disabled { opacity: .58; }
+.organization-weekly-feature-toggle { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 18px; }
+.organization-weekly-feature-toggle > div:first-child { display: grid; gap: 6px; min-width: 0; }
+.organization-weekly-feature-toggle label { color: var(--strong); font-size: 14px; font-weight: 650; }
+.organization-weekly-feature-toggle p { max-width: 620px; margin: 0; color: var(--muted-text); font-size: 12px; line-height: 1.65; }
+.organization-weekly-feature-toggle > div:last-child { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.organization-weekly-feature-toggle > div:last-child > span { color: var(--muted-text); font-size: 12px; white-space: nowrap; }
 .wr-rules-footer { display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); padding-top: 16px; }
 .wr-admin-aside { min-width: 0; border-left: 1px solid var(--line); padding-left: 22px; }
 .wr-admin-aside h3 { font-size: 14px; margin: 0 0 12px; }
@@ -1688,6 +1697,11 @@
 .wr-collection-table small { display: block; margin-top: 5px; color: var(--muted-text); font-size: 11px; }
 .wr-collection-table progress { width: 95px; height: 4px; display: block; margin-top: 7px; accent-color: var(--primary); }
 .wr-summary-layout > div:first-child { margin: 0; display: block; min-width: 0; }
+.organization-weekly-disabled { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 36px 20px; text-align: center; color: var(--muted-text); }
+.organization-weekly-disabled svg { color: var(--primary); }
+.organization-weekly-disabled strong { color: var(--strong); font-size: 15px; }
+.organization-weekly-disabled > span { max-width: 520px; font-size: 12px; line-height: 1.7; }
+.organization-weekly-disabled [data-slot='button'] { margin-top: 4px; }
 @media (max-width: 760px) {
   .organization-report-summary .wr-org-progress .wr-progress + .wr-progress { border-left: 0; border-top: 1px solid var(--line); }
   .organization-report-header-actions { flex-wrap: wrap; }
@@ -1698,6 +1712,7 @@
   .wr-admin-members button { flex: 0 0 155px; }
   .wr-admin-paper { padding: 16px; }
   .wr-admin-aside { border-left: 0; border-top: 1px solid var(--line); padding: 18px 0 0; }
+  .organization-weekly-feature-toggle { align-items: flex-start; flex-direction: column; gap: 12px; }
 }
 
 .organization-weekly-tab-intro {

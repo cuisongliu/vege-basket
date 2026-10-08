@@ -25,6 +25,7 @@ export type OrganizationListItem = {
   memberCount: number
   name: string
   packageMarketEnabled: boolean
+  weeklyReportEnabled: boolean
   weeklyReportProfiles: WeeklyReportProfile[]
 }
 
@@ -33,6 +34,7 @@ export type WeeklyReportContext = {
   id: number
   name: string
   weekStartsOn: number
+  weeklyReportEnabled: boolean
   weeklyReportProfiles: WeeklyReportProfile[]
   weeklyReportRules: WeeklyReportRules
 }
@@ -270,6 +272,7 @@ export type OrganizationDetail = {
   testEnvironments: OrganizationTestEnvironment[]
   testSpaces: OrganizationTestSpace[]
   weeklyReportAssignments: Array<{ profiles: WeeklyReportProfile[]; userId: number }>
+  weeklyReportEnabled: boolean
   weeklyReportProfiles: WeeklyReportProfile[]
   weeklyReportRules: WeeklyReportRules
   weekStartsOn: number
