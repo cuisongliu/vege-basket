@@ -1606,6 +1606,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
 }, ref) {
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
   const [eventDetailOpen, setEventDetailOpen] = useState(false)
+  const eventDetailDrawerRef = useRef<HTMLElement>(null)
   const [eventDetailTab, setEventDetailTab] = useState<'overview' | 'delivery'>('overview')
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [commentsDrawerOpen, setCommentsDrawerOpen] = useState(false)
@@ -1984,8 +1985,25 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectedEventNeedsDetails = Boolean(selectedEvent && selectedEvent.detailsLoaded === false)
   useEffect(() => {
     if (!eventDetailOpen) return
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      if (event.button !== 0 || !(event.target instanceof Node)) return
+      if (!eventDetailDrawerRef.current || eventDetailDrawerRef.current.contains(event.target)) return
+      // Portaled dialogs and menus own outside interactions while they are open.
+      if (document.querySelector([
+        '[data-slot="dialog-content"][data-state="open"]',
+        '[data-slot="select-content"][data-state="open"]',
+        '[data-slot="dropdown-menu-content"][data-state="open"]',
+        '[data-slot="popover-content"][data-state="open"]',
+      ].join(','))) return
+      setEventDetailOpen(false)
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [eventDetailOpen])
+  useEffect(() => {
+    if (!eventDetailOpen) return
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented) return
       if (document.querySelector('[data-slot="dialog-content"][data-state="open"]')) return
       setEventDetailOpen(false)
     }
@@ -3899,6 +3917,7 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </section>
 
           {eventDetailOpen && selectedEvent ? <aside
+            ref={eventDetailDrawerRef}
             aria-describedby={eventDetailDescriptionId}
             aria-labelledby={eventDetailTitleId}
             aria-modal="false"

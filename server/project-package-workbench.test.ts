@@ -542,6 +542,24 @@ test('delivery list exposes signed delay days with distinct visual states', () =
   assert.match(workbenchSource, /project-event-delay-cell/u)
 })
 
+test('event detail outside clicks preserve internal and portaled interactions', () => {
+  const pointerHandler = workbenchSource.slice(
+    workbenchSource.indexOf('const handlePointerDown = (event: globalThis.PointerEvent)'),
+    workbenchSource.indexOf('const handleKeyDown = (event: globalThis.KeyboardEvent)'),
+  )
+  assert.match(workbenchSource, /ref=\{eventDetailDrawerRef\}/u)
+  assert.match(pointerHandler, /event\.button !== 0/u)
+  assert.match(pointerHandler, /eventDetailDrawerRef\.current\.contains\(event\.target\)/u)
+  for (const slot of ['dialog-content', 'select-content', 'dropdown-menu-content', 'popover-content']) {
+    assert.ok(pointerHandler.includes(`[data-slot="${slot}"][data-state="open"]`))
+  }
+  assert.match(pointerHandler, /setEventDetailOpen\(false\)/u)
+  assert.match(pointerHandler, /addEventListener\('pointerdown', handlePointerDown\)/u)
+  assert.match(pointerHandler, /removeEventListener\('pointerdown', handlePointerDown\)/u)
+  assert.doesNotMatch(pointerHandler, /addEventListener\('focus/u)
+  assert.match(workbenchSource, /event\.key !== 'Escape' \|\| event\.defaultPrevented/u)
+})
+
 test('delivery workbench uses a full-width event list and a desktop right detail drawer', () => {
   const detailDrawerSource = workbenchSource.slice(
     workbenchSource.indexOf('{eventDetailOpen && selectedEvent ? <aside'),
