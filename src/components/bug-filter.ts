@@ -12,6 +12,7 @@ export type BugFilterField =
   | 'testPlan'
   | 'reporter'
   | 'assignee'
+  | 'verifier'
   | 'createdAt'
   | 'status'
   | 'severity'
@@ -47,6 +48,7 @@ export const bugFilterFieldLabels: Record<BugFilterField, string> = {
   testPlan: '测试计划',
   reporter: '创建人',
   assignee: '指派人',
+  verifier: '验证人',
   createdAt: '创建时间',
   status: 'Bug 状态',
   severity: '严重程度',
@@ -75,6 +77,7 @@ export const bugFilterFields: BugFilterField[] = [
   'testPlan',
   'reporter',
   'assignee',
+  'verifier',
   'createdAt',
   'status',
   'severity',
@@ -94,6 +97,7 @@ export const bugFilterOperatorsByField: Record<BugFilterField, BugFilterOperator
   testPlan: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   reporter: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   assignee: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
+  verifier: ['equals', 'not_equals', 'is_empty', 'is_not_empty'],
   createdAt: ['equals', 'not_equals', 'before', 'after', 'between'],
   status: ['equals', 'not_equals'],
   severity: ['equals', 'not_equals'],
@@ -184,6 +188,7 @@ function getFieldValue(bug: TestBug, field: BugFilterField) {
   if (field === 'testPlan') return bug.testPlanId ? String(bug.testPlanId) : ''
   if (field === 'reporter') return bug.reporterUserId ? String(bug.reporterUserId) : ''
   if (field === 'assignee') return bug.assigneeUserId ? String(bug.assigneeUserId) : ''
+  if (field === 'verifier') return bug.verifierUserId ? String(bug.verifierUserId) : ''
   if (field === 'createdAt') return bug.createdAt.slice(0, 10)
   if (field === 'status') return bug.status
   if (field === 'severity') return bug.severity

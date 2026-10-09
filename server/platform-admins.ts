@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg'
 import { pool, query } from './db.ts'
 import { decryptText, encryptText, keyedDigest } from './crypto.ts'
+import { reassignBugsForVerifierLossAcrossSpaces } from './test-bug-verifiers.ts'
 
 type AssignableRole = 'developer' | 'tester' | 'organization_admin'
 type RegistrationSource = 'builtin' | 'feishu' | 'legacy_unknown'
@@ -305,6 +306,12 @@ export async function updateManagedUserPermissions(input: {
     await client.query('delete from user_roles where user_id = $1', [input.targetUserId])
     for (const role of roles) {
       await client.query('insert into user_roles (user_id, role) values ($1, $2)', [input.targetUserId, role])
+    }
+    if (!roles.includes('tester') && !roles.includes('organization_admin')) {
+      await reassignBugsForVerifierLossAcrossSpaces(client, {
+        actorUserId: input.actorUserId,
+        verifierUserId: input.targetUserId,
+      })
     }
     const switchableRoles = roles.includes('organization_admin')
       ? ['developer', 'tester']

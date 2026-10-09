@@ -232,14 +232,18 @@ export type TestBugEvent = {
   assigneeName?: string
   assigneeUserId?: number
   createdAt: string
-  eventType: 'created' | 'assigned' | 'transferred' | 'status_changed' | 'space_transferred'
+  eventType: 'created' | 'assigned' | 'transferred' | 'verifier_transferred' | 'status_changed' | 'space_transferred'
   id: number
   nextSpaceName?: string
   nextSpaceVersionLabel?: string
   nextStatus?: BugStatus
+  nextVerifierName?: string
+  nextVerifierUserId?: number
   previousSpaceName?: string
   previousSpaceVersionLabel?: string
   previousStatus?: BugStatus
+  previousVerifierName?: string
+  previousVerifierUserId?: number
   transferSource?: 'manual' | 'offboarding'
 }
 
@@ -297,7 +301,9 @@ export type TestBug = BugDiscoveryAssessment & {
   canEdit?: boolean
   canEditSpaceVersion?: boolean
   canManage?: boolean
+  canResolveVerification?: boolean
   canShare?: boolean
+  canTransferVerifier?: boolean
   canTransferSpace?: boolean
   canTransfer?: boolean
   comments: TestBugComment[]
@@ -337,6 +343,9 @@ export type TestBug = BugDiscoveryAssessment & {
   transferCandidates?: Array<{ id: number; name: string }>
   updatedAt: string
   verificationSubmissions?: TestBugVerificationSubmission[]
+  verifierCandidates?: Array<{ id: number; name: string }>
+  verifierName?: string
+  verifierUserId?: number
 }
 
 export type TestWorkspaceUser = {

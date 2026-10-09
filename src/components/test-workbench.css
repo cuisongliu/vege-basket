@@ -1200,6 +1200,21 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.test-bug-verification-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-self: end;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.test-bug-verification-actions [data-slot="button"] {
+  width: 100%;
+  height: 36px;
+  justify-content: center;
+}
+
 .test-workbench-dialog.test-verification-dialog {
   width: min(94vw, 1060px);
   max-width: 1060px;

@@ -2351,6 +2351,7 @@ create table if not exists test_bugs (
   actual_result text not null default '',
   reporter_user_id bigint references users(id) on delete set null,
   assignee_user_id bigint references users(id) on delete set null,
+  verifier_user_id bigint references users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (test_plan_case_id is null or test_plan_id is not null),
@@ -2361,6 +2362,31 @@ create table if not exists test_bugs (
   foreign key (test_plan_case_id, test_plan_id)
     references test_plan_cases(id, test_plan_id) on delete set null
 );
+
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'test_bugs' and column_name = 'verifier_user_id'
+  ) then
+    alter table test_bugs add column verifier_user_id bigint references users(id) on delete set null;
+    update test_bugs bug
+    set verifier_user_id = bug.reporter_user_id
+    where bug.reporter_user_id is not null
+      and exists (
+        select 1
+        from users u
+        join user_roles role on role.user_id = u.id and role.role in ('tester', 'organization_admin')
+        join test_space_memberships membership
+          on membership.user_id = u.id and membership.test_space_id = bug.test_space_id
+         and membership.status = 'active' and membership.access_level in ('owner', 'editor')
+        where u.id = bug.reporter_user_id and u.account_status = 'active'
+      );
+  end if;
+end $$;
+
+create index if not exists idx_test_bugs_verifier_id
+  on test_bugs(verifier_user_id, status, updated_at desc);
 
 -- Historical Bugs start at medium; new HTTP requests must select a level explicitly.
 alter table test_bugs
@@ -2498,11 +2524,13 @@ create table if not exists test_bug_events (
   id bigserial primary key,
   test_bug_id bigint not null references test_bugs(id) on delete cascade,
   event_type text not null
-    check (event_type in ('created', 'assigned', 'transferred', 'status_changed', 'space_transferred')),
+    check (event_type in ('created', 'assigned', 'transferred', 'verifier_transferred', 'status_changed', 'space_transferred')),
   actor_user_id bigint references users(id) on delete set null,
   previous_status text,
   next_status text,
   assignee_user_id bigint references users(id) on delete set null,
+  previous_verifier_user_id bigint references users(id) on delete set null,
+  next_verifier_user_id bigint references users(id) on delete set null,
   transfer_source text,
   previous_test_space_id bigint references test_spaces(id) on delete set null,
   next_test_space_id bigint references test_spaces(id) on delete set null,
@@ -2612,6 +2640,8 @@ create unique index if not exists idx_test_bug_comments_verification_submission
 
 alter table test_bug_events
   add column if not exists transfer_source text,
+  add column if not exists previous_verifier_user_id bigint references users(id) on delete set null,
+  add column if not exists next_verifier_user_id bigint references users(id) on delete set null,
   add column if not exists previous_test_space_id bigint references test_spaces(id) on delete set null,
   add column if not exists next_test_space_id bigint references test_spaces(id) on delete set null;
 
@@ -2638,7 +2668,7 @@ alter table test_bug_events
 
 alter table test_bug_events
   add constraint test_bug_events_event_type_check
-  check (event_type in ('created', 'assigned', 'transferred', 'status_changed', 'space_transferred'));
+  check (event_type in ('created', 'assigned', 'transferred', 'verifier_transferred', 'status_changed', 'space_transferred'));
 
 create table if not exists test_space_data_imports (
   id bigserial primary key,

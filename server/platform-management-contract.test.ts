@@ -225,10 +225,10 @@ test('maintenance mode blocks business APIs while keeping administrator recovery
 })
 
 test('automatic database migrations are serialized, checksummed, and recorded', () => {
-  assert.match(migrationsSource, /const migrationId = '20261009_schema_v28'/u)
+  assert.match(migrationsSource, /const migrationId = '20261009_schema_v30'/u)
   assert.equal(
     crypto.createHash('sha256').update(schemaSql).digest('hex'),
-    '727e0472bee196716f2f2114e9f057317f77c7e6f9563cdd1667d0df83970dcc',
+    '07267129a55e698b81432579943ef9cd67b78fc36c9d6f02df2a81e0ea1e5cba',
   )
   assert.match(migrationsSource, /pg_try_advisory_lock/u)
   assert.match(migrationsSource, /createHash\('sha256'\)\.update\(schemaSql\)/u)

@@ -40,6 +40,7 @@ The current migrations are:
 | `20261008_organization_weekly_report_toggle.sql` | Adds the organization-level weekly-report switch while preserving existing assignments and report history. |
 | `20261008_personal_todo_lifecycle.sql` | Adds personal-todo lifecycle fields, encryptable discard reasons, and normalizes historical personal confirmation states. Apply only to an explicitly approved database. |
 | `20261009_todo_activity_detail.sql` | Adds the encrypted activity-detail snapshot used to retain discard reasons in todo history. |
+| `20261009_test_bug_verifiers.sql` | Adds an independent Bug verifier, backfills eligible reporting testers, and records verifier transfers in the Bug timeline. |
 | `20260929_remove_legacy_ai_settings.sql` | Explicit destructive cleanup for the retired user-level AI settings table. It is never part of startup and requires a verified platform configuration, backup, and separate approval. |
 
 For the organization package-market policy release, update the image only. API startup applies

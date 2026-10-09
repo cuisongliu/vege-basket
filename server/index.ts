@@ -9463,7 +9463,7 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
     `
     select b.id, b.title as bug_title, b.status as bug_status,
            bug_share.token_encrypted as bug_share_token_encrypted,
-           b.reporter_user_id as recipient_user_id,
+           coalesce($4::bigint, b.verifier_user_id) as recipient_user_id,
            space.name as test_space_name, space.version_label as test_space_version_label, plan.name as test_plan_name,
            plan.project_id, project.name as project_name,
            recipient.email as recipient_email, recipient.display_name as recipient_display_name,
@@ -9473,7 +9473,7 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
            null::text as comment_content, null::text as title
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
-    join users recipient on recipient.id = b.reporter_user_id and recipient.id <> $2
+    join users recipient on recipient.id = coalesce($4::bigint, b.verifier_user_id) and recipient.id <> $2
     left join test_plans plan on plan.id = b.test_plan_id and plan.test_space_id = b.test_space_id
     left join projects project on project.id = plan.project_id
     left join bug_share_links bug_share
@@ -9484,14 +9484,18 @@ async function buildTestBugStatusChangedFeishuCandidate(event: TestBugStatusChan
     where b.id = $1 and b.status = $3
     limit 1
     `,
-    [event.bugId, event.actorUserId, event.nextStatus],
+    [event.bugId, event.actorUserId, event.nextStatus, event.recipientUserId ?? null],
   )
   const row = result.rows[0]
   return row
     ? testWorkbenchNotificationCandidate(
         'test_bug_status_changed',
         row,
-        event.nextStatus === 'pending_confirmation' ? '将 Bug 打回待确认' : '修复了你创建的 Bug，请验证',
+        event.nextStatus === 'pending_confirmation'
+          ? '将 Bug 打回待确认'
+          : event.nextStatus === 'closed'
+            ? '完成了 Bug 验证'
+            : '修复已提交，请验证',
       )
     : null
 }
@@ -9716,14 +9720,14 @@ async function deliverTestPlanAssignedNotification(event: TestPlanAssignedEvent)
 }
 
 async function deliverTestBugStatusChangedNotification(event: TestBugStatusChangedEvent) {
+  await query(
+    `delete from notification_deliveries where kind = 'test_bug_status_changed' and source_id = $1`,
+    [event.bugId],
+  )
   const candidate = await buildTestBugStatusChangedFeishuCandidate(event)
   if (!candidate) return { failed: 0, sent: 0, skipped: 1 }
   await recordTestWorkbenchInAppNotification(candidate)
   if (!feishuDeliveryAvailable()) return { failed: 0, sent: 0, skipped: 1 }
-  await query(
-    `delete from notification_deliveries where kind = 'test_bug_status_changed' and source_id = $1 and channel = 'feishu'`,
-    [event.bugId],
-  )
   return deliverFeishuNotification(candidate)
 }
 

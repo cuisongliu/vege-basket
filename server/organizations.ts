@@ -34,6 +34,7 @@ import {
 } from './organization-policy.ts'
 import { getAuthenticatedRoleSession } from './roles.ts'
 import { getDepartedUserIds } from './user-lifecycle.ts'
+import { reassignBugsForVerifierLoss } from './test-bug-verifiers.ts'
 import {
   buildOrganizationInvitationCard,
   buildOrganizationInvitationStatusCard,
@@ -2148,7 +2149,10 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       )
       for (const project of projects.rows) await lockProjectMutation(client, Number(project.id))
       await client.query('select id from projects where organization_id = $1 order by id for update', [organizationId])
-      await client.query('select id from test_spaces where organization_id = $1 order by id for update', [organizationId])
+      const testSpaces = await client.query<{ id: string }>(
+        'select id from test_spaces where organization_id = $1 order by id for update',
+        [organizationId],
+      )
       if (!await lockOrganizationAdministrator(client, organizationId!, session.userId)) {
         throw new ProjectModuleError('ORGANIZATION_ACCESS_CHANGED', '组织管理权限校验未通过，请刷新后重试；如仍失败，请确认你是该组织 Owner/Admin。', 409)
       }
@@ -2177,6 +2181,13 @@ export function createOrganizationRouter(dependencies: OrganizationRouterDepende
       const blockers = await getOrganizationMemberTaskBlockers(client, organizationId!, userId)
       if (hasMemberTaskBlockers(blockers)) {
         throw new ProjectModuleError('ORGANIZATION_MEMBER_HAS_TASKS', memberTaskBlockerMessage(blockers), 409)
+      }
+      for (const space of testSpaces.rows) {
+        await reassignBugsForVerifierLoss(client, {
+          actorUserId: session.userId,
+          spaceId: Number(space.id),
+          verifierUserId: userId,
+        })
       }
       await client.query(
         `delete from project_memberships where invited_user_id = $1 and project_id in

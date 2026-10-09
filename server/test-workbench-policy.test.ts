@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  bugStatusAfterAssignment,
   canDeleteTestCase,
   canDeleteTestBug,
   canDeleteTestSubject,
@@ -10,6 +11,9 @@ import {
   canEditTestSubject,
   canDeveloperRejectBug,
   canDeveloperSetBugStatus,
+  canMutateTestBugFields,
+  canReopenRejectedBug,
+  canResolveBugVerification,
   canManageTestPlan,
   canRemoveTestPlanCase,
   isBugStatus,
@@ -167,6 +171,18 @@ test('developer bug transitions stop at pending verification', () => {
   assert.equal(canDeveloperSetBugStatus('pending_verification', 'closed'), false)
   assert.equal(canDeveloperSetBugStatus('new', 'rejected'), false)
   assert.equal(canDeveloperSetBugStatus('pending_confirmation', 'pending_verification'), false)
+  assert.equal(canDeveloperSetBugStatus('closed', 'closed'), false)
+})
+
+test('Bug assignment derives status while closed Bugs stay immutable', () => {
+  assert.equal(bugStatusAfterAssignment('new', null, 42), 'pending_confirmation')
+  assert.equal(bugStatusAfterAssignment('pending_confirmation', 42, null), 'new')
+  assert.equal(bugStatusAfterAssignment('in_progress', 42, 7), 'pending_confirmation')
+  assert.equal(bugStatusAfterAssignment('closed', 42, 7), 'closed')
+  assert.equal(canMutateTestBugFields('closed'), false)
+  assert.equal(canMutateTestBugFields('rejected'), true)
+  assert.equal(canReopenRejectedBug('rejected', 'pending_confirmation'), true)
+  assert.equal(canReopenRejectedBug('closed', 'pending_confirmation'), false)
 })
 
 test('developer can reject only Bugs that are not yet being fixed', () => {
@@ -176,6 +192,17 @@ test('developer can reject only Bugs that are not yet being fixed', () => {
   assert.equal(canDeveloperRejectBug('pending_verification'), false)
   assert.equal(canDeveloperRejectBug('rejected'), false)
   assert.equal(canDeveloperRejectBug('closed'), false)
+})
+
+test('only the verifier or a test-space manager can resolve pending verification', () => {
+  assert.equal(canResolveBugVerification('pending_verification', 'closed', true), true)
+  assert.equal(canResolveBugVerification('pending_verification', 'pending_confirmation', true), true)
+  assert.equal(canResolveBugVerification('pending_verification', 'closed', false), false)
+  assert.equal(canResolveBugVerification('pending_verification', 'pending_confirmation', false), false)
+  assert.equal(canResolveBugVerification('pending_verification', 'in_progress', true), false)
+  assert.equal(canResolveBugVerification('pending_verification', 'rejected', false), false)
+  assert.equal(canResolveBugVerification('in_progress', 'pending_verification', false), true)
+  assert.equal(canResolveBugVerification('pending_verification', 'pending_verification', false), true)
 })
 
 test('bug status and comment kind checks include pending confirmation, reject, and legacy acceptance', () => {
@@ -294,20 +321,47 @@ test('verification package picker supports filtered paginated catalogs and incre
   assert.doesNotMatch(testWorkbenchClientSource, /跳过并提交/u)
 })
 
-test('reopening a rejected or closed Bug is a dedicated button next to share that returns it to pending confirmation', () => {
-  assert.match(testWorkbenchClientSource, /\(bug\.status === 'rejected' \|\| bug\.status === 'closed'\) \? <Button/u)
+test('only a rejected Bug exposes the dedicated reopen action', () => {
+  assert.match(testWorkbenchClientSource, /bug\.status === 'rejected' \? <Button/u)
   assert.match(testWorkbenchClientSource, /onStatus\(bug, 'pending_confirmation'\)/u)
   assert.match(testWorkbenchClientSource, /<ArrowCounterClockwise \/> 重新打开/u)
+  assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/bugs\/:bugId\/reopen'/u)
+  assert.match(testWorkbenchSource, /只能重新打开已驳回的 Bug/u)
   assert.doesNotMatch(testWorkbenchClientSource, /\[['"]reopened['"], '重新打开'\]/u)
   assert.doesNotMatch(testWorkbenchClientSource, /if \(status === 'reopened'\)/u)
   assert.doesNotMatch(testWorkbenchClientSource, /updateTestBug\(selected\.testSpaceId, selected\.id, \{ status: 'pending_confirmation' \}\)/u)
+})
+
+test('Bug tracking keeps status read-only and pending verification uses aligned approve or reject actions', () => {
+  assert.match(testWorkbenchClientSource, /<Label>状态<Select value=\{visibleBugStatus\(bug\.status\)\} disabled>/u)
+  assert.match(testWorkbenchClientSource, /className="test-bug-verification-actions" role="group" aria-label="验证结果"/u)
+  assert.match(testWorkbenchClientSource, /<XCircle \/> 驳回/u)
+  assert.match(testWorkbenchClientSource, /<CheckCircle \/> 通过/u)
+  assert.match(readFileSync(new URL('../src/components/test-workbench.css', import.meta.url), 'utf8'), /\.test-bug-verification-actions[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/u)
+})
+
+test('closed Bugs reject field and collaboration mutations', () => {
+  assert.match(testWorkbenchSource, /if \(!canMutateTestBugFields\(currentBug\.status\)\)/u)
+  assert.match(testWorkbenchSource, /queryMutableBug/u)
+  assert.match(testWorkbenchSource, /已关闭的 Bug 不允许修改/u)
+  assert.match(testWorkbenchSource, /options\.allowBugEditorTransfer && !canMutateTestBugFields\(bug\.status\)/u)
+  assert.match(testWorkbenchSource, /canTransferVerifier: row\.status !== 'closed'/u)
+  assert.match(testWorkbenchSource, /canComment: row\.status !== 'closed'/u)
+  assert.match(testWorkbenchSource, /canDelete: row\.status !== 'closed'/u)
+  assert.match(testWorkbenchSource, /canShare: row\.status !== 'closed'/u)
+  assert.match(readFileSync(new URL('./bug-share.ts', import.meta.url), 'utf8'), /bug\.status === 'closed'/u)
+})
+
+test('closed Bugs stay unchanged during case CSV imports and plan deletion', () => {
+  assert.match(testWorkbenchSource, /where test_case_id = \$3 and test_space_id = \$4 and status <> 'closed'/u)
+  assert.match(testWorkbenchSource, /where test_plan_id = \$1 and test_space_id = \$2 and status <> 'closed'/u)
 })
 
 test('Bug timeline records creation, assignment, transfer and status changes without comments', () => {
   assert.match(schemaSource, /create table if not exists test_bug_events/u)
   assert.match(schemaSource, /transfer_source text/u)
   assert.match(schemaSource, /test_bug_events_transfer_source_check/u)
-  assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'status_changed', 'space_transferred'\)\)/u)
+  assert.match(schemaSource, /event_type text not null\s+check \(event_type in \('created', 'assigned', 'transferred', 'verifier_transferred', 'status_changed', 'space_transferred'\)\)/u)
   assert.match(schemaSource, /create index if not exists idx_test_bug_events_bug/u)
   assert.match(schemaSource, /on test_bug_events\(test_bug_id, created_at, id\)/u)
 
@@ -379,7 +433,7 @@ test('test-space data import supports copied cases and plans only', () => {
 test('Bug details offer same-organization space transfer with the existing transfer transaction', () => {
   assert.match(testWorkbenchSource, /router\.post\('\/test-spaces\/:spaceId\/bugs\/:bugId\/transfer-space'/u)
   assert.match(testWorkbenchSource, /bugIds: \[bugId\], categories: \['bugs'\], spaceId/u)
-  assert.match(testWorkbenchSource, /canTransferSpace: row\.direct_access_level != null && row\.direct_access_level !== 'viewer'/u)
+  assert.match(testWorkbenchSource, /canTransferSpace: row\.status !== 'closed' && row\.direct_access_level != null && row\.direct_access_level !== 'viewer'/u)
   assert.match(testWorkbenchSource, /transferSpaceCandidates: editableSpaces/u)
   assert.match(testWorkbenchSource, /space\.organization_id === row\.organization_id/u)
   assert.match(testWorkbenchSource, /allowBugEditorTransfer: true/u)

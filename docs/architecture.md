@@ -99,6 +99,8 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 - `server/roles.ts`, `server/organization-scope.ts`, `server/test-workbench.ts`:
   session-scoped business personas, additive organization-administrator capability,
   and resource-scoped read/write authorization boundaries.
+- `server/test-bug-verifiers.ts`: Bug 验证人资格、转移权限、空间成员/账号权限变化后的
+  事务内回收与候选人回填。
 - `server/project-package-timeline.ts`: package timeline domain logic, transactional
   aggregate draft saves, ordered delivery processes, encrypted timeline fields, mixed
   object-storage packages, container images, offline-package URLs, reusable Shell scripts,

@@ -436,13 +436,12 @@ export function updateTestBug(spaceId: number, bugId: number, payload: {
   discoveryDifficulty?: BugDiscoveryDifficulty
   discoveryDifficultyReason?: string
   actualResult?: string
-  assigneeUserId?: number
+  assigneeUserId?: number | null
   environment?: string
   expectedResult?: string
   priority?: Priority
   reproductionSteps?: string
   severity?: BugSeverity
-  status?: BugStatus
   testEnvironmentId?: number | null
   moduleId?: number | null
   testCaseId?: number
@@ -452,6 +451,30 @@ export function updateTestBug(spaceId: number, bugId: number, payload: {
   return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  })
+}
+
+export function updateTestBugVerifier(spaceId: number, bugId: number, verifierUserId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/verifier`, {
+    method: 'POST',
+    body: JSON.stringify({ verifierUserId }),
+  })
+}
+
+export function resolveTestBugVerification(
+  spaceId: number,
+  bugId: number,
+  status: 'closed' | 'pending_confirmation',
+) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/verification-result`, {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  })
+}
+
+export function reopenRejectedTestBug(spaceId: number, bugId: number) {
+  return request<TestWorkbenchData>(`/api/test-spaces/${spaceId}/bugs/${bugId}/reopen`, {
+    method: 'POST',
   })
 }
 

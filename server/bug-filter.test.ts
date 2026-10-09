@@ -21,6 +21,8 @@ const baseBug: TestBug = {
   actualResult: '页面返回 500',
   assigneeName: '开发甲',
   assigneeUserId: 11,
+  verifierName: '测试丙',
+  verifierUserId: 13,
   comments: [],
   createdAt: '2026-08-04T12:30:00.000Z',
   environment: 'Chrome 128',
@@ -106,6 +108,7 @@ test('bug filters match linked test fields and people by stable ids', () => {
     condition('testPlan', 'equals', '22'),
     condition('reporter', 'equals', '12'),
     condition('assignee', 'equals', '11'),
+    condition('verifier', 'equals', '13'),
   ], 'and'), true)
   assert.equal(matchesBugFilterConditions(baseBug, [
     condition('testCase', 'equals', '99'),

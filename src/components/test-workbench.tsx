@@ -168,6 +168,7 @@ import {
   updateAssignedTestBugComment,
   updateAssignedTestBug,
   updateTestBug,
+  updateTestBugVerifier,
   updateTestBugComment,
   updateTestCase,
   updateTestCaseFolder,
@@ -176,6 +177,8 @@ import {
   updateTestPlanStatus,
   updateTestSpaceMember,
   updateTestSubject,
+  resolveTestBugVerification,
+  reopenRejectedTestBug,
   verifyTestSpaceInviteLink,
 } from '@/test-workbench-api'
 import type {
@@ -440,9 +443,6 @@ function visibleBugStatus(status: BugStatus) {
   return status === 'pending_confirmation' ? 'new' : status
 }
 
-function selectedBugStatus(bug: TestBug, status: BugStatus) {
-  return status === 'new' && bug.assigneeUserId ? 'pending_confirmation' : status
-}
 const severityLabel: Record<BugSeverity, string> = {
   blocker: '阻断',
   critical: '严重',
@@ -1228,6 +1228,7 @@ export function TestWorkbench({
       bug.testPlanName,
       bug.reporterName,
       bug.assigneeName,
+      bug.verifierName,
     ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedBugSearchQuery))
   }), [bugFilterConditions, bugFilterJoin, bugs, normalizedBugSearchQuery])
   const activeContentScopeKey = testWorkbenchScopeKey(tab, spaceId)
@@ -1241,6 +1242,9 @@ export function TestWorkbench({
       : undefined),
     reporters: uniqueBugFilterOptions(bugs, (bug) => bug.reporterUserId && bug.reporterName
       ? { label: bug.reporterName, value: String(bug.reporterUserId) }
+      : undefined),
+    verifiers: uniqueBugFilterOptions(bugs, (bug) => bug.verifierUserId && bug.verifierName
+      ? { label: bug.verifierName, value: String(bug.verifierUserId) }
       : undefined),
     spaces: [],
     modules: [{ label: '无模块', value: 'none' }, ...Array.from(new Map([
@@ -1794,17 +1798,23 @@ export function TestWorkbench({
                 }}
                 onStatus={(bug, status) => {
                   if (bug.status === status) return
-                  const run = () => mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }), true,
+                  const resolvingVerification = bug.status === 'pending_verification'
+                    && (status === 'closed' || status === 'pending_confirmation')
+                  const run = () => mutate(() => resolvingVerification
+                    ? resolveTestBugVerification(bug.testSpaceId, bug.id, status as 'closed' | 'pending_confirmation')
+                    : reopenRejectedTestBug(bug.testSpaceId, bug.id), true,
                     (next) => next.bugs.some((item) => item.id === bug.id && item.status === status))
-                  if (status === 'closed' || status === 'rejected') {
-                    void confirmAction({ title: status === 'closed' ? '确认关闭 Bug？' : '确认驳回 Bug？',
-                      description: `「${bug.title}」将变为${bugStatusLabel[status]}并退出待处理事项，可在原测试空间按对应状态查看。`,
-                      confirmLabel: status === 'closed' ? '确认关闭' : '确认驳回', variant: status === 'closed' ? 'default' : 'destructive',
+                  if (status === 'closed' || status === 'rejected' || resolvingVerification) {
+                    const returningVerification = resolvingVerification && status === 'pending_confirmation'
+                    void confirmAction({ title: returningVerification ? '确认驳回验证？' : status === 'closed' ? '确认通过验证？' : '确认驳回 Bug？',
+                      description: returningVerification ? `「${bug.title}」将回到待确认，交由负责人继续处理。` : `「${bug.title}」将变为${bugStatusLabel[status]}，关闭后不可再修改字段。`,
+                      confirmLabel: returningVerification ? '确认驳回' : status === 'closed' ? '确认通过' : '确认驳回', variant: status === 'closed' ? 'default' : 'destructive',
                     }, run)
-                  } else void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: bug.assigneeUserId, status }))
+                  } else if (bug.status === 'rejected') void run()
                 }}
                 onTransferSpace={(bug, targetSpaceId, targetTestCaseId) => mutate(() => transferTestBugToSpace(bug.testSpaceId, bug.id, targetSpaceId, targetTestCaseId))}
-                onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId, status: assigneeUserId ? 'pending_confirmation' : 'new' }))}
+                onAssignee={(bug, assigneeUserId) => void mutate(() => updateTestBug(bug.testSpaceId, bug.id, { assigneeUserId: assigneeUserId ?? null }))}
+                onVerifier={(bug, verifierUserId) => void mutate(() => updateTestBugVerifier(bug.testSpaceId, bug.id, verifierUserId))}
                 onComment={(bug, content) => mutate(() => addTestBugComment(bug.testSpaceId, bug.id, content))}
                 onUpdateComment={(bug, comment, content) => mutate(() => updateTestBugComment(bug.testSpaceId, bug.id, comment.id, content))}
                 onDeleteComment={(bug, comment) => mutate(() => deleteTestBugComment(bug.testSpaceId, bug.id, comment.id), true,
@@ -2865,7 +2875,7 @@ function BugListItem({ bug, children, onSelect, selected }: {
   )
 }
 
-function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onLoadTransferCases, onSelect, onStatus, onTransferSpace, onUpdateComment, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
+function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOwnerUserId, filterConditions, onAssignee, onComment, onCreate, onDelete, onDeleteComment, onEdit, onFilterClear, onFilterOpenChange, onLoadTransferCases, onSelect, onStatus, onTransferSpace, onUpdateComment, onVerifier, readOnly, searchQuery, onSearchQueryChange, selectedId }: {
   paginationScope: string
   bugs: TestBug[]
   bugDetailLoading: boolean
@@ -2887,6 +2897,7 @@ function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOw
   onStatus: (bug: TestBug, status: BugStatus) => void
   onTransferSpace: (bug: TestBug, targetSpaceId: number, targetTestCaseId: number) => Promise<boolean>
   onUpdateComment: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
+  onVerifier: (bug: TestBug, verifierUserId: number) => void
   readOnly: boolean
   searchQuery: string
   selectedId?: number
@@ -2942,7 +2953,7 @@ function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOw
         </div>
         <div className="test-record-detail">
           {selected && selected.detailsLoaded
-            ? <BugDetail bug={selected} busy={busy} cases={data.cases} departedUserIds={data.departedUserIds} draftOwnerUserId={draftOwnerUserId} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDelete={onDelete} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onLoadTransferCases={onLoadTransferCases} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} />
+            ? <BugDetail bug={selected} busy={busy} cases={data.cases} departedUserIds={data.departedUserIds} draftOwnerUserId={draftOwnerUserId} readOnly={readOnly} users={data.users} onAssignee={onAssignee} onComment={readOnly ? undefined : onComment} onDelete={onDelete} onDeleteComment={readOnly ? undefined : onDeleteComment} onEdit={onEdit} onLoadTransferCases={onLoadTransferCases} onStatus={onStatus} onTransferSpace={onTransferSpace} onUpdateComment={readOnly ? undefined : onUpdateComment} onVerifier={onVerifier} />
             : selected && bugDetailLoading
               ? <div className="test-detail-empty"><Bug size={28} /><p>正在加载 Bug 详情...</p></div>
               : <div className="test-detail-empty"><Bug size={28} /><p>选择一个 Bug 查看和流转。</p></div>}
@@ -2952,7 +2963,7 @@ function BugsView({ paginationScope, bugs, bugDetailLoading, busy, data, draftOw
   )
 }
 
-function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssignee, onComment, onDelete, onDeleteComment, onEdit, onLoadTransferCases, onStatus, onTransferSpace, onUpdateComment, readOnly, users }: {
+function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssignee, onComment, onDelete, onDeleteComment, onEdit, onLoadTransferCases, onStatus, onTransferSpace, onUpdateComment, onVerifier, readOnly, users }: {
   bug: TestBug
   busy: boolean
   cases: TestCase[]
@@ -2967,6 +2978,7 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
   onStatus: (bug: TestBug, status: BugStatus) => void
   onTransferSpace: (bug: TestBug, targetSpaceId: number, targetTestCaseId: number) => Promise<boolean>
   onUpdateComment?: (bug: TestBug, comment: TestBugComment, content: string) => Promise<boolean>
+  onVerifier: (bug: TestBug, verifierUserId: number) => void
   readOnly: boolean
   users: TestWorkbenchData['users']
 }) {
@@ -2996,19 +3008,25 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
       <div className="test-detail-heading-actions">
         {bug.canTransferSpace ? <Button aria-label="转移空间" disabled={busy} onClick={() => setTransferSpaceOpen(true)} size="icon-sm" title="转移空间" variant="outline"><ArrowsLeftRight /></Button> : null}
         <Button aria-label="时间线" onClick={() => setTimelineOpen(true)} size="icon-sm" title="时间线" variant="outline"><Clock /></Button>
-        {(bug.status === 'rejected' || bug.status === 'closed') ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}
+        {bug.status === 'rejected' ? <Button variant="outline" disabled={busy || readOnly} onClick={() => onStatus(bug, 'pending_confirmation')}><ArrowCounterClockwise /> 重新打开</Button> : null}
         {bug.canShare ? <Button aria-label="分享 Bug" disabled={busy} onClick={() => setShareOpen(true)} size="icon-sm" title="分享 Bug" variant="outline"><LinkSimple /></Button> : null}
         {bug.canEdit && !readOnly ? <Button aria-label="编辑" disabled={busy} onClick={() => onEdit(bug)} size="icon-sm" title="编辑" variant="outline"><PencilSimple /></Button> : null}
         {bug.canDelete ? <Button aria-label="删除 Bug" disabled={busy} onClick={() => onDelete(bug)} size="icon-sm" title="删除 Bug" variant="destructive"><Trash /></Button> : null}
       </div>
     </div>
-    <div className="test-bug-controls"><Label>状态<Select value={visibleBugStatus(bug.status)} onValueChange={(value) => onStatus(bug, selectedBugStatus(bug, value as BugStatus))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label><Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label></div>
+    <div className="test-bug-controls">
+      <Label>状态<Select value={visibleBugStatus(bug.status)} disabled><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{bugStatusOptions.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label>
+      <Label>负责人<Select value={bug.assigneeUserId ? String(bug.assigneeUserId) : 'none'} onValueChange={(value) => onAssignee(bug, value === 'none' ? undefined : Number(value))} disabled={busy || readOnly || bug.status === 'closed'}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">未分配</SelectItem>{developers.map((user) => <SelectItem key={user.id} value={String(user.id)}>{user.displayName}</SelectItem>)}</SelectContent></Select></Label>
+      <Label>验证人<Select value={bug.verifierUserId ? String(bug.verifierUserId) : ''} onValueChange={(value) => onVerifier(bug, Number(value))} disabled={busy || bug.status === 'closed' || !bug.canTransferVerifier}><SelectTrigger><SelectValue placeholder="未指定" /></SelectTrigger><SelectContent>{bug.verifierCandidates?.map((candidate) => <SelectItem key={candidate.id} value={String(candidate.id)}>{candidate.name}</SelectItem>)}</SelectContent></Select></Label>
+      {bug.status === 'pending_verification' && bug.canResolveVerification ? <div className="test-bug-verification-actions" role="group" aria-label="验证结果"><Button disabled={busy} variant="outline" onClick={() => onStatus(bug, 'pending_confirmation')}><XCircle /> 驳回</Button><Button disabled={busy} onClick={() => onStatus(bug, 'closed')}><CheckCircle /> 通过</Button></div> : null}
+    </div>
     <div className="test-detail-meta test-bug-detail-meta">
       <span>测试用例 <strong>{bug.testCaseId ? `CASE-${bug.testCaseId} ${bug.testCaseTitle || ''}` : '待补关联'}</strong></span>
       <span>用例目录 <strong>{bug.testCaseId ? bug.testCaseFolderName || '未分类' : '待补关联'}</strong></span>
       <span>模块 <strong>{bug.moduleName || '无模块'}</strong></span>
       {bug.testPlanName ? <span>测试计划 <strong>{bug.testPlanName}</strong></span> : null}
       <span>测试空间 <strong>{bug.testSpaceName || '未记录'}</strong></span>
+      <span>验证人 <UserName departedUserIds={departedUserIds} name={bug.verifierName || '未指定'} userId={bug.verifierUserId} /></span>
         <span>空间版本 <span className="test-detail-meta-label"><strong>{bug.testSpaceVersionLabel || '未指定'}</strong>{bug.canTransferSpace ? <Button aria-label="迁移到其他测试空间" className="test-detail-meta-copy" disabled={busy} onClick={() => setTransferSpaceOpen(true)} size="icon-xs" title="迁移到其他测试空间" variant="ghost"><PencilSimple /></Button> : null}</span></span>
       <span>严重程度 <strong>{severityLabel[bug.severity]}</strong></span>
       <span>优先级 <strong>{priorityLabel[bug.priority]}</strong></span>
@@ -3031,9 +3049,9 @@ function BugDetail({ bug, busy, cases, departedUserIds, draftOwnerUserId, onAssi
       departedUserIds={departedUserIds}
       draftOwnerUserId={draftOwnerUserId}
       placeholder="补充验证信息或处理记录，支持粘贴、拖入或上传图片和视频。"
-      onComment={onComment}
-      onDeleteComment={onDeleteComment}
-      onUpdateComment={onUpdateComment}
+      onComment={bug.status === 'closed' ? undefined : onComment}
+      onDeleteComment={bug.status === 'closed' ? undefined : onDeleteComment}
+      onUpdateComment={bug.status === 'closed' ? undefined : onUpdateComment}
     />
     <BugShareDialog bugId={bug.id} open={shareOpen} onOpenChange={setShareOpen} />
     <BugSpaceTransferDialog bug={bug} busy={busy} cases={cases} open={transferSpaceOpen} onLoadCases={onLoadTransferCases} onOpenChange={setTransferSpaceOpen} onSubmit={onTransferSpace} />
@@ -3141,9 +3159,13 @@ function BugTimelineDialog({ bug, departedUserIds, onOpenChange, open }: {
     nextSpaceName?: string
     nextSpaceVersionLabel?: string
     nextStatus?: BugStatus
+    nextVerifierName?: string
+    nextVerifierUserId?: number
     previousSpaceName?: string
     previousSpaceVersionLabel?: string
     previousStatus?: BugStatus
+    previousVerifierName?: string
+    previousVerifierUserId?: number
     transferSource?: 'manual' | 'offboarding'
   }> = [
     ...(hasCreatedEvent ? [] : [{ eventType: 'created' as const, actorName: bug.reporterName, actorUserId: bug.reporterUserId, createdAt: bug.createdAt, id: 0 }]),
@@ -3176,7 +3198,7 @@ function BugTimelineDialog({ bug, departedUserIds, onOpenChange, open }: {
             <div className="bug-timeline-empty">暂无记录</div>
           ) : timeline.map((event) => (
             <div className="bug-timeline-item" key={event.id}>
-              <span className="bug-timeline-icon">{event.eventType === 'created' ? <Plus size={15} /> : event.eventType === 'assigned' ? <UserPlus size={15} /> : event.eventType === 'transferred' || event.eventType === 'space_transferred' ? <ArrowsLeftRight size={15} /> : event.eventType === 'rejected' ? <XCircle size={15} /> : <ArrowCounterClockwise size={15} />}</span>
+              <span className="bug-timeline-icon">{event.eventType === 'created' ? <Plus size={15} /> : event.eventType === 'assigned' ? <UserPlus size={15} /> : event.eventType === 'transferred' || event.eventType === 'space_transferred' || event.eventType === 'verifier_transferred' ? <ArrowsLeftRight size={15} /> : event.eventType === 'rejected' ? <XCircle size={15} /> : <ArrowCounterClockwise size={15} />}</span>
               <div className="bug-timeline-content">
                 {event.eventType === 'created' ? (
                   <strong>创建了 Bug</strong>
@@ -3186,6 +3208,8 @@ function BugTimelineDialog({ bug, departedUserIds, onOpenChange, open }: {
                   <strong>转移给 <UserName departedUserIds={departedUserIds} name={event.assigneeName ?? '未分配'} userId={event.assigneeUserId} />{event.transferSource === 'offboarding' ? '（离职转移）' : null}</strong>
                 ) : event.eventType === 'space_transferred' ? (
                   <strong>从「{formatSpace(event.previousSpaceName, event.previousSpaceVersionLabel)}」转移到「{formatSpace(event.nextSpaceName, event.nextSpaceVersionLabel)}」</strong>
+                ) : event.eventType === 'verifier_transferred' ? (
+                  <strong>验证人从 <UserName departedUserIds={departedUserIds} name={event.previousVerifierName ?? '未指定'} userId={event.previousVerifierUserId} /> 转移给 <UserName departedUserIds={departedUserIds} name={event.nextVerifierName ?? '未指定'} userId={event.nextVerifierUserId} />{event.transferSource === 'offboarding' ? '（权限变更）' : null}</strong>
                 ) : event.eventType === 'rejected' ? (
                   <strong>驳回了该 Bug</strong>
                 ) : (
@@ -6236,6 +6260,7 @@ export function AssignedTestBugs({
         bug.testPlanName,
         bug.reporterName,
         bug.assigneeName,
+        bug.verifierName,
       ].filter(Boolean).some((value) => String(value).toLocaleLowerCase('zh-CN').includes(normalizedSearchQuery))
     )
   )), [filterConditions, filterJoin, normalizedSearchQuery, spaceBugs])
@@ -6255,6 +6280,9 @@ export function AssignedTestBugs({
       : undefined),
     reporters: uniqueBugFilterOptions(spaceBugs, (bug) => bug.reporterUserId && bug.reporterName
       ? { label: bug.reporterName, value: String(bug.reporterUserId) }
+      : undefined),
+    verifiers: uniqueBugFilterOptions(spaceBugs, (bug) => bug.verifierUserId && bug.verifierName
+      ? { label: bug.verifierName, value: String(bug.verifierUserId) }
       : undefined),
     spaces: [],
     modules: [{ label: '无模块', value: 'none' }, ...spaceBugs.flatMap((bug) => bug.moduleId && bug.moduleName ? [{ label: bug.moduleName, value: String(bug.moduleId) }] : []).filter((item, index, all) => all.findIndex((candidate) => candidate.value === item.value) === index)],
@@ -6489,6 +6517,7 @@ export function AssignedTestBugs({
                 {aiExportError ? <p className="test-form-error" role="alert">{aiExportError}</p> : null}
                 <div className="test-detail-meta assigned-bug-detail-meta">
                   <span>负责人 <UserName departedUserIds={departedUserIds} name={selected.assigneeName || '未分配'} userId={selected.assigneeUserId} /></span>
+                  <span>验证人 <UserName departedUserIds={departedUserIds} name={selected.verifierName || '未指定'} userId={selected.verifierUserId} /></span>
                   <span>测试用例 <strong>{selected.testCaseId ? `CASE-${selected.testCaseId} ${selected.testCaseTitle || ''}` : '待补关联'}</strong></span>
                   <span>用例目录 <strong>{selected.testCaseId ? selected.testCaseFolderName || '未分类' : '待补关联'}</strong></span>
                   <span>模块 <strong>{selected.moduleName || '无模块'}</strong></span>

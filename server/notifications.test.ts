@@ -642,7 +642,8 @@ test('covers test-workbench Feishu private notification events', () => {
   assert.doesNotMatch(cardBranch, /\\n\\n\*\*评论内容\*\*/)
   assert.match(cardBranch, /title: \{ content: `\$\{isRejection \? '⛔' : '🔔'\} \$\{activityTitle\}`,/)
   assert.match(cardBranch, /bugShareLinkMarkdown\(candidate\)/u)
-  assert.match(serverSource, /event\.nextStatus === 'pending_confirmation' \? '将 Bug 打回待确认' : '修复了你创建的 Bug，请验证'/)
+  assert.match(serverSource, /coalesce\(\$4::bigint, b\.verifier_user_id\) as recipient_user_id/u)
+  assert.match(serverSource, /'修复已提交，请验证'/u)
   assert.doesNotMatch(serverSource, /退回了你创建的 Bug/)
 })
 
@@ -698,7 +699,7 @@ test('reuses Feishu recipients for the test-workbench in-app notification feed',
   )
   assert.match(
     serverSource,
-    /kind = 'test_bug_status_changed' and source_id = \$1 and channel = 'feishu'/u,
+    /kind = 'test_bug_status_changed' and source_id = \$1/u,
   )
   assert.match(testWorkbenchSource, /where delivery\.user_id = \$1/u)
   assert.match(testWorkbenchSource, /delivery\.channel = 'in_app'/u)

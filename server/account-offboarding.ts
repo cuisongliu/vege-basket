@@ -4,6 +4,7 @@ import { pool, query } from './db.ts'
 import type { UserAccountStatus } from '../shared/user-lifecycle.ts'
 import { formatTestSpaceReference } from '../shared/test-space-reference.ts'
 import { lockPlatformAdministration, requirePlatformAdminWithClient } from './platform-admins.ts'
+import { reassignBugsForVerifierLoss, reassignBugsForVerifierLossAcrossSpaces } from './test-bug-verifiers.ts'
 
 export type OffboardingAdmin = {
   displayName: string
@@ -407,6 +408,18 @@ export async function offboardUser(input: {
         transferredTestSpaceCount += 1
       }
 
+      const verifierSpaces = await client.query<{ id: string }>(
+        `select id from test_spaces where organization_id = $1 order by id for update`,
+        [organizationId],
+      )
+      for (const space of verifierSpaces.rows) {
+        await reassignBugsForVerifierLoss(client, {
+          actorUserId,
+          spaceId: Number(space.id),
+          verifierUserId: userId,
+        })
+      }
+
       const projectRows = await client.query<{ id: string }>(
         `select id from projects where organization_id = $1 order by id for update`,
         [organizationId],
@@ -721,6 +734,10 @@ export async function updateManagedAccountStatus(input: {
     )
     if (input.status === 'disabled') {
       await client.query('delete from sessions where user_id = $1', [input.userId])
+      await reassignBugsForVerifierLossAcrossSpaces(client, {
+        actorUserId: input.actorUserId,
+        verifierUserId: input.userId,
+      })
     }
     const permissionVersion = Number((await client.query<{ revision: string }>(
       `insert into platform_user_permission_versions (user_id, revision, updated_at)

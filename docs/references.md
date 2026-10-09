@@ -487,8 +487,20 @@ case/weekly-report pagination remain unchanged.
   `testCaseDirectoryPath` contains only that case's ancestor IDs/names, in root-to-leaf order;
   choosing a parent directory matches all descendant cases, while equal names keep distinct IDs.
   Creator-owned detail PATCH accepts optional `testCaseId` and `moduleId`; selecting a case
-  refreshes its derived module, while clearing the case permits standalone triage.
-  Ordinary status/assignment updates remain possible for legacy Bugs.
+  refreshes its derived module, while clearing the case permits standalone triage. The Bug tracking
+  status control is read-only: assignment derives `new` or `pending_confirmation`, developers advance
+  through start/verification submission, and verifiers resolve `pending_verification` through the
+  dedicated result route. A rejected Bug may be explicitly reopened; a closed Bug is immutable and
+  rejects detail, assignment, verifier, space-transfer, and comment mutations.
+  Every new Bug stores its reporting tester as the default verifier. The current verifier,
+  test-space owner, or active organization Owner/Admin with the `organization_admin` role may
+  use `POST /api/test-spaces/:spaceId/bugs/:bugId/verifier` to select another active owner/editor
+  space member with the `tester` or `organization_admin` role. Only those same actors may resolve
+  `pending_verification` through `POST .../verification-result` with `closed` or
+  `pending_confirmation`; ordinary editors cannot complete verification through the generic PATCH.
+  Removing verifier eligibility transfers open verification responsibility to the space owner or
+  another eligible manager. If no candidate remains, the verifier is cleared and a
+  `pending_verification` Bug returns to `pending_confirmation`.
   `POST /api/test-spaces/:spaceId/bugs/:bugId/transfer-space` requires `targetSpaceId` and
   `targetTestCaseId`. Target-space ownership and same-organization checks remain in force;
   old plan/execution links are cleared and recorded in encrypted collaboration text. Legacy
@@ -513,8 +525,8 @@ case/weekly-report pagination remain unchanged.
   space, and the reporting creator identity. It cascades comments, event timeline rows, and
   share links; delivery rows that do not have foreign keys are explicitly removed in the
   deletion transaction.
-- Bug lifecycle events (`test_bug_events`): creation, assignment, transfer, and every status
-  change are appended with the acting user, previous/next status, and the involved assignee
+- Bug lifecycle events (`test_bug_events`): creation, assignment, assignee/verifier transfer, and every status
+  change are appended with the acting user, previous/next status, and the involved assignee or verifier
   (encrypted fields are not involved; comments are intentionally not recorded). The Bug detail
   view exposes a timeline dialog built from these events; Bugs created before the table existed
   fall back to a synthetic creation entry from the Bug row itself.
@@ -538,6 +550,8 @@ case/weekly-report pagination remain unchanged.
   project, the same assignment is also sent to the configured project chat and mentions
   the assignee. Bugs without a project-linked plan never target a group chat. Status-only
   edits and unchanged assignees do not redeliver the assignment notification.
+  A transition to `pending_verification` and any verifier transfer notify the current verifier,
+  replacing the previous verifier's pending status notification.
 - Package download expiry choices: 4 hours, 8 hours, 24 hours, 3 days, or 7 days.
 
 `GET /api/ai/status` returns `configured`, `model`, and the effective positive

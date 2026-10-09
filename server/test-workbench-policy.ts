@@ -48,6 +48,19 @@ export function canEditTestBug(reporterUserId: number | null, userId: number) {
   return reporterUserId === userId
 }
 
+export function canMutateTestBugFields(status: BugStatus) {
+  return status !== 'closed'
+}
+
+export function canReopenRejectedBug(current: BugStatus, next: BugStatus) {
+  return current === 'rejected' && next === 'pending_confirmation'
+}
+
+export function bugStatusAfterAssignment(current: BugStatus, previousAssignee: number | null, nextAssignee: number | null): BugStatus {
+  if (current === 'closed' || previousAssignee === nextAssignee) return current
+  return nextAssignee ? 'pending_confirmation' : 'new'
+}
+
 /** Bug detail ownership is intentionally separate from assignee/editor access. */
 export function canDeleteTestBug(reporterUserId: number | null, userId: number) {
   return canEditTestBug(reporterUserId, userId)
@@ -109,7 +122,7 @@ export function canRemoveTestPlanCase(
 }
 
 export function canDeveloperSetBugStatus(current: BugStatus, next: BugStatus) {
-  if (current === next) return true
+  if (current === 'closed' || current === next) return false
   if (next === 'in_progress') {
     return current === 'pending_confirmation' || current === 'assigned'
   }
@@ -119,4 +132,13 @@ export function canDeveloperSetBugStatus(current: BugStatus, next: BugStatus) {
 
 export function canDeveloperRejectBug(current: BugStatus) {
   return current === 'pending_confirmation' || current === 'assigned'
+}
+
+export function canResolveBugVerification(
+  current: BugStatus,
+  next: BugStatus,
+  authorized: boolean,
+) {
+  if (current !== 'pending_verification' || current === next) return true
+  return authorized && (next === 'closed' || next === 'pending_confirmation')
 }

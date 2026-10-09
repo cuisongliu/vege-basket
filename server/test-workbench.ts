@@ -16,6 +16,13 @@ import { createLimitedQuery, pool, query } from './db.ts'
 import { bugCaseDirectoryJoinSql, serializeBugCaseDirectory, type BugCaseDirectoryRow } from './bug-case-directory.ts'
 import { getDepartedUserIds } from './user-lifecycle.ts'
 import {
+  canTransferBugVerifier,
+  findBugVerifierFallback,
+  isEligibleBugVerifier,
+  lockBugVerifierSpace,
+  reassignBugsForVerifierLoss,
+} from './test-bug-verifiers.ts'
+import {
   managedOrganizationReadScopeSql,
   testSpaceMembershipPresentSql,
 } from './organization-scope.ts'
@@ -57,7 +64,11 @@ import {
   canEditTestSpaceVersion,
   canEditTestSubject,
   canDeveloperRejectBug,
+  canResolveBugVerification,
   canDeveloperSetBugStatus,
+  bugStatusAfterAssignment,
+  canMutateTestBugFields,
+  canReopenRejectedBug,
   canManageTestPlan,
   canRemoveTestPlanCase,
   isBugStatus,
@@ -137,6 +148,7 @@ export type TestBugStatusChangedEvent = {
   bugId: number
   nextStatus: BugStatus
   previousStatus: BugStatus
+  recipientUserId?: number
 }
 
 export type TestBugRejectedEvent = {
@@ -1078,14 +1090,27 @@ type ImportBugRow = {
   test_case_id: string | null
   assignee_user_id: string | null
   id: string
+  status: BugStatus
   test_environment_id: string | null
   test_plan_case_id: string | null
   test_plan_id: string | null
   test_subject_id: string
+  verifier_user_id: string | null
 }
 
 function importFailure(message: string, status = 409) {
   return Object.assign(new Error(message), { status })
+}
+
+async function queryMutableBug<T extends import('pg').QueryResultRow>(bugId: number, sql: string, params: unknown[]) {
+  return transaction(async (client) => {
+    const locked = await client.query<{ status: BugStatus }>(
+      'select status from test_bugs where id = $1 for update', [bugId],
+    )
+    if (!locked.rows[0]) throw importFailure('Bug not found', 404)
+    if (!canMutateTestBugFields(locked.rows[0].status)) throw importFailure('已关闭的 Bug 不允许修改。', 409)
+    return client.query<T>(sql, params)
+  })
 }
 
 function parseTestSpaceImportSources(value: unknown, targetSpaceId: number) {
@@ -1248,8 +1273,8 @@ async function importTestSpaceData(
         const bugIds = source.bugIds
         const bugs = await client.query<ImportBugRow>(
           bugIds
-            ? `select id, assignee_user_id, test_environment_id, test_plan_case_id, test_plan_id, test_subject_id, test_case_id from test_bugs where test_space_id = $1 and id = any($2::bigint[]) for update`
-            : `select id, assignee_user_id, test_environment_id, test_plan_case_id, test_plan_id, test_subject_id, test_case_id from test_bugs where test_space_id = $1 for update`,
+            ? `select id, assignee_user_id, verifier_user_id, status, test_environment_id, test_plan_case_id, test_plan_id, test_subject_id, test_case_id from test_bugs where test_space_id = $1 and id = any($2::bigint[]) for update`
+            : `select id, assignee_user_id, verifier_user_id, status, test_environment_id, test_plan_case_id, test_plan_id, test_subject_id, test_case_id from test_bugs where test_space_id = $1 for update`,
           bugIds ? [source.spaceId, bugIds] : [source.spaceId],
         )
         if (bugIds && bugs.rows.length !== bugIds.length) throw importFailure('Bug 不存在或不属于当前测试空间', 404)
@@ -1310,6 +1335,9 @@ async function importTestSpaceData(
 
     for (const source of sources) {
       for (const bug of sourceBugs.get(source.spaceId) ?? []) {
+        if (options.allowBugEditorTransfer && !canMutateTestBugFields(bug.status)) {
+          throw importFailure('已关闭的 Bug 不允许修改。', 409)
+        }
         if (!await userCanBeAssignedInSpace(
           bug.assignee_user_id ? Number(bug.assignee_user_id) : null,
           targetSpaceId,
@@ -1548,13 +1576,25 @@ async function importTestSpaceData(
           )
           targetEnvironmentId = assignment.rows[0] ? Number(assignment.rows[0].id) : null
         }
+        const previousVerifierUserId = bug.verifier_user_id ? Number(bug.verifier_user_id) : null
+        const nextVerifierUserId = previousVerifierUserId && await isEligibleBugVerifier(
+          client,
+          targetSpaceId,
+          previousVerifierUserId,
+        )
+          ? previousVerifierUserId
+          : await findBugVerifierFallback(client, targetSpaceId, previousVerifierUserId ?? 0)
+        const nextStatus: BugStatus = !nextVerifierUserId && bug.status === 'pending_verification'
+          ? 'pending_confirmation'
+          : bug.status
         await client.query(
           `update test_bugs
            set test_space_id = $1, test_subject_id = $2, test_plan_id = $3, test_plan_case_id = $4,
-               test_environment_id = $5, test_case_id = $8, updated_at = now()
+               test_environment_id = $5, test_case_id = $8, verifier_user_id = $9, status = $10,
+               updated_at = now()
            where id = $6 and test_space_id = $7`,
           [targetSpaceId, targetSubjectId, targetPlanId, targetPlanCaseId ?? null,
-            targetEnvironmentId, Number(bug.id), source.spaceId, targetCaseId],
+            targetEnvironmentId, Number(bug.id), source.spaceId, targetCaseId, nextVerifierUserId, nextStatus],
         )
         await recordTestBugEvent({
           actorUserId: userId,
@@ -1563,6 +1603,25 @@ async function importTestSpaceData(
           nextTestSpaceId: targetSpaceId,
           previousTestSpaceId: source.spaceId,
         }, client)
+        if (previousVerifierUserId !== nextVerifierUserId) {
+          await recordTestBugEvent({
+            actorUserId: userId,
+            bugId: Number(bug.id),
+            eventType: 'verifier_transferred',
+            nextVerifierUserId,
+            previousVerifierUserId,
+            transferSource: 'manual',
+          }, client)
+        }
+        if (nextStatus !== bug.status) {
+          await recordTestBugEvent({
+            actorUserId: userId,
+            bugId: Number(bug.id),
+            eventType: 'status_changed',
+            nextStatus,
+            previousStatus: bug.status,
+          }, client)
+        }
         if (targetCase) {
           await client.query(
             `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
@@ -1594,12 +1653,14 @@ async function recordTestBugEvent(
     actorUserId: number | null
     assigneeUserId?: number | null
     bugId: number
-    eventType: 'created' | 'assigned' | 'transferred' | 'status_changed' | 'space_transferred'
+    eventType: 'created' | 'assigned' | 'transferred' | 'verifier_transferred' | 'status_changed' | 'space_transferred'
     transferSource?: 'manual' | 'offboarding'
     nextTestSpaceId?: number | null
     nextStatus?: BugStatus
     previousTestSpaceId?: number | null
     previousStatus?: BugStatus
+    previousVerifierUserId?: number | null
+    nextVerifierUserId?: number | null
   },
   client?: PoolClient,
 ) {
@@ -1609,8 +1670,8 @@ async function recordTestBugEvent(
   await run(
     `insert into test_bug_events
        (test_bug_id, event_type, actor_user_id, previous_status, next_status, assignee_user_id,
-        transfer_source, previous_test_space_id, next_test_space_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        previous_verifier_user_id, next_verifier_user_id, transfer_source, previous_test_space_id, next_test_space_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       event.bugId,
       event.eventType,
@@ -1618,6 +1679,8 @@ async function recordTestBugEvent(
       event.previousStatus ?? null,
       event.nextStatus ?? null,
       event.assigneeUserId ?? null,
+      event.previousVerifierUserId ?? null,
+      event.nextVerifierUserId ?? null,
       event.transferSource ?? null,
       event.previousTestSpaceId ?? null,
       event.nextTestSpaceId ?? null,
@@ -1720,6 +1783,7 @@ export async function getTestWorkbench(
     planExecutions,
     planExecutionImages,
     bugs,
+    verifierCandidates,
     comments,
     events,
     verificationSubmissions,
@@ -1989,6 +2053,9 @@ export async function getTestWorkbench(
       assignee_display_name: string | null
       assignee_email: string | null
       assignee_user_id: string | null
+      verifier_display_name: string | null
+      verifier_email: string | null
+      verifier_user_id: string | null
       created_at: Date
       environment: string
       expected_result: string
@@ -2031,7 +2098,7 @@ export async function getTestWorkbench(
       select b.id, b.test_space_id, b.test_subject_id, b.test_case_id,
         b.test_plan_id, b.test_plan_case_id, b.test_environment_id,
         b.organization_module_id,
-        b.reporter_user_id, b.assignee_user_id, b.title, b.environment,
+        b.reporter_user_id, b.assignee_user_id, b.verifier_user_id, b.title, b.environment,
         b.severity, b.priority, b.discovery_difficulty, b.status, b.created_at, b.updated_at,
         ${includeBugDetails
           ? 'b.actual_result, b.expected_result, b.reproduction_steps, b.discovery_difficulty_reason,'
@@ -2050,6 +2117,7 @@ export async function getTestWorkbench(
         environment.access_url as test_environment_access_url,
         reporter.display_name as reporter_display_name, reporter.email as reporter_email,
         assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+        verifier.display_name as verifier_display_name, verifier.email as verifier_email,
         latest_assignment.event_type as latest_assignment_event_type,
         latest_assignment.transfer_source as latest_assignment_transfer_source,
         ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
@@ -2064,6 +2132,7 @@ export async function getTestWorkbench(
         on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
       left join users reporter on reporter.id = b.reporter_user_id
       left join users assignee on assignee.id = b.assignee_user_id
+      left join users verifier on verifier.id = b.verifier_user_id
       left join lateral (
         select event_type, transfer_source
         from test_bug_events assignment_event
@@ -2075,6 +2144,29 @@ export async function getTestWorkbench(
       where (${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')})${scopeBugs}
       order by b.updated_at desc, b.id desc
       `,
+      [userId],
+    ) : Promise.resolve({ rows: [] }),
+    includes('bugs') ? workbenchQuery<{ id: string; name: string; test_space_id: string }>(
+      `select membership.test_space_id, account.id,
+              coalesce(nullif(account.display_name, ''), account.email) as name
+         from test_space_memberships membership
+         join users account on account.id = membership.user_id and account.account_status = 'active'
+        where membership.status = 'active'
+          and membership.access_level in ('owner', 'editor')
+          and exists(
+            select 1 from user_roles role
+            where role.user_id = account.id and role.role in ('tester', 'organization_admin')
+          )
+          and exists(
+            select 1
+            from test_spaces candidate_space
+            left join test_space_memberships mine
+              on mine.test_space_id = candidate_space.id and mine.user_id = $1 and mine.status = 'active'
+            where candidate_space.id = membership.test_space_id
+              and (${testSpaceMembershipPresentSql('mine')}
+                or ${managedOrganizationReadScopeSql('candidate_space.organization_id')})
+          )
+        order by membership.test_space_id, lower(coalesce(nullif(account.display_name, ''), account.email)), account.id`,
       [userId],
     ) : Promise.resolve({ rows: [] }),
     includes('bugs') && includeBugDetails ? workbenchQuery<{
@@ -2118,11 +2210,21 @@ export async function getTestWorkbench(
       previous_test_space_name: string | null
       previous_test_space_version_label: string | null
       previous_status: string | null
+      previous_verifier_display_name: string | null
+      previous_verifier_email: string | null
+      previous_verifier_user_id: string | null
+      next_verifier_display_name: string | null
+      next_verifier_email: string | null
+      next_verifier_user_id: string | null
       test_bug_id: string
     }>(
       `
       select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
              assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+             previous_verifier.display_name as previous_verifier_display_name,
+             previous_verifier.email as previous_verifier_email,
+             next_verifier.display_name as next_verifier_display_name,
+             next_verifier.email as next_verifier_email,
              previous_space.name as previous_test_space_name,
              previous_space.version_label as previous_test_space_version_label,
              next_space.name as next_test_space_name,
@@ -2134,6 +2236,8 @@ export async function getTestWorkbench(
         on m.test_space_id = b.test_space_id and m.user_id = $1 and m.status = 'active'
       left join users actor on actor.id = e.actor_user_id
       left join users assignee on assignee.id = e.assignee_user_id
+      left join users previous_verifier on previous_verifier.id = e.previous_verifier_user_id
+      left join users next_verifier on next_verifier.id = e.next_verifier_user_id
       left join test_spaces previous_space on previous_space.id = e.previous_test_space_id
       left join test_spaces next_space on next_space.id = e.next_test_space_id
       where (${testSpaceMembershipPresentSql('m')} or ${managedOrganizationReadScopeSql('space.organization_id')})${scopeBugs}
@@ -2354,13 +2458,25 @@ export async function getTestWorkbench(
         nextSpaceName: row.next_test_space_name ? decryptText(row.next_test_space_name) : undefined,
         nextSpaceVersionLabel: row.next_test_space_version_label ? decryptText(row.next_test_space_version_label) : undefined,
         nextStatus: row.next_status ?? undefined,
+        nextVerifierName: row.next_verifier_display_name || row.next_verifier_email || undefined,
+        nextVerifierUserId: row.next_verifier_user_id ? Number(row.next_verifier_user_id) : undefined,
         previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
         previousSpaceVersionLabel: row.previous_test_space_version_label ? decryptText(row.previous_test_space_version_label) : undefined,
         previousStatus: row.previous_status ?? undefined,
+        previousVerifierName: row.previous_verifier_display_name || row.previous_verifier_email || undefined,
+        previousVerifierUserId: row.previous_verifier_user_id ? Number(row.previous_verifier_user_id) : undefined,
       },
     ])
   }
   const verificationSubmissionsByBug = mapVerificationSubmissions(verificationSubmissions.rows)
+  const verifierCandidatesBySpace = new Map<number, Array<{ id: number; name: string }>>()
+  for (const candidate of verifierCandidates.rows) {
+    const testSpaceId = Number(candidate.test_space_id)
+    verifierCandidatesBySpace.set(testSpaceId, [
+      ...(verifierCandidatesBySpace.get(testSpaceId) ?? []),
+      { id: Number(candidate.id), name: candidate.name },
+    ])
+  }
   const modulesById = new Map(modules.rows.map((row) => [Number(row.id), {
     enabled: row.enabled,
     id: Number(row.id),
@@ -2450,20 +2566,30 @@ export async function getTestWorkbench(
       assigneeTransferSource: row.latest_assignment_event_type === 'transferred'
         ? row.latest_assignment_transfer_source ?? 'manual'
         : undefined,
-      canDelete: Boolean(row.direct_access_level) && canDeleteTestBug(
+      canDelete: row.status !== 'closed' && Boolean(row.direct_access_level) && canDeleteTestBug(
         row.reporter_user_id ? Number(row.reporter_user_id) : null,
         userId,
       ),
-      canEdit: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
+      canEdit: row.status !== 'closed' && canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId),
       canEditSpaceVersion: Boolean(row.direct_access_level) && canEditTestSpaceVersion(
         Number(row.space_owner_user_id),
         row.reporter_user_id ? Number(row.reporter_user_id) : null,
         userId,
       ),
-      canShare: canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
+      canShare: row.status !== 'closed' && (
+        canEditTestBug(row.reporter_user_id ? Number(row.reporter_user_id) : null, userId)
         || Number(row.assignee_user_id) === userId
-        || Boolean(row.organization_admin_access),
-      canTransferSpace: row.direct_access_level != null && row.direct_access_level !== 'viewer'
+        || Boolean(row.organization_admin_access)
+      ),
+      canTransferVerifier: row.status !== 'closed' && (Number(row.verifier_user_id) === userId
+        || Number(row.space_owner_user_id) === userId
+        || Boolean(row.organization_admin_access)),
+      canResolveVerification: row.status === 'pending_verification' && (
+        Number(row.verifier_user_id) === userId
+        || Number(row.space_owner_user_id) === userId
+        || Boolean(row.organization_admin_access)
+      ),
+      canTransferSpace: row.status !== 'closed' && row.direct_access_level != null && row.direct_access_level !== 'viewer'
         && editableSpaces.some((space) => Number(space.id) !== Number(row.test_space_id)
         && space.organization_id === row.organization_id),
       comments: commentsByBug.get(Number(row.id)) ?? [],
@@ -2515,6 +2641,9 @@ export async function getTestWorkbench(
           versionLabel: space.version_label ? decryptText(space.version_label) : undefined,
         })),
       updatedAt: row.updated_at.toISOString(),
+      verifierCandidates: verifierCandidatesBySpace.get(Number(row.test_space_id)) ?? [],
+      verifierName: row.verifier_display_name || row.verifier_email || undefined,
+      verifierUserId: row.verifier_user_id ? Number(row.verifier_user_id) : undefined,
     })),
     cases: cases.rows.map((row) => ({
       canDelete: canDeleteTestCase(row.created_by_user_id ? Number(row.created_by_user_id) : null, userId),
@@ -3160,6 +3289,13 @@ router.patch('/test-spaces/:spaceId/members/:userId', asyncRoute(async (request,
     return
   }
   if (!await withSpaceManager(response, spaceId, session.userId, async (client) => {
+    if (accessLevel === 'viewer') {
+      await reassignBugsForVerifierLoss(client, {
+        actorUserId: session.userId,
+        spaceId,
+        verifierUserId: userId,
+      })
+    }
     const updated = await client.query(
       `
       update test_space_memberships
@@ -3187,6 +3323,11 @@ router.delete('/test-spaces/:spaceId/members/:userId', asyncRoute(async (request
     return
   }
   if (!await withSpaceManager(response, spaceId, session.userId, async (client) => {
+    await reassignBugsForVerifierLoss(client, {
+      actorUserId: session.userId,
+      spaceId,
+      verifierUserId: userId,
+    })
     const removed = await client.query(
       `
       delete from test_space_memberships
@@ -4031,7 +4172,7 @@ router.post(
           await client.query(
             `update test_bugs
                 set test_subject_id = $1, organization_module_id = $2, updated_at = now()
-              where test_case_id = $3 and test_space_id = $4`,
+              where test_case_id = $3 and test_space_id = $4 and status <> 'closed'`,
             [subjectId, item.moduleId, item.existingCaseId, spaceId],
           )
         } else {
@@ -4530,7 +4671,7 @@ router.delete('/test-spaces/:spaceId/plans/:planId', asyncRoute(async (request, 
   try {
     await client.query('begin')
     await client.query(
-      'update test_bugs set test_plan_case_id = null, test_plan_id = null, updated_at = now() where test_plan_id = $1 and test_space_id = $2',
+      "update test_bugs set test_plan_case_id = null, test_plan_id = null, updated_at = now() where test_plan_id = $1 and test_space_id = $2 and status <> 'closed'",
       [planId, spaceId],
     )
     const lockedPlan = await client.query<{
@@ -4844,9 +4985,9 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
         insert into test_bugs
           (test_space_id, test_subject_id, test_plan_id, test_plan_case_id, test_environment_id,
            title, severity, priority, status, environment, reproduction_steps, expected_result,
-           actual_result, reporter_user_id, assignee_user_id, test_case_id, organization_module_id,
+           actual_result, reporter_user_id, assignee_user_id, verifier_user_id, test_case_id, organization_module_id,
            discovery_difficulty, discovery_difficulty_reason)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         returning id
         `,
         [
@@ -4865,6 +5006,7 @@ router.post('/test-spaces/:spaceId/bugs', asyncRoute(async (request, response) =
           encryptText(text(request.body.actualResult, 10000)),
           session.userId,
           assigneeUserId,
+          session.userId,
           caseId,
           moduleId,
           discovery.value.discoveryDifficulty,
@@ -4937,6 +5079,153 @@ router.post('/test-spaces/:spaceId/bugs/:bugId/transfer-space', asyncRoute(async
   response.json(await getTestWorkbench(session.userId))
 }))
 
+router.post('/test-spaces/:spaceId/bugs/:bugId/verifier', asyncRoute(async (request, response) => {
+  const session = await requireTestSpaceManagementSession(request, response)
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const bugId = positiveId(request.params.bugId)
+  const verifierUserId = positiveId(request.body?.verifierUserId)
+  if (!spaceId || !bugId || !verifierUserId) {
+    response.status(400).json({ error: 'Valid test space, Bug, and verifier are required' })
+    return
+  }
+  let statusNotification: TestBugStatusChangedEvent | null = null
+  try {
+    await transaction(async (client) => {
+      if (!await lockBugVerifierSpace(client, spaceId)) throw importFailure('Test space not found', 404)
+      const locked = await client.query<{ status: BugStatus; verifier_user_id: string | null }>(
+        `select status, verifier_user_id from test_bugs
+         where id = $1 and test_space_id = $2 for update`,
+        [bugId, spaceId],
+      )
+      const bug = locked.rows[0]
+      if (!bug) throw importFailure('Bug not found', 404)
+      if (!canMutateTestBugFields(bug.status)) throw importFailure('已关闭的 Bug 不允许修改。', 409)
+      const previousVerifierUserId = bug.verifier_user_id ? Number(bug.verifier_user_id) : null
+      if (!await canTransferBugVerifier(client, spaceId, session.userId, previousVerifierUserId)) {
+        throw importFailure('Only the current verifier or a test-space manager can transfer verification', 403)
+      }
+      if (!await isEligibleBugVerifier(client, spaceId, verifierUserId)) {
+        throw importFailure('Verifier must be an active tester with edit access to this test space', 400)
+      }
+      if (previousVerifierUserId === verifierUserId) return
+      await client.query(
+        `update test_bugs set verifier_user_id = $1, updated_at = now()
+         where id = $2 and test_space_id = $3 and verifier_user_id is not distinct from $4::bigint`,
+        [verifierUserId, bugId, spaceId, previousVerifierUserId],
+      )
+      await recordTestBugEvent({
+        actorUserId: session.userId,
+        bugId,
+        eventType: 'verifier_transferred',
+        nextVerifierUserId: verifierUserId,
+        previousVerifierUserId,
+        transferSource: 'manual',
+      }, client)
+      if (bug.status === 'pending_verification') {
+        statusNotification = {
+          actorUserId: session.userId,
+          bugId,
+          nextStatus: bug.status,
+          previousStatus: bug.status,
+          recipientUserId: verifierUserId,
+        }
+      }
+    })
+  } catch (error) {
+    if (error instanceof Error && 'status' in error) {
+      response.status(Number((error as Error & { status: number }).status)).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+  if (statusNotification) onTestBugStatusChanged(statusNotification)
+  response.json(await getTestWorkbench(session.userId))
+}))
+
+router.post('/test-spaces/:spaceId/bugs/:bugId/verification-result', asyncRoute(async (request, response) => {
+  const session = await requireTestSpaceManagementSession(request, response)
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const bugId = positiveId(request.params.bugId)
+  const nextStatus = request.body?.status
+  if (!spaceId || !bugId || (nextStatus !== 'closed' && nextStatus !== 'pending_confirmation')) {
+    response.status(400).json({ error: 'Verification result must close or return the Bug' })
+    return
+  }
+  let statusNotification: TestBugStatusChangedEvent | null = null
+  try {
+    await transaction(async (client) => {
+      if (!await lockBugVerifierSpace(client, spaceId)) throw importFailure('Test space not found', 404)
+      const locked = await client.query<{ status: BugStatus; verifier_user_id: string | null }>(
+        `select status, verifier_user_id from test_bugs
+         where id = $1 and test_space_id = $2 for update`,
+        [bugId, spaceId],
+      )
+      const bug = locked.rows[0]
+      if (!bug) throw importFailure('Bug not found', 404)
+      if (bug.status !== 'pending_verification') {
+        throw importFailure('Only a Bug pending verification can receive a verification result', 409)
+      }
+      const verifierUserId = bug.verifier_user_id ? Number(bug.verifier_user_id) : null
+      const authorized = await canTransferBugVerifier(client, spaceId, session.userId, verifierUserId)
+      if (!canResolveBugVerification(bug.status, nextStatus, authorized)) {
+        throw importFailure('Only the current verifier or a test-space manager can finish verification', 403)
+      }
+      await client.query(
+        `update test_bugs set status = $1, updated_at = now()
+         where id = $2 and test_space_id = $3 and status = 'pending_verification'`,
+        [nextStatus, bugId, spaceId],
+      )
+      await recordTestBugEvent({
+        actorUserId: session.userId,
+        bugId,
+        eventType: 'status_changed',
+        nextStatus,
+        previousStatus: bug.status,
+      }, client)
+      statusNotification = {
+        actorUserId: session.userId,
+        bugId,
+        nextStatus,
+        previousStatus: bug.status,
+        recipientUserId: verifierUserId ?? undefined,
+      }
+    })
+  } catch (error) {
+    if (error instanceof Error && 'status' in error) {
+      response.status(Number((error as Error & { status: number }).status)).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+  if (statusNotification) onTestBugStatusChanged(statusNotification)
+  response.json(await getTestWorkbench(session.userId))
+}))
+
+router.post('/test-spaces/:spaceId/bugs/:bugId/reopen', asyncRoute(async (request, response) => {
+  const session = await requireActiveRole(request, response, 'tester')
+  if (!session) return
+  const spaceId = positiveId(request.params.spaceId)
+  const bugId = positiveId(request.params.bugId)
+  if (!spaceId || !bugId || !(await requireSpaceAccess(response, spaceId, session.userId, true))) return
+  await transaction(async (client) => {
+    await lockTestCaseSpace(client, spaceId)
+    const access = await getDirectSpaceAccess(spaceId, session.userId, client)
+    if (access !== 'owner' && access !== 'editor') throw importFailure('需要测试空间的编辑权限。', 403)
+    const locked = await client.query<{ status: BugStatus }>(
+      'select status from test_bugs where id = $1 and test_space_id = $2 for update', [bugId, spaceId],
+    )
+    const bug = locked.rows[0]
+    if (!bug) throw importFailure('Bug not found', 404)
+    if (!canReopenRejectedBug(bug.status, 'pending_confirmation')) throw importFailure('只能重新打开已驳回的 Bug。', 409)
+    await client.query("update test_bugs set status = 'pending_confirmation', updated_at = now() where id = $1", [bugId])
+    await recordTestBugEvent({ actorUserId: session.userId, bugId, eventType: 'status_changed', nextStatus: 'pending_confirmation', previousStatus: bug.status }, client)
+  })
+  onTestBugStatusChanged({ actorUserId: session.userId, bugId, nextStatus: 'pending_confirmation', previousStatus: 'rejected' })
+  response.json(await getTestWorkbench(session.userId))
+}))
+
 router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, response) => {
   const session = await requireActiveRole(request, response, 'tester')
   if (!session) return
@@ -4972,6 +5261,14 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
     return
   }
   const currentBug = current.rows[0]
+  if (!canMutateTestBugFields(currentBug.status)) {
+    response.status(409).json({ error: '已关闭的 Bug 不允许修改。' })
+    return
+  }
+  if (Object.prototype.hasOwnProperty.call(request.body ?? {}, 'status')) {
+    response.status(400).json({ error: 'Bug 状态必须通过正常流转操作变更。' })
+    return
+  }
   const hasDetailEdit = [
     'testCaseId',
     'moduleId',
@@ -5037,6 +5334,7 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
         test_plan_case_id: string | null
         actual_result: string
         assignee_user_id: string | null
+        verifier_user_id: string | null
         environment: string
         expected_result: string
         reproduction_steps: string
@@ -5048,13 +5346,14 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
         test_environment_id: string | null
         title: string
       }>(
-        `select status, assignee_user_id, reporter_user_id, title, severity, priority, discovery_difficulty, discovery_difficulty_reason, test_case_id, test_subject_id, organization_module_id, test_plan_id, test_plan_case_id,
+        `select status, assignee_user_id, verifier_user_id, reporter_user_id, title, severity, priority, discovery_difficulty, discovery_difficulty_reason, test_case_id, test_subject_id, organization_module_id, test_plan_id, test_plan_case_id,
                 environment, test_environment_id, reproduction_steps, expected_result, actual_result
            from test_bugs where id = $1 and test_space_id = $2 for update`,
         [bugId, spaceId],
       )
       const lockedBug = locked.rows[0]
       if (!lockedBug) throw importFailure('Bug not found', 404)
+      if (!canMutateTestBugFields(lockedBug.status)) throw importFailure('已关闭的 Bug 不允许修改。', 409)
       const lockedReporter = lockedBug.reporter_user_id ? Number(lockedBug.reporter_user_id) : null
       if (hasDetailEdit && !canEditTestBug(lockedReporter, session.userId)) {
         throw importFailure('Only the Bug creator can edit its details', 403)
@@ -5140,8 +5439,20 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
         ? lockedBug.actual_result
         : encryptText(text(request.body.actualResult, 10000))
       const lockedPreviousAssignee = lockedBug.assignee_user_id ? Number(lockedBug.assignee_user_id) : null
-      const lockedStatus = isBugStatus(request.body.status) ? request.body.status : lockedBug.status
-      if (!(await userCanBeAssignedInSpace(normalizedAssigneeUserId, spaceId!, 'developer', client))) {
+      const nextAssigneeUserId = request.body.assigneeUserId === undefined
+        ? lockedPreviousAssignee : normalizedAssigneeUserId
+      const lockedStatus = bugStatusAfterAssignment(lockedBug.status, lockedPreviousAssignee, nextAssigneeUserId)
+      const verifierUserId = lockedBug.verifier_user_id ? Number(lockedBug.verifier_user_id) : null
+      const verificationAuthorized = await canTransferBugVerifier(
+        client,
+        spaceId!,
+        session.userId,
+        verifierUserId,
+      )
+      if (!canResolveBugVerification(lockedBug.status, lockedStatus, verificationAuthorized)) {
+        throw importFailure('Only the current verifier or a test-space manager can finish verification', 403)
+      }
+      if (!(await userCanBeAssignedInSpace(nextAssigneeUserId, spaceId!, 'developer', client))) {
         throw importFailure('Bug assignee must be a developer in this test space', 400)
       }
       if (caseBinding) {
@@ -5167,19 +5478,19 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
                 discovery_difficulty = $13, discovery_difficulty_reason = $14
            where id = $11 and test_space_id = $12`,
         [nextTitle, severity, priority, nextEnvironment, nextEnvironmentId, nextReproduction,
-          nextExpected, nextActual, lockedStatus, normalizedAssigneeUserId, bugId, spaceId,
+          nextExpected, nextActual, lockedStatus, nextAssigneeUserId, bugId, spaceId,
           discovery.value.discoveryDifficulty, nextDiscoveryReason],
       )
-      if (normalizedAssigneeUserId && normalizedAssigneeUserId !== lockedPreviousAssignee) {
+      if (nextAssigneeUserId && nextAssigneeUserId !== lockedPreviousAssignee) {
         await recordTestBugEvent({
           actorUserId: session.userId,
-          assigneeUserId: normalizedAssigneeUserId,
+          assigneeUserId: nextAssigneeUserId,
           bugId,
           eventType: 'assigned',
         }, client)
         assignedNotification = {
           actorUserId: session.userId,
-          assigneeUserId: normalizedAssigneeUserId,
+          assigneeUserId: nextAssigneeUserId,
           assignmentKind: 'assigned',
           bugId,
         }
@@ -5201,6 +5512,7 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, res
             bugId,
             nextStatus: lockedStatus,
             previousStatus: lockedBug.status,
+            recipientUserId: verifierUserId ?? undefined,
           }
         }
       }
@@ -5235,8 +5547,8 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, re
       if (!(await getDirectSpaceAccess(spaceId, session.userId, client))) {
         throw importFailure('Test space not found', 404)
       }
-      const locked = await client.query<{ reporter_user_id: string | null }>(
-        `select reporter_user_id
+      const locked = await client.query<{ reporter_user_id: string | null; status: BugStatus }>(
+        `select reporter_user_id, status
            from test_bugs
           where id = $1 and test_space_id = $2
           for update`,
@@ -5244,6 +5556,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId', asyncRoute(async (request, re
       )
       const bug = locked.rows[0]
       if (!bug) throw importFailure('Bug not found', 404)
+      if (!canMutateTestBugFields(bug.status)) throw importFailure('已关闭的 Bug 不允许修改。', 409)
       if (!canDeleteTestBug(bug.reporter_user_id ? Number(bug.reporter_user_id) : null, session.userId)) {
         throw importFailure('Only the Bug creator can delete it', 403)
       }
@@ -5287,12 +5600,16 @@ router.post('/test-spaces/:spaceId/bugs/:bugId/comments', asyncRoute(async (requ
     response.status(400).json({ error: 'Comment is required' })
     return
   }
-  const bug = await query('select id from test_bugs where id = $1 and test_space_id = $2', [bugId, spaceId])
+  const bug = await query<{ id: string; status: BugStatus }>('select id, status from test_bugs where id = $1 and test_space_id = $2', [bugId, spaceId])
   if (!bug.rows[0]) {
     response.status(404).json({ error: 'Bug not found' })
     return
   }
-  const insertedComment = await query<{ id: string }>(
+  if (!canMutateTestBugFields(bug.rows[0].status)) {
+    response.status(409).json({ error: '已关闭的 Bug 不允许修改。' })
+    return
+  }
+  const insertedComment = await queryMutableBug<{ id: string }>(bugId,
     'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3) returning id',
     [bugId, session.userId, encryptText(content)],
   )
@@ -5318,7 +5635,7 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRoute
     response.status(400).json({ error: 'Comment is required' })
     return
   }
-  const result = await query(
+  const result = await queryMutableBug(bugId,
     `
     update test_bug_comments c
        set content = $1,
@@ -5328,6 +5645,7 @@ router.patch('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRoute
        and c.test_bug_id = b.id
        and b.id = $3
        and b.test_space_id = $4
+       and b.status <> 'closed'
        and c.author_user_id = $5
        and c.kind = 'comment'
      returning c.id
@@ -5348,7 +5666,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
   const bugId = positiveId(request.params.bugId)
   const commentId = positiveId(request.params.commentId)
   if (!(await requireSpaceAccess(response, spaceId, session.userId, true)) || !bugId || !commentId) return
-  const result = await query(
+  const result = await queryMutableBug(bugId,
     `
     delete from test_bug_comments c
      using test_bugs b
@@ -5356,6 +5674,7 @@ router.delete('/test-spaces/:spaceId/bugs/:bugId/comments/:commentId', asyncRout
        and c.test_bug_id = b.id
        and b.id = $2
        and b.test_space_id = $3
+       and b.status <> 'closed'
        and c.author_user_id = $4
        and c.kind = 'comment'
      returning c.id
@@ -5381,6 +5700,9 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
     assignee_display_name: string | null
     assignee_email: string | null
     assignee_user_id: string | null
+    verifier_display_name: string | null
+    verifier_email: string | null
+    verifier_user_id: string | null
     created_at: Date
     environment: string
     expected_result: string
@@ -5413,7 +5735,7 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
       organization_module.name as organization_module_name,
       linked_case.folder_id as test_case_folder_id,
       case_directory.path as test_case_directory_path,
-      b.reporter_user_id, b.assignee_user_id, b.title, b.severity, b.priority,
+      b.reporter_user_id, b.assignee_user_id, b.verifier_user_id, b.title, b.severity, b.priority,
       b.discovery_difficulty, b.discovery_difficulty_reason,
       b.status, b.environment, b.reproduction_steps, b.expected_result, b.actual_result,
       b.created_at, b.updated_at,
@@ -5424,6 +5746,7 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
       plan.name as test_plan_name,
       reporter.display_name as reporter_display_name, reporter.email as reporter_email,
       assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+      verifier.display_name as verifier_display_name, verifier.email as verifier_email,
       ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
@@ -5436,6 +5759,7 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
     left join test_plans plan on plan.id = b.test_plan_id
     left join users reporter on reporter.id = b.reporter_user_id
     left join users assignee on assignee.id = b.assignee_user_id
+    left join users verifier on verifier.id = b.verifier_user_id
     where space.organization_id is not distinct from $2::bigint
       and (
         (b.assignee_user_id = $1 and b.status not in ('closed', 'rejected'))
@@ -5515,11 +5839,21 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
     previous_test_space_name: string | null
     previous_test_space_version_label: string | null
     previous_status: string | null
+    previous_verifier_display_name: string | null
+    previous_verifier_email: string | null
+    previous_verifier_user_id: string | null
+    next_verifier_display_name: string | null
+    next_verifier_email: string | null
+    next_verifier_user_id: string | null
     test_bug_id: string
   }>(
     `
     select e.*, actor.display_name as actor_display_name, actor.email as actor_email,
            assignee.display_name as assignee_display_name, assignee.email as assignee_email,
+           previous_verifier.display_name as previous_verifier_display_name,
+           previous_verifier.email as previous_verifier_email,
+           next_verifier.display_name as next_verifier_display_name,
+           next_verifier.email as next_verifier_email,
            previous_space.name as previous_test_space_name,
            previous_space.version_label as previous_test_space_version_label,
            next_space.name as next_test_space_name,
@@ -5529,6 +5863,8 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
     join test_spaces space on space.id = b.test_space_id
     left join users actor on actor.id = e.actor_user_id
     left join users assignee on assignee.id = e.assignee_user_id
+    left join users previous_verifier on previous_verifier.id = e.previous_verifier_user_id
+    left join users next_verifier on next_verifier.id = e.next_verifier_user_id
     left join test_spaces previous_space on previous_space.id = e.previous_test_space_id
     left join test_spaces next_space on next_space.id = e.next_test_space_id
     where space.organization_id is not distinct from $2::bigint
@@ -5597,6 +5933,10 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
         previousSpaceName: row.previous_test_space_name ? decryptText(row.previous_test_space_name) : undefined,
         previousSpaceVersionLabel: row.previous_test_space_version_label ? decryptText(row.previous_test_space_version_label) : undefined,
         previousStatus: row.previous_status ?? undefined,
+        nextVerifierName: row.next_verifier_display_name || row.next_verifier_email || undefined,
+        nextVerifierUserId: row.next_verifier_user_id ? Number(row.next_verifier_user_id) : undefined,
+        previousVerifierName: row.previous_verifier_display_name || row.previous_verifier_email || undefined,
+        previousVerifierUserId: row.previous_verifier_user_id ? Number(row.previous_verifier_user_id) : undefined,
       },
     ])
   }
@@ -5671,9 +6011,9 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
       assigneeName: row.assignee_display_name || row.assignee_email || undefined,
       assigneeUserId: row.assignee_user_id ? Number(row.assignee_user_id) : undefined,
       assigneeTransferSource: assigneeTransferSourceByBug.get(Number(row.id)),
-      canComment: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
-      canManage: Number(row.assignee_user_id) === userId,
-      canShare: Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access),
+      canComment: row.status !== 'closed' && (Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access)),
+      canManage: row.status !== 'closed' && Number(row.assignee_user_id) === userId,
+      canShare: row.status !== 'closed' && (Number(row.assignee_user_id) === userId || Boolean(row.organization_admin_access)),
       canTransfer: (Number(row.assignee_user_id) === userId || (
         !row.assignee_user_id && row.organization_admin_access
       )) &&
@@ -5719,6 +6059,8 @@ export async function getAssignedBugs(userId: number, organizationId: Organizati
         : [],
       updatedAt: row.updated_at.toISOString(),
       verificationSubmissions: verificationSubmissionsByBug.get(Number(row.id)) ?? [],
+      verifierName: row.verifier_display_name || row.verifier_email || undefined,
+      verifierUserId: row.verifier_user_id ? Number(row.verifier_user_id) : undefined,
     })),
   }
 }
@@ -5732,9 +6074,10 @@ async function getAssignedBugCommentAccess(
     assignee_user_id: string | null
     organization_id: string | null
     organization_admin_access: boolean
+    status: BugStatus
   }>(
     `
-    select b.assignee_user_id, space.organization_id,
+    select b.assignee_user_id, b.status, space.organization_id,
       ${managedOrganizationReadScopeSql('space.organization_id')} as organization_admin_access
     from test_bugs b
     join test_spaces space on space.id = b.test_space_id
@@ -6020,53 +6363,33 @@ router.patch('/test-bugs/:bugId/assigned', asyncRoute(async (request, response) 
     response.status(400).json({ error: '请通过提交验证流程选择安装包后再提交' })
     return
   }
-  const current = await query<{ status: BugStatus }>(
-    `select b.status
-     from test_bugs b
-     join test_spaces space on space.id = b.test_space_id
-     where b.id = $1
-       and b.assignee_user_id = $2
-       and space.organization_id is not distinct from $3::bigint`,
-    [bugId, session.userId, organizationId],
-  )
-  if (!current.rows[0]) {
-    response.status(404).json({ error: 'Assigned bug not found' })
-    return
-  }
-  if (!canDeveloperSetBugStatus(current.rows[0].status, request.body.status)) {
-    response.status(409).json({ error: 'Developer cannot perform this bug transition' })
-    return
-  }
-  const updated = await query(
-    `update test_bugs b
-     set status = $1, updated_at = now()
-     from test_spaces space
-     where b.id = $2
-       and b.assignee_user_id = $3
-       and space.id = b.test_space_id
-       and space.organization_id is not distinct from $4::bigint
-     returning b.id`,
-    [request.body.status, bugId, session.userId, organizationId],
-  )
-  if (!updated.rows[0]) {
-    response.status(404).json({ error: 'Assigned bug not found' })
-    return
-  }
-  await recordTestBugEvent({
-    actorUserId: session.userId,
-    bugId,
-    eventType: 'status_changed',
-    nextStatus: request.body.status,
-    previousStatus: current.rows[0].status,
-  })
-  if (request.body.status === 'pending_verification') {
-    onTestBugStatusChanged({
+  await transaction(async (client) => {
+    const current = await client.query<{ status: BugStatus }>(
+      `select b.status
+       from test_bugs b
+       join test_spaces space on space.id = b.test_space_id
+       where b.id = $1 and b.assignee_user_id = $2
+         and space.organization_id is not distinct from $3::bigint
+       for update of b`,
+      [bugId, session.userId, organizationId],
+    )
+    const bug = current.rows[0]
+    if (!bug) throw importFailure('Assigned bug not found', 404)
+    if (!canDeveloperSetBugStatus(bug.status, request.body.status)) {
+      throw importFailure('Developer cannot perform this bug transition', 409)
+    }
+    await client.query(
+      'update test_bugs set status = $1, updated_at = now() where id = $2 and assignee_user_id = $3',
+      [request.body.status, bugId, session.userId],
+    )
+    await recordTestBugEvent({
       actorUserId: session.userId,
       bugId,
+      eventType: 'status_changed',
       nextStatus: request.body.status,
-      previousStatus: current.rows[0].status,
-    })
-  }
+      previousStatus: bug.status,
+    }, client)
+  })
   response.json(await getAssignedBugs(session.userId, organizationId))
 }))
 
@@ -6315,13 +6638,17 @@ router.post('/test-bugs/:bugId/assigned/comments', asyncRoute(async (request, re
     response.status(404).json({ error: 'Assigned bug not found' })
     return
   }
+  if (!canMutateTestBugFields(bug.status)) {
+    response.status(409).json({ error: '已关闭的 Bug 不允许修改。' })
+    return
+  }
   const mentionedUserIds = bug.organization_admin_access
     ? await resolveOrganizationMentionUserIds(
       bug.organization_id ? Number(bug.organization_id) : null,
       content,
     )
     : []
-  const insertedComment = await query<{ id: string }>(
+  const insertedComment = await queryMutableBug<{ id: string }>(bugId,
     'insert into test_bug_comments (test_bug_id, author_user_id, content) values ($1, $2, $3) returning id',
     [bugId, session.userId, encryptText(content)],
   )
@@ -6348,7 +6675,7 @@ router.patch('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async 
     response.status(400).json({ error: 'Bug and comment are required' })
     return
   }
-  const result = await query(
+  const result = await queryMutableBug(bugId,
     `
     update test_bug_comments c
        set content = $1,
@@ -6360,6 +6687,7 @@ router.patch('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async 
        and b.id = $3
        and (b.assignee_user_id = $4 or ${managedOrganizationReadScopeSql('space.organization_id', '$4')})
        and space.organization_id is not distinct from $5::bigint
+       and b.status <> 'closed'
        and c.author_user_id = $4
        and c.kind = 'comment'
      returning c.id
@@ -6384,7 +6712,7 @@ router.delete('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async
     response.status(400).json({ error: 'Bug and comment are required' })
     return
   }
-  const result = await query(
+  const result = await queryMutableBug(bugId,
     `
     delete from test_bug_comments c
      using test_bugs b
@@ -6394,6 +6722,7 @@ router.delete('/test-bugs/:bugId/assigned/comments/:commentId', asyncRoute(async
        and b.id = $2
        and (b.assignee_user_id = $3 or ${managedOrganizationReadScopeSql('space.organization_id', '$3')})
        and space.organization_id is not distinct from $4::bigint
+       and b.status <> 'closed'
        and c.author_user_id = $3
        and c.kind = 'comment'
      returning c.id

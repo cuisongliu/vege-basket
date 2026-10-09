@@ -282,6 +282,7 @@ export async function createBugShareLink(bugId: number, userId: number) {
         from test_bugs b
         join test_spaces space on space.id = b.test_space_id
         where b.id = $1
+          and b.status <> 'closed'
           and (b.reporter_user_id = $2 or b.assignee_user_id = $2 or ${managedOrganizationReadScopeSql('space.organization_id', '$2')})
         for update of b
         `,
@@ -329,6 +330,7 @@ export async function revokeBugShareLink(bugId: number, userId: number) {
       join test_spaces space on space.id = b.test_space_id
      where link.test_bug_id = b.id
        and b.id = $1
+       and b.status <> 'closed'
        and link.revoked_at is null
        and (b.reporter_user_id = $2 or b.assignee_user_id = $2 or ${managedOrganizationReadScopeSql('space.organization_id', '$2')})
      returning link.id
@@ -342,14 +344,18 @@ export async function revokeBugShareLink(bugId: number, userId: number) {
 export async function addBugShareComment(token: string, userId: number, content: string) {
   let commentId = 0
   const bugId = await transaction(async (client) => {
-    const link = await client.query<{ test_bug_id: string }>(
-      `select test_bug_id from bug_share_links
+    const link = await client.query<{ status: string; test_bug_id: string }>(
+      `select link.test_bug_id, b.status
+         from bug_share_links link
+         join test_bugs b on b.id = link.test_bug_id
        where token_hash = $1 and revoked_at is null and expires_at > now()
-       for update`,
+       for update of b`,
       [hashBugShareToken(token)],
     )
-    const bugId = link.rows[0]?.test_bug_id
+    const bug = link.rows[0]
+    const bugId = bug?.test_bug_id
     if (!bugId) throw shareError('Bug share link is invalid or expired', 404)
+    if (bug.status === 'closed') throw shareError('已关闭的 Bug 不允许修改。', 409)
     const inserted = await client.query<{ id: string }>(
       `insert into test_bug_comments (test_bug_id, author_user_id, content, kind)
        values ($1, $2, $3, 'comment')

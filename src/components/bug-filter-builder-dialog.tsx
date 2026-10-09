@@ -40,6 +40,7 @@ export type BugFilterCaseOption = BugFilterOption & { folderIds: string[] }
 
 export type BugFilterOptions = {
   assignees: BugFilterOption[]
+  verifiers: BugFilterOption[]
   plans: BugFilterOption[]
   reporters: BugFilterOption[]
   spaces: BugFilterOption[]
@@ -78,6 +79,7 @@ function optionsForField(field: BugFilterField, options: BugFilterOptions) {
   if (field === 'testPlan') return options.plans
   if (field === 'reporter') return options.reporters
   if (field === 'assignee') return options.assignees
+  if (field === 'verifier') return options.verifiers
   if (field === 'status') return statusOptions
   if (field === 'severity') return severityOptions
   if (field === 'priority') return priorityOptions

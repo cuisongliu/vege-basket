@@ -13,6 +13,8 @@ test('discovery assessment HTTP guards reject invalid and unauthorized mutations
   let lockedReporterId = '42'
   let lockedDifficulty = 'medium'
   let lockedReason = ''
+  let currentStatus = 'new'
+  let lockedStatus = 'new'
   const statements: string[] = []
   const query = async (sql: string) => {
     const statement = sql.replace(/\s+/gu, ' ').trim()
@@ -34,7 +36,7 @@ test('discovery assessment HTTP guards reject invalid and unauthorized mutations
         reporter_user_id: locked ? lockedReporterId : '42', assignee_user_id: null,
         discovery_difficulty: locked ? lockedDifficulty : 'medium',
         discovery_difficulty_reason: locked ? lockedReason : '',
-        title: 'Example', severity: 'major', priority: 'medium', status: 'new',
+        title: 'Example', severity: 'major', priority: 'medium', status: locked ? lockedStatus : currentStatus,
         environment: '', reproduction_steps: '', expected_result: '', actual_result: '',
         test_case_id: null, test_subject_id: null, organization_module_id: null,
         test_plan_id: null, test_plan_case_id: null, test_environment_id: null,
@@ -89,6 +91,25 @@ test('discovery assessment HTTP guards reject invalid and unauthorized mutations
       assert.equal(statements.includes('begin'), false)
     }
     actorId = 42
+  })
+  await t.test('closed Bugs reject every detail, assignment, and status payload before writing', async () => {
+    currentStatus = 'closed'
+    for (const input of [{ title: 'Changed' }, { assigneeUserId: 7 }, { severity: 'critical' }, { status: 'new' }, { discoveryDifficultyReason: 'Changed' }]) {
+      assert.equal((await request('PATCH', input)).status, 409)
+    }
+    currentStatus = 'new'
+  })
+  await t.test('generic detail PATCH rejects direct status changes', async () => {
+    for (const status of ['in_progress', 'pending_verification', 'closed', 'new']) {
+      assert.equal((await request('PATCH', { status })).status, 400)
+      assert.equal(statements.includes('begin'), false)
+    }
+  })
+  await t.test('a Bug closed after the first read is rejected under the row lock', async () => {
+    lockedStatus = 'closed'
+    assert.equal((await request('PATCH', { title: 'Changed' })).status, 409)
+    assert.ok(statements.includes('rollback'))
+    lockedStatus = 'new'
   })
   await t.test('creator authority is checked again after taking the row lock', async () => {
     lockedReporterId = '99'
