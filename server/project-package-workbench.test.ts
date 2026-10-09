@@ -121,7 +121,7 @@ test('draft event documents remain openable for editing', () => {
 
 test('delivery documents no longer expose todo association actions', () => {
   const detailDrawerSource = workbenchSource.slice(
-    workbenchSource.indexOf('<Dialog open={eventDetailOpen'),
+    workbenchSource.indexOf('{eventDetailOpen && selectedEvent ? <aside'),
     workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
   )
   assert.doesNotMatch(detailDrawerSource, /关联待办|删除记录|添加操作文档/u)
@@ -141,7 +141,7 @@ test('delivery workbench enforces one event-level change record and package-only
 
 test('event details separate read-only overview and delivery content tabs', () => {
   const detailDrawerSource = workbenchSource.slice(
-    workbenchSource.indexOf('<Dialog modal={false} open={eventDetailOpen'),
+    workbenchSource.indexOf('{eventDetailOpen && selectedEvent ? <aside'),
     workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
   )
   assert.match(workbenchSource, /基础信息与变更记录/u)
@@ -544,7 +544,7 @@ test('delivery list exposes signed delay days with distinct visual states', () =
 
 test('delivery workbench uses a full-width event list and a desktop right detail drawer', () => {
   const detailDrawerSource = workbenchSource.slice(
-    workbenchSource.indexOf('<Dialog modal={false} open={eventDetailOpen'),
+    workbenchSource.indexOf('{eventDetailOpen && selectedEvent ? <aside'),
     workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
   )
   assert.match(workbenchSource, /delivery-workbench-shell/u)
@@ -554,11 +554,14 @@ test('delivery workbench uses a full-width event list and a desktop right detail
   assert.match(workbenchSource, /delivery-event-table-viewport/u)
   assert.match(workbenchSource, /project-package-event-drawer/u)
   assert.match(workbenchSource, /事件详情暂时无法显示/u)
-  assert.match(workbenchSource, /<Dialog modal=\{false\} open=\{eventDetailOpen/u)
-  assert.match(
-    detailDrawerSource,
-    /<DialogContent[\s\S]*?showOverlay=\{false\}[\s\S]*?className="project-package-event-drawer"[\s\S]*?onInteractOutside=\{\(interactionEvent\) => interactionEvent\.preventDefault\(\)\}[\s\S]*?>/u,
-  )
+  assert.match(detailDrawerSource, /<aside[\s\S]*?aria-describedby=\{eventDetailDescriptionId\}[\s\S]*?aria-labelledby=\{eventDetailTitleId\}[\s\S]*?aria-modal="false"[\s\S]*?className="project-package-event-drawer"[\s\S]*?role="dialog"/u)
+  assert.match(detailDrawerSource, /<h2 id=\{eventDetailTitleId\}>\{selectedEvent\.title\}<\/h2>/u)
+  assert.match(detailDrawerSource, /<p id=\{eventDetailDescriptionId\}>/u)
+  assert.match(detailDrawerSource, /关闭交付事件详情/u)
+  assert.match(detailDrawerSource, /<div className="delivery-drawer-body">/u)
+  assert.doesNotMatch(detailDrawerSource, /<Dialog(?:Content|Title|Description)?[\s>]/u)
+  assert.match(workbenchSource, /event\.key !== 'Escape'/u)
+  assert.match(workbenchSource, /document\.querySelector\('\[data-slot="dialog-content"\]\[data-state="open"\]'\)/u)
   assert.match(workbenchSource, /selectedEvent\.detailsLoaded === false && !eventDetailsError/u)
   assert.match(workbenchSource, /事件不存在、已删除或当前账号无权查看/u)
   assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)
@@ -567,6 +570,8 @@ test('delivery workbench uses a full-width event list and a desktop right detail
     'utf8',
   )
   assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*width: min\(820px/u)
+  assert.match(workbenchCss, /\.project-package-event-drawer[\s\S]*z-index: 50[\s\S]*border: 1px solid var\(--line\)[\s\S]*box-shadow: var\(--shadow-lg\)/u)
+  assert.match(workbenchCss, /\.delivery-drawer-close[\s\S]*position: absolute[\s\S]*padding: 4px/u)
   assert.match(workbenchCss, /\.delivery-event-table-viewport[\s\S]*overflow: auto/u)
   assert.match(workbenchCss, /\.project-event-table-head[\s\S]*position: sticky/u)
   assert.match(workbenchCss, /--delivery-event-content-columns:[\s\S]*minmax\(130px, 1fr\)/u)

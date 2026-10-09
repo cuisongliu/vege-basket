@@ -39,6 +39,7 @@ import {
   SortDescending,
   TerminalWindow,
   Trash,
+  X,
 } from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -1620,6 +1621,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const [packageDocumentValues, setPackageDocumentValues] = useState<Record<string, EventDocumentDraftValue>>({})
   const [activeDocumentScope, setActiveDocumentScope] = useState('event')
   const documentTabsId = useId()
+  const eventDetailTitleId = useId()
+  const eventDetailDescriptionId = useId()
   const [documentTodoPickerOpen, setDocumentTodoPickerOpen] = useState(false)
   const [documentTodoSearch, setDocumentTodoSearch] = useState('')
   const [documentTodoFilterDialogOpen, setDocumentTodoFilterDialogOpen] = useState(false)
@@ -1979,6 +1982,16 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
   const selectedEventDetailId = selectedEvent?.id ?? null
   const selectedEventDetailRevision = selectedEvent?.detailRevision ?? ''
   const selectedEventNeedsDetails = Boolean(selectedEvent && selectedEvent.detailsLoaded === false)
+  useEffect(() => {
+    if (!eventDetailOpen) return
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (document.querySelector('[data-slot="dialog-content"][data-state="open"]')) return
+      setEventDetailOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [eventDetailOpen])
   useEffect(() => {
     const requestId = ++eventDetailsRequestIdRef.current
     if (!selectedEventNeedsDetails || selectedEventDetailId == null) {
@@ -3885,17 +3898,27 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
             <ListPagination label="交付事件分页" page={eventPage} pageSize={eventPageSize} total={eventTotal} disabled={timelineLoading} onPageChange={setEventPage} onPageSizeChange={(size) => { setEventPage(0); setEventPageSize(size) }} />
           </section>
 
-          <Dialog modal={false} open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
-            <DialogContent
-              fixedHeader
-              showOverlay={false}
-              className="project-package-event-drawer"
-              onInteractOutside={(interactionEvent) => interactionEvent.preventDefault()}
-            >
-              <DialogHeader className="delivery-drawer-header">
-                <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
-                <DialogDescription>{selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · ${eventStatusLabel(eventDisplayStatus(selectedEvent))}` : '查看交付事件详情'}</DialogDescription>
-              </DialogHeader>
+          {eventDetailOpen && selectedEvent ? <aside
+            aria-describedby={eventDetailDescriptionId}
+            aria-labelledby={eventDetailTitleId}
+            aria-modal="false"
+            className="project-package-event-drawer"
+            data-state="open"
+            role="dialog"
+          >
+            <DialogHeader className="delivery-drawer-header">
+              <h2 id={eventDetailTitleId}>{selectedEvent.title}</h2>
+              <p id={eventDetailDescriptionId}>{`${eventTypeLabel(selectedEvent.type)} · ${eventStatusLabel(eventDisplayStatus(selectedEvent))}`}</p>
+              <button
+                aria-label="关闭交付事件详情"
+                className="delivery-drawer-close"
+                type="button"
+                onClick={() => setEventDetailOpen(false)}
+              >
+                <X aria-hidden size={16} />
+              </button>
+            </DialogHeader>
+            <div className="delivery-drawer-body">
               {selectedEvent && selectedEvent.detailsLoaded === false && !eventDetailsError ? (
                 <section className="event-workspace event-details-loading" aria-live="polite"><div className="event-details-loading-bar" /><p>正在加载事件详情...</p></section>
               ) : eventDetailsError && selectedEvent ? (
@@ -3943,8 +3966,8 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
                   </TabsContent>
                 </Tabs>
               ) : null}
-            </DialogContent>
-          </Dialog>
+            </div>
+          </aside> : null}
           </>
         )}
       </div>
