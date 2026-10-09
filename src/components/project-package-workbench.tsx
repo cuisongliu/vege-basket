@@ -3886,7 +3886,12 @@ export const ProjectPackageWorkbench = forwardRef<ProjectPackageWorkbenchHandle,
           </section>
 
           <Dialog modal={false} open={eventDetailOpen && Boolean(selectedEvent)} onOpenChange={setEventDetailOpen}>
-            <DialogContent fixedHeader showOverlay={false} className="project-package-event-drawer">
+            <DialogContent
+              fixedHeader
+              showOverlay={false}
+              className="project-package-event-drawer"
+              onInteractOutside={(interactionEvent) => interactionEvent.preventDefault()}
+            >
               <DialogHeader className="delivery-drawer-header">
                 <DialogTitle>{selectedEvent?.title ?? '交付事件详情'}</DialogTitle>
                 <DialogDescription>{selectedEvent ? `${eventTypeLabel(selectedEvent.type)} · ${eventStatusLabel(eventDisplayStatus(selectedEvent))}` : '查看交付事件详情'}</DialogDescription>

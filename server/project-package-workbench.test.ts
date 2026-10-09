@@ -141,7 +141,7 @@ test('delivery workbench enforces one event-level change record and package-only
 
 test('event details separate read-only overview and delivery content tabs', () => {
   const detailDrawerSource = workbenchSource.slice(
-    workbenchSource.indexOf('<Dialog open={eventDetailOpen'),
+    workbenchSource.indexOf('<Dialog modal={false} open={eventDetailOpen'),
     workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
   )
   assert.match(workbenchSource, /基础信息与变更记录/u)
@@ -543,6 +543,10 @@ test('delivery list exposes signed delay days with distinct visual states', () =
 })
 
 test('delivery workbench uses a full-width event list and a desktop right detail drawer', () => {
+  const detailDrawerSource = workbenchSource.slice(
+    workbenchSource.indexOf('<Dialog modal={false} open={eventDetailOpen'),
+    workbenchSource.indexOf('<Dialog open={deliveryResultDialogOpen'),
+  )
   assert.match(workbenchSource, /delivery-workbench-shell/u)
   assert.match(workbenchSource, /delivery-workbench-heading/u)
   assert.match(workbenchSource, /delivery-event-stats/u)
@@ -551,7 +555,10 @@ test('delivery workbench uses a full-width event list and a desktop right detail
   assert.match(workbenchSource, /project-package-event-drawer/u)
   assert.match(workbenchSource, /事件详情暂时无法显示/u)
   assert.match(workbenchSource, /<Dialog modal=\{false\} open=\{eventDetailOpen/u)
-  assert.match(workbenchSource, /<DialogContent fixedHeader showOverlay=\{false\} className="project-package-event-drawer">/u)
+  assert.match(
+    detailDrawerSource,
+    /<DialogContent[\s\S]*?showOverlay=\{false\}[\s\S]*?className="project-package-event-drawer"[\s\S]*?onInteractOutside=\{\(interactionEvent\) => interactionEvent\.preventDefault\(\)\}[\s\S]*?>/u,
+  )
   assert.match(workbenchSource, /selectedEvent\.detailsLoaded === false && !eventDetailsError/u)
   assert.match(workbenchSource, /事件不存在、已删除或当前账号无权查看/u)
   assert.match(workbenchSource, /setEventDetailOpen\(true\)/u)
