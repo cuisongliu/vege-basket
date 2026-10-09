@@ -136,6 +136,12 @@ import {
   OrganizationPermissionErrorDialog,
 } from './organization-permission-error-dialog'
 import { isOrganizationPermissionError, organizationPermissionErrorMessage } from './organization-permission-error'
+import {
+  canApplyOrganizationDetail,
+  canApplyOrganizationDetailRead,
+  mergeOrganizationDetail,
+  organizationDetailSectionsForActiveSection,
+} from '../organization-detail-state'
 
 type OrganizationTab =
   | 'overview'
@@ -147,54 +153,6 @@ type OrganizationTab =
   | 'packageMarket'
 
 type OrganizationTabGroup = 'governance' | 'operations'
-
-function organizationSectionForTab(tab: OrganizationTab): OrganizationDetailSection {
-  return (tab as string) === 'workHours' ? 'overview' : tab
-}
-
-function mergeOrganizationDetail(current: OrganizationDetail, next: OrganizationDetail) {
-  const allSections: OrganizationDetailSection[] = [
-    'members',
-    'overview',
-    'packageMarket',
-    'projects',
-    'reports',
-    'settings',
-    'testSpaces',
-  ]
-  const sections = new Set<OrganizationDetailSection>(next.loadedSections ?? allSections)
-  const includes = (...candidates: OrganizationDetailSection[]) => (
-    candidates.some((section) => sections.has(section))
-  )
-  return {
-    ...current,
-    ...next,
-    attachableProjects: includes('projects') ? next.attachableProjects : current.attachableProjects,
-    attachableTestSpaces: includes('testSpaces') ? next.attachableTestSpaces : current.attachableTestSpaces,
-    departedUserIds: includes('overview') ? next.departedUserIds : current.departedUserIds,
-    invitations: includes('members', 'settings') ? next.invitations : current.invitations,
-    loadedSections: [...new Set([...(current.loadedSections ?? []), ...sections])],
-    members: includes('members', 'overview', 'projects', 'reports', 'settings', 'testSpaces')
-      ? next.members
-      : current.members,
-    packageMarketPolicy: includes('packageMarket', 'settings')
-      ? next.packageMarketPolicy
-      : current.packageMarketPolicy,
-    projects: includes('overview', 'projects') ? next.projects : current.projects,
-    projectModules: includes('settings') ? next.projectModules : current.projectModules,
-    reports: includes('reports') ? next.reports : current.reports,
-    summaries: includes('reports') ? next.summaries : current.summaries,
-    tasks: includes('overview') ? next.tasks : current.tasks,
-    testEnvironments: includes('testSpaces') ? next.testEnvironments : current.testEnvironments,
-    testSpaces: includes('overview', 'testSpaces') ? next.testSpaces : current.testSpaces,
-    weeklyReportAssignments: includes('reports', 'settings')
-      ? next.weeklyReportAssignments
-      : current.weeklyReportAssignments,
-    weeklyReportProfiles: includes('reports', 'settings')
-      ? next.weeklyReportProfiles
-      : current.weeklyReportProfiles,
-  }
-}
 
 const organizationTabs: Array<{
   group: OrganizationTabGroup
@@ -423,6 +381,7 @@ export function OrganizationWorkbench({
 }) {
   const [organizations, setOrganizations] = useState<OrganizationListItem[]>(initialOrganizations)
   const [selectedOrganizationId, setSelectedOrganizationId] = useState(initialSelectedOrganizationId ?? initialOrganizations[0]?.id ?? 0)
+  const selectedOrganizationIdRef = useRef(selectedOrganizationId)
   const [detail, setDetail] = useState<OrganizationDetail | null>(null)
   const [tab, setTab] = useState<OrganizationTab>('overview')
   const [testResourceTab, setTestResourceTab] = useState<'spaces' | 'environments'>('spaces')
@@ -478,8 +437,31 @@ export function OrganizationWorkbench({
   const packageMarketDraftOrganizationId = useRef(0)
   const loadedDetailId = useRef(0)
   const loadedPackageMarketCatalogOrganizationId = useRef(0)
-  const detailSectionRefreshVersions = useRef<Record<string, number>>({})
+  const detailReadVersion = useRef(0)
+  const detailRef = useRef(detail)
   const canAccessOrganizationManagement = hasOrganizationAdminRole(currentUser.roles)
+
+  const selectOrganization = useCallback((organizationId: number) => {
+    detailReadVersion.current += 1
+    selectedOrganizationIdRef.current = organizationId
+    setSelectedOrganizationId(organizationId)
+  }, [])
+
+  const applyCanonicalDetail = useCallback((
+    nextDetail: OrganizationDetail,
+    expectedOrganizationId: number,
+  ) => {
+    if (!canApplyOrganizationDetail(
+      expectedOrganizationId,
+      selectedOrganizationIdRef.current,
+      nextDetail,
+    )) return false
+    detailReadVersion.current += 1
+    setDetail(nextDetail)
+    setDetailLoading(false)
+    setLoading(false)
+    return true
+  }, [])
 
   const showOrganizationPermissionError = useCallback((failure: unknown) => {
     if (!isOrganizationPermissionError(failure)) return false
@@ -490,6 +472,10 @@ export function OrganizationWorkbench({
   useEffect(() => {
     if (tab !== 'reports') setWeeklyAdminTab('collection')
   }, [tab])
+
+  useEffect(() => {
+    detailRef.current = detail
+  }, [detail])
 
   useEffect(() => startVisibleRefreshSchedule({
     clearInterval: (handle) => window.clearInterval(handle),
@@ -510,13 +496,20 @@ export function OrganizationWorkbench({
 
   useEffect(() => {
     setOrganizations(initialOrganizations)
-    setSelectedOrganizationId((current) => (
-      initialOrganizations.some((organization) => organization.id === current)
-        ? current
+    const currentOrganizationId = selectedOrganizationIdRef.current
+    const nextOrganizationId = initialOrganizations.some((organization) => organization.id === currentOrganizationId)
+      ? currentOrganizationId
         : initialSelectedOrganizationId ?? initialOrganizations[0]?.id ?? 0
-    ))
+    if (nextOrganizationId !== currentOrganizationId) selectOrganization(nextOrganizationId)
     setLoading(false)
-  }, [initialOrganizations, initialSelectedOrganizationId])
+  }, [initialOrganizations, initialSelectedOrganizationId, selectOrganization])
+
+  const activeDetailSection: OrganizationDetailSection = tab
+  const activeDetailSections = useMemo(
+    () => organizationDetailSectionsForActiveSection(activeDetailSection),
+    [activeDetailSection],
+  )
+  const activeDetailSectionLoaded = detail?.loadedSections?.includes(activeDetailSection) ?? true
 
   useEffect(() => {
     if (!selectedOrganizationId) {
@@ -527,17 +520,25 @@ export function OrganizationWorkbench({
     }
     let active = true
     const controller = new AbortController()
+    const requestVersion = ++detailReadVersion.current
     const showLoading = loadedDetailId.current !== selectedOrganizationId
+      || !(detailRef.current?.loadedSections?.includes(activeDetailSection) ?? true)
     if (showLoading) {
       setDetailLoading(true)
       setLoading(true)
     }
     fetchOrganization(selectedOrganizationId, {
-      sections: ['overview'],
+      sections: activeDetailSections,
       signal: controller.signal,
     })
       .then((nextDetail) => {
-        if (active) {
+        if (active && canApplyOrganizationDetailRead(
+          requestVersion,
+          detailReadVersion.current,
+          selectedOrganizationId,
+          selectedOrganizationIdRef.current,
+          nextDetail,
+        )) {
           loadedDetailId.current = nextDetail.id
           setDetail((current) => (
             current?.id === nextDetail.id ? mergeOrganizationDetail(current, nextDetail) : nextDetail
@@ -546,10 +547,10 @@ export function OrganizationWorkbench({
         }
       })
       .catch((loadError) => {
-        if (active) setError(errorMessage(loadError))
+        if (active && requestVersion === detailReadVersion.current) setError(errorMessage(loadError))
       })
       .finally(() => {
-        if (active && showLoading) {
+        if (active && requestVersion === detailReadVersion.current && showLoading) {
           setDetailLoading(false)
           setLoading(false)
         }
@@ -558,44 +559,7 @@ export function OrganizationWorkbench({
       active = false
       controller.abort()
     }
-  }, [backgroundRefreshVersion, selectedOrganizationId])
-
-  const activeDetailSection = organizationSectionForTab(tab)
-  const activeDetailSectionLoaded = detail?.loadedSections?.includes(activeDetailSection) ?? true
-  useEffect(() => {
-    if (!detail) return
-    const sectionKey = `${detail.id}:${activeDetailSection}`
-    const needsBackgroundRefresh = backgroundRefreshVersion
-      > (detailSectionRefreshVersions.current[sectionKey] ?? 0)
-    const primarySectionRefreshesWithDetail = activeDetailSection === 'overview'
-      || activeDetailSection === 'settings'
-    if (activeDetailSectionLoaded && (!needsBackgroundRefresh || primarySectionRefreshesWithDetail)) return
-    let active = true
-    const controller = new AbortController()
-    if (!activeDetailSectionLoaded) setDetailLoading(true)
-    fetchOrganization(detail.id, {
-      sections: [activeDetailSection],
-      signal: controller.signal,
-    })
-      .then((nextDetail) => {
-        if (active) {
-          detailSectionRefreshVersions.current[sectionKey] = backgroundRefreshVersion
-          setDetail((current) => (
-            current?.id === nextDetail.id ? mergeOrganizationDetail(current, nextDetail) : current
-          ))
-        }
-      })
-      .catch((loadError) => {
-        if (active) setError(errorMessage(loadError))
-      })
-      .finally(() => {
-        if (active && !activeDetailSectionLoaded) setDetailLoading(false)
-      })
-    return () => {
-      active = false
-      controller.abort()
-    }
-  }, [activeDetailSection, activeDetailSectionLoaded, backgroundRefreshVersion, detail])
+  }, [activeDetailSection, activeDetailSections, backgroundRefreshVersion, selectedOrganizationId])
 
   useEffect(() => {
     setOrganizationRenameDraft(detail?.name ?? '')
@@ -675,14 +639,15 @@ export function OrganizationWorkbench({
   }
 
   async function mutate(operation: () => Promise<OrganizationDetail>, confirmed = false, matches: (data: OrganizationDetail) => boolean = () => false) {
+    detailReadVersion.current += 1
     setBusy(true)
     setError('')
     setOrganizationSettingsError('')
     try {
       const nextDetail = confirmed ? await reconcileAction(operation, () => fetchOrganization(selectedOrganizationId), matches) : await operation()
+      const applied = applyCanonicalDetail(nextDetail, selectedOrganizationId)
       if (actionScopeRef.current !== actionScope) return false
-      setDetail(nextDetail)
-      return true
+      return applied
     } catch (mutationError) {
       if (confirmed) throw mutationError
       if (!showOrganizationPermissionError(mutationError)) setError(errorMessage(mutationError))
@@ -694,15 +659,19 @@ export function OrganizationWorkbench({
 
   async function refreshResources() {
     if (!selectedOrganizationId) return
-    setDetail(await fetchOrganization(selectedOrganizationId))
+    const requestVersion = ++detailReadVersion.current
+    const nextDetail = await fetchOrganization(selectedOrganizationId)
+    if (requestVersion === detailReadVersion.current) {
+      applyCanonicalDetail(nextDetail, selectedOrganizationId)
+    }
   }
 
   async function applyProjectOrganizationTransfer(
     targetOrganizationId: number,
     nextDetail: OrganizationDetail,
   ) {
-    setDetail(nextDetail)
-    setSelectedOrganizationId(targetOrganizationId)
+    selectOrganization(targetOrganizationId)
+    applyCanonicalDetail(nextDetail, targetOrganizationId)
     setProjectHealth('all')
     setProjectQuery('')
     setProjectStatus('all')
@@ -720,9 +689,10 @@ export function OrganizationWorkbench({
     setBusy(true)
     setError('')
     setOrganizationSettingsError('')
+    detailReadVersion.current += 1
     try {
       const nextDetail = await updateOrganization(detail.id, name)
-      setDetail(nextDetail)
+      applyCanonicalDetail(nextDetail, detail.id)
       setOrganizations((current) => current.map((organization) => (
         organization.id === nextDetail.id
           ? { ...organization, name: nextDetail.name }
@@ -747,7 +717,7 @@ export function OrganizationWorkbench({
       const created = await createOrganization(organizationName)
       const result = await fetchOrganizations()
       setOrganizations(result.organizations)
-      setSelectedOrganizationId(created.id)
+      selectOrganization(created.id)
       setNewOrganizationName('')
       setNewOrganizationOpen(false)
       onOrganizationsChanged?.()
@@ -774,6 +744,7 @@ export function OrganizationWorkbench({
     if (!detail || !packageMarketPolicyDraft) return
     setPackageMarketPolicySaving(true)
     setOrganizationSettingsError('')
+    detailReadVersion.current += 1
     try {
       const nextDetail = await updateOrganizationPackageMarketPolicy(detail.id, {
         featureEnabled: packageMarketPolicyDraft.enabled,
@@ -783,7 +754,7 @@ export function OrganizationWorkbench({
         selection: packageMarketPolicyDraft.selection,
         showDependencies: packageMarketPolicyDraft.showDependencies,
       })
-      setDetail(nextDetail)
+      applyCanonicalDetail(nextDetail, detail.id)
       setOrganizations((current) => current.map((organization) => (
         organization.id === nextDetail.id
           ? {
@@ -821,6 +792,7 @@ export function OrganizationWorkbench({
     setBusy(true)
     setWeeklyRulesError('')
     setError('')
+    detailReadVersion.current += 1
     const scope = actionScopeRef.current
     try {
       const nextDetail = await updateOrganizationWeeklyReportRules(detail.id, {
@@ -829,8 +801,8 @@ export function OrganizationWorkbench({
         weeklyReportEnabled: weeklyReportEnabledDraft,
         weeklyReportRules: rules,
       })
+      applyCanonicalDetail(nextDetail, detail.id)
       if (scope !== actionScopeRef.current) return
-      setDetail(nextDetail)
       setWeeklyCollection(null)
       setWeeklyCollectionRefresh((value) => value + 1)
       setWeeklyAdminTab('collection')
@@ -854,8 +826,12 @@ export function OrganizationWorkbench({
     if (!detail || !inviteUsername.trim()) return
     setBusy(true)
     setInviteDialogError('')
+    detailReadVersion.current += 1
     try {
-      setDetail(await inviteOrganizationMemberByUsername(detail.id, inviteUsername.trim()))
+      applyCanonicalDetail(
+        await inviteOrganizationMemberByUsername(detail.id, inviteUsername.trim()),
+        detail.id,
+      )
       setInviteUsername('')
     } catch (inviteError) {
       setInviteDialogError(errorMessage(inviteError))
@@ -1079,7 +1055,7 @@ export function OrganizationWorkbench({
             value={String(selectedOrganizationId)}
             onValueChange={(value) => {
               setOrganizationSettingsError('')
-              setSelectedOrganizationId(Number(value))
+              selectOrganization(Number(value))
             }}
           >
             <SelectTrigger className="organization-topbar-switcher" aria-label="选择组织">
@@ -1569,7 +1545,7 @@ export function OrganizationWorkbench({
                   modules={detail.projectModules}
                   disabled={busy}
                   onSaved={(nextDetail) => {
-                    setDetail(current => current?.id === nextDetail.id ? nextDetail : current)
+                    applyCanonicalDetail(nextDetail, nextDetail.id)
                     onProjectModulesChanged?.()
                   }}
                   onError={showOrganizationPermissionError}

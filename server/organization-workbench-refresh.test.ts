@@ -41,6 +41,20 @@ test('organization detail loading cannot render the empty organization state ear
   assert.match(workbenchSource, /if \(!detail \|\| detail\.id !== selectedOrganizationId\)/u)
 })
 
+test('organization refresh uses one overview plus active-section request', () => {
+  assert.match(workbenchSource, /organizationDetailSectionsForActiveSection\(activeDetailSection\)/u)
+  assert.match(workbenchSource, /sections: activeDetailSections/u)
+  assert.match(workbenchSource, /requestVersion === detailReadVersion\.current/u)
+  assert.match(workbenchSource, /canApplyOrganizationDetail/u)
+  assert.match(workbenchSource, /canApplyOrganizationDetailRead/u)
+  assert.match(workbenchSource, /selectedOrganizationIdRef\.current/u)
+  assert.match(
+    workbenchSource,
+    /const applied = applyCanonicalDetail\(nextDetail, selectedOrganizationId\)[\s\S]*?if \(actionScopeRef\.current !== actionScope\) return false[\s\S]*?return applied/u,
+  )
+  assert.doesNotMatch(workbenchSource, /detailSectionRefreshVersions/u)
+})
+
 test('organization management replaces the workspace navigation in the existing sidebar', () => {
   assert.match(appSource, /view === 'organization'[\s\S]*?ref=\{setOrganizationSidebarHost\}/u)
   assert.match(appSource, /sidebarNavigationHost=\{organizationSidebarHost\}/u)

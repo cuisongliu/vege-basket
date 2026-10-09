@@ -135,7 +135,8 @@ test('organization sections preserve the complete default and avoid multiplied c
   assert.doesNotMatch(organizationServerSource, /left join test_bugs b on b\.test_space_id = s\.id/u)
   assert.match(organizationClientSource, /mergeOrganizationDetail/u)
   assert.match(organizationServerSource, /weekly-report-context/u)
-  assert.match(organizationClientSource, /sections: \['overview'\]/u)
+  assert.match(organizationClientSource, /organizationDetailSectionsForActiveSection/u)
+  assert.match(organizationClientSource, /sections: activeDetailSections/u)
   assert.doesNotMatch(organizationClientSource, /sections: \['overview', 'settings'\]/u)
 })
 

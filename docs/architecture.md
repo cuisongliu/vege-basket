@@ -179,6 +179,11 @@ explicit successful mutation. The test and organization workbenches may request 
 sections for their active tab; omitting the section parameter preserves the complete legacy
 response used by mutations and compatibility callers. Every section performs the same server-side
 authentication and resource authorization as the complete response.
+The organization workbench requests the overview and visible tab section together. Scoped response
+merging updates only fields owned by the returned sections: an overview refresh may update project
+summary fields or remove inaccessible projects, but it must preserve already loaded project members
+and milestones. A projects response remains authoritative for genuine member or milestone removal.
+Request generations prevent an older background read from overwriting a canonical mutation result.
 
 The application shell no longer uses the legacy complete workspace response for routine loading.
 Authentication returns only the project catalog. Catalog reconciliation runs every 30 seconds,
