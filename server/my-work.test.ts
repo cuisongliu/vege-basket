@@ -84,6 +84,7 @@ test('keeps ordinary responsibility separate from the organization-admin work-ho
   assert.match(myWorkSource, /\$7::boolean = true\s+and \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}\s+and not t\.done/u)
   assert.doesNotMatch(myWorkSource, /\$7::boolean = true[\s\S]*?work_hours\.submitted_minutes > 0/u)
   assert.doesNotMatch(myWorkSource, /\$7::boolean = true\s+and coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
+  assert.match(myWorkSource, /p\.organization_id is null[\s\S]*?coalesce\(t\.created_by_user_id, p\.user_id\) = \$1/u)
 })
 
 test('navigation count matches the actionable work-hour confirmation queue', () => {

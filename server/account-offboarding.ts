@@ -163,7 +163,7 @@ export async function getOffboardingPreview(userId: number): Promise<Offboarding
       query<{ count: string }>(
         `select count(*)::text as count
          from todos t join projects p on p.id = t.project_id
-         where p.organization_id = $1 and t.assignee_user_id = $2 and t.done = false`,
+         where p.organization_id = $1 and t.assignee_user_id = $2 and t.done = false and t.todo_status <> 'discarded'`,
         [organizationId, userId],
       ),
       query<{ count: string }>(
@@ -432,7 +432,7 @@ export async function offboardUser(input: {
         }>(
           `select id, project_id, title, due_date, priority
            from todos
-           where project_id = $1 and assignee_user_id = $2 and done = false
+           where project_id = $1 and assignee_user_id = $2 and done = false and todo_status <> 'discarded'
            order by id for update`,
           [projectId, userId],
         )

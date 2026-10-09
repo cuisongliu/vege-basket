@@ -21,6 +21,7 @@ export type AiTodoProposalCatalog = {
     id: number
     modules: Array<{ id: number; name: string }>
     name: string
+    organizationId?: number | null
   }>
 }
 
@@ -188,6 +189,9 @@ function parseProposal(
     title: boundedString(value.title, `proposals[${index}].title`, 200),
   }
   if (hasEstimate) {
+    if (project && project.organizationId == null) {
+      throw new AiTodoProposalValidationError(`proposals[${index}].estimatedWorkMinutes is not supported for personal projects`)
+    }
     const minutes = value.estimatedWorkMinutes
     if (!Number.isSafeInteger(minutes) || Number(minutes) < 60 || Number(minutes) > 1440 || Number(minutes) % 60 !== 0) {
       throw new AiTodoProposalValidationError(`proposals[${index}].estimatedWorkMinutes must be a positive integer hour`)

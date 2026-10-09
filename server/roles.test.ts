@@ -128,7 +128,8 @@ test('tester persona keeps capability-authorized weekly report and AI views avai
 
 test('tester identity hides project delivery while developer identity retains it', () => {
   assert.match(appSource, /const canViewProjectDelivery = Boolean\(authUser && authUser\.activeRole !== 'tester'\)/u)
-  assert.match(appSource, /canViewProjectDelivery=\{canViewProjectDelivery\}/u)
+  assert.match(appSource, /canViewSelectedProjectDelivery = canViewProjectDelivery && selectedProject\?\.organizationId != null/u)
+  assert.match(appSource, /canViewProjectDelivery=\{canViewSelectedProjectDelivery\}/u)
   assert.match(appSource, /projectDetailTab === 'packages' && !canViewProjectDelivery/u)
 })
 

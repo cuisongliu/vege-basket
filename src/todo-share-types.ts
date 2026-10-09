@@ -18,6 +18,7 @@ export type TodoShareView = {
   departedUserIds: number[]
   detail: string
   done: boolean
+  todoStatus: 'open' | 'completed' | 'discarded'
   dueDate: string
   mentionableMembers: Array<{ id: number; name: string }>
   moduleName: string | null

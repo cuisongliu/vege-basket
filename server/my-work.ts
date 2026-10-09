@@ -82,7 +82,9 @@ export async function getMyWork(
           and (t.confirmation_status = 'pending_review' or t.done)
         ) as can_complete,
         t.title,
-        case when t.done then 'completed' else t.confirmation_status end as status,
+        case when t.todo_status = 'completed' or t.done then 'completed'
+             when t.todo_status = 'discarded' then 'discarded'
+             else t.confirmation_status end as status,
         t.priority, t.due_date::text as due_at, t.updated_at,
         case
           when t.reviewer_user_id = $1 then 'reviewer'
@@ -124,6 +126,11 @@ export async function getMyWork(
                 t.assignee_user_id = $1
                 and t.confirmation_status <> 'pending_review'
               )
+              or (
+                p.organization_id is null
+                and t.assignee_user_id is null
+                and coalesce(t.created_by_user_id, p.user_id) = $1
+              )
               or t.reviewer_user_id = $1
             )
           )
@@ -134,6 +141,7 @@ export async function getMyWork(
           )
         )
         and (${managedOrganizationReadScopeSql('p.organization_id', '$1')} or p.user_id = $1 or mine.id is not null)
+        and t.todo_status <> 'discarded'
         and ($7::boolean = true or t.confirmation_status <> 'rejected')
       union all
       select 'delivery'::text, e.id, e.project_id, p.organization_id, p.name, null::text, null::text,

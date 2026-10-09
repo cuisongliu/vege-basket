@@ -52,10 +52,12 @@ test('legacy todo acceptance stays creator-only for enterprise todos without cha
   assert.match(source, /lockedTodo\.organization_id != null\s*\? createdByUserId === userId\s*:\s*canUserReviewTodo/u)
 })
 
-test('personal todo creation keeps estimate and assignee optional', () => {
+test('personal todos reject enterprise-only estimate and assignee fields', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
   assert.match(source, /let estimatedWorkMinutes: number \| null = null/u)
-  assert.match(source, /else if \(request\.body\.estimatedWorkMinutes != null && request\.body\.estimatedWorkMinutes !== ''\)/u)
+  assert.match(source, /else if \('estimatedWorkMinutes' in request\.body\)/u)
+  assert.match(source, /if \(existingTodo\.rows\[0\]\.organization_id == null && 'estimatedWorkMinutes' in request\.body\)/u)
+  assert.match(source, /if \(isPersonalProject && \(/u)
   assert.match(source, /if \(projectOrganization\?\.organization_id && !assigneeUserId\)/u)
 })
 
@@ -64,6 +66,14 @@ test('work-hour edits and deletes lock the todo before the entry', () => {
   assert.match(source, /getTodoForWork\(client, Number\(reference\.todo_id\), userId, true\)/u)
   assert.match(source, /where entry\.id = \$1[^`]*for update of entry/u)
   assert.match(source, /where id = \$1 for update'[,\n]/u)
+})
+
+test('discarded todos reject every work-hour mutation path', () => {
+  const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /todo_status: 'open' \| 'completed' \| 'discarded'/u)
+  assert.match(source, /TODO_DISCARDED/u)
+  assert.equal(source.match(/requireActiveTodoForWorkHours\(/gu)?.length, 7)
 })
 
 test('work-hour schema preserves task-project identity and bounded states', () => {
@@ -141,7 +151,7 @@ test('task completion is restricted to the work-hour confirmation transaction', 
 test('workspace todo aggregates join the project before filtering managed visibility', () => {
   const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
   assert.match(source, /from todos t\s+join projects p on p\.id = t\.project_id\s+left join lateral \(/u)
-  assert.match(source, /hours\.user_id = \$1\s+or t\.created_by_user_id = \$1\s+or \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}/u)
+  assert.match(source, /hours\.user_id = \$1\s+or t\.created_by_user_id = \$1\s+or p\.user_id = \$1\s+or \$\{managedOrganizationReadScopeSql\('p\.organization_id', '\$1'\)\}/u)
 })
 
 test('demo review queue targets an organization administrator and includes mixed confirmation states', () => {

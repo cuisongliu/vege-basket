@@ -138,7 +138,7 @@ const projectSources = {
     alias: 'todo',
     title: 'todo.title',
     status:
-      "case when todo.done then 'completed' else todo.confirmation_status end",
+      "case when todo.todo_status = 'completed' or todo.done then 'completed' when todo.todo_status = 'discarded' then 'discarded' else todo.confirmation_status end",
     period: todoPeriodSql,
     date: todoMatchedDateSql,
     related:

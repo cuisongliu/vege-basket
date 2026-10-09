@@ -24,20 +24,21 @@ test('project basket defaults to active projects while preserving explicit statu
   assert.match(appSource, /<SelectItem value="archived">归档<\/SelectItem>/u)
 })
 
-test('project basket hides completed todos by default while preserving explicit status filters', () => {
+test('project basket hides non-open todos by default while preserving explicit status filters', () => {
   const todoListStart = appSource.indexOf('function TodoList(')
   const todoListSource = appSource.slice(todoListStart)
 
   assert.ok(todoListStart >= 0)
   assert.match(todoListSource, /const hasExplicitStatusFilter = todoFilterConditions\.some\(\(condition\) => condition\.field === 'status'\)/u)
   assert.match(todoListSource, /const useDefaultOpenFilter = !todoFilterPersistenceEnabled && !hasExplicitStatusFilter/u)
-  assert.match(todoListSource, /\(!useDefaultOpenFilter \|\| compact \|\| !todo\.done\)/u)
+  assert.match(todoListSource, /\(!useDefaultOpenFilter \|\| compact \|\| todo\.todoStatus === 'open'\)/u)
 })
 
-test('project creation is available only from organization project management', () => {
-  assert.doesNotMatch(appSource, /isNewProjectDialogOpen/u)
-  assert.doesNotMatch(appSource, /function NewProjectForm\(/u)
-  assert.doesNotMatch(appSource, /<DialogTitle>新建项目<\/DialogTitle>/u)
+test('personal project basket restores its own creation entry while organization creation stays managed', () => {
+  assert.match(appSource, /isNewProjectDialogOpen/u)
+  assert.match(appSource, /function NewProjectForm\(/u)
+  assert.match(appSource, /selectedOrganizationId === null/u)
+  assert.match(appSource, /<DialogTitle>新建项目<\/DialogTitle>/u)
   assert.match(organizationWorkbenchSource, /\{detail\.canManageProjects \? \(/u)
   assert.match(organizationWorkbenchSource, /<DialogTitle>新建项目<\/DialogTitle>/u)
   assert.match(organizationWorkbenchSource, /await createProject\(\{/u)

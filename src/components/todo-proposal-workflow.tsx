@@ -330,11 +330,16 @@ export const TodoProposalWorkflow = forwardRef<
                       <Select
                         disabled={confirming || readOnly}
                         value={proposal.projectId ? String(proposal.projectId) : 'none'}
-                        onValueChange={(value) => updateProposal(proposal.clientId, {
-                          assigneeUserId: null,
-                          moduleId: null,
-                          projectId: value === 'none' ? null : Number(value),
-                        })}
+                        onValueChange={(value) => {
+                          const nextProjectId = value === 'none' ? null : Number(value)
+                          const nextProject = projects.find((item) => item.id === nextProjectId)
+                          updateProposal(proposal.clientId, {
+                            assigneeUserId: null,
+                            estimatedWorkMinutes: nextProject?.organizationId ? proposal.estimatedWorkMinutes : null,
+                            moduleId: null,
+                            projectId: nextProjectId,
+                          })
+                        }}
                       >
                         <SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger>
                         <SelectContent>
@@ -363,22 +368,24 @@ export const TodoProposalWorkflow = forwardRef<
                         </SelectContent>
                       </Select>
                     </Label>
-                    <Label>
-                      负责人
-                      <Select
-                        disabled={confirming || readOnly || !project}
-                        value={proposal.assigneeUserId ? String(proposal.assigneeUserId) : 'none'}
-                        onValueChange={(value) => updateProposal(proposal.clientId, {
-                          assigneeUserId: value === 'none' ? null : Number(value),
-                        })}
-                      >
-                        <SelectTrigger><SelectValue placeholder="暂不指派" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">暂不指派</SelectItem>
-                          {members.map((member) => <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </Label>
+                    {project?.organizationId ? (
+                      <Label>
+                        负责人
+                        <Select
+                          disabled={confirming || readOnly}
+                          value={proposal.assigneeUserId ? String(proposal.assigneeUserId) : 'none'}
+                          onValueChange={(value) => updateProposal(proposal.clientId, {
+                            assigneeUserId: value === 'none' ? null : Number(value),
+                          })}
+                        >
+                          <SelectTrigger><SelectValue placeholder="暂不指派" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">暂不指派</SelectItem>
+                            {members.map((member) => <SelectItem key={member.id} value={String(member.id)}>{member.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </Label>
+                    ) : null}
                     <Label>
                       截止日期
                       <Input

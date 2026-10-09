@@ -246,7 +246,18 @@ export function TodoActivityPanel({
                 icon: <ArrowCounterClockwise size={18} weight="bold" />,
                 label: '重新打开',
               },
-            }[event.eventType]
+              discarded: {
+                className: 'is-rejected',
+                description: '废弃了这项待办',
+                icon: <XCircle size={18} weight="fill" />,
+                label: '已废弃',
+              },
+            }[event.eventType] ?? {
+              className: 'is-assigned',
+              description: '更新了这项待办',
+              icon: <ArrowClockwise size={18} weight="bold" />,
+              label: '已更新',
+            }
             return (
               <li key={event.id} className={eventMeta.className}>
                 <span className="todo-activity-icon" aria-hidden>
@@ -257,7 +268,10 @@ export function TodoActivityPanel({
                     <strong>{event.todoTitle}</strong>
                     <span>{eventMeta.label}</span>
                   </div>
-                  <p><UserName departedUserIds={departedUserIds} name={event.actorName} userId={event.actorUserId} /> {eventMeta.description}</p>
+                  <p>
+                    <UserName departedUserIds={departedUserIds} name={event.actorName} userId={event.actorUserId} /> {eventMeta.description}
+                    {event.eventType === 'discarded' && event.detail ? `：${event.detail}` : null}
+                  </p>
                 </div>
                 <time dateTime={event.occurredAt}>{event.occurredAt}</time>
               </li>

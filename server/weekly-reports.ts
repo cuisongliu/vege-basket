@@ -936,9 +936,9 @@ async function loadGenerationFacts(
   }>(
     `select project.id::text as project_id, project.name as project_name,
        count(*)::int as total,
-       (count(*) filter (where todo.done))::int as completed,
-       (count(*) filter (where not todo.done and todo.confirmation_status = 'pending_review'))::int as pending_review,
-       (count(*) filter (where not todo.done and todo.confirmation_status <> 'rejected'))::int as unfinished
+       (count(*) filter (where todo.todo_status = 'completed' or todo.done))::int as completed,
+       (count(*) filter (where todo.todo_status = 'open' and todo.confirmation_status = 'pending_review' and not todo.done))::int as pending_review,
+       (count(*) filter (where todo.todo_status = 'open' and not todo.done and todo.confirmation_status <> 'rejected'))::int as unfinished
      from todos todo
      join projects project on project.id = todo.project_id
      where ${sourceProjectAccessSql}

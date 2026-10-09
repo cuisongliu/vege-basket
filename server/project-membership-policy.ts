@@ -27,6 +27,7 @@ export async function getProjectMemberTaskBlockers(
        (select count(distinct todo.id)
           from todos todo
          where todo.project_id = $1::bigint
+           and todo.todo_status <> 'discarded'
            and (todo.done = false or todo.confirmation_status = 'pending_review')
            and (
              todo.assignee_user_id = $2::bigint
@@ -70,6 +71,7 @@ export async function getOrganizationMemberTaskBlockers(
           from todos todo
           join projects project on project.id = todo.project_id
          where project.organization_id = $1::bigint
+           and todo.todo_status <> 'discarded'
            and (todo.done = false or todo.confirmation_status = 'pending_review')
            and (
              todo.assignee_user_id = $2::bigint

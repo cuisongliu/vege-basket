@@ -141,6 +141,16 @@ test('rejects invalid dates, confidence, priorities, and unknown fields', () => 
   )
 })
 
+test('personal project proposals cannot carry estimates', () => {
+  assert.throws(
+    () => parseAiTodoProposalResponse(response({ assigneeUserId: null, estimatedWorkMinutes: 60, moduleId: null }), {
+      catalog,
+      sourceMarkdown,
+    }),
+    /estimatedWorkMinutes is not supported for personal projects/,
+  )
+})
+
 test('requires strict JSON and enforces the proposal count limit', () => {
   assert.throws(
     () => parseAiTodoProposalResponse('```json\n{}\n```', { catalog, sourceMarkdown }),

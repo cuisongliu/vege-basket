@@ -3920,6 +3920,7 @@ textarea:focus {
 .todo-status-marker.is-open { background: color-mix(in oklch, #4c86b8 10%, var(--surface)); border-color: color-mix(in oklch, #4c86b8 40%, var(--line)); color: #4c86b8; }
 .todo-status-marker.is-review { background: color-mix(in oklch, #c98a35 12%, var(--surface)); border-color: color-mix(in oklch, #c98a35 42%, var(--line)); color: #a66a16; }
 .todo-status-marker.is-done { background: color-mix(in oklch, var(--brand) 12%, var(--surface)); border-color: color-mix(in oklch, var(--brand) 42%, var(--line)); color: var(--brand); }
+.todo-status-marker.is-discarded { background: color-mix(in oklch, var(--destructive) 9%, var(--surface)); border-color: color-mix(in oklch, var(--destructive) 34%, var(--line)); color: var(--destructive); }
 .todo-status-marker.is-returned { background: color-mix(in oklch, #b2483e 10%, var(--surface)); border-color: color-mix(in oklch, #b2483e 38%, var(--line)); color: #b2483e; }
 
 .todo-workflow-table {
@@ -3964,6 +3965,19 @@ textarea:focus {
   border-bottom: 1px solid var(--line);
   padding: 8px 0;
   transition: background-color 0.16s ease;
+}
+
+.todo-workflow-table.is-personal {
+  min-width: 620px;
+}
+
+.todo-workflow-table.is-personal .todo-workflow-table-header,
+.todo-workflow-table.is-personal .todo-workflow-table-row {
+  grid-template-columns: minmax(280px, 1fr) 84px minmax(250px, auto);
+}
+
+.todo-workflow-table.is-personal .todo-workflow-table-header > :nth-child(2) {
+  padding-inline-start: 7px;
 }
 
 .todo-workflow-table-row:hover {
@@ -4032,6 +4046,7 @@ textarea:focus {
 .todo-workflow-status.is-open { background: color-mix(in oklch, #4c86b8 12%, transparent); color: #4c86b8; }
 .todo-workflow-status.is-review { background: color-mix(in oklch, #c98a35 14%, transparent); color: #a66a16; }
 .todo-workflow-status.is-done { background: color-mix(in oklch, var(--brand) 14%, transparent); color: var(--brand); }
+.todo-workflow-status.is-discarded { background: color-mix(in oklch, var(--destructive) 10%, transparent); color: var(--destructive); }
 
 .todo-workflow-actions {
   display: inline-flex;
@@ -4043,6 +4058,19 @@ textarea:focus {
 .todo-workflow-actions button {
   width: 30px;
   height: 30px;
+}
+
+.todo-lifecycle-status-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+}
+
+.todo-workflow-actions .todo-lifecycle-status-actions button:not([aria-label^='重新打开']) {
+  width: auto;
+  min-width: 52px;
+  padding-inline: 10px;
 }
 
 .todo-work-summary {
@@ -13084,6 +13112,8 @@ textarea:focus {
 
   .todo-workflow-table-row.is-review { border-left-color: #c98a35; }
   .todo-workflow-table-row.is-done { border-left-color: var(--brand); }
+  .todo-workflow-table-row.is-discarded { border-left-color: var(--destructive); }
+  .todo-workflow-table.is-personal { min-width: 0; }
   .todo-workflow-title { grid-column: 1 / -1; }
   .todo-workflow-assignee { grid-column: 1; }
   .todo-workflow-number { text-align: left; }

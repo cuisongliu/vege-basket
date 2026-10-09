@@ -288,6 +288,7 @@ async function loadDigestFacts(run: DigestRunRow): Promise<DailyTodoDigestFacts>
           )
         )
         and t.done = false
+        and t.todo_status = 'open'
         and t.confirmation_status = 'confirmed'
       order by t.due_date, case t.priority when 'high' then 0 when 'medium' then 1 else 2 end, t.id
       limit 40

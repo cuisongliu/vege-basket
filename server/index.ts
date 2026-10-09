@@ -3,6 +3,7 @@ import { reassignProjectPackageEvent } from './project-package-timeline.ts'
 import 'dotenv/config'
 import { canCompleteProjectTransfer, lockTransferProject } from './project-transfer.ts'
 import { lockOrganizationResourceManager, lockResourceManager, type ManagedResource } from './resource-management.ts'
+import { lockProjectMutation } from './project-lock.ts'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -323,6 +324,7 @@ import {
 type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 type Priority = 'high' | 'medium' | 'low'
 type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
+type TodoLifecycleStatus = 'open' | 'completed' | 'discarded'
 type SummaryType = 'daily' | 'weekly' | 'monthly' | 'reply'
 type ProjectAccessRole = 'owner' | 'member'
 type JournalVisibility = 'private' | 'public'
@@ -435,7 +437,7 @@ type ProjectModuleRow = {
   name: string
   created_at: Date
 }
-type TodoActivityEventType = 'created' | 'updated' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
+type TodoActivityEventType = 'created' | 'updated' | 'completed' | 'reopened' | 'discarded' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
 type TodoNoteRow = {
   id: string
   todo_id: string
@@ -1886,7 +1888,7 @@ async function getOwnerProjectSummarySource(projectId: number, userId: number) {
       p.status,
       (select content from risks where project_id = p.id order by created_at desc limit 1) as risks,
       (select content from journal_entries where project_id = p.id order by created_at desc limit 1) as journal,
-      (select title from todos where project_id = p.id and done = false and confirmation_status = 'confirmed' order by due_date asc limit 1) as todo
+      (select title from todos where project_id = p.id and done = false and todo_status = 'open' and confirmation_status = 'confirmed' order by due_date asc limit 1) as todo
     from projects p
     where p.id = $1 and p.user_id = $2
     `,
@@ -1948,6 +1950,7 @@ async function getMemberProjectSummarySource(projectId: number, userId: number) 
       from todos
       where project_id = $1
         and assignee_user_id = $2
+        and todo_status <> 'discarded'
         and confirmation_status = 'confirmed'
       order by done asc, due_date asc, created_at desc, id desc
       limit 8
@@ -1974,6 +1977,7 @@ async function getMemberProjectSummarySource(projectId: number, userId: number) 
       left join users author on author.id = n.author_user_id
       where m.mentioned_user_id = $2
         and p.id = $1
+        and t.todo_status <> 'discarded'
       order by m.created_at desc, m.id desc
       limit 8
       `,
@@ -2409,6 +2413,7 @@ async function buildAiTodoProposalCatalog(
             name: module.name,
           })),
           name: project.name,
+          organizationId: project.organizationId ?? null,
         }
       }),
   }
@@ -2444,6 +2449,13 @@ async function lockAiTodoProposalTarget(
     if (!access.rows[0]) {
       throw new AiConversationStoreError('AI_PROJECT_NOT_FOUND', 'Project not found', 404)
     }
+  }
+  const organization = await client.query<{ organizationId: string | null }>(
+    'select organization_id as "organizationId" from projects where id = $1',
+    [projectId],
+  )
+  if (organization.rows[0]?.organizationId == null && (proposal.assigneeUserId != null || proposal.estimatedWorkMinutes != null)) {
+    throw new AiTodoProposalValidationError('个人项目待办不支持负责人或预估工时')
   }
   await resolveProjectModuleId(client, projectId, proposal.moduleId)
   if (proposal.assigneeUserId && proposal.assigneeUserId !== ownerUserId) {
@@ -3752,6 +3764,7 @@ function ensureSummaryType(value: unknown): SummaryType {
 async function insertTodoActivityEvent(client: PoolClient, payload: {
   actorUserId: number
   assigneeUserId?: number | null
+  detail?: string
   dueDate: Date | string
   eventType: TodoActivityEventType
   priority: Priority
@@ -3768,10 +3781,11 @@ async function insertTodoActivityEvent(client: PoolClient, payload: {
       assignee_user_id,
       event_type,
       title,
+      detail,
       due_date,
       priority
     )
-    values ($1, $2, $3, $4, $5, $6, $7, $8)
+    values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `,
     [
       payload.projectId,
@@ -3780,6 +3794,7 @@ async function insertTodoActivityEvent(client: PoolClient, payload: {
       payload.assigneeUserId ?? null,
       payload.eventType,
       encryptText(payload.title),
+      payload.eventType === 'discarded' && payload.detail ? encryptText(payload.detail) : '',
       formatDate(payload.dueDate),
       payload.priority,
     ],
@@ -4718,6 +4733,12 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       due_date: Date
       priority: Priority
       done: boolean
+      todo_status: TodoLifecycleStatus
+      discard_reason: string | null
+      discarded_at: Date | null
+      discarded_by_user_id: string | null
+      discarded_by_email: string | null
+      discarded_by_display_name: string | null
       completed_at: Date | null
       completed_by_user_id: string | null
       completed_by_email: string | null
@@ -4761,6 +4782,10 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              t.due_date,
              t.priority,
              t.done,
+             t.todo_status,
+             t.discard_reason,
+             t.discarded_at,
+             t.discarded_by_user_id,
              t.completed_at,
              t.completed_by_user_id,
              t.confirmation_status,
@@ -4814,6 +4839,8 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              assigner.display_name as assigner_display_name,
              creator.email as creator_email,
              creator.display_name as creator_display_name,
+             discarded_by.email as discarded_by_email,
+             discarded_by.display_name as discarded_by_display_name,
              completed_by.email as completed_by_email,
              completed_by.display_name as completed_by_display_name
       from todos t
@@ -4828,6 +4855,7 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
           and (
             hours.user_id = $1
             or t.created_by_user_id = $1
+            or p.user_id = $1
             or ${managedOrganizationReadScopeSql('p.organization_id', '$1')}
           )
       ) work_hours on true
@@ -4836,6 +4864,7 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
        and membership.status = 'active'
        and membership.invited_user_id = $1
       left join users creator on creator.id = t.created_by_user_id
+      left join users discarded_by on discarded_by.id = t.discarded_by_user_id
       left join users completed_by on completed_by.id = t.completed_by_user_id
       left join users assignee on assignee.id = t.assignee_user_id
       left join users watcher on watcher.id = t.watcher_user_id
@@ -5229,6 +5258,16 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       dueDate: formatDate(todo.due_date),
       priority: todo.priority,
       done: todo.done,
+      todoStatus: todo.todo_status ?? (todo.done ? 'completed' : 'open'),
+      discardReason: todo.discard_reason ? decryptText(todo.discard_reason) : undefined,
+      discardedAt: todo.discarded_at ? formatDateTime(todo.discarded_at) : undefined,
+      discardedByUserId: todo.discarded_by_user_id ? Number(todo.discarded_by_user_id) : undefined,
+      discardedByName: todo.discarded_by_user_id
+        ? displayNameFromUser({
+          email: todo.discarded_by_email ?? '',
+          display_name: todo.discarded_by_display_name ?? '',
+        })
+        : undefined,
       completedAt: todo.completed_at ? formatDateTime(todo.completed_at) : undefined,
       completedByUserId: todo.completed_by_user_id ? Number(todo.completed_by_user_id) : undefined,
       completedByName: todo.completed_by_user_id
@@ -6065,6 +6104,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
     assignee_email: string | null
     assignee_user_id: string | null
     due_date: Date
+    detail: string
     event_type: TodoActivityEventType
     id: string
     occurred_at: Date
@@ -6080,6 +6120,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
            event.assignee_user_id,
            event.event_type,
            event.title,
+           event.detail,
            event.due_date,
            event.priority,
            event.occurred_at,
@@ -6127,6 +6168,7 @@ app.get('/api/projects/:projectId/todo-activity', asyncHandler(async (request, r
         })
         : undefined,
       eventType: event.event_type,
+      detail: event.event_type === 'discarded' && event.detail ? decryptText(event.detail) : undefined,
       title: decryptText(event.title),
       todoTitle: decryptText(event.title),
       dueDate: formatDate(event.due_date),
@@ -6419,6 +6461,7 @@ async function getNotifications(userId: number, access: NotificationAccess) {
       left join users watched_by on watched_by.id = tw.watched_by_user_id
       where tw.watched_by_user_id is distinct from $1
         and (p.user_id = $1 or pm.id is not null)
+        and t.todo_status <> 'discarded'
       order by coalesce(tw.watched_at, t.created_at) desc, t.id desc
       `,
       [userId],
@@ -6472,6 +6515,7 @@ async function getNotifications(userId: number, access: NotificationAccess) {
       where t.assignee_user_id = $1
         and t.assigned_by_user_id is distinct from $1
         and t.done = false
+        and t.todo_status <> 'discarded'
         and t.confirmation_status = 'confirmed'
         and (p.user_id = $1 or pm.id is not null)
       order by coalesce(t.assigned_at, t.created_at) desc, t.id desc
@@ -6507,6 +6551,7 @@ async function getNotifications(userId: number, access: NotificationAccess) {
       join projects p on p.id = t.project_id
       left join project_modules module on module.id = t.project_module_id
       where t.done = false
+        and t.todo_status <> 'discarded'
         and t.confirmation_status = 'confirmed'
         and t.due_date = $2::date
         and (
@@ -6556,6 +6601,7 @@ async function getNotifications(userId: number, access: NotificationAccess) {
       left join users author on author.id = n.author_user_id
       where m.mentioned_user_id = $1
         and t.done = false
+        and t.todo_status <> 'discarded'
       order by m.created_at desc, m.id desc
       `,
       [userId],
@@ -6839,6 +6885,7 @@ type AssignedTodoNotificationRow = {
   due_date: Date
   detail: string
   done: boolean
+  todo_status: TodoLifecycleStatus
   id: string
   project_id: string
   project_name: string
@@ -6852,6 +6899,7 @@ type WatchedTodoNotificationRow = {
   detail: string
   due_date: Date
   done: boolean
+  todo_status: TodoLifecycleStatus
   id: string
   project_id: string
   project_name: string
@@ -8591,7 +8639,7 @@ async function deliverFeishuNotification(candidate: FeishuNotificationCandidate)
 }
 
 function buildAssignedTodoFeishuCandidate(todo: AssignedTodoNotificationRow): FeishuNotificationCandidate | null {
-  if (todo.done || !todo.assignee_user_id) return null
+  if (todo.done || todo.todo_status === 'discarded' || !todo.assignee_user_id) return null
   const recipientName = todo.assignee_email
     ? displayNameFromUser({
       email: todo.assignee_email,
@@ -8642,6 +8690,7 @@ async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
            t.due_date,
            t.priority,
            t.done,
+           t.todo_status,
            t.assignee_user_id,
            assigner.email as assigner_email,
            assigner.display_name as assigner_display_name,
@@ -8656,6 +8705,7 @@ async function buildAssignedTodoFeishuCandidateByTodoId(todoId: number) {
     where t.id = $1
       and t.assignee_user_id is not null
       and t.assigned_by_user_id is distinct from t.assignee_user_id
+      and t.todo_status <> 'discarded'
     limit 1
     `,
     [todoId],
@@ -8691,6 +8741,7 @@ async function buildTodoMentionFeishuCandidateByMentionId(mentionId: number) {
     left join users recipient on recipient.id = mention.mentioned_user_id
     left join users assignee on assignee.id = t.assignee_user_id
     where mention.id = $1
+      and t.todo_status <> 'discarded'
     limit 1
     `,
     [mentionId],
@@ -8747,7 +8798,7 @@ async function deliverTodoMentionNotification(mentionId: number) {
 }
 
 function buildWatchedTodoFeishuCandidate(todo: WatchedTodoNotificationRow): FeishuNotificationCandidate | null {
-  if (!todo.watcher_user_id) return null
+  if (todo.todo_status === 'discarded' || !todo.watcher_user_id) return null
   const recipientName = todo.watcher_email
     ? displayNameFromUser({
       email: todo.watcher_email,
@@ -8807,6 +8858,7 @@ async function buildWatchedTodoFeishuCandidateByTodoId(todoId: number) {
            t.due_date,
            t.priority,
            t.done,
+           t.todo_status,
            tw.user_id as watcher_user_id,
            assignee.email as assignee_email,
            assignee.display_name as assignee_display_name,
@@ -8824,6 +8876,7 @@ async function buildWatchedTodoFeishuCandidateByTodoId(todoId: number) {
     left join users watcher on watcher.id = tw.user_id
     where t.id = $1
       and tw.watched_by_user_id is distinct from tw.user_id
+      and t.todo_status <> 'discarded'
     `,
     [todoId],
   )
@@ -8901,8 +8954,9 @@ async function buildCompletedTodoCreatorFeishuCandidateByTodoId(params: {
     join projects p on p.id = t.project_id
     left join users reviewer on reviewer.id = coalesce(t.reviewer_user_id, t.created_by_user_id, p.user_id)
     left join users operator_user on operator_user.id = $2
-	    where t.id = $1
-	      and coalesce(t.reviewer_user_id, t.created_by_user_id, p.user_id) <> $2
+    where t.id = $1
+      and t.todo_status <> 'discarded'
+      and coalesce(t.reviewer_user_id, t.created_by_user_id, p.user_id) <> $2
 	    limit 1
 	    `,
     [params.todoId, params.operatorUserId],
@@ -8983,6 +9037,7 @@ async function buildRejectedTodoCreatorFeishuCandidateByTodoId(params: {
     left join users creator on creator.id = coalesce(t.created_by_user_id, p.user_id)
     left join users operator_user on operator_user.id = $2
     where t.id = $1
+      and t.todo_status <> 'discarded'
       and coalesce(t.created_by_user_id, p.user_id) <> $2
     limit 1
     `,
@@ -9075,6 +9130,7 @@ async function buildAcceptanceFailedTodoAssigneeFeishuCandidateByNoteId(params: 
     where n.id = $1
       and n.todo_id = $2
       and n.kind = 'acceptance'
+      and t.todo_status <> 'discarded'
       and coalesce(t.assignee_user_id, t.created_by_user_id, p.user_id) <> $3
     limit 1
     `,
@@ -9124,6 +9180,7 @@ async function buildTodoNoteFeishuCandidates(noteId: number) {
       where tw.todo_id = t.id
     ) watchers on true
     where n.id = $1
+      and t.todo_status <> 'discarded'
     limit 1
     `,
     [noteId],
@@ -10210,10 +10267,12 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
            where p.organization_id is not distinct from $2::bigint
              and (
                (t.assignee_user_id = $1::bigint and t.confirmation_status <> 'pending_review')
+               or (p.organization_id is null and t.assignee_user_id is null and coalesce(t.created_by_user_id, p.user_id) = $1::bigint)
                or t.reviewer_user_id = $1::bigint
              )
              and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
              and not t.done
+             and t.todo_status <> 'discarded'
              and t.confirmation_status <> 'rejected'
           union all
           select event.id
@@ -10253,6 +10312,7 @@ app.get('/api/navigation-counts', asyncHandler(async (request, response) => {
           on mine.project_id = p.id and mine.invited_user_id = $1::bigint and mine.status = 'active'
         where p.organization_id is not distinct from $2::bigint
           and not t.done
+          and t.todo_status <> 'discarded'
           and ${managedOrganizationReadScopeSql('p.organization_id', '$1::bigint')}
           and (${managedOrganizationReadScopeSql('p.organization_id')} or p.user_id = $1::bigint or mine.id is not null)
       ) as work_hour_confirmation_count,
@@ -11843,19 +11903,21 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
       response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须填写整数小时，最少 1 小时。' })
       return
     }
-  } else if (request.body.estimatedWorkMinutes != null && request.body.estimatedWorkMinutes !== '') {
-    try {
-      estimatedWorkMinutes = parseWorkMinutes(request.body.estimatedWorkMinutes, { required: false })
-    } catch (error) {
-      response.status(400).json({ error: error instanceof Error ? error.message : '预估工时必须是整数小时。' })
-      return
-    }
+  } else if ('estimatedWorkMinutes' in request.body) {
+    response.status(400).json({ error: '个人项目不支持预估工时。' })
+    return
   }
-  const assigneeUserId = await ensureProjectMemberUserId(
-    request.body.assigneeUserId,
-    projectId,
-    access.ownerUserId,
-  )
+  const isPersonalProject = projectOrganization?.organization_id == null
+  if (isPersonalProject && (
+    (request.body.assigneeUserId != null && request.body.assigneeUserId !== '') ||
+    (request.body.reviewerUserId != null && request.body.reviewerUserId !== '')
+  )) {
+    response.status(400).json({ error: '个人项目待办由当前用户本人负责，不支持指派负责人或确认人。' })
+    return
+  }
+  const assigneeUserId = isPersonalProject
+    ? null
+    : await ensureProjectMemberUserId(request.body.assigneeUserId, projectId, access.ownerUserId)
   if (projectOrganization?.organization_id && !assigneeUserId) {
     response.status(400).json({ error: '负责人是必填项，且必须是当前项目成员。' })
     return
@@ -11871,11 +11933,9 @@ app.post('/api/todos', asyncHandler(async (request, response) => {
     return
   }
   const watcherUserId = watcherUserIds[0] ?? null
-  const reviewerUserId = await ensureProjectMemberUserId(
-    request.body.reviewerUserId,
-    projectId,
-    access.ownerUserId,
-  )
+  const reviewerUserId = isPersonalProject
+    ? null
+    : await ensureProjectMemberUserId(request.body.reviewerUserId, projectId, access.ownerUserId)
   if (request.body.reviewerUserId != null && request.body.reviewerUserId !== '' && reviewerUserId == null) {
     response.status(400).json({ error: 'Todo reviewer must be an active project member' })
     return
@@ -12025,6 +12085,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     assigned_by_user_id: string | null
     created_by_user_id: string | null
     done: boolean
+    todo_status: TodoLifecycleStatus
     confirmation_status: TodoConfirmationStatus
     project_id: string
     organization_id: string | null
@@ -12038,7 +12099,7 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     select t.project_id, p.organization_id, p.user_id as owner_user_id,
            ${managedOrganizationReadScopeSql('p.organization_id', '$2')} as organization_admin_todo_access,
            t.created_by_user_id, t.assignee_user_id, t.assigned_by_user_id,
-           watcher_user_id, reviewer_user_id, done, confirmation_status, title, due_date, priority
+           watcher_user_id, reviewer_user_id, done, todo_status, confirmation_status, title, due_date, priority
     from todos t
     join projects p on p.id = t.project_id
     where t.id = $1
@@ -12085,6 +12146,184 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     : null
   const canManageTodo = organizationAdminTodoAccess || access.role === 'owner' || createdByUserId === userId
   const canManageTodoFields = canManageTodo || systemAdminTodoAccess
+  const requestedTodoStatus = request.body.todoStatus
+  if (requestedTodoStatus !== undefined) {
+    if (requestedTodoStatus !== 'open' && requestedTodoStatus !== 'completed' && requestedTodoStatus !== 'discarded') {
+      response.status(400).json({ error: 'Invalid todo lifecycle status' })
+      return
+    }
+    const organizationId = existingTodo.rows[0].organization_id == null
+      ? null
+      : Number(existingTodo.rows[0].organization_id)
+    if (organizationId != null && requestedTodoStatus === 'completed') {
+      response.status(409).json({ error: '企业待办请通过工时确认流程完成。' })
+      return
+    }
+    if (!canManageTodo || !Object.keys(request.body).every((key) => key === 'todoStatus' || key === 'discardReason')) {
+      response.status(403).json({ error: '只有待办创建人、项目所有者或组织管理员可以更新状态。' })
+      return
+    }
+    const discardReason = typeof request.body.discardReason === 'string' ? request.body.discardReason.trim() : ''
+    if (requestedTodoStatus === 'discarded' && !discardReason) {
+      response.status(400).json({ error: '废弃待办必须填写理由。' })
+      return
+    }
+    if (requestedTodoStatus !== 'discarded' && 'discardReason' in request.body) {
+      response.status(400).json({ error: '废弃理由只能用于废弃待办。' })
+      return
+    }
+    const lifecycleClient = await pool.connect()
+    let lifecycleNoop = false
+    try {
+      await lifecycleClient.query('begin')
+      let lockedOrganizationAdminTodoAccess = false
+      if (organizationId != null) {
+        await lifecycleClient.query('select id from organizations where id = $1 for share', [organizationId])
+        lockedOrganizationAdminTodoAccess = await lockOrganizationResourceManager(lifecycleClient, organizationId, userId)
+      }
+      await lockProjectMutation(lifecycleClient, projectId)
+      const locked = await lifecycleClient.query<{
+        todo_status: TodoLifecycleStatus
+        confirmation_status: TodoConfirmationStatus
+        created_by_user_id: string | null
+        owner_user_id: string
+        organization_id: string | null
+        title: string
+        due_date: Date
+        priority: Priority
+        assignee_user_id: string | null
+      }>(
+        `select t.todo_status, t.confirmation_status, t.created_by_user_id, p.user_id as owner_user_id,
+                p.organization_id, t.title, t.due_date, t.priority, t.assignee_user_id
+           from todos t
+           join projects p on p.id = t.project_id
+          where t.id = $1 and t.project_id = $2
+          for update of t`,
+        [todoId, projectId],
+      )
+      const current = locked.rows[0]
+      if (!current) {
+        await lifecycleClient.query('rollback')
+        response.status(404).json({ error: 'Todo not found' })
+        return
+      }
+      const lockedCreatorUserId = current.created_by_user_id ? Number(current.created_by_user_id) : Number(current.owner_user_id)
+      const lockedOrganizationId = current.organization_id == null ? null : Number(current.organization_id)
+      if (lockedOrganizationId !== organizationId) {
+        await lifecycleClient.query('rollback')
+        response.status(409).json({ error: '待办所属组织已变更，请刷新后重试。' })
+        return
+      }
+      if (
+        lockedCreatorUserId !== userId &&
+        Number(current.owner_user_id) !== userId &&
+        !lockedOrganizationAdminTodoAccess
+      ) {
+        await lifecycleClient.query('rollback')
+        response.status(403).json({ error: '只有待办创建人、项目所有者或组织管理员可以更新状态。' })
+        return
+      }
+      if (current.todo_status === requestedTodoStatus) {
+        await lifecycleClient.query('commit')
+        lifecycleNoop = true
+      }
+      if (!lifecycleNoop && requestedTodoStatus === 'discarded' && current.todo_status !== 'open') {
+        await lifecycleClient.query('rollback')
+        response.status(409).json({ error: '只有进行中的待办可以废弃。' })
+        return
+      }
+      if (!lifecycleNoop && requestedTodoStatus === 'completed' && current.todo_status !== 'open') {
+        await lifecycleClient.query('rollback')
+        response.status(409).json({ error: '只有进行中的个人待办可以完成。' })
+        return
+      }
+      if (
+        !lifecycleNoop &&
+        requestedTodoStatus === 'open' &&
+        current.todo_status !== 'discarded'
+      ) {
+        await lifecycleClient.query('rollback')
+        response.status(409).json({ error: '只有已废弃待办可以重新打开。' })
+        return
+      }
+      if (!lifecycleNoop && requestedTodoStatus === 'discarded' && organizationId != null) {
+        const workHours = await lifecycleClient.query<{ has_work_hours: boolean }>(
+          'select exists(select 1 from todo_work_hours where todo_id = $1) as has_work_hours',
+          [todoId],
+        )
+        if (workHours.rows[0]?.has_work_hours) {
+          await lifecycleClient.query('rollback')
+          response.status(409).json({ error: '已有工时记录的企业待办不能废弃。' })
+          return
+        }
+      }
+      if (!lifecycleNoop && requestedTodoStatus === 'open' && current.todo_status === 'open') {
+        await lifecycleClient.query('rollback')
+        response.status(409).json({ error: '待办已经是进行中。' })
+        return
+      }
+      if (!lifecycleNoop) {
+      const updated = await lifecycleClient.query<{
+        title: string
+        due_date: Date
+        priority: Priority
+        assignee_user_id: string | null
+      }>(
+        `update todos
+            set todo_status = $3::text,
+                done = ($3::text = 'completed'),
+                confirmation_status = 'confirmed',
+                needs_revision = false,
+                submitted_at = null,
+                completed_at = case when $3::text = 'completed' then now() else null end,
+                completed_by_user_id = case when $3::text = 'completed' then $4::bigint else null end,
+                discard_reason = case when $3::text = 'discarded' then $5::text else null end,
+                discarded_at = case when $3::text = 'discarded' then now() else null end,
+                discarded_by_user_id = case when $3::text = 'discarded' then $4::bigint else null end,
+                updated_at = now()
+          where id = $1 and project_id = $2
+          returning title, due_date, priority, assignee_user_id`,
+        [todoId, projectId, requestedTodoStatus, userId, requestedTodoStatus === 'discarded' ? encryptText(discardReason) : null],
+      )
+      const next = updated.rows[0]
+      if (!next) throw new Error('Todo lifecycle update failed')
+      await insertTodoActivityEvent(lifecycleClient, {
+        actorUserId: userId,
+        assigneeUserId: next.assignee_user_id ? Number(next.assignee_user_id) : null,
+        detail: requestedTodoStatus === 'discarded' ? discardReason : undefined,
+        dueDate: next.due_date,
+        eventType: requestedTodoStatus === 'discarded' ? 'discarded' : requestedTodoStatus === 'completed' ? 'completed' : 'reopened',
+        priority: next.priority,
+        projectId,
+        title: decryptText(next.title),
+        todoId,
+      })
+      await lifecycleClient.query('commit')
+      }
+    } catch (error) {
+      await lifecycleClient.query('rollback')
+      throw error
+    } finally {
+      lifecycleClient.release()
+    }
+    response.json(await getWorkspace(userId, { projectId, todoId, sections: new Set(['todos']) }))
+    return
+  }
+  if (existingTodo.rows[0].organization_id == null && ('done' in request.body || 'confirmationStatus' in request.body)) {
+    response.status(409).json({ error: '个人项目请直接使用完成、废弃或重新打开操作。' })
+    return
+  }
+  if (existingTodo.rows[0].organization_id == null && (
+    'assigneeUserId' in request.body ||
+    'reviewerUserId' in request.body
+  )) {
+    response.status(400).json({ error: '个人项目待办由当前用户本人负责，不支持指派负责人或确认人。' })
+    return
+  }
+  if (existingTodo.rows[0].organization_id == null && 'estimatedWorkMinutes' in request.body) {
+    response.status(400).json({ error: '个人项目不支持预估工时。' })
+    return
+  }
   const isSystemAdminTodoFieldUpdate = systemAdminTodoAccess && isOrganizationTodoFieldUpdate(request.body)
   const canReviewTodo = existingTodo.rows[0].organization_id != null
     ? createdByUserId === userId
@@ -12138,6 +12377,14 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
     (requestedConfirmationStatus === 'confirmed' || requestedConfirmationStatus === 'acceptance_failed') &&
     typeof request.body.done === 'boolean' &&
     Object.keys(request.body).every((key) => key === 'done' || key === 'confirmationStatus' || key === 'acceptanceNote')
+  if (
+    existingTodo.rows[0].organization_id != null &&
+    request.body.done === false &&
+    !(isAcceptanceDecisionUpdate && requestedConfirmationStatus === 'acceptance_failed')
+  ) {
+    response.status(409).json({ error: '企业待办请通过工时提交与确认流程重新打开。' })
+    return
+  }
   if (requestedConfirmationStatus === 'acceptance_failed' && !requestedAcceptanceNote) {
     response.status(400).json({ error: 'Acceptance note is required when acceptance fails' })
     return
@@ -12380,6 +12627,12 @@ app.patch('/api/todos/:todoId', asyncHandler(async (request, response) => {
       `
       update todos
       set done = case when $7::text in ('rejected', 'pending_review', 'acceptance_failed') then false else coalesce($1, done) end,
+          todo_status = case
+            when $7::text in ('rejected', 'pending_review', 'acceptance_failed') then 'open'
+            when $17::boolean and $1::boolean then 'completed'
+            when $17::boolean and not $1::boolean then 'open'
+            else todo_status
+          end,
           title = coalesce($2, title),
           detail = case when $3::boolean then $4 else detail end,
           due_date = coalesce($5, due_date),
@@ -12695,12 +12948,16 @@ app.post('/api/todos/:todoId/notes', asyncHandler(async (request, response) => {
     response.status(400).json({ error: 'Note content is required' })
     return
   }
-  const existingTodo = await query<{ project_id: string }>(
-    'select project_id from todos where id = $1',
+  const existingTodo = await query<{ project_id: string; todo_status: TodoLifecycleStatus }>(
+    'select project_id, todo_status from todos where id = $1',
     [todoId],
   )
   if (existingTodo.rows.length === 0) {
     response.status(404).json({ error: 'Todo not found' })
+    return
+  }
+  if (existingTodo.rows[0].todo_status === 'discarded') {
+    response.status(409).json({ error: '已废弃待办不能新增备注。' })
     return
   }
   const projectId = Number(existingTodo.rows[0].project_id)
@@ -12714,6 +12971,15 @@ app.post('/api/todos/:todoId/notes', asyncHandler(async (request, response) => {
   let noteId: number | null
   try {
     await client.query('begin')
+    const lockedTodo = await client.query<{ todo_status: TodoLifecycleStatus }>(
+      'select todo_status from todos where id = $1 for update',
+      [todoId],
+    )
+    if (lockedTodo.rows[0]?.todo_status === 'discarded') {
+      await client.query('rollback')
+      response.status(409).json({ error: '已废弃待办不能新增备注。' })
+      return
+    }
     const noteResult = await client.query<{ id: string }>(
       `
       insert into todo_notes (todo_id, author_user_id, content)
@@ -12784,6 +13050,15 @@ app.patch('/api/todos/:todoId/notes/:noteId', asyncHandler(async (request, respo
   const client = await pool.connect()
   try {
     await client.query('begin')
+    const lockedTodo = await client.query<{ todo_status: TodoLifecycleStatus }>(
+      'select t.todo_status from todos t where t.id = $1 for update',
+      [todoId],
+    )
+    if (lockedTodo.rows[0]?.todo_status === 'discarded') {
+      await client.query('rollback')
+      response.status(409).json({ error: '已废弃待办不能编辑备注。' })
+      return
+    }
     if (noteResult.rows[0].source_operation_id) {
       await lockDeliveryProject(client, projectId)
       const event = await client.query<{ published_at: Date | null }>(`select e.published_at from project_package_operations o join project_package_events e on e.id = o.project_package_event_id where o.id = $1 and e.project_id = $2`, [noteResult.rows[0].source_operation_id, projectId])

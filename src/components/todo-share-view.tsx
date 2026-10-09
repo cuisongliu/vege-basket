@@ -122,7 +122,7 @@ export function TodoShareView({ authUser, onBackToShare, onLogin, onOpenTodo, to
         {data ? (
           <>
             <div className="bug-share-badges">
-              <span>{data.done ? '已完成' : '未完成'}</span>
+              <span>{data.todoStatus === 'discarded' ? '已废弃' : data.todoStatus === 'completed' ? '已完成' : '进行中'}</span>
               <span>{confirmationLabels[data.confirmationStatus] || data.confirmationStatus}</span>
               <span>{priorityLabels[data.priority] || data.priority}</span>
               {data.moduleName ? <span>{data.moduleName}</span> : null}

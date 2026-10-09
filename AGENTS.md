@@ -220,6 +220,11 @@ historical product context; current code and these operational docs take precede
   select-before-insert checks alone.
 - Todo completion and reopen transitions must lock the todo row inside the same
   transaction before updating `completed_at`, `completed_by_user_id`, or activity events.
+- Organization todos may be discarded only while open and only when no
+  `todo_work_hours` row exists. Check that invariant under the organization/project/todo
+  mutation locks. The lifecycle reopen action accepts only discarded organization todos;
+  completed organization todos retain the work-hours reopen flow. Discarded todos reject
+  every work-hours write or transition.
 
 ## Destructive And Terminal UI Actions
 

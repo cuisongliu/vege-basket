@@ -22,6 +22,7 @@ const todo: Todo = {
   dueDate: '2026-10-08',
   priority: 'high',
   done: false,
+  todoStatus: 'open',
   confirmationStatus: 'pending_review',
   estimatedWorkMinutes: 120,
   recordedWorkMinutes: 60,

@@ -1896,6 +1896,8 @@ export function updateTodo(
     acceptanceNote?: string
     moduleId?: number | null
     rejectionReason?: string
+    todoStatus?: Todo['todoStatus']
+    discardReason?: string
     reviewerUserId?: number | null
     watcherUserId?: number | null
     watcherUserIds?: number[]

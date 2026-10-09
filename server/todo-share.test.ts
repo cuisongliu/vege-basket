@@ -74,6 +74,7 @@ test('Todo share exposes only standalone normal and acceptance notes', () => {
   assert.match(todoShareSource, /kind in \('normal', 'acceptance'\)/u)
   assert.match(todoShareSource, /limit 100/u)
   assert.doesNotMatch(todoShareSource, /todo_activity_events/u)
+  assert.doesNotMatch(todoShareSource, /discard_reason|discardReason/u)
 })
 
 test('Todo share comments encrypt notes and persist mentions in one transaction', () => {
@@ -83,7 +84,13 @@ test('Todo share comments encrypt notes and persist mentions in one transaction'
   assert.match(serverSource, /result\.created && result\.noteId > 0/u)
   assert.match(serverSource, /enqueueTodoNoteDeliveries\(result\.noteId\)/u)
   assert.match(todoShareSource, /source_share_request_id = \$3::uuid/u)
-  assert.match(todoShareSource, /select id from todos where id = \$1 for update/u)
+  assert.match(todoShareSource, /select todo_status from todos where id = \$1 for update/u)
+  assert.match(todoShareSource, /if \(lockedTodo\.rows\[0\]\?\.todo_status === 'discarded'\)/u)
+  assert.ok(
+    todoShareSource.indexOf("source_share_request_id = $3::uuid") <
+      todoShareSource.indexOf("todo_status === 'discarded'"),
+    'idempotent comment replay must be checked before discarded-state rejection',
+  )
   assert.match(todoShareSource, /Todo share comment rate limit exceeded/u)
   assert.match(todoShareSource, /Todo share comments do not support image Markdown/u)
   assert.match(todoShareSource, /with authorized_project as/u)

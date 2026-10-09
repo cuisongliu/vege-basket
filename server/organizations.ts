@@ -643,10 +643,10 @@ async function getOrganizationDetail(
         p.updated_at, p.user_id as owner_user_id, owner.email as owner_email,
         owner.display_name as owner_display_name,
         count(distinct t.id) as todo_count,
-        count(distinct t.id) filter (where t.done = false) as open_todo_count
+        count(distinct t.id) filter (where t.done = false and t.todo_status <> 'discarded') as open_todo_count
       from projects p
       join users owner on owner.id = p.user_id
-      left join todos t on t.project_id = p.id
+      left join todos t on t.project_id = p.id and t.todo_status <> 'discarded'
       left join project_memberships mine
         on mine.project_id = p.id and mine.invited_user_id = $3 and mine.status = 'active'
       where p.organization_id = $1 and ($2::boolean or p.user_id = $3 or mine.id is not null)
@@ -792,6 +792,7 @@ async function getOrganizationDetail(
       left join project_memberships mine
         on mine.project_id = p.id and mine.invited_user_id = $3 and mine.status = 'active'
       where p.organization_id = $1 and ($2::boolean or p.user_id = $3 or mine.id is not null)
+        and t.todo_status <> 'discarded'
       order by t.done, t.updated_at desc, t.id desc
       limit 200
       `,

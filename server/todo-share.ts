@@ -31,6 +31,7 @@ export type TodoShareView = {
   departedUserIds: number[]
   detail: string
   done: boolean
+  todoStatus: 'open' | 'completed' | 'discarded'
   dueDate: string
   mentionableMembers: Array<{ id: number; name: string }>
   moduleName: string | null
@@ -56,6 +57,7 @@ type ShareTodoRow = {
   creator_user_id: string
   detail: string
   done: boolean
+  todo_status: 'open' | 'completed' | 'discarded'
   due_date: Date | string
   module_name: string | null
   subproject_name: string | null
@@ -166,7 +168,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
   const result = await query<ShareTodoRow>(
     `
     select t.id as todo_id, t.project_id, t.title, t.detail, t.due_date, t.priority,
-           t.done, t.confirmation_status, t.created_at, t.updated_at,
+           t.done, t.todo_status, t.confirmation_status, t.created_at, t.updated_at,
            p.name as project_name, module.name as module_name,
            subproject.name as subproject_name,
            creator.id as creator_user_id, creator.display_name as creator_display_name,
@@ -264,6 +266,7 @@ async function readView(token: string, userId?: number | null): Promise<TodoShar
     departedUserIds: await getDepartedUserIds(),
     detail: decryptText(todo.detail),
     done: todo.done,
+    todoStatus: todo.todo_status,
     dueDate: todo.due_date instanceof Date
       ? todo.due_date.toISOString().slice(0, 10)
       : String(todo.due_date).slice(0, 10),
@@ -425,7 +428,10 @@ export async function addTodoShareComment(
       )
       const todoId = candidateLink.rows[0]?.todo_id
       if (!todoId) throw shareError('Todo share link is invalid or expired', 404)
-      await client.query('select id from todos where id = $1 for update', [todoId])
+      const lockedTodo = await client.query<{ todo_status: 'open' | 'completed' | 'discarded' }>(
+        'select todo_status from todos where id = $1 for update',
+        [todoId],
+      )
       const link = await client.query<{ id: string; project_id: string; todo_id: string }>(
       `
       select link.id, t.project_id, link.todo_id
@@ -453,6 +459,9 @@ export async function addTodoShareComment(
       )
       if (replay.rows[0]) {
         return { created: false as const, noteId: Number(replay.rows[0].id), todoId: Number(row.todo_id) }
+      }
+      if (lockedTodo.rows[0]?.todo_status === 'discarded') {
+        throw shareError('已废弃待办不能新增评论', 409)
       }
 
       const quota = await client.query<{

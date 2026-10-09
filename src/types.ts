@@ -3,6 +3,7 @@ import type { DeliveryRuntimeConfig } from '../shared/delivery-artifact'
 export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived'
 export type Priority = 'high' | 'medium' | 'low'
 export type TodoConfirmationStatus = 'confirmed' | 'pending_review' | 'rejected' | 'acceptance_failed'
+export type TodoLifecycleStatus = 'open' | 'completed' | 'discarded'
 export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 export type { UserAccountStatus } from '../shared/user-lifecycle'
@@ -85,10 +86,15 @@ export type Todo = {
   dueDate: string
   priority: Priority
   done: boolean
+  todoStatus: TodoLifecycleStatus
   completedAt?: string
   completedByUserId?: number
   completedByName?: string
   confirmationStatus: TodoConfirmationStatus
+  discardReason?: string
+  discardedAt?: string
+  discardedByUserId?: number
+  discardedByName?: string
   estimatedWorkMinutes?: number | null
   recordedWorkMinutes?: number
   confirmedWorkMinutes?: number
@@ -318,7 +324,8 @@ export type TodoActivityEvent = {
   id: number
   todoId?: number
   projectId: number
-  eventType: 'created' | 'updated' | 'completed' | 'reopened' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
+  eventType: 'created' | 'updated' | 'completed' | 'reopened' | 'discarded' | 'assigned' | 'confirmed' | 'rejected' | 'acceptance_failed' | 'work_hours_added' | 'work_hours_updated' | 'work_hours_deleted' | 'work_hours_submitted'
+  detail?: string
   todoTitle: string
   actorUserId?: number
   actorName: string

@@ -728,6 +728,11 @@ create table if not exists todos (
   due_date date not null,
   priority text not null default 'medium',
   done boolean not null default false,
+  todo_status text not null default 'open'
+    check (todo_status in ('open', 'completed', 'discarded')),
+  discard_reason text,
+  discarded_by_user_id bigint references users(id) on delete set null,
+  discarded_at timestamptz,
   confirmation_status text not null default 'confirmed'
     check (confirmation_status in ('confirmed', 'pending_review', 'rejected', 'acceptance_failed')),
   created_at timestamptz not null default now(),
@@ -920,6 +925,20 @@ alter table todos
   add column if not exists confirmation_status text not null default 'confirmed';
 
 alter table todos
+  add column if not exists todo_status text not null default 'open',
+  add column if not exists discard_reason text,
+  add column if not exists discarded_by_user_id bigint references users(id) on delete set null,
+  add column if not exists discarded_at timestamptz;
+
+update todos
+   set todo_status = case when done then 'completed' else 'open' end
+ where todo_status = 'open' and done = true;
+
+alter table todos drop constraint if exists todos_todo_status_check;
+alter table todos add constraint todos_todo_status_check
+  check (todo_status in ('open', 'completed', 'discarded'));
+
+alter table todos
   drop constraint if exists todos_confirmation_status_check;
 
 alter table todos
@@ -1000,19 +1019,40 @@ create table if not exists todo_activity_events (
   actor_user_id bigint references users(id) on delete set null,
   assignee_user_id bigint references users(id) on delete set null,
   event_type text not null
-    check (event_type in ('created', 'updated', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted')),
+    check (event_type in ('created', 'updated', 'completed', 'reopened', 'discarded', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted')),
   title text not null,
+  detail text not null default '',
   due_date date not null,
   priority text not null default 'medium',
   occurred_at timestamptz not null default now()
 );
 
 alter table todo_activity_events
+  add column if not exists detail text not null default '';
+
+update todo_activity_events event
+   set detail = todo.discard_reason
+  from todos todo
+ where event.todo_id = todo.id
+   and event.event_type = 'discarded'
+   and event.detail = ''
+   and todo.todo_status = 'discarded'
+   and todo.discard_reason is not null
+   and event.id = (
+     select latest.id
+       from todo_activity_events latest
+      where latest.todo_id = event.todo_id
+        and latest.event_type = 'discarded'
+      order by latest.occurred_at desc, latest.id desc
+      limit 1
+   );
+
+alter table todo_activity_events
   drop constraint if exists todo_activity_events_event_type_check;
 
 alter table todo_activity_events
   add constraint todo_activity_events_event_type_check
-  check (event_type in ('created', 'updated', 'completed', 'reopened', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted'));
+  check (event_type in ('created', 'updated', 'completed', 'reopened', 'discarded', 'assigned', 'confirmed', 'rejected', 'acceptance_failed', 'work_hours_added', 'work_hours_updated', 'work_hours_deleted', 'work_hours_submitted'));
 
 create table if not exists risks (
   id bigserial primary key,

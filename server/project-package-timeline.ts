@@ -1179,6 +1179,9 @@ async function setTodosDoneState(projectId: number, todoIds: number[], done: boo
     `
     update todos
     set done = $1,
+        todo_status = case when $1 then 'completed' else 'open' end,
+        completed_at = case when $1 then now() else null end,
+        completed_by_user_id = case when $1 then completed_by_user_id else null end,
         updated_at = now()
     where project_id = $2
       and id = any($3::bigint[])

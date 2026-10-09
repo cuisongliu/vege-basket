@@ -145,6 +145,7 @@ export const AI_WORKSPACE_OPEN_TODOS_QUERY = `
   left join users assignee on assignee.id = todo.assignee_user_id
   where todo.project_id = any($2::bigint[])
     and todo.done = false
+    and todo.todo_status = 'open'
     and todo.confirmation_status = 'confirmed'
     and (
       project.user_id = $1::bigint
