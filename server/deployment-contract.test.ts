@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { loadAll } from 'js-yaml'
+import { load, loadAll } from 'js-yaml'
 
 const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8')
 const sealosTemplate = readFileSync(
@@ -10,6 +10,10 @@ const sealosTemplate = readFileSync(
 )
 const dockerPushWorkflow = readFileSync(
   new URL('../.github/workflows/docker-push.yml', import.meta.url),
+  'utf8',
+)
+const dockerPrWorkflow = readFileSync(
+  new URL('../.github/workflows/docker-pr.yml', import.meta.url),
   'utf8',
 )
 const sealosResources = loadAll(sealosTemplate) as Array<Record<string, unknown>>
@@ -103,4 +107,29 @@ test('main image workflow deploys the immutable image to the application Deploym
   assert.match(deployJob, /rollout status/u)
   assert.match(deployJob, /test "\$DEPLOYMENT_IMAGE" = "\$EXPECTED_IMAGE"/u)
   assert.doesNotMatch(deployJob, /K8S_NAMESPACE|--namespace|K8S_CRONJOB_NAME|cronjob\//u)
+})
+
+test('Docker workflows route jobs to matching Sealos architecture runners', () => {
+  const getRunnerAssignments = (workflow: string) => {
+    const parsed = load(workflow) as {
+      jobs: Record<string, { 'runs-on': string }>
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed.jobs).map(([job, config]) => [job, config['runs-on']]),
+    )
+  }
+
+  assert.deepEqual(getRunnerAssignments(dockerPushWorkflow), {
+    verify: 'namespace-profile-sealos-apps-amd64',
+    'build-push-amd64': 'namespace-profile-sealos-apps-amd64',
+    'build-push-arm64': 'namespace-profile-sealos-apps-arm64',
+    'merge-manifest': 'namespace-profile-sealos-apps-amd64',
+    'deploy-k8s': 'namespace-profile-sealos-apps-amd64',
+  })
+  assert.deepEqual(getRunnerAssignments(dockerPrWorkflow), {
+    verify: 'namespace-profile-sealos-apps-amd64',
+    'build-amd64': 'namespace-profile-sealos-apps-amd64',
+    'build-arm64': 'namespace-profile-sealos-apps-arm64',
+  })
 })

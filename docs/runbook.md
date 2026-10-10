@@ -412,8 +412,9 @@ database-backed platform configuration is readable; it is never required for an 
 
 ## Deployment
 
-`main` 分支推送后，GitHub Actions 会先运行只读校验，再分别在 `ubuntu-latest`
-（amd64）与 `ubuntu-24.04-arm`（arm64）原生 runner 上用普通 `docker build` 构建镜像，
+`main` 分支推送后，GitHub Actions 会先运行只读校验，再分别在
+`namespace-profile-sealos-apps-amd64` 与 `namespace-profile-sealos-apps-arm64` 原生 runner
+上用普通 `docker build` 构建 amd64 与 arm64 镜像，
 推送 `ghcr.io/<仓库>/vege-basket:main-<12位sha>-amd64` 与
 `ghcr.io/<仓库>/vege-basket:main-<12位sha>-arm64`，最后用 `docker manifest` 合并为同一个镜像
 `ghcr.io/<仓库>/vege-basket:main-<12位sha>`。配置 Kubernetes 发布凭据时，随后会自动发布到

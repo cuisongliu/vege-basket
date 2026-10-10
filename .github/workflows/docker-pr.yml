@@ -12,7 +12,7 @@ concurrency:
 jobs:
   verify:
     name: 校验
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     # 测试导入的服务模块要求配置 DATABASE_URL；占位值只用于允许只读单元测试导入，不会连接数据库。
     env:
       DATABASE_URL: postgresql://veges-ci:veges-ci@127.0.0.1:5432/veges_ci
@@ -34,7 +34,7 @@ jobs:
   build-amd64:
     name: 构建 amd64 镜像（不推送）
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -47,7 +47,7 @@ jobs:
   build-arm64:
     name: 构建 arm64 镜像（不推送）
     needs: verify
-    runs-on: ubuntu-24.04-arm
+    runs-on: namespace-profile-sealos-apps-arm64
     steps:
       - name: 检出代码
         uses: actions/checkout@v4

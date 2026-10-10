@@ -17,7 +17,7 @@ concurrency:
 jobs:
   verify:
     name: 校验
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     # 测试导入的服务模块要求配置 DATABASE_URL；占位值只用于允许只读单元测试导入，不会连接数据库。
     env:
       DATABASE_URL: postgresql://veges-ci:veges-ci@127.0.0.1:5432/veges_ci
@@ -39,7 +39,7 @@ jobs:
   build-push-amd64:
     name: 构建并推送 amd64 镜像
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     permissions:
       contents: read
       packages: write
@@ -61,7 +61,7 @@ jobs:
   build-push-arm64:
     name: 构建并推送 arm64 镜像
     needs: verify
-    runs-on: ubuntu-24.04-arm
+    runs-on: namespace-profile-sealos-apps-arm64
     permissions:
       contents: read
       packages: write
@@ -85,7 +85,7 @@ jobs:
     needs:
       - build-push-amd64
       - build-push-arm64
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     permissions:
       contents: read
       packages: write
@@ -121,7 +121,7 @@ jobs:
   deploy-k8s:
     name: 发布到 Kubernetes
     needs: merge-manifest
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-sealos-apps-amd64
     environment: production
     permissions:
       contents: read
