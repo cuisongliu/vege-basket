@@ -6,3 +6,30 @@ export function selectedListPage(ids: readonly number[], selectedId: number | un
   const index = selectedId == null ? -1 : ids.indexOf(selectedId)
   return index < 0 ? 0 : Math.floor(index / pageSize)
 }
+
+export function calculateAdaptiveListPageSize({
+  containerTop,
+  itemHeight,
+  maxPageSize,
+  minPageSize,
+  pagerHeight = 0,
+  reservedHeight = 0,
+  viewportHeight,
+}: {
+  containerTop: number
+  itemHeight: number
+  maxPageSize: number
+  minPageSize: number
+  pagerHeight?: number
+  reservedHeight?: number
+  viewportHeight: number
+}) {
+  const availableHeight = Math.max(
+    itemHeight * minPageSize,
+    viewportHeight - containerTop - reservedHeight - pagerHeight,
+  )
+  return Math.max(
+    minPageSize,
+    Math.min(maxPageSize, Math.floor(availableHeight / itemHeight)),
+  )
+}
