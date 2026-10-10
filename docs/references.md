@@ -246,6 +246,11 @@ are retained. Read failures roll back; rollback failures discard the connection.
 The project basket shows eight projects per page and displays pagination only when
 the filtered result exceeds eight. Search, status, tag, user, and organization changes
 reset its page; opening a project and returning preserves its page and scroll position.
+Each project includes server-aggregated todo counts for total, in-progress, pending-review,
+completed, and discarded work. The buckets are mutually exclusive: discarded takes
+precedence over completed, completed takes precedence over pending review, and pending
+review is distinct only for organization projects; retained rejection and failed-acceptance
+states remain in progress.
 Bug lists and My Work default to 20 rows with a 50-row option. Project todo cards
 retain their adaptive page size and share the range/previous/next controls.
 My Work remembers filters, page size, page, and list scroll position in App memory,

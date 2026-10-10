@@ -197,6 +197,16 @@ test('workspace loading uses independently scoped live read models', () => {
   assert.match(appSource, /sections && \(!includes\('catalog'\) \|\| data\.scope\?\.projectId\)/u)
 })
 
+test('project catalog includes mutually exclusive todo lifecycle counts', () => {
+  assert.match(workspaceServerSource, /left join lateral \([\s\S]*?from todos todo[\s\S]*?where todo\.project_id = p\.id[\s\S]*?\) todo_counts on true/u)
+  assert.match(workspaceServerSource, /todo\.todo_status = 'open'[\s\S]*?p\.organization_id is null or todo\.confirmation_status <> 'pending_review'/u)
+  assert.match(workspaceServerSource, /todo\.todo_status = 'open'[\s\S]*?p\.organization_id is not null[\s\S]*?todo\.confirmation_status = 'pending_review'/u)
+  assert.match(workspaceServerSource, /todo\.todo_status <> 'discarded'[\s\S]*?todo\.todo_status = 'completed' or todo\.done/u)
+  assert.match(workspaceServerSource, /todo\.todo_status = 'discarded'/u)
+  assert.match(workspaceServerSource, /todoCounts: \{[\s\S]*?total: Number\(project\.todo_total\)[\s\S]*?discarded: Number\(project\.todo_discarded\)/u)
+  assert.match(appSource, /className="project-todo-counts"[\s\S]*?待办[\s\S]*?进行中[\s\S]*?待确认[\s\S]*?已完成[\s\S]*?已废弃/u)
+})
+
 test('todo detail hydration does not invalidate its own in-flight request', () => {
   const detailLoadEffect = appSource.slice(
     appSource.indexOf('    const requestId = todoDetailRequestIdRef.current + 1'),

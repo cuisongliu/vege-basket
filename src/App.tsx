@@ -1630,6 +1630,7 @@ const initialProjects: Project[] = [
     riskJournalEntryIds: [101],
     modules: [],
     subprojects: [],
+    todoCounts: { total: 1, open: 1, review: 0, completed: 0, discarded: 0 },
     journals: [
       {
         id: 101,
@@ -1667,6 +1668,7 @@ const initialProjects: Project[] = [
     riskJournalEntryIds: [201],
     modules: [],
     subprojects: [],
+    todoCounts: { total: 1, open: 1, review: 0, completed: 0, discarded: 0 },
     journals: [
       {
         id: 201,
@@ -1695,6 +1697,7 @@ const initialProjects: Project[] = [
     riskJournalEntryIds: [301],
     modules: [],
     subprojects: [],
+    todoCounts: { total: 1, open: 1, review: 0, completed: 0, discarded: 0 },
     journals: [
       {
         id: 301,
@@ -1723,6 +1726,7 @@ const initialProjects: Project[] = [
     riskJournalEntryIds: [],
     modules: [],
     subprojects: [],
+    todoCounts: { total: 1, open: 0, review: 0, completed: 1, discarded: 0 },
     journals: [
       {
         id: 401,
@@ -9806,6 +9810,16 @@ function SearchView({
                   <ProjectTags tags={project.tags} compact />
                 </div>
                 {project.description.trim() ? <p>{project.description}</p> : null}
+                <dl
+                  className="project-todo-counts"
+                  aria-label={`${project.name}待办统计：共${project.todoCounts.total}项，进行中${project.todoCounts.open}项，待确认${project.todoCounts.review}项，已完成${project.todoCounts.completed}项，已废弃${project.todoCounts.discarded}项`}
+                >
+                  <div className="total"><dt>待办</dt><dd>{project.todoCounts.total}</dd></div>
+                  <div className="open"><dt>进行中</dt><dd>{project.todoCounts.open}</dd></div>
+                  <div className="review"><dt>待确认</dt><dd>{project.todoCounts.review}</dd></div>
+                  <div className="completed"><dt>已完成</dt><dd>{project.todoCounts.completed}</dd></div>
+                  <div className="discarded"><dt>已废弃</dt><dd>{project.todoCounts.discarded}</dd></div>
+                </dl>
               </div>
             </button>
             {(project.canManageSettings ?? project.accessRole === 'owner') && (
