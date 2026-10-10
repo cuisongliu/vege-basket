@@ -10673,6 +10673,49 @@ textarea:focus {
   line-height: 1.6;
 }
 
+.project-todo-counts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 10px 0 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.project-todo-counts > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.project-todo-counts dt,
+.project-todo-counts dd {
+  margin: 0;
+}
+
+.project-todo-counts dd {
+  min-width: 1ch;
+  color: var(--strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-align: right;
+}
+
+.project-todo-counts .review dd {
+  color: var(--warning, #b45309);
+}
+
+.project-todo-counts .completed dd {
+  color: var(--primary);
+}
+
+.project-todo-counts .discarded dd {
+  color: var(--destructive);
+}
+
 :root:not(.dark) .nav-button:hover {
   background: var(--surface);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
