@@ -4577,6 +4577,11 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       name: string
       description_encrypted: string | null
       status: ProjectStatus
+	      todo_total: number
+	      todo_open: number
+	      todo_review: number
+	      todo_completed: number
+	      todo_discarded: number
 	      tags: string[]
 	      tags_encrypted: string | null
 	      feishu_chat_id: string | null
@@ -4597,6 +4602,11 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
              p.name,
              p.description_encrypted,
              p.status,
+	             todo_counts.total as todo_total,
+	             todo_counts.open as todo_open,
+	             todo_counts.review as todo_review,
+	             todo_counts.completed as todo_completed,
+	             todo_counts.discarded as todo_discarded,
 	             p.tags,
 	             p.tags_encrypted,
 	             pi.target_id as feishu_chat_id,
@@ -4605,6 +4615,21 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
 	             p.updated_at
 	      from projects p
 	      join users u on u.id = p.user_id
+	      left join lateral (
+	        select count(*)::int as total,
+	               count(*) filter (where todo.todo_status = 'open'
+	                 and not todo.done
+	                 and (p.organization_id is null or todo.confirmation_status <> 'pending_review'))::int as open,
+	               count(*) filter (where todo.todo_status = 'open'
+	                 and not todo.done
+	                 and p.organization_id is not null
+	                 and todo.confirmation_status = 'pending_review')::int as review,
+	               count(*) filter (where todo.todo_status <> 'discarded'
+	                 and (todo.todo_status = 'completed' or todo.done))::int as completed,
+	               count(*) filter (where todo.todo_status = 'discarded')::int as discarded
+	          from todos todo
+	         where todo.project_id = p.id
+	      ) todo_counts on true
 	      left join project_integrations pi
 	        on pi.project_id = p.id
 	       and pi.provider = 'feishu'
@@ -5188,6 +5213,13 @@ async function getWorkspace(userId: number, options: WorkspaceReadOptions = {}) 
       }),
       ownerUserId: Number(project.owner_user_id),
       status: project.status,
+      todoCounts: {
+        total: Number(project.todo_total),
+        open: Number(project.todo_open),
+        review: Number(project.todo_review),
+        completed: Number(project.todo_completed),
+        discarded: Number(project.todo_discarded),
+      },
       createdAt: formatUpdatedAt(project.created_at),
 	      updatedAt: formatUpdatedAt(project.updated_at),
 	      tags: decryptTags(project.tags_encrypted, project.tags ?? []),

@@ -8,6 +8,14 @@ export type ProjectAccessRole = 'owner' | 'member'
 export type JournalVisibility = 'private' | 'public'
 export type { UserAccountStatus } from '../shared/user-lifecycle'
 
+export type ProjectTodoCounts = {
+  total: number
+  open: number
+  review: number
+  completed: number
+  discarded: number
+}
+
 export type ImageSyncArchitecture = 'amd64' | 'arm64'
 export type ImageSyncArtifactKind = 'tar' | 'md5'
 export type ImageSyncRunStatus = 'dispatching' | 'queued' | 'in_progress' | 'completed' | 'failed'
@@ -664,4 +672,5 @@ export type Project = {
   riskJournalEntryIds: number[]
   modules: ProjectModule[]
   subprojects: ProjectSubproject[]
+  todoCounts: ProjectTodoCounts
 }
