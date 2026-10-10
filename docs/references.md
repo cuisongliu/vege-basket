@@ -393,17 +393,23 @@ case/weekly-report pagination remain unchanged.
   and manage organization membership. They may add an existing account directly or create
   an expiring browser invite link; link acceptance activates ordinary member access without
   a Feishu callback. Platform deletion requires the exact organization name and succeeds only
-  for an empty organization; it never detaches or deletes business resources.
+  for an empty organization; it never detaches or deletes business resources. The organization
+  directory returns only blocker counts. `GET /api/admin/organizations/:organizationId/deletion-check`
+  loads grouped blocker details on demand, including the business label, database table, cleanup
+  instruction, total count, up to ten examples, and the remaining example count.
   Accounts assigned `organization_admin` see the organization-management identity, and active
   platform administrators see the super-administrator identity in the same role switcher.
   There are no separate management menu entries. These selections are independent of the
   global organization selector. Refreshing a stored management view rechecks the relevant
   grant; losing it returns the user to an available business workspace. Server authorization
   never trusts the selected browser identity.
-  If they also have active `owner` or `admin` membership in an organization, they receive
-  access to all attached projects and project records, test spaces and test records, and
-  Bugs and comments. That dual authorization may update attached project lifecycle status,
-  health notes, and milestones, and manage project settings, membership, invite links,
+  With any active organization membership, an account assigned `organization_admin` receives
+  read-only access in organization management to all attached project summaries, milestones,
+  todos, and delivery events. This does not create project membership or project-owner access.
+  Active `owner` or `admin` organization membership is additionally required for access to all
+  attached test spaces and test records, and Bugs and comments. That stronger dual authorization
+  may update attached project lifecycle status, health notes, and milestones, and manage project
+  settings, membership, invite links,
   deletion and ownership transfer. It may also manage test-space settings, membership,
   invite links, deletion and organization assignment. Integrations, ordinary project content,
   test data import, plan, case and Bug mutation retain their original resource permissions.

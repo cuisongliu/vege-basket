@@ -82,6 +82,31 @@
 .platform-organization-row > div:first-child { display: grid; gap: 4px; }
 .platform-organization-row small { color: var(--muted-foreground); }
 .platform-counts { display: flex; gap: 13px; color: var(--muted-foreground); font-size: .78rem; }
+.platform-organization-blockers { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.platform-organization-deletion-dialog { width: min(94vw, 860px); max-height: min(86vh, 760px); }
+.platform-organization-deletion-detail { display: grid; gap: 22px; min-height: 120px; overflow: auto; padding-right: 4px; }
+.platform-organization-deletion-loading,
+.platform-organization-deletion-empty { display: flex; min-height: 140px; align-items: center; justify-content: center; gap: 8px; color: var(--muted-foreground); font-size: .84rem; }
+.platform-organization-deletion-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.platform-organization-deletion-summary strong { font-size: .9rem; }
+.platform-organization-deletion-summary span { color: var(--muted-foreground); font-size: .76rem; }
+.platform-organization-deletion-group { display: grid; gap: 1px; }
+.platform-organization-deletion-group h4 { margin: 0 0 6px; color: var(--muted-foreground); font-size: .75rem; font-weight: 600; }
+.platform-organization-deletion-blocker { display: grid; gap: 8px; border-top: 1px solid var(--border); padding: 13px 0; }
+.platform-organization-deletion-blocker-heading { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.platform-organization-deletion-blocker-heading > strong { font-size: .84rem; }
+.platform-organization-deletion-blocker-heading > code { min-width: 0; margin-left: auto; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .7rem; }
+.platform-organization-deletion-blocker > p { margin: 0; color: var(--muted-foreground); font-size: .77rem; line-height: 1.55; }
+.platform-organization-deletion-samples { display: grid; border: 1px solid var(--border); border-radius: 6px; }
+.platform-organization-deletion-samples > div { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.25fr) auto; align-items: center; gap: 12px; min-width: 0; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: .74rem; }
+.platform-organization-deletion-samples > div:last-of-type { border-bottom: 0; }
+.platform-organization-deletion-samples strong,
+.platform-organization-deletion-samples span { min-width: 0; overflow-wrap: anywhere; }
+.platform-organization-deletion-samples span,
+.platform-organization-deletion-samples code,
+.platform-organization-deletion-samples small { color: var(--muted-foreground); }
+.platform-organization-deletion-samples code { white-space: nowrap; }
+.platform-organization-deletion-samples small { padding: 7px 10px; border-top: 1px solid var(--border); }
 
 .platform-runtime { display: grid; gap: 28px; }
 .platform-maintenance { display: grid; gap: 24px; }
@@ -183,6 +208,7 @@
   .platform-history-row { grid-template-columns: 1fr; }
   .platform-history-summary > span { white-space: normal; }
   .platform-user-actions { justify-content: flex-start; }
+  .platform-organization-blockers { justify-content: flex-start; }
   .platform-maintenance-form { grid-template-columns: 1fr; }
   .platform-maintenance-actions { justify-content: flex-start; }
   .platform-maintenance-record-header { display: none; }
@@ -220,4 +246,8 @@
   .platform-history-change,
   .platform-history-changes.compact .platform-history-change,
   .platform-history-text-diff { grid-template-columns: 1fr; }
+  .platform-organization-deletion-summary { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .platform-organization-deletion-blocker-heading { align-items: flex-start; flex-wrap: wrap; }
+  .platform-organization-deletion-blocker-heading > code { width: 100%; margin-left: 0; }
+  .platform-organization-deletion-samples > div { grid-template-columns: 1fr; gap: 3px; }
 }

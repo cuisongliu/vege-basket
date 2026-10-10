@@ -88,6 +88,7 @@ import type {
   PlatformConfigSection,
   PlatformMaintenanceHistory,
   PlatformOrganization,
+  PlatformOrganizationDeletionCheck,
   PlatformRuntimeStatus,
   PlatformSecurityStatus,
   PlatformStatus,
@@ -1100,6 +1101,10 @@ export function fetchPlatformOrganizations(search = '') {
   return request<{ organizations: PlatformOrganization[]; page: number; pageSize: number; total: number }>(
     `/api/admin/organizations?${params.toString()}`,
   )
+}
+
+export function fetchPlatformOrganizationDeletionCheck(organizationId: number) {
+  return request<PlatformOrganizationDeletionCheck>(`/api/admin/organizations/${organizationId}/deletion-check`)
 }
 
 export function createPlatformOrganization(name: string, ownerUserId: number) {

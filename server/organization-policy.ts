@@ -47,6 +47,13 @@ export function canManageOrganizationProjects(
   return canManageOrganizationResources(role, assignedRoles)
 }
 
+export function canReadAllOrganizationProjects(
+  role: OrganizationAccessRole | null,
+  assignedRoles: readonly string[],
+) {
+  return canManageOrganization(role, assignedRoles)
+}
+
 export function canManageOrganizationResources(
   role: OrganizationAccessRole | null,
   assignedRoles: readonly string[],

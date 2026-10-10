@@ -244,12 +244,15 @@ does not expose it. Selecting it opens organization management without changing 
 session's developer/tester persona. The management view determines the displayed identity
 and selected menu item. There is no separate organization-management menu entry. Restoring
 that view rechecks the assigned role and falls back to the business landing page if revoked.
-It allows the account to assume the developer or tester persona. When that
-account is also an active organization owner or administrator, read routes may expose all
-projects, test spaces, Bugs, comments, and related records attached to that organization.
-That dual authorization also permits project-governance mutations for lifecycle status,
-health, and milestones. It may also edit and delete todos in projects attached to that
-organization; todo completion and acceptance transitions retain their reviewer rules.
+It allows the account to assume the developer or tester persona. When that account has any
+active membership in an organization, read routes may expose all attached project summaries,
+milestones, todos, and delivery events in organization management. This organization-wide
+project visibility is read-only and does not synthesize project membership or owner access.
+Active organization owner or administrator membership is additionally required before read
+routes expose all attached test spaces, Bugs, comments, and related records. That stronger dual
+authorization also permits project-governance mutations for lifecycle status, health, and
+milestones. It may also edit and delete todos in projects attached to that organization; todo
+completion and acceptance transitions retain their reviewer rules.
 Resource administration is another explicit exception: organization managers may edit
 attached project settings, manage members and invite links, delete projects and initiate
 ownership transfers. They may manage attached test-space settings, members, deletion and

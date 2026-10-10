@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   canManageOrganization,
   canManageOrganizationProjects,
+  canReadAllOrganizationProjects,
   canManageOrganizationWeeklyReports,
   canManageTestEnvironments,
   hashOrganizationInviteToken,
@@ -88,6 +89,15 @@ test('organization project governance requires both account and organization aut
   assert.equal(canManageOrganizationProjects('admin', ['organization_admin', 'developer']), true)
   assert.equal(canManageOrganizationProjects('member', ['organization_admin']), false)
   assert.equal(canManageOrganizationProjects('admin', ['developer']), false)
+})
+
+test('organization administrators can read every organization project without gaining governance authority', () => {
+  assert.equal(canReadAllOrganizationProjects('owner', ['organization_admin']), true)
+  assert.equal(canReadAllOrganizationProjects('admin', ['organization_admin']), true)
+  assert.equal(canReadAllOrganizationProjects('member', ['organization_admin']), true)
+  assert.equal(canReadAllOrganizationProjects('member', ['developer']), false)
+  assert.equal(canReadAllOrganizationProjects(null, ['organization_admin']), false)
+  assert.equal(canManageOrganizationProjects('member', ['organization_admin']), false)
 })
 
 test('test-environment maintenance requires organization-admin role and owner/admin membership', () => {

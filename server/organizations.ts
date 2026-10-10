@@ -13,6 +13,7 @@ import { platformFeishuConfig } from './platform-config-values.ts'
 import {
   canManageOrganization,
   canManageOrganizationProjects,
+  canReadAllOrganizationProjects,
   canManageOrganizationWeeklyReports,
   canManageTestEnvironments,
   hashOrganizationInviteToken,
@@ -568,6 +569,7 @@ async function getOrganizationDetail(
   const assignedRoles = await getAssignedRoles(userId)
   const canManage = canManageOrganization(membership.access_role, assignedRoles)
   const canManageProjects = canManageOrganizationProjects(membership.access_role, assignedRoles)
+  const canReadAllProjects = canReadAllOrganizationProjects(membership.access_role, assignedRoles)
   const canManageWeeklyReports = canManageOrganizationWeeklyReports(membership.access_role, assignedRoles)
   const [organization, members, projects, projectMemberships, milestones, testSpaces, testEnvironments, todos, packageEvents, bugs, reports, summaries, invitations, attachableProjects, attachableTestSpaces, packageMarketPolicy, projectModules] = await Promise.all([
     detailQuery<{
@@ -654,7 +656,7 @@ async function getOrganizationDetail(
       group by p.id, owner.id
       order by p.updated_at desc, p.id desc
       `,
-      [organizationId, canManageProjects, userId],
+      [organizationId, canReadAllProjects, userId],
     ) : Promise.resolve({ rows: [] }),
     canManageProjects && includes('projects') ? detailQuery<{
       created_at: Date
@@ -722,7 +724,7 @@ async function getOrganizationDetail(
       group by milestone.id, responsible.id
       order by milestone.target_date, milestone.sort_order, milestone.id
       `,
-      [organizationId, canManageProjects, userId],
+      [organizationId, canReadAllProjects, userId],
     ) : Promise.resolve({ rows: [] }),
     includes('overview', 'testSpaces') ? detailQuery<{
       bug_count: string
@@ -797,7 +799,7 @@ async function getOrganizationDetail(
       order by t.done, t.updated_at desc, t.id desc
       limit 200
       `,
-      [organizationId, canManageProjects, userId],
+      [organizationId, canReadAllProjects, userId],
     ) : Promise.resolve({ rows: [] }),
     includes('overview') ? detailQuery<{
       assignee_display_name: string | null
@@ -824,7 +826,7 @@ async function getOrganizationDetail(
       order by e.updated_at desc, e.id desc
       limit 200
       `,
-      [organizationId, canManageProjects, userId],
+      [organizationId, canReadAllProjects, userId],
     ) : Promise.resolve({ rows: [] }),
     includes('overview') ? detailQuery<{
       assignee_display_name: string | null

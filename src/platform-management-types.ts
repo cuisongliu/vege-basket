@@ -81,8 +81,30 @@ export type PlatformConfigHistoryDetail = {
   version: Pick<PlatformConfigHistoryItem, 'createdAt' | 'createdBy' | 'revision' | 'source' | 'sourceLabel'>
 }
 
+export type PlatformOrganizationDeletionBlockerGroup = 'configuration' | 'history' | 'membership' | 'resources' | 'workflow'
+
+export type PlatformOrganizationDeletionBlocker = {
+  count: number
+  databaseTable: string
+  group: PlatformOrganizationDeletionBlockerGroup
+  groupLabel: string
+  instruction: string
+  label: string
+  remainingCount: number
+  samples: Array<{ detail: string; id: string; label: string }>
+  type: string
+}
+
+export type PlatformOrganizationDeletionCheck = {
+  blockers: PlatformOrganizationDeletionBlocker[]
+  canDelete: boolean
+  checkedAt: string
+  id: number
+  name: string
+}
+
 export type PlatformOrganization = {
-  blockers: Array<{ count: number; type: string }>
+  blockers: PlatformOrganizationDeletionBlocker[]
   canDelete: boolean
   checkedAt: string
   id: number

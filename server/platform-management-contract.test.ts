@@ -190,6 +190,23 @@ test('platform organization search does not silently truncate the directory', ()
   assert.doesNotMatch(listSource, /limit 1000/u)
 })
 
+test('platform organization deletion details classify every blocker and load samples only on demand', () => {
+  const blockerTypes = [...platformOrganizationsSource.matchAll(/union all select '([^']+)'/gu)].map((match) => match[1])
+  blockerTypes.unshift('members')
+  const definitions = [...platformOrganizationsSource.matchAll(/\{ type: '([^']+)', label:/gu)].map((match) => match[1])
+
+  assert.deepEqual(new Set(definitions), new Set(blockerTypes))
+  assert.equal(definitions.length, 19)
+  assert.match(platformOrganizationsSource, /checkPlatformOrganizationDeletion\(id, false\)/u)
+  assert.match(platformOrganizationsSource, /checkPlatformOrganizationDeletion\(organizationId: number, includeSamples = true\)/u)
+  assert.match(platformOrganizationsSource, /version_label \? `版本：\$\{decryptText\(row\.version_label\)\}`/u)
+  assert.match(apiSource, /fetchPlatformOrganizationDeletionCheck/u)
+  assert.match(workbenchSource, /类数据阻止删除/u)
+  assert.match(workbenchSource, /重新检查/u)
+  assert.match(workbenchSource, /blocker\.databaseTable/u)
+  assert.match(workbenchSource, /setOrganizations\(\(current\) => current\.map/u)
+})
+
 test('platform organization creation is hidden without organization-admin permission', () => {
   assert.match(clientAppSource, /canCreateOrganizations=\{isOrganizationAdmin\}/u)
   assert.match(workbenchSource, /canCreateOrganizations \? <Button onClick=\{\(\) => setCreateOpen\(true\)\}/u)

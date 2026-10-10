@@ -9,6 +9,7 @@ import {
   Copy,
   Cpu,
   Database,
+  Info,
   Eye,
   EyeSlash,
   GearSix,
@@ -33,6 +34,7 @@ import {
   fetchPlatformConfigHistory,
   fetchPlatformConfigHistoryDetail,
   fetchPlatformOrganizations,
+  fetchPlatformOrganizationDeletionCheck,
   fetchPlatformRuntimeStatus,
   fetchPlatformSecurityStatus,
   fetchPlatformMaintenance,
@@ -63,6 +65,8 @@ import type {
   PlatformConfigSection,
   PlatformMaintenanceRecord,
   PlatformOrganization,
+  PlatformOrganizationDeletionCheck,
+  PlatformOrganizationDeletionBlockerGroup,
   PlatformRuntimeStatus,
   PlatformSecurityStatus,
   PlatformStatus,
@@ -104,6 +108,14 @@ import './platform-management-workbench.css'
 type Tab = PlatformConfigSection | 'users' | 'organizations' | 'maintenance' | 'security' | 'runtime' | 'history'
 type SecretDrafts = Record<string, string | undefined>
 type UserTab = 'users' | 'admins'
+
+const organizationDeletionGroupOrder: PlatformOrganizationDeletionBlockerGroup[] = [
+  'resources',
+  'membership',
+  'configuration',
+  'workflow',
+  'history',
+]
 
 const tabs: Array<{ group: string; icon: typeof GearSix; id: Tab; label: string }> = [
   { group: '平台', icon: GearSix, id: 'general', label: '平台信息' },
@@ -430,6 +442,8 @@ export function PlatformManagementWorkbench({
   const [grantUserId, setGrantUserId] = useState('')
   const [grantAdminOpen, setGrantAdminOpen] = useState(false)
   const [organizationSearch, setOrganizationSearch] = useState('')
+  const [organizationDeletionCheck, setOrganizationDeletionCheck] = useState<PlatformOrganizationDeletionCheck>()
+  const [organizationDeletionCheckLoading, setOrganizationDeletionCheckLoading] = useState(false)
   const [offboardingUser, setOffboardingUser] = useState<ManagedUser>()
   const [offboardingPreview, setOffboardingPreview] = useState<OffboardingPreview>()
   const [offboardingSelections, setOffboardingSelections] = useState<Record<number, string>>({})
@@ -458,6 +472,32 @@ export function PlatformManagementWorkbench({
   async function loadOrganizations(search = organizationSearch) {
     const response = await fetchPlatformOrganizations(search)
     setOrganizations(response.organizations)
+  }
+
+  async function loadOrganizationDeletionCheck(organization: PlatformOrganization) {
+    setOrganizationDeletionCheck({
+      blockers: organization.blockers,
+      canDelete: organization.canDelete,
+      checkedAt: organization.checkedAt,
+      id: organization.id,
+      name: organization.name,
+    })
+    setOrganizationDeletionCheckLoading(true)
+    setError('')
+    try {
+      const deletionCheck = await fetchPlatformOrganizationDeletionCheck(organization.id)
+      setOrganizationDeletionCheck(deletionCheck)
+      setOrganizations((current) => current.map((item) => item.id === deletionCheck.id ? {
+        ...item,
+        blockers: deletionCheck.blockers,
+        canDelete: deletionCheck.canDelete,
+        checkedAt: deletionCheck.checkedAt,
+      } : item))
+    } catch (checkError) {
+      handleError(checkError, '组织删除检查失败。')
+    } finally {
+      setOrganizationDeletionCheckLoading(false)
+    }
   }
 
   async function loadRuntime() {
@@ -1111,7 +1151,51 @@ export function PlatformManagementWorkbench({
             </div>
           </> : null}
 
-          {tab === 'organizations' ? <div className="platform-organizations"><div className="platform-list-tools"><div className="platform-search"><MagnifyingGlass /><Input placeholder="搜索组织或所有者" value={organizationSearch} onChange={(event) => setOrganizationSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadOrganizations() }} /></div><Button variant="outline" onClick={() => void loadOrganizations()} disabled={busy}>查询</Button>{canCreateOrganizations ? <Button onClick={() => setCreateOpen(true)} disabled={busy}><Plus />新建组织</Button> : null}</div><div className="platform-table-list">{organizations.map((organization) => <article className="platform-organization-row" key={organization.id}><div><strong>{organization.name}</strong><small>所有者：{organization.owner.displayName}</small></div><div className="platform-counts"><span>{organization.memberCount} 成员</span><span>{organization.projectCount} 项目</span><span>{organization.testSpaceCount} 测试空间</span></div><Badge variant={organization.canDelete ? 'secondary' : 'outline'}>{organization.canDelete ? '空组织' : `${organization.blockers.reduce((sum, item) => sum + item.count, 0)} 项关联数据`}</Badge><ConfirmActionDialog actionKey={`platform-organization-delete:${organization.id}`} title={`删除组织“${organization.name}”？`} description={organization.canDelete ? '仅删除组织壳和唯一所有者关系，操作不可恢复。' : '该组织仍有关联业务或历史数据，当前不能删除。'} confirmationName={organization.name} confirmLabel="删除组织" confirmDisabled={!organization.canDelete} trigger={<Button size="icon" variant="destructive" title="删除组织"><Trash /></Button>} onConfirm={async () => { await deletePlatformOrganization(organization.id, organization.name); await loadOrganizations(); return true }} /></article>)}</div></div> : null}
+          {tab === 'organizations' ? (
+            <div className="platform-organizations">
+              <div className="platform-list-tools">
+                <div className="platform-search">
+                  <MagnifyingGlass />
+                  <Input
+                    placeholder="搜索组织或所有者"
+                    value={organizationSearch}
+                    onChange={(event) => setOrganizationSearch(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === 'Enter') void loadOrganizations() }}
+                  />
+                </div>
+                <Button variant="outline" onClick={() => void loadOrganizations()} disabled={busy}>查询</Button>
+                {canCreateOrganizations ? <Button onClick={() => setCreateOpen(true)} disabled={busy}><Plus data-icon="inline-start" />新建组织</Button> : null}
+              </div>
+              <div className="platform-table-list">
+                {organizations.map((organization) => (
+                  <article className="platform-organization-row" key={organization.id}>
+                    <div><strong>{organization.name}</strong><small>所有者：{organization.owner.displayName}</small></div>
+                    <div className="platform-counts"><span>{organization.memberCount} 成员</span><span>{organization.projectCount} 项目</span><span>{organization.testSpaceCount} 测试空间</span></div>
+                    <div className="platform-organization-blockers">
+                      <Badge variant={organization.canDelete ? 'secondary' : 'outline'}>
+                        {organization.canDelete ? '空组织' : `${organization.blockers.length} 类数据阻止删除`}
+                      </Badge>
+                      {!organization.canDelete ? (
+                        <Button size="sm" variant="ghost" onClick={() => void loadOrganizationDeletionCheck(organization)}>
+                          <Info data-icon="inline-start" />查看明细
+                        </Button>
+                      ) : null}
+                    </div>
+                    <ConfirmActionDialog
+                      actionKey={`platform-organization-delete:${organization.id}`}
+                      title={`删除组织“${organization.name}”？`}
+                      description={organization.canDelete ? '仅删除组织壳和唯一所有者关系，操作不可恢复。' : '该组织仍有关联业务或历史数据，当前不能删除。'}
+                      confirmationName={organization.name}
+                      confirmLabel="删除组织"
+                      confirmDisabled={!organization.canDelete}
+                      trigger={<Button aria-label={`删除组织${organization.name}`} size="icon" variant="destructive" title="删除组织"><Trash /></Button>}
+                      onConfirm={async () => { await deletePlatformOrganization(organization.id, organization.name); await loadOrganizations(); return true }}
+                    />
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {tab === 'maintenance' ? <div className="platform-maintenance">
             <div className="platform-runtime-summary">
@@ -1200,6 +1284,76 @@ export function PlatformManagementWorkbench({
           {activeConfigSection ? <footer className="platform-savebar"><Button variant="outline" type="button" disabled={busy || !sectionChanged} onClick={() => restoreSection(activeConfigSection)}>还原</Button>{(['ai', 'email', 'storage', 'feishu', 'github'] as PlatformConfigSection[]).includes(activeConfigSection) ? <Button variant="outline" type="button" disabled={busy} onClick={() => void testSection(activeConfigSection)}>{busy ? <SpinnerGap className="animate-spin" /> : <CheckCircle />}{tab === 'email' ? '测试连接' : '测试可用性'}</Button> : null}<Button type="button" disabled={busy || !sectionChanged} onClick={() => void saveSection(activeConfigSection)}>{busy ? <SpinnerGap className="animate-spin" /> : <CheckCircle />}保存更改</Button></footer> : null}
         </section>
       </div>
+
+      <Dialog open={Boolean(organizationDeletionCheck)} onOpenChange={(open) => { if (!open && !organizationDeletionCheckLoading) setOrganizationDeletionCheck(undefined) }}>
+        <DialogContent fixedHeader className="platform-organization-deletion-dialog">
+          <DialogHeader>
+            <DialogTitle>{organizationDeletionCheck?.name ?? '组织'} · 删除阻塞明细</DialogTitle>
+            <DialogDescription>
+              删除仅对没有业务与历史关联数据的空组织开放。以下结果来自实时只读检查。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="platform-organization-deletion-detail">
+            {organizationDeletionCheckLoading ? (
+              <div className="platform-organization-deletion-loading"><SpinnerGap className="animate-spin" />正在检查关联数据…</div>
+            ) : organizationDeletionCheck?.blockers.length ? (
+              <>
+                <div className="platform-organization-deletion-summary">
+                  <strong>{organizationDeletionCheck.blockers.length} 类数据阻止删除</strong>
+                  <span>共 {organizationDeletionCheck.blockers.reduce((sum, blocker) => sum + blocker.count, 0)} 条数据库记录</span>
+                </div>
+                {organizationDeletionGroupOrder.map((group) => {
+                  const blockers = organizationDeletionCheck.blockers.filter((blocker) => blocker.group === group)
+                  if (blockers.length === 0) return null
+                  return (
+                    <section className="platform-organization-deletion-group" key={group}>
+                      <h4>{blockers[0].groupLabel}</h4>
+                      {blockers.map((blocker) => (
+                        <div className="platform-organization-deletion-blocker" key={blocker.type}>
+                          <div className="platform-organization-deletion-blocker-heading">
+                            <strong>{blocker.label}</strong>
+                            <Badge variant="outline">{blocker.count} 条</Badge>
+                            <code>{blocker.databaseTable}</code>
+                          </div>
+                          <p>{blocker.instruction}</p>
+                          {blocker.samples.length > 0 ? (
+                            <div className="platform-organization-deletion-samples">
+                              {blocker.samples.map((sample) => (
+                                <div key={`${blocker.type}:${sample.id}`}>
+                                  <strong>{sample.label}</strong>
+                                  <span>{sample.detail}</span>
+                                  <code>#{sample.id}</code>
+                                </div>
+                              ))}
+                              {blocker.remainingCount > 0 ? <small>另有 {blocker.remainingCount} 条未展开</small> : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </section>
+                  )
+                })}
+              </>
+            ) : (
+              <div className="platform-organization-deletion-empty"><CheckCircle />当前没有关联数据，可以关闭明细后删除组织。</div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={organizationDeletionCheckLoading || !organizationDeletionCheck}
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const organization = organizations.find((item) => item.id === organizationDeletionCheck?.id)
+                if (organization) void loadOrganizationDeletionCheck(organization)
+              }}
+            >
+              <ArrowClockwise data-icon="inline-start" />重新检查
+            </Button>
+            <Button disabled={organizationDeletionCheckLoading} type="button" onClick={() => setOrganizationDeletionCheck(undefined)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(historyDetail)} onOpenChange={(open) => { if (!open) setHistoryDetail(undefined) }}>
         <DialogContent fixedHeader className="platform-history-dialog">
