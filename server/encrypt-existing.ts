@@ -121,6 +121,51 @@ async function encryptTestSpaceVersionFields() {
   }
 }
 
+async function encryptProjectLedgerFields() {
+  const columns: Array<[string, string]> = [
+    ['project_ledgers', 'description_markdown_encrypted'],
+    ['project_ledgers', 'installation_version_encrypted'],
+    ['project_ledger_clusters', 'name_encrypted'],
+    ['project_ledger_clusters', 'environment_type_encrypted'],
+    ['project_ledger_clusters', 'region_encrypted'],
+    ['project_ledger_clusters', 'access_address_encrypted'],
+    ['project_ledger_clusters', 'access_account_markdown_encrypted'],
+    ['project_ledger_clusters', 'notes_encrypted'],
+    ['project_ledger_applications', 'name_encrypted'],
+    ['project_ledger_applications', 'version_encrypted'],
+    ['project_ledger_applications', 'notes_encrypted'],
+    ['project_ledger_licenses', 'product_encrypted'],
+    ['project_ledger_licenses', 'notes_encrypted'],
+    ['project_ledger_vpn_profiles', 'content_encrypted'],
+    ['project_ledger_machines', 'host_name_encrypted'],
+    ['project_ledger_machines', 'machine_type_encrypted'],
+    ['project_ledger_machines', 'use_encrypted'],
+    ['project_ledger_machines', 'cpu_encrypted'],
+    ['project_ledger_machines', 'gpu_encrypted'],
+    ['project_ledger_machines', 'memory_encrypted'],
+    ['project_ledger_machines', 'disks_markdown_encrypted'],
+    ['project_ledger_machines', 'operating_system_encrypted'],
+    ['project_ledger_machines', 'kernel_encrypted'],
+    ['project_ledger_machines', 'architecture_encrypted'],
+    ['project_ledger_machines', 'raid_card_encrypted'],
+    ['project_ledger_machines', 'network_cards_encrypted'],
+    ['project_ledger_machines', 'ssh_markdown_encrypted'],
+    ['project_ledger_machines', 'internal_address_encrypted'],
+    ['project_ledger_machines', 'external_address_encrypted'],
+    ['project_ledger_machines', 'instance_id_encrypted'],
+    ['project_ledger_machines', 'notes_encrypted'],
+    ['project_ledger_network_mappings', 'network_name_encrypted'],
+    ['project_ledger_network_mappings', 'ip_encrypted'],
+    ['project_ledger_network_mappings', 'access_address_encrypted'],
+    ['project_ledger_network_mappings', 'access_scope_encrypted'],
+    ['project_ledger_network_mappings', 'purpose_encrypted'],
+    ['project_ledger_diagrams', 'object_key_encrypted'],
+    ['project_ledger_diagrams', 'file_name_encrypted'],
+    ['project_ledger_diagrams', 'description_encrypted'],
+  ]
+  for (const [table, column] of columns) await encryptColumn(table, column)
+}
+
 async function main() {
   await query(schemaSql)
   await initializeProjectModules(pool, true)
@@ -197,6 +242,7 @@ async function main() {
   await encryptColumn('test_plans', 'environment_access_url')
   await encryptTestEnvironmentFields()
   await encryptTestSpaceVersionFields()
+  await encryptProjectLedgerFields()
 
   const collaborators = await query<{ id: string; name: string; role: string }>(
     'select id, name, role from collaborators',

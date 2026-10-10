@@ -1,6 +1,7 @@
 import { platformManagementSchemaSql } from './platform-management-schema.ts'
 import { platformMaintenanceHistorySchemaSql } from './platform-maintenance-history-schema.ts'
 import { platformMaintenanceSchemaSql } from './platform-maintenance-schema.ts'
+import { projectLedgerSchemaSql } from './project-ledger-schema.ts'
 
 export const schemaSql = `
 create table if not exists users (
@@ -3125,6 +3126,7 @@ create trigger project_delivery_organization_changed after update of organizatio
 ${platformManagementSchemaSql}
 ${platformMaintenanceSchemaSql}
 ${platformMaintenanceHistorySchemaSql}
+${projectLedgerSchemaSql}
 `
 
 // Applied only after the encrypted, idempotent module-name backfill has succeeded.

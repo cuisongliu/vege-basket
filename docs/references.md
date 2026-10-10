@@ -5,7 +5,7 @@
 | Concern | Source of truth |
 | --- | --- |
 | Scripts and dependency roles | `package.json`, `package-lock.json` |
-| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/organization-context.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
+| Browser API and AI stream contracts | `src/api.ts`, `src/types.ts`, `src/my-work-types.ts`, `src/test-workbench-api.ts`, `src/test-workbench-types.ts`, `src/organization-types.ts`, `shared/project-ledger.ts`, `shared/organization-context.ts`, `shared/organization-package-market.ts`, `shared/ai-conversation-wire.ts`, `shared/server-sent-events.ts` |
 | WYSIWYG Markdown editor contract | `src/components/markdown-wysiwyg-editor.tsx`, `src/App.css` |
 | HTTP routes and authorization | `server/index.ts`, `server/roles.ts`, `server/test-workbench.ts`, `server/organizations.ts`, `server/organization-package-market.ts` |
 | Database schema and incremental migrations | `server/schema.ts`, `server/migrations/` |

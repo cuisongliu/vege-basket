@@ -1,0 +1,42 @@
+.project-ledger-workbench { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; height: 100%; overflow: auto; padding: 4px 2px 28px; }
+.ledger-page-header, .ledger-cluster-header, .ledger-section-toolbar, .ledger-cluster-title, .ledger-machine-heading { align-items: center; display: flex; justify-content: space-between; gap: 12px; }
+.ledger-page-header { border-bottom: 1px solid var(--border); padding: 10px 4px 16px; }
+.ledger-page-header h2 { margin: 3px 0 4px; font-size: 24px; }
+.ledger-page-header p, .ledger-cluster-title span, .ledger-cluster-toolbar span, .ledger-hint { color: var(--muted-text); font-size: 13px; margin: 0; }
+.ledger-eyebrow { color: var(--primary); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.ledger-page-actions { display: flex; gap: 8px; }
+.ledger-project-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); }
+.ledger-project-overview > div { background: var(--panel); display: grid; gap: 4px; padding: 13px 16px; }
+.ledger-project-overview span, .ledger-label, .ledger-field > span { color: var(--muted-text); font-size: 12px; }
+.ledger-description, .ledger-cluster, .ledger-maintainers-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.ledger-description { padding: 16px; }
+.ledger-markdown-field { display: grid; gap: 7px; min-width: 0; }
+.ledger-markdown-field .markdown-wysiwyg-editor { min-height: 120px; }
+.ledger-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ledger-field { display: grid; gap: 6px; min-width: 0; }
+.ledger-field-wide { display: grid; gap: 14px; grid-column: 1 / -1; }
+.ledger-read-value { min-height: 32px; display: flex; align-items: center; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ledger-cluster { overflow: hidden; }
+.ledger-cluster-header { padding: 14px 16px; }
+.ledger-cluster-title { justify-content: flex-start; min-width: 0; }
+.ledger-cluster-title > div { display: grid; gap: 3px; min-width: 0; }
+.ledger-cluster-title strong { overflow-wrap: anywhere; }
+.ledger-license-flag { align-items: center; display: inline-flex; gap: 4px; font-size: 12px; white-space: nowrap; }
+.ledger-license-flag.expired { color: var(--danger); }.ledger-license-flag.warning { color: #b16b00; }
+.ledger-cluster-tabs { border-block: 1px solid var(--border); display: flex; gap: 3px; overflow-x: auto; padding: 0 10px; }
+.ledger-cluster-tabs button, .ledger-inline-switch button { background: transparent; border: 0; color: var(--muted-text); cursor: pointer; font-size: 12px; font-weight: 600; padding: 10px 9px; white-space: nowrap; }
+.ledger-cluster-tabs button.active, .ledger-inline-switch button.active { color: var(--primary); box-shadow: inset 0 -2px var(--primary); }
+.ledger-cluster-tabs button:hover, .ledger-inline-switch button:hover:not(:disabled) { color: var(--primary); }
+.ledger-cluster-body { padding: 16px; }
+.ledger-section-toolbar { margin-bottom: 12px; }
+.ledger-table-scroll { overflow-x: auto; }
+.ledger-table { border-collapse: collapse; min-width: 760px; width: 100%; }
+.ledger-table th, .ledger-table td { border-bottom: 1px solid var(--border); padding: 8px; text-align: left; vertical-align: middle; }
+.ledger-table th { color: var(--muted-text); font-size: 12px; font-weight: 600; white-space: nowrap; }.ledger-table td { font-size: 13px; }
+.ledger-cell-text { display: block; min-height: 30px; padding: 7px 2px; overflow-wrap: anywhere; }
+.ledger-empty, .ledger-state { color: var(--muted-text); font-size: 13px; margin: 18px 0; }.ledger-empty-large { padding: 32px; text-align: center; }
+.ledger-machine-list { display: grid; gap: 12px; }.ledger-machine { border: 1px solid var(--border); border-radius: 5px; padding: 12px; }.ledger-machine-heading { margin-bottom: 12px; }
+.ledger-vpn { display: grid; gap: 12px; }.ledger-inline-switch { border-bottom: 1px solid var(--border); display: flex; gap: 4px; }.ledger-remove-inline { justify-self: start; }.ledger-hint { margin-top: -5px; }
+.ledger-diagram-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }.ledger-diagram-item { align-items: center; border: 1px solid var(--border); border-radius: 5px; display: flex; gap: 5px; min-width: 0; padding: 8px; }.ledger-diagram-item button { align-items: center; background: transparent; border: 0; cursor: pointer; display: grid; flex: 1; gap: 4px; min-width: 0; padding: 5px; text-align: left; }.ledger-diagram-item strong, .ledger-diagram-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.ledger-diagram-item small { color: var(--muted-text); }.ledger-upload-button { align-items: center; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; display: inline-flex; gap: 6px; padding: 6px 9px; font-size: 12px; }.ledger-upload-button.disabled { cursor: not-allowed; opacity: .55; }.ledger-upload-button input { display: none; }
+.ledger-error { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); padding: 9px 12px; }.ledger-maintainers-panel { margin-top: 12px; padding: 14px; }.ledger-maintainers-panel header { align-items: center; display: flex; justify-content: space-between; gap: 12px; }.ledger-maintainers-panel header div { display: grid; gap: 3px; }.ledger-maintainers-panel header span { color: var(--muted-text); font-size: 12px; }.ledger-maintainer-editor { display: grid; gap: 10px; margin-top: 12px; }.ledger-maintainer-editor > div { display: grid; gap: 7px; max-height: 220px; overflow: auto; }.ledger-maintainer-editor label { align-items: center; display: flex; gap: 8px; }.ledger-maintainer-editor label span { display: grid; gap: 2px; }.ledger-maintainer-editor small { color: var(--muted-text); }.ledger-maintainer-editor footer { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 700px) { .ledger-project-overview, .ledger-form-grid { grid-template-columns: 1fr; }.ledger-field-wide { grid-column: auto; }.ledger-page-header { align-items: flex-start; flex-direction: column; }.ledger-page-actions { width: 100%; }.ledger-page-actions > * { flex: 1; }.project-ledger-workbench { padding-inline: 0; } }

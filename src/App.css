@@ -6273,6 +6273,17 @@ textarea:focus {
   overflow: hidden;
 }
 
+.detail-layout.ledger-mode {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.detail-layout.ledger-mode .project-detail-main {
+  grid-column: 1 / -1;
+  overflow: hidden;
+}
+
 .project-detail-main {
   min-width: 0;
   min-height: 0;

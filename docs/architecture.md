@@ -26,6 +26,23 @@ The production image builds `src/` into `dist/`, copies `server/`, and starts
 
 ## Module Boundaries
 
+- `shared/project-ledger.ts`, `server/project-ledger.ts`, `server/project-ledger-schema.ts`:
+  organization-project ledgers with a project-level Markdown description and installation
+  version plus cluster-scoped applications, licenses, VPN documentation, machines, network
+  mappings, and architecture images. Reads require the active developer persona, direct active
+  project access, and active membership in the project's organization. Writes additionally
+  require an explicit ledger-maintainer grant; project ownership and organization governance do
+  not imply content write access. Organization Owner/Admin members with the assigned
+  `organization_admin` role configure maintainers from Organization Management. Text and OSS
+  object keys are encrypted, diagram content is returned only through the authenticated project
+  route, and composite foreign keys keep every nested row inside its project, organization, and
+  cluster. Revocation triggers permanently remove maintainer grants after account, project, or
+  organization membership changes.
+- `src/components/project-ledger.tsx`, `src/components/project-ledger-maintainers-panel.tsx`:
+  the developer-only project-detail ledger and the organization project roster editor. The
+  browser never receives OSS object keys and stores no access password, private key, token, or
+  VPN configuration file in the ledger.
+
 - `server/project-subprojects.ts`: parent-project-scoped subproject names, encrypted
   name lookups, strict identifiers, and transactional governance checks. Subproject
   maintenance and task selection share the existing project advisory lock. A composite

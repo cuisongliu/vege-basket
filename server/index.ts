@@ -199,6 +199,7 @@ import { waitForAiTurnStreamDrain } from './ai-turn-stream.ts'
 import { deleteOwnedProjectWithAiCleanup } from './project-deletion.ts'
 import { managedOrganizationReadScopeSql } from './organization-scope.ts'
 import { createWorkHoursRouter, parseWorkMinutes } from './work-hours.ts'
+import { createProjectLedgerRouter } from './project-ledger.ts'
 import {
   getAuthenticatedRoleSession,
   getUserRoleContext,
@@ -15250,6 +15251,7 @@ app.use('/api', createWeeklyReportRouter({
 // Enterprise work-time routes are kept in their own router so every read and
 // mutation shares the same organization/project authorization boundary.
 app.use('/api', createWorkHoursRouter())
+app.use('/api', createProjectLedgerRouter())
 
 function setShareDocumentHeaders(response: express.Response, todoShare = false) {
   response.setHeader('Cache-Control', 'private, no-store')

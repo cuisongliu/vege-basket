@@ -752,6 +752,10 @@ export async function getOssObject(objectKey: string) {
   return ossClient().get(objectKey)
 }
 
+export async function deleteOssObject(objectKey: string) {
+  return ossClient().delete(objectKey)
+}
+
 async function listAllObjects(client: OSS, prefix: string) {
   const objects: OssObject[] = []
   let marker: string | undefined

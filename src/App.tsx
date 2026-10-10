@@ -65,6 +65,7 @@ import {
   Flask,
   FunnelSimple,
   GearSix,
+  HardDrives,
   LinkSimple,
   ListChecks,
   MagnifyingGlass,
@@ -324,6 +325,7 @@ import { TodoShareView } from './components/todo-share-view'
 import { getTodoShareTokenFromPath } from './todo-share-deep-link'
 import type { TestBug } from './test-workbench-types'
 import { OrganizationWorkbench } from './components/organization-workbench'
+import { ProjectLedger } from './components/project-ledger'
 import { PlatformManagementWorkbench } from './components/platform-management-workbench'
 import { ProjectModulePicker } from './components/project-module-picker'
 import { ChangelogWorkbench } from './components/changelog-workbench'
@@ -594,7 +596,7 @@ type MentionOption = {
   name: string
   role: string
 }
-type ProjectDetailTab = 'tasks' | 'journal' | 'activity' | 'packages' | 'work_hours'
+type ProjectDetailTab = 'tasks' | 'journal' | 'activity' | 'packages' | 'work_hours' | 'ledger'
 type WorkHourRecorderContext = { projectId: number; todoId: number }
 type TodoFilterJoin = 'and' | 'or'
 type TodoFilterField =
@@ -3131,6 +3133,9 @@ function App() {
   const selectedProject =
     scopedProjects.find((project) => project.id === selectedProjectId) ?? scopedProjects[0]
   const canViewSelectedProjectDelivery = canViewProjectDelivery && selectedProject?.organizationId != null
+  const canViewSelectedProjectLedger = Boolean(
+    authUser?.activeRole === 'developer' && selectedProject?.organizationId != null,
+  )
   const selectedOrganizationName = selectedOrganizationId == null
     ? '个人项目'
     : organizations.find((organization) => organization.id === selectedOrganizationId)?.name ?? '组织项目'
@@ -6166,6 +6171,7 @@ function App() {
               ? workHourRecorderContext
               : null}
             canViewProjectDelivery={canViewSelectedProjectDelivery}
+            canViewProjectLedger={canViewSelectedProjectLedger}
             canViewProjectWorkHours={canManageSelectedOrganization}
             onProjectDetailTabChange={setProjectDetailTab}
             onAddTodo={addTodo}
@@ -7085,6 +7091,7 @@ function ProjectDetail({
   projectDetailTab,
   workHourRecorderContext,
   canViewProjectDelivery,
+  canViewProjectLedger,
   canViewProjectWorkHours,
   onAddTodo,
   onAddInstallEventComment,
@@ -7162,6 +7169,7 @@ function ProjectDetail({
   projectDetailTab: ProjectDetailTab
   workHourRecorderContext: WorkHourRecorderContext | null
   canViewProjectDelivery: boolean
+  canViewProjectLedger: boolean
   canViewProjectWorkHours: boolean
   onProjectDetailTabChange: (tab: ProjectDetailTab) => void
   onAddTodo: (projectId: number) => Promise<boolean>
@@ -7402,11 +7410,15 @@ function ProjectDetail({
       onProjectDetailTabChange('tasks')
       return
     }
+    if (projectDetailTab === 'ledger' && !canViewProjectLedger) {
+      onProjectDetailTabChange('tasks')
+      return
+    }
     if (projectDetailTab !== 'tasks') {
       setIsProjectTodoDetailOpen(false)
       setIsTodoCreateDialogOpen(false)
     }
-  }, [canViewProjectDelivery, canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
+  }, [canViewProjectDelivery, canViewProjectLedger, canViewProjectWorkHours, onProjectDetailTabChange, projectDetailTab])
 
   useEffect(() => {
     setJournalPage((page) => Math.min(page, journalPageCount - 1))
@@ -7426,6 +7438,8 @@ function ProjectDetail({
       className={
         projectDetailTab === 'packages'
           ? 'detail-layout packages-mode'
+          : projectDetailTab === 'ledger'
+            ? 'detail-layout ledger-mode'
           : projectDetailTab === 'activity'
             ? 'detail-layout activity-mode'
           : projectDetailTab === 'tasks'
@@ -7444,6 +7458,7 @@ function ProjectDetail({
           <button className={projectDetailTab === 'tasks' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('tasks')} role="tab" aria-selected={projectDetailTab === 'tasks'} type="button"><ListChecks size={17} /><span>项目待办</span><span className="project-detail-tab-count">{projectTodos.length}</span></button>
           <button className={projectDetailTab === 'journal' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('journal')} role="tab" aria-selected={projectDetailTab === 'journal'} type="button"><FileText size={17} /><span>项目日记</span></button>
           {canViewProjectDelivery ? <button className={projectDetailTab === 'packages' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('packages')} role="tab" aria-selected={projectDetailTab === 'packages'} type="button"><ShoppingCartSimple size={17} /><span>交付工作台</span></button> : null}
+          {canViewProjectLedger ? <button className={projectDetailTab === 'ledger' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('ledger')} role="tab" aria-selected={projectDetailTab === 'ledger'} type="button"><HardDrives size={17} /><span>项目台账</span></button> : null}
           {canViewProjectWorkHours ? <button className={projectDetailTab === 'work_hours' ? 'is-active' : ''} onClick={() => onProjectDetailTabChange('work_hours')} role="tab" aria-selected={projectDetailTab === 'work_hours'} type="button"><Clock size={17} /><span>项目工时</span></button> : null}
         </nav>
         {projectDetailTab === 'tasks' && canWriteProject && !isProjectTodoFocusOpen ? (
@@ -7457,6 +7472,8 @@ function ProjectDetail({
       <div className="project-detail-main">
         {projectDetailTab === 'activity' ? (
           <TodoActivityPanel departedUserIds={departedUserIds} projectId={project.id} />
+        ) : projectDetailTab === 'ledger' && canViewProjectLedger ? (
+          <ProjectLedger projectId={project.id} />
         ) : projectDetailTab === 'work_hours' && canViewProjectWorkHours ? (
           <WorkHoursWorkbench
             mode="project"

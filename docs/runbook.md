@@ -630,6 +630,29 @@ constraint, migration or HTTP integration behavior.
 `npm test` supplies an inert loopback database URL only when the caller has not configured one.
 Pure tests import database-aware modules but do not start the API or issue queries.
 
+## Project ledger rollout
+
+`server/migrations/20261010_project_ledgers.sql` and the matching schema addition create the
+organization-project ledger tables, composite project/organization/cluster foreign keys, encrypted
+ledger fields, architecture-diagram metadata, and permanent maintainer-revocation triggers. The
+automatic migration receipt is `20261010_schema_v31`; do not run this migration or start the API
+without explicit approval against an isolated non-production PostgreSQL database.
+
+Before an authorized rollout, retain a PostgreSQL snapshot and the complete encryption key ring.
+Existing organization projects start with no ledger maintainer grants, so organization managers must
+configure the roster before anyone can edit. Project Owner and organization manager status do not
+implicitly grant ledger writes. An old image may read the additive tables but is not a safe permission
+rollback because it cannot enforce the new developer-only read boundary; prefer a forward fix or
+restore the approved snapshot and key ring as one coordinated rollback.
+
+The ledger stores Markdown descriptions, account/SSH guidance, VPN Markdown or HTTPS document links,
+and encrypted diagram object metadata. Do not enter passwords, private keys, tokens, VPN configuration
+files, or other credentials. Diagram objects use the configured OSS prefix and are deleted on an
+authorized metadata deletion when the object key still matches that project prefix. Browser checks
+should use mocked HTTP/OSS responses; they do not establish PostgreSQL, OSS, migration, or browser
+production behavior. The current implementation has intentionally not been verified against a live
+database, OSS bucket, or running service.
+
 ## Project delivery permissions rollout
 
 `server/migrations/20260922_project_delivery_permissions.sql` adds project delivery grants, completion

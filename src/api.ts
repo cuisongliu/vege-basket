@@ -1,4 +1,9 @@
 import type { ProjectDeliveryMember } from '../shared/project-delivery'
+import type {
+  ProjectLedger,
+  ProjectLedgerMaintainerConfiguration,
+  ProjectLedgerWritePayload,
+} from '../shared/project-ledger'
 import {
   emptyDeliveryRuntimeConfig,
   normalizeDeliveryRuntimeConfig,
@@ -1760,6 +1765,58 @@ export async function uploadTodoImage(file: File) {
   }
 
   return response.json() as Promise<TodoImageUploadResponse>
+}
+
+export function fetchProjectLedger(projectId: number) {
+  return request<ProjectLedger>(`/api/projects/${projectId}/ledger`)
+}
+
+export function saveProjectLedger(projectId: number, payload: ProjectLedgerWritePayload) {
+  return request<ProjectLedger>(`/api/projects/${projectId}/ledger`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function uploadProjectLedgerDiagram(projectId: number, clusterId: string, file: File) {
+  const response = await fetch(`/api/projects/${projectId}/ledger/clusters/${clusterId}/diagrams`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type,
+      'X-File-Name': encodeURIComponent(file.name),
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: file,
+  })
+  if (!response.ok) await throwApiResponseError(response, `/api/projects/${projectId}/ledger/clusters/${clusterId}/diagrams`, 'POST')
+  return response.json() as Promise<{ contentType: string; fileName: string; id: string; size: number; uploadedAt: string }>
+}
+
+export async function fetchProjectLedgerDiagram(projectId: number, diagramId: string) {
+  const path = `/api/projects/${projectId}/ledger/diagrams/${diagramId}/content`
+  const response = await fetch(path, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} })
+  if (!response.ok) await throwApiResponseError(response, path, 'GET')
+  return response.blob()
+}
+
+export function deleteProjectLedgerDiagram(projectId: number, diagramId: string) {
+  return request<ProjectLedger>(`/api/projects/${projectId}/ledger/diagrams/${diagramId}`, { method: 'DELETE' })
+}
+
+export function fetchProjectLedgerMaintainers(organizationId: number, projectId: number) {
+  return request<ProjectLedgerMaintainerConfiguration>(`/api/organizations/${organizationId}/projects/${projectId}/ledger-maintainers`)
+}
+
+export function saveProjectLedgerMaintainers(
+  organizationId: number,
+  projectId: number,
+  members: number[],
+  expectedMembers: number[],
+) {
+  return request<ProjectLedgerMaintainerConfiguration>(`/api/organizations/${organizationId}/projects/${projectId}/ledger-maintainers`, {
+    method: 'PUT',
+    body: JSON.stringify({ expectedMembers, members }),
+  })
 }
 
 export async function uploadTestPlanExecutionImage(file: File) {

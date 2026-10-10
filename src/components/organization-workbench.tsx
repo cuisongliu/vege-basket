@@ -1,4 +1,5 @@
 import { ProjectDeliveryMembersPanel } from './project-delivery-members-panel'
+import { ProjectLedgerMaintainersPanel } from './project-ledger-maintainers-panel'
 import { WeeklyReportProgress, WeeklyReportReading } from './weekly-report-form'
 import { combineWeeklyReportProgress, formatWeeklyReportPercent } from '../../shared/weekly-report-document'
 import { weeklyReportProfiles, type WeeklyReportProfile } from '../../shared/weekly-report-profile'
@@ -2052,6 +2053,7 @@ function OrganizationProjectRow({
         <div>
           <div className="organization-project-detail">
             {expanded && canManage && <ProjectDeliveryMembersPanel key={`delivery:${detail.id}:${project.id}`} organizationId={detail.id} projectId={project.id} />}
+            {expanded && canManage && <ProjectLedgerMaintainersPanel key={`ledger:${detail.id}:${project.id}`} organizationId={detail.id} projectId={project.id} />}
             {expanded && <ProjectSubprojectsPanel key={project.id} projectId={project.id} canManage={canManageSubprojects} onChange={onSubprojectsChanged} />}
             <div className="organization-project-detail-heading">
               <div>
