@@ -19,7 +19,8 @@ const MAX_SELECTED_WORK_HOURS = 100
 
 const emptyWorkHourSummary: WorkHourSummary = {
   byDate: [], byProject: [], byUser: [], confirmedMinutes: 0, pendingMinutes: 0,
-  projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0,
+  projectCount: 0, taskCount: 0, totalHours: 0, totalMinutes: 0, todoMinutes: 0,
+  supplementalMinutes: 0, supplementalCount: 0, bugCount: 0,
 }
 
 function formatMinutes(minutes: number | null | undefined) {

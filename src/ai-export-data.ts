@@ -58,7 +58,7 @@ function workHourEntryStatusLabel(entry: WorkHourEntry) {
 
 export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHourSummary): WorkHourSummary {
   const byDate = new Map<string, { minutes: number; pendingMinutes: number; confirmedMinutes: number }>()
-  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes: number; estimatedMinutes: number }>()
+  const byProject = new Map<number, { projectId: number; projectName: string; minutes: number; todoMinutes: number; supplementalMinutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes: number; estimatedMinutes: number }>()
   const byUser = new Map<number, { userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes: number; returnedCount: number; projectIds: Set<number>; todoIds: Set<number> }>()
   const todoEstimates = new Map<number, number>()
   const todoProjects = new Map<number, number>()
@@ -74,18 +74,22 @@ export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHou
     if (isConfirmed) date.confirmedMinutes += entry.minutes
     else date.pendingMinutes += entry.minutes
     byDate.set(entry.workDate, date)
-    const project = byProject.get(entry.projectId) ?? { projectId: entry.projectId, projectName: entry.projectName ?? '未命名项目', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, returnedMinutes: 0, estimatedMinutes: 0 }
+    const project = byProject.get(entry.projectId) ?? { projectId: entry.projectId, projectName: entry.projectName ?? '未命名项目', minutes: 0, todoMinutes: 0, supplementalMinutes: 0, pendingMinutes: 0, confirmedMinutes: 0, returnedMinutes: 0, estimatedMinutes: 0 }
     project.minutes += entry.minutes
+    if ((entry.sourceType ?? 'todo') === 'todo') project.todoMinutes += entry.minutes
+    else project.supplementalMinutes += entry.minutes
     if (isConfirmed) project.confirmedMinutes += entry.minutes
     else project.pendingMinutes += entry.minutes
     if (entry.returnedAt) project.returnedMinutes += entry.minutes
-    if (entry.estimatedWorkMinutes != null) todoEstimates.set(entry.todoId, entry.estimatedWorkMinutes)
-    todoProjects.set(entry.todoId, entry.projectId)
-    const task = taskTotals.get(entry.todoId) ?? { totalMinutes: 0, pendingMinutes: 0, confirmedMinutes: 0 }
-    task.totalMinutes += entry.minutes
-    if (isConfirmed) task.confirmedMinutes += entry.minutes
-    else task.pendingMinutes += entry.minutes
-    taskTotals.set(entry.todoId, task)
+    if (entry.todoId != null) {
+      if (entry.estimatedWorkMinutes != null) todoEstimates.set(entry.todoId, entry.estimatedWorkMinutes)
+      todoProjects.set(entry.todoId, entry.projectId)
+      const task = taskTotals.get(entry.todoId) ?? { totalMinutes: 0, pendingMinutes: 0, confirmedMinutes: 0 }
+      task.totalMinutes += entry.minutes
+      if (isConfirmed) task.confirmedMinutes += entry.minutes
+      else task.pendingMinutes += entry.minutes
+      taskTotals.set(entry.todoId, task)
+    }
     byProject.set(entry.projectId, project)
     const user = byUser.get(entry.userId) ?? { userId: entry.userId, userName: entry.userName ?? '未知', minutes: 0, pendingMinutes: 0, confirmedMinutes: 0, returnedMinutes: 0, returnedCount: 0, projectIds: new Set(), todoIds: new Set() }
     user.minutes += entry.minutes
@@ -96,7 +100,7 @@ export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHou
       user.returnedCount += 1
     }
     user.projectIds.add(entry.projectId)
-    user.todoIds.add(entry.todoId)
+    if (entry.todoId != null) user.todoIds.add(entry.todoId)
     byUser.set(entry.userId, user)
   }
   for (const [todoId, estimated] of todoEstimates) {
@@ -104,7 +108,7 @@ export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHou
     if (project) project.estimatedMinutes += estimated
   }
   const estimatedMinutes = entries.length ? [...todoEstimates.values()].reduce((sum, value) => sum + value, 0) : base.estimatedMinutes ?? 0
-  const includedTodoIds = new Set(entries.map((entry) => entry.todoId))
+  const includedTodoIds = new Set(entries.filter((entry) => entry.todoId != null).map((entry) => entry.todoId))
   return {
     ...base,
     totalMinutes: entries.reduce((sum, entry) => sum + entry.minutes, 0),
@@ -112,7 +116,11 @@ export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHou
     confirmedMinutes,
     pendingMinutes,
     projectCount: byProject.size,
-    taskCount: new Set(entries.map((entry) => entry.todoId)).size,
+    taskCount: new Set(entries.filter((entry) => entry.todoId != null).map((entry) => entry.todoId)).size,
+    todoMinutes: entries.filter((entry) => (entry.sourceType ?? 'todo') === 'todo').reduce((sum, entry) => sum + entry.minutes, 0),
+    supplementalMinutes: entries.filter((entry) => (entry.sourceType ?? 'todo') === 'project_supplement').reduce((sum, entry) => sum + entry.minutes, 0),
+    supplementalCount: entries.filter((entry) => (entry.sourceType ?? 'todo') === 'project_supplement').length,
+    bugCount: entries.filter((entry) => (entry.sourceType ?? 'todo') === 'project_supplement' && entry.bugId != null).length,
     estimatedMinutes,
     estimatedHours: estimatedMinutes / 60,
     tasks: base.tasks?.filter((task) => includedTodoIds.has(task.taskId)).map((task) => ({
@@ -120,7 +128,7 @@ export function summarizeWorkHourEntries(entries: WorkHourEntry[], base: WorkHou
       ...(taskTotals.get(task.taskId) ?? { totalMinutes: 0, pendingMinutes: 0, confirmedMinutes: 0 }),
     })),
     byDate: [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, value]) => ({ date, hours: value.minutes / 60, ...value })),
-    byProject: [...byProject.values()].map((value) => ({ ...value, varianceMinutes: value.minutes - value.estimatedMinutes })),
+    byProject: [...byProject.values()].map((value) => ({ ...value, varianceMinutes: value.todoMinutes - value.estimatedMinutes })),
     byUser: [...byUser.values()].map((value) => ({ userId: value.userId, userName: value.userName, minutes: value.minutes, pendingMinutes: value.pendingMinutes, confirmedMinutes: value.confirmedMinutes, returnedMinutes: value.returnedMinutes, returnedCount: value.returnedCount, projectCount: value.projectIds.size, taskCount: value.todoIds.size })),
   }
 }
@@ -149,7 +157,7 @@ export function filterWorkHourEntries(
     ? null
     : new Set(tasks.filter((task) => taskStatus === 'done' ? task.done : !task.done).map((task) => task.taskId))
   return entries.filter((entry) => (
-    (!allowedTodoIds || allowedTodoIds.has(entry.todoId)) &&
+    (!allowedTodoIds || entry.todoId == null || allowedTodoIds.has(entry.todoId)) &&
     (!normalizedQuery || [entry.projectName, entry.todoTitle, entry.description, entry.userName, entry.workDate, workHourEntryStatusLabel(entry)]
       .join(' ')
       .toLocaleLowerCase('zh-CN')
@@ -159,10 +167,20 @@ export function filterWorkHourEntries(
 
 export function formatWorkHourExport(entries: WorkHourEntry[]) {
   if (!entries.length) return '无数据'
-  const groups = new Map<number, WorkHourEntry[]>()
-  for (const entry of entries) groups.set(entry.todoId, [...(groups.get(entry.todoId) ?? []), entry])
+  const groups = new Map<string, WorkHourEntry[]>()
+  for (const entry of entries) {
+    const key = entry.todoId == null ? `supplement:${entry.projectId}:${entry.bugId ?? 'project'}` : `todo:${entry.todoId}`
+    groups.set(key, [...(groups.get(key) ?? []), entry])
+  }
   return [...groups.values()].map((records) => {
     const first = records[0]
+    if (first.todoId == null) return [
+      `### 项目补录${first.bugTitle ? `：${first.bugTitle}` : ''}`,
+      `- 项目：${first.projectName ?? '未命名项目'}`,
+      `- 实际投入：${records.reduce((sum, entry) => sum + entry.minutes, 0)} 分钟`,
+      '- 工时记录：',
+      ...records.map((entry) => `  - ${entry.workDate} · ${entry.userName ?? '未知'} · ${entry.minutes} 分钟 · ${workHourEntryStatusLabel(entry)}（${entry.status}） · ${entry.description || '无说明'}`),
+    ].join('\n')
     return [
       `### 任务：${first.todoTitle ?? `任务 #${first.todoId}`}`,
       `- 任务 ID：${first.todoId}`,

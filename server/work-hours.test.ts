@@ -86,6 +86,21 @@ test('work-hour schema preserves task-project identity and bounded states', () =
   assert.match(schema, /legacy_minutes or minutes % 60 = 0/u)
 })
 
+test('project supplements stay separate from todo lifecycle and support Bug linkage', () => {
+  const schema = readFileSync(new URL('./schema.ts', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL('./migrations/20261010_project_work_hours.sql', import.meta.url), 'utf8')
+
+  const supplementStart = schema.indexOf('create table if not exists project_work_hours')
+  const supplementEnd = schema.indexOf('do $$', supplementStart)
+  const schemaSupplement = schema.slice(supplementStart, supplementEnd > supplementStart ? supplementEnd : undefined)
+  for (const source of [schemaSupplement, migration]) {
+    assert.match(source, /create table if not exists project_work_hours/u)
+    assert.match(source, /test_bug_id bigint references test_bugs\(id\)(?: on delete set null)?/u)
+    assert.match(source, /status in \('pending', 'submitted', 'confirmed'\)/u)
+    assert.doesNotMatch(source, /foreign key (todo_id, project_id)/u)
+  }
+})
+
 test('todo detail work-hour reads stay scoped to the authorized todo and paginate results', () => {
   const source = readFileSync(new URL('./work-hours.ts', import.meta.url), 'utf8')
 

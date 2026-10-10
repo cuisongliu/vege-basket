@@ -158,7 +158,9 @@ export type WorkHourStatus = 'pending' | 'submitted' | 'confirmed'
 export type WorkHourEntry = {
   id: number
   projectId: number
-  todoId: number
+  sourceType?: 'todo' | 'project_supplement'
+  todoId?: number
+  bugId?: number
   userId: number
   workDate: string
   minutes: number
@@ -170,6 +172,7 @@ export type WorkHourEntry = {
   updatedAt: string
   projectName?: string
   todoTitle?: string
+  bugTitle?: string
   userName?: string
   estimatedWorkMinutes?: number | null
 }
@@ -188,11 +191,15 @@ export type WorkHourTaskSummary = {
 export type WorkHourSummary = {
   totalMinutes: number
   totalHours: number
+  todoMinutes: number
+  supplementalMinutes: number
+  supplementalCount: number
+  bugCount: number
   confirmedMinutes: number
   pendingMinutes: number
   projectCount: number
   taskCount: number
-  byProject: Array<{ projectId: number; projectName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes?: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
+  byProject: Array<{ projectId: number; projectName: string; minutes: number; todoMinutes?: number; supplementalMinutes?: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes?: number; taskCount?: number; estimatedMinutes?: number | null; varianceMinutes?: number | null }>
   byDate: Array<{ date: string; minutes: number; hours: number; pendingMinutes: number; confirmedMinutes: number }>
   byUser: Array<{ userId: number; userName: string; minutes: number; pendingMinutes: number; confirmedMinutes: number; returnedMinutes?: number; returnedCount?: number; projectCount?: number; taskCount?: number }>
   tasks?: WorkHourTaskSummary[]
@@ -690,6 +697,19 @@ export function createWorkHour(payload: {
   })
 }
 
+export function createSupplementalWorkHour(payload: {
+  bugId?: number
+  description?: string
+  minutes?: number
+  projectId: number
+  workDate: string
+}) {
+  return request<{ entry: WorkHourEntry }>(`/api/projects/${payload.projectId}/supplemental-work-hours`, {
+    method: 'POST',
+    body: JSON.stringify({ bugId: payload.bugId, description: payload.description, minutes: payload.minutes, workDate: payload.workDate }),
+  })
+}
+
 export function fetchTodoWorkHours(todoId: number, filters: { cursor?: number; limit?: number; q?: string } = {}) {
   const params = new URLSearchParams()
   if (filters.cursor) params.set('cursor', String(filters.cursor))
@@ -708,6 +728,32 @@ export function updateWorkHour(entryId: number, payload: Partial<Pick<WorkHourEn
 
 export function removeWorkHour(entryId: number) {
   return request<{ ok: true }>(`/api/my-work-hours/${entryId}`, { method: 'DELETE' })
+}
+
+export function updateSupplementalWorkHour(entryId: number, payload: Partial<Pick<WorkHourEntry, 'description' | 'minutes' | 'workDate'>>) {
+  return request<{ entry: WorkHourEntry }>(`/api/supplemental-work-hours/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeSupplementalWorkHour(entryId: number) {
+  return request<{ ok: true }>(`/api/supplemental-work-hours/${entryId}`, { method: 'DELETE' })
+}
+
+export function submitSupplementalWorkHour(entryId: number) {
+  return request<{ ok: true }>(`/api/supplemental-work-hours/${entryId}/submit`, { method: 'POST' })
+}
+
+export function acceptSupplementalWorkHour(entryId: number) {
+  return request<{ ok: true }>(`/api/supplemental-work-hours/${entryId}/accept`, { method: 'POST' })
+}
+
+export function returnSupplementalWorkHour(entryId: number, reason: string) {
+  return request<{ ok: true }>(`/api/supplemental-work-hours/${entryId}/return`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
 }
 
 export function submitWorkHours(todoId: number, entryIds: number[]) {

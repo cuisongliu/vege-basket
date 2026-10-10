@@ -804,6 +804,14 @@ retired configuration tables; such cleanup remains an explicit, separately appro
 创建人也可只确认选中的 `submitted` 记录，或将选中记录退回为 `pending` 供负责人继续修改。“工时确认”队列列出当前组织内全部尚未完成且组织管理员有权管理的企业任务，不以是否已有工时或待确认工时作为入选条件，并展示任务预估、全状态累计与待确认工时。队列默认每页 10 条，导航角标统计未完成任务总数。没有工时的任务仍会显示，但需要先记录至少一条工时才能从该队列完成；存在 `submitted` 工时时则必须先确认或退回。未选记录保持原状态并继续遵循编辑权限。组织管理员和任务创建人可以查看任务
 的完整投入记录，普通开发/测试账号只能查看自己的记录和汇总，不能读取其他成员的工作说明或工时。
 
+### 项目补录工时与统计口径
+
+项目补录工时存储在独立的 `project_work_hours` 表，不创建默认待办，也不进入待办完成、废弃、负责人或预估工时流程。补录记录可选关联同组织测试空间内的 Bug；服务端重新校验项目成员资格、组织范围和 Bug 组织归属，用户 ID 始终取自会话，不能代他人填报。
+
+普通项目成员和组织管理员可以新增自己的补录记录，并在 `pending` 状态下编辑或删除；提交后由组织管理员确认或退回。个人工时读取只返回当前用户记录，项目级和组织级完整统计继续保持组织管理员权限。
+
+统计读取使用待办工时与补录工时的统一流水：项目、组织、个人的总投入、日期、成员和状态汇总包含两类来源，并单独返回项目补录和 Bug 投入；任务数量、任务累计工时、任务预估偏差和任务明细只计算 `todo_work_hours`。因此 Bug 或其他项目补录不会伪造任务，也不会改变待办生命周期和任务统计。
+
 Platform maintenance state is stored independently from configuration history. Manual maintenance,
 an incomplete or failed database migration, or a missing platform configuration blocks ordinary
 API routes with `503 PLATFORM_MAINTENANCE`. Health/status remain public; after migration, the
