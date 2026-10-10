@@ -1,4 +1,4 @@
-import { clampListPage } from './list-pagination'
+import { calculateAdaptiveListPageSize, clampListPage } from './list-pagination'
 import { canDiscardTodo, canReopenTodo, getTodoDisplayStatus } from './todo-lifecycle'
 import { reassignProjectPackageEvent } from './api'
 import type { MyWorkViewState } from './my-work-types'
@@ -1097,20 +1097,16 @@ function useAdaptivePageSize({
     function updatePageSize() {
       const viewportHeight = window.innerHeight
       const containerRect = containerElement!.getBoundingClientRect()
-      const parentRect = containerElement!.parentElement?.getBoundingClientRect()
-      const containerTop = containerRect.top
-      const availableBottom = parentRect?.bottom && parentRect.bottom > containerTop
-        ? Math.min(parentRect.bottom, viewportHeight)
-        : viewportHeight
-      const availableHeight = Math.max(
-        itemHeight * minPageSize,
-        availableBottom - containerTop - (reservedHeight?.(viewportHeight) ?? 0) - pagerHeight,
-      )
-      const nextItemsPerPage = Math.max(
+      const nextItemsPerPage = calculateAdaptiveListPageSize({
+        containerTop: containerRect.top,
+        itemHeight,
+        maxPageSize,
         minPageSize,
-        Math.min(maxPageSize, Math.floor(availableHeight / itemHeight)),
-      )
-      setItemsPerPage(nextItemsPerPage)
+        pagerHeight,
+        reservedHeight: reservedHeight?.(viewportHeight),
+        viewportHeight,
+      })
+      setItemsPerPage((current) => current === nextItemsPerPage ? current : nextItemsPerPage)
     }
 
     const resizeObserver = new ResizeObserver(updatePageSize)
